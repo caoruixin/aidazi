@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/aidazi/schemas/sprint_stanza.schema.json",
+  "title": "aidazi Sprint Stanza",
+  "description": "JSON Schema for the §7 stanza required in semantic-touching sub-sprint objectives per framework/governance/constitution.md §7. The stanza in sprint_objective.md is Markdown for human readability; this schema validates the equivalent structured representation that can be derived from it.",
+  "type": "object",
+  "required": [
+    "target_failure_layer",
+    "tier0_invariant",
+    "semantic_hardcode",
+    "generalization_coverage"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "target_failure_layer": {
+      "description": "The §3.1 layer the sub-sprint targets.",
+      "type": "string",
+      "enum": [
+        "infra",
+        "runtime_guard",
+        "prompt_projection",
+        "skill_state",
+        "semantic_planner",
+        "eval_spec",
+        "product_policy",
+        "judge_calibration",
+        "human_review_required"
+      ]
+    },
+    "tier0_invariant": {
+      "description": "Either explicit no-Tier-0 statement, or a pointer to the Tier-0 invariant being protected in docs/current/runtime_invariants.md.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status"],
+          "additionalProperties": false,
+          "properties": {
+            "status": { "const": "none" },
+            "note": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["status", "pointer"],
+          "additionalProperties": false,
+          "properties": {
+            "status": { "const": "protects_existing" },
+            "pointer": {
+              "type": "string",
+              "description": "Section anchor in docs/current/runtime_invariants.md, e.g. '§1.2' or '§safety_floor.message_filter'."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["status", "candidate_description"],
+          "additionalProperties": false,
+          "properties": {
+            "status": { "const": "new_candidate" },
+            "candidate_description": { "type": "string" },
+            "human_review_required": { "type": "boolean", "default": true }
+          }
+        }
+      ]
+    },
+    "semantic_hardcode": {
+      "description": "Either explicit no-hardcode statement, or a declared hardcode with justification and sunset plan.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["introduced"],
+          "additionalProperties": false,
+          "properties": {
+            "introduced": { "const": false }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "introduced",
+            "hardcode_name",
+            "justification",
+            "sunset_plan"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "introduced": { "const": true },
+            "hardcode_name": { "type": "string" },
+            "justification": {
+              "type": "string",
+              "description": "Why this hardcode is justified (typically Tier-0 protection or fix-iteration interim)."
+            },
+            "sunset_plan": {
+              "type": "object",
+              "required": ["trigger", "target_sprint_id"],
+              "additionalProperties": false,
+              "properties": {
+                "trigger": {
+                  "type": "string",
+                  "description": "The downgrade-to-signal trigger condition."
+                },
+                "target_sprint_id": {
+                  "type": "string",
+                  "description": "Sprint id where the conversion is expected to land."
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "generalization_coverage": {
+      "description": "Either declared case-family counts, or deferred-to-future-sprint marker.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "counts"],
+          "additionalProperties": false,
+          "properties": {
+            "status": { "const": "declared" },
+            "counts": {
+              "type": "object",
+              "required": ["target", "neighbor", "negative", "shadow"],
+              "additionalProperties": false,
+              "properties": {
+                "target": { "type": "integer", "minimum": 0 },
+                "neighbor": { "type": "integer", "minimum": 0 },
+                "negative": { "type": "integer", "minimum": 0 },
+                "shadow": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["status", "deferred_to_sprint_id"],
+          "additionalProperties": false,
+          "properties": {
+            "status": { "const": "deferred" },
+            "deferred_to_sprint_id": { "type": "string" },
+            "reason": { "type": "string" }
+          }
+        }
+      ]
+    }
+  }
+}
