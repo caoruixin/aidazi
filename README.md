@@ -87,12 +87,34 @@ aidazi/
 │   ├── constitution.md             — LLM-vs-Runtime boundary + layer classification + review gates + milestone framework
 │   ├── doc_governance.md           — front-matter schema, tier model, fold-back cadence
 │   └── context_briefing.md         — Context Pack Prompt + cold-start reading discipline
-├── role-cards/                     — four agent role definitions
+├── role-cards/                     — five agent role definitions
 │   ├── deliver-agent.md
 │   ├── dev-agent.md
 │   ├── review-agent.md             — includes 4-parallel sub-agent orchestration
-│   └── research-agent.md
-├── templates/                      — eight reusable artifact templates
+│   ├── research-agent.md
+│   └── acceptance-agent.md         — NEW v0.2 (5th role per Δ-9 / v3.2 §5)
+├── process/                        — NEW v0.2 — Layer B process docs (load on demand)
+│   ├── domain-discovery-process.md             — Δ-2 D1/D2/D3
+│   ├── tech-architecture-decision-catalog.md   — Δ-3 8 项决策
+│   ├── doc-lifecycle-rules.md                  — Δ-4 live vs intermediate
+│   ├── context-passing-efficiency.md           — Δ-5 sufficient AND efficient
+│   ├── typeA-runtime-architecture-skeleton.md  — Δ-6 intent gate + phase pipeline
+│   ├── post-deployment-iteration.md            — Δ-9 OBS / autoloop role-split
+│   ├── doc-responsibility-matrix.md            — Δ-10 8-field schema
+│   ├── capability-staging-roadmap.md           — Δ-11 + Δ-17 S0..S6
+│   ├── artifact-taxonomy.md                    — Δ-12 11 artifact + per-role
+│   ├── stage-stable-heuristic.md               — Δ-13 git-commit heuristic
+│   ├── profile-aware-maturity.md               — Δ-14 9-cell A/B/C × stage
+│   ├── agent-design-elicitation.md             — Δ-15 6 Q + Part B/C/D
+│   ├── agent-creation-prerequisites.md         — Δ-16 7 类前置
+│   ├── common-detours-and-warnings-typeA.md    — Δ-17 P1-P4 + S1.5/S2.5/S5
+│   ├── common-detours-and-warnings-typeB.md    — Δ-17-B placeholder
+│   └── common-detours-and-warnings-typeC.md    — Δ-17-C placeholder
+├── modules/                        — NEW v0.2 — Module template specs
+│   ├── m-evaluation.md             — light spec (4 components + 4-tier)
+│   ├── m-trace.md                  — conditional spec (portable shape + adaptation gate)
+│   └── m-autoloop.md               — conditional spec (OBS triage + driver edges)
+├── templates/                      — reusable artifact templates
 │   ├── milestone_objective.md
 │   ├── sprint_objective.md
 │   ├── handoff.md
@@ -114,8 +136,18 @@ aidazi/
 │   ├── domain-adaptation.md        — placeholder checklist for domain teams
 │   ├── industry-mapping.md         — framework vs industry 2026 patterns
 │   └── friction-playbook.md        — known frictions + remediation patterns
-└── examples/
-    └── minimal-greenfield/         — bare-bones project skeleton
+├── examples/
+│   ├── minimal-greenfield/         — bare-bones project skeleton
+│   └── csagent-reference/          — NEW v0.2 — §L worked-example snapshot (read-only after first instantiation)
+│       ├── README.md
+│       ├── timeline-54-day.md      — Δ-17 (g) worked example
+│       ├── discovery/              — D1/D2/D3 placeholder
+│       ├── decisions/              — Δ-3 8-decision placeholder
+│       ├── runtime-skeleton/       — Δ-6 phase pipeline placeholder
+│       ├── m-eval/                 — 4-tier instance placeholder
+│       └── m-trace/                — trace schema instance placeholder
+└── archive/
+    └── 2026-06-06-v3.2-snapshot.md — frozen v3.2 plan archive (source of v0.2 content)
 ```
 
 ## Versioning
@@ -125,7 +157,7 @@ tag and upgrade deliberately. Breaking changes to the governance schema,
 role-card responsibilities, or compact-prompt invariants increment the
 major version.
 
-Current version: `0.1.0` (initial extraction).
+Current version: `0.2.0-from-v3.2-plan` (P0 additive integration of v3.2 plan; v0.1.0 content preserved).
 
 ## License
 
