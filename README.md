@@ -1,164 +1,144 @@
-# aidazi — Multi-Agent Iteration Framework
+# aidazi — multi-agent framework for LLM-first software delivery
 
-> **A**gentic **I**teration with **D**eliver / dev / review / research **A**gents
-> through a **Z**ero-hardcode, human-orchestrated **I**teration loop.
+**v4.0.0** — 2026
 
-A reusable, domain-agnostic framework for building agentic AI applications
-(workflow+LLM systems and domain AI agents) with a disciplined
-multi-agent collaboration model.
+aidazi is a framework for delivering software with a multi-agent team where the LLM is responsible for soft semantic decisions and a deterministic runtime owns hard kernel-level invariants. It defines a 5-role chain (Research / Deliver / Dev / Code Reviewer / Acceptance) + a human Customer + the governance + process docs + templates + schemas to run them coherently.
 
-`aidazi` is extracted from production experience iterating an LLM-first
-customer-service agent over 50+ sprints and 5 milestones. The framework
-ships only the **generic** layer; all domain-specific content
-(taxonomies, acceptance metrics, invariants, examples) is supplied by
-the consuming project.
+## What aidazi IS
 
-## What this framework gives you
+- A **constitution** (`governance/constitution.md`) defining LLM-vs-Runtime ownership boundaries + a forbidden list (no keyword/regex matching for semantic decisions, no eval phrase encoding into code, etc.).
+- A **5-role chain** with explicit boundary invariants — no role self-grades; Acceptance is structurally isolated from Deliver/Dev to avoid bias loops.
+- A **process layer** of ~25 numbered Δs (domain discovery, decision catalogs, runtime skeleton, OBS triage, bad-case lifecycle, etc.) — each Δ is a small portable process pattern.
+- **Two loops** named distinctly: **Auto Loop** (Concept 1; Type A agent self-improvement) vs **Delivery Loop** (Concept 2; Δ-18 multi-agent team delivery). They compose; they don't conflict.
+- An **orchestrator pattern** (Δ-18 Delivery Loop) — optional state machine + spawn functions + checkpoint inbox + scope envelope + F5 evidence + calibration gate. Adopters who want automation use it; pure human-paste adopters keep the chain without the automation.
+- A **role-skill model** (`process/role-skill-model.md`) — roles are accountability boundaries; industry capability packs (Agent Skills / SKILL.md standard, coding-agent subagent libraries) mount INSIDE roles as role skills or intra-role fan-out, never as new chain roles. One exemplar packaged skill ships under `skills/`.
+- A **two-direction fold-back** (adopter → framework lessons; framework → adopter releases) so the framework evolves from real adopter experience, not committee decree.
 
-1. **A 4-role multi-agent workflow** — Research / Deliver / Dev / Review
-   agents under Human orchestration. Each role has a self-contained entry
-   doc and clear responsibility boundaries.
-2. **A constitution-chain auto-load mechanism** — agents always load the
-   same governance docs on cold start, so context never depends on chat
-   history.
-3. **Anti-hardcode discipline** — a nine-question review kernel that
-   catches semantic hardcodes (keyword / regex / if-else / per-domain
-   matrix) before they ship.
-4. **Layer classification before code** — a 9-layer fix routing checklist
-   that prevents every failure defaulting to a runtime guard.
-5. **Sprint stanza contract** — a four-field schema (layer / invariant /
-   hardcode / generalization coverage) that gates whether a sprint is
-   ready to start.
-6. **Milestone framework** — 3–5 sub-sprints sharing a single
-   architectural theme; one close review; one human-judgment acceptance
-   gate.
-7. **Self-contained compact prompts** — each dev/review session can be
-   spawned by pasting a single file; no chat history dependency.
-8. **Bundled industry-best-practice tools** — JSON schema validator for
-   stanzas, pre-commit hook for path-based bundling check, trace emitter
-   for observability, four-way parallel review sub-agent orchestration.
+## What aidazi is NOT
 
-## What this framework does NOT give you
+- Not a runtime — there is no "aidazi server" you deploy. The runtime is YOUR project's runtime; aidazi shapes how you build it.
+- Not a single tool — backing coding-agents (Claude Code / Codex / other) are configurable per role per charter.
+- Not opinionated on domain — the framework is track-aware (Type A AI agent / Type B agentic workflow / Type C demo / Type A+B hybrid) but domain-agnostic.
+- Not an LLM eval harness — but it specifies a 4-tier eval pyramid + 6-primitive trace_check DSL (`modules/m-evaluation.md`) that adopters instantiate.
 
-- Domain taxonomy (what a "workflow lane" means in your app)
-- Acceptance metrics (success rate, escalation rate, grounding floor —
-  your choice)
-- Tier-0 invariants (your app's hard safety/correctness floor)
-- Eval harness (the framework defines the philosophy; you bring the
-  toolchain)
-- Code execution environment (the framework is markdown + JSON + small
-  scripts; no runtime)
+## Read order
 
-These belong in the **domain solution** that consumes `aidazi`. See
-[`docs/domain-adaptation.md`](docs/domain-adaptation.md) for the
-placeholder checklist.
+If you're new to aidazi, read in this order:
 
-## Quick start
+1. **This file** (you're here).
+2. `docs/adoption-overview.md` — the mental model: what aidazi does and does not decide.
+3. `docs/two-loops-explainer.md` — Auto Loop vs Delivery Loop naming discipline (Constitution §1.7-E).
+4. `governance/constitution.md` — the always-loaded core.
+5. `governance/doc_governance.md` — front-matter schema + tier model + edit rules.
+6. `governance/context_briefing.md` — cold-start reading discipline + Context Pack Prompt.
+7. Per-track adoption guide:
+   - Greenfield (new project): `docs/greenfield-guide.md`.
+   - Brownfield (existing project): `docs/brownfield-guide.md`.
+8. `docs/directory-taxonomy.md` — fast lookup for "where does this content go?"
+9. The 5 role cards under `role-cards/` — adopt one per session as needed.
+10. The Δ docs under `process/` — load on demand by role.
 
-### New project (greenfield)
-
-See [`docs/greenfield-guide.md`](docs/greenfield-guide.md) for the
-full idea-to-app walkthrough.
-
-```bash
-# 1. Clone framework into your project
-cd your-new-project/
-git submodule add https://github.com/your-org/aidazi.git framework
-
-# 2. Copy the minimal greenfield skeleton
-cp -r framework/examples/minimal-greenfield/. .
-
-# 3. Edit AGENTS.md to point at your domain context docs (3 files)
-# 4. Run the adoption checklist in docs/greenfield-guide.md
-```
-
-### Existing project (brownfield)
-
-See [`docs/brownfield-guide.md`](docs/brownfield-guide.md) for the
-non-invasive incremental integration path.
+The framework's full doc tree is detailed in `governance/constitution.md` §11.
 
 ## Repository layout
 
 ```
 aidazi/
-├── README.md                       — this file
-├── AGENTS.md                       — constitution chain loader (consumer template)
-├── governance/                     — three framework-core governance docs
-│   ├── constitution.md             — LLM-vs-Runtime boundary + layer classification + review gates + milestone framework
-│   ├── doc_governance.md           — front-matter schema, tier model, fold-back cadence
-│   └── context_briefing.md         — Context Pack Prompt + cold-start reading discipline
-├── role-cards/                     — five agent role definitions
+├── README.md                    — this file
+├── AGENTS.md                    — consumer-side template
+├── governance/                  — Layer A (always-load)
+│   ├── constitution.md
+│   ├── doc_governance.md
+│   └── context_briefing.md
+├── process/                     — Layer B (on-demand by role)
+│   ├── delivery-loop.md         — Δ-18 (Concept 2)
+│   ├── customer-checkpoints.md  — human-side gate catalog
+│   ├── self-governance.md       — bloat prevention mechanics
+│   ├── fold-back-protocol.md    — adopter ↔ framework cadence
+│   └── ... (~22 more Δ + promoted process docs)
+├── role-cards/                  — 5 agent role cards
+│   ├── research-agent.md
 │   ├── deliver-agent.md
 │   ├── dev-agent.md
-│   ├── review-agent.md             — includes 4-parallel sub-agent orchestration
-│   ├── research-agent.md
-│   └── acceptance-agent.md         — NEW v0.2 (5th role per Δ-9 / v3.2 §5)
-├── process/                        — NEW v0.2 — Layer B process docs (load on demand)
-│   ├── domain-discovery-process.md             — Δ-2 D1/D2/D3
-│   ├── tech-architecture-decision-catalog.md   — Δ-3 8 项决策
-│   ├── doc-lifecycle-rules.md                  — Δ-4 live vs intermediate
-│   ├── context-passing-efficiency.md           — Δ-5 sufficient AND efficient
-│   ├── typeA-runtime-architecture-skeleton.md  — Δ-6 intent gate + phase pipeline
-│   ├── post-deployment-iteration.md            — Δ-9 OBS / autoloop role-split
-│   ├── doc-responsibility-matrix.md            — Δ-10 8-field schema
-│   ├── capability-staging-roadmap.md           — Δ-11 + Δ-17 S0..S6
-│   ├── artifact-taxonomy.md                    — Δ-12 11 artifact + per-role
-│   ├── stage-stable-heuristic.md               — Δ-13 git-commit heuristic
-│   ├── profile-aware-maturity.md               — Δ-14 9-cell A/B/C × stage
-│   ├── agent-design-elicitation.md             — Δ-15 6 Q + Part B/C/D
-│   ├── agent-creation-prerequisites.md         — Δ-16 7 类前置
-│   ├── common-detours-and-warnings-typeA.md    — Δ-17 P1-P4 + S1.5/S2.5/S5
-│   ├── common-detours-and-warnings-typeB.md    — Δ-17-B placeholder
-│   └── common-detours-and-warnings-typeC.md    — Δ-17-C placeholder
-├── modules/                        — NEW v0.2 — Module template specs
-│   ├── m-evaluation.md             — light spec (4 components + 4-tier)
-│   ├── m-trace.md                  — conditional spec (portable shape + adaptation gate)
-│   └── m-autoloop.md               — conditional spec (OBS triage + driver edges)
-├── templates/                      — reusable artifact templates
-│   ├── milestone_objective.md
-│   ├── sprint_objective.md
-│   ├── handoff.md
-│   ├── codex_review.md
-│   ├── failure_brief.md
-│   ├── compact_dev_prompt.md
-│   ├── compact_review_prompt.md
-│   └── anti_hardcode_kernel.md
-├── schemas/
-│   └── sprint_stanza.schema.json   — JSON schema for sprint-objective stanza
-├── tools/
-│   ├── stanza_validator.py         — validates sprint stanza against schema
-│   ├── precommit_bundling_check.sh — checks dev vs deliver path ownership
-│   └── trace_emitter.py            — per-session trace.jsonl emission helper
-├── docs/
-│   ├── adoption-overview.md        — high-level model
-│   ├── greenfield-guide.md         — idea → app step-by-step
-│   ├── brownfield-guide.md         — existing project incremental integration
-│   ├── domain-adaptation.md        — placeholder checklist for domain teams
-│   ├── industry-mapping.md         — framework vs industry 2026 patterns
-│   └── friction-playbook.md        — known frictions + remediation patterns
-├── examples/
-│   ├── minimal-greenfield/         — bare-bones project skeleton
-│   └── csagent-reference/          — NEW v0.2 — §L worked-example snapshot (read-only after first instantiation)
-│       ├── README.md
-│       ├── timeline-54-day.md      — Δ-17 (g) worked example
-│       ├── discovery/              — D1/D2/D3 placeholder
-│       ├── decisions/              — Δ-3 8-decision placeholder
-│       ├── runtime-skeleton/       — Δ-6 phase pipeline placeholder
-│       ├── m-eval/                 — 4-tier instance placeholder
-│       └── m-trace/                — trace schema instance placeholder
-└── archive/
-    └── 2026-06-06-v3.2-snapshot.md — frozen v3.2 plan archive (source of v0.2 content)
+│   ├── code-reviewer-agent.md
+│   └── acceptance-agent.md
+├── templates/                   — adopter-copyable templates
+│   ├── mission-charter.yaml
+│   ├── anti-hardcode-review-kernel.md
+│   ├── compact-dev-prompt.md
+│   ├── compact-review-prompt.md
+│   ├── compact-acceptance-prompt.md
+│   ├── compact-research-brief.md
+│   ├── compact-codex-rebuttal-prompt.md
+│   ├── deliver-close-taxonomy.md
+│   ├── adoption-state-template.md
+│   ├── lessons-learned-template.md
+│   ├── sprint-objective.md
+│   ├── milestone-objective.md
+│   └── handoff-template.md
+├── skills/                      — packaged role skills (Agent Skills standard; SKILL.md)
+│   └── anti-hardcode-review-kernel/  — exemplar (normative source stays in templates/)
+├── schemas/                     — JSON schemas for verdict shapes
+│   ├── mission-charter.schema.json
+│   ├── review-verdict.schema.json
+│   ├── deliver-close-verdict.schema.json
+│   ├── deliver-plan-fix.schema.json
+│   ├── acceptance-verdict.schema.json
+│   ├── research-brief.schema.json
+│   ├── case-spec.schema.json
+│   ├── adoption-state.schema.json
+│   └── sprint_stanza.schema.json
+├── modules/                     — module specs
+│   ├── m-evaluation.md          — 4-tier pyramid + 6-primitive DSL
+│   ├── m-trace.md               — portable trace shape
+│   └── m-autoloop.md            — Concept 1 (Auto Loop)
+├── docs/                        — Application Guide
+│   ├── adoption-overview.md
+│   ├── two-loops-explainer.md
+│   ├── directory-taxonomy.md
+│   ├── friction-playbook.md
+│   ├── greenfield-guide.md
+│   ├── brownfield-guide.md
+│   ├── domain-adaptation.md
+│   ├── industry-mapping.md
+│   └── application-funnel.md
+├── examples/                    — worked instances (read-only after snapshot)
+│   ├── minimal-greenfield/      — working consumer template
+│   ├── csagent-reference/       — Type A donor snapshot (build-trigger)
+│   ├── hermes-reference/        — Type A+B hybrid snapshot (build-trigger)
+│   └── fortunes-reference-placeholder/  — Type C placeholder
+├── lessons/                     — adopter → framework fold-back inbox (.gitkeep until first lesson)
+├── tools/                       — referenced-but-deferred scripts (OQ-V4-009 tracker)
+└── archive/                     — v3.2 + v4 design-history snapshots (read-only)
 ```
 
 ## Versioning
 
-`aidazi` uses semantic versioning. Consuming projects pin to a specific
-tag and upgrade deliberately. Breaking changes to the governance schema,
-role-card responsibilities, or compact-prompt invariants increment the
-major version.
+Framework cuts versioned releases:
 
-Current version: `0.2.0-from-v3.2-plan` (P0 additive integration of v3.2 plan; v0.1.0 content preserved).
+- `v4.0.0` — first stable v4 release.
+- `v4.0.x` — patch releases (typo fixes, doc clarifications).
+- `v4.x.0` — minor releases (Δ additions or extensions; backwards-compatible).
+- `v5.0.0` — major release (Δ removals, role-chain changes, breaking front-matter shape changes).
+
+Adopters consume on their own cadence (no auto-update). See `process/fold-back-protocol.md` §1.2 for the framework → adopter direction.
+
+## Contributing
+
+This is a framework. Contributing means:
+
+- **Adopting it**: try the framework on a real project; file lessons (`templates/lessons-learned-template.md`) when something doesn't fit your context.
+- **Folding back**: at the framework's fold-back sub-sprint cadence (per `process/fold-back-protocol.md` §2), the framework maintainer reviews lessons and incorporates load-bearing patterns into Δ revisions.
+- **Worked examples**: when you've completed a milestone or full lifecycle, the framework maintainer may invite you to contribute a snapshot to `examples/`.
+
+NOT contributing:
+- Mid-cycle pull requests to framework docs without going through a fold-back. Constitution §8 governance-editing-discipline applies.
+- Edits to `examples/<ref>/` after first snapshot — read-only per Δ-7.
 
 ## License
 
-To be decided by the maintaining organization.
+See LICENSE file (when present).
+
+---
+
+End of README.

@@ -1,77 +1,26 @@
 ---
-title: Runtime invariants (Tier-0 registry)
-doc_tier: current-runtime
+title: Acme Returns Bot — runtime invariants (Tier-0)
+doc_tier: adopter-state
+doc_category: live
 status: current
-implementation_status: not_started
 source_of_truth: this file
-last_reviewed: <YYYY-MM-DD>
-review_cadence: every 3-5 milestones
-notes: >
-  The project's Tier-0 invariant registry. Required by
-  `framework/governance/constitution.md` §4.1 Q2 (Tier-0 justification)
-  and §3.2 Q2 (Tier-0 routing). Fill during M0.
+last_reviewed: 2026-06-12
+review_cadence: per milestone close
 ---
 
-# Runtime invariants
+# Runtime invariants (Tier-0) — refund eligibility
 
-## What is Tier-0?
+The hard, deterministic rules the runtime owns in this domain (`aidazi/governance/constitution.md` §1.4). Load-bearing for the Code Reviewer: a proposed guard is justified only if it protects an invariant on THIS list. Adding a new invariant is a `new_tier0_candidate` MANDATORY_CHECKPOINT, not a silent edit.
 
-Per `framework/governance/constitution.md` §1.4, a Tier-0 invariant
-is a hard floor the **Runtime guarantees regardless of LLM choice**.
-It is NOT a soft signal. The LLM cannot override it.
+| ID | Invariant | Owner |
+|---|---|---|
+| TI-1 | Never confirm a refund as eligible without checking the specific order against the policy window. | runtime (eligibility check is a tool call, not an LLM claim) |
+| TI-2 | Never expose another customer's order or PII. | runtime (capability boundary) |
+| TI-3 | Eligibility math (days since `delivered_at`, category check) is deterministic — never LLM-estimated. | runtime |
+| TI-4 | Refund processing is idempotent on `refund_request.id`. | runtime |
 
-Common Tier-0 categories:
+Everything else — interpreting the customer's intent, deciding when to escalate, wording the response, detecting topic drift — is LLM-owned (§1.3) and MUST NOT be moved to a guard.
 
-- **Safety floor** — no PII leaks; no actions that bypass user
-  consent.
-- **Grounding floor** — no factual claims without retrieval evidence
-  (for retrieval-grounded agents).
-- **Capability boundary** — agent never invokes a tool not in its
-  whitelist.
-- **Persistence floor** — session state survives restart.
+---
 
-A new Tier-0 invariant requires `human_review_required` per §3.2 —
-the human decides whether to register a new Tier-0.
-
-## §1. Active Tier-0 invariants
-
-### 1.1 `<invariant-name-1>`
-
-- **Statement**: <one sentence>
-- **Why Tier-0**: <why this is hard floor; what fails if the runtime
-  doesn't enforce>
-- **How enforced**: <code path or mechanism that guarantees this;
-  cite file:line>
-- **Detection mechanism**: <how a violation is detected in trace /
-  test / eval; cite file:line>
-- **Sprint where this Tier-0 was introduced**: <sprint id>
-
-### 1.2 `<invariant-name-2>`
-
-(same shape)
-
-(Add more sub-sections as Tier-0 invariants accumulate.)
-
-## §2. Tier-0 candidates under review
-
-Invariants that have been proposed but not yet ratified. Per §3.2,
-adding a new Tier-0 requires `human_review_required` exit.
-
-### `<candidate-name>`
-
-- **Statement**: <one sentence>
-- **Surfaced by**: <sprint id / failure brief id>
-- **Status**: under review
-- **Decision target**: <milestone id where decision is expected>
-
-## §3. Retired Tier-0 invariants (history)
-
-Invariants that were once Tier-0 but have been downgraded (e.g.,
-because the structural source of failure was removed).
-
-### `<retired-name>`
-
-- **Original statement**: <one sentence>
-- **Active period**: <sprint X to sprint Y>
-- **Reason for retirement**: <why downgrade is safe>
-- **Replaced by** (if applicable): <new mechanism>
+End of runtime invariants.

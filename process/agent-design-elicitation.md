@@ -1,101 +1,165 @@
 ---
+title: Agent design elicitation (Δ-15)
+doc_tier: process
 doc_category: live
-artifact_type: reference_contract
-last_reviewed: 2026-06-06
-source: v3.2 §9.9 Δ-15
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-07
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 12KB
+notes: >
+  Δ-15 AMEND per v4-plan §4.1: 6 must-answer questions + 4 inventories +
+  closure_contract draft as Part D output. v4 adds Q6 boundary clause for
+  "where Acceptance evaluates closure_contract" + Part B inventory adds
+  "claimed closure_contract draft" item. Loaded by Research Agent (Path 1
+  formal greenfield) + at Δ-16 prerequisite gate.
 ---
 
-# Agent Design Elicitation(Δ-15)
+# Agent design elicitation (Δ-15)
 
-**Tier**: T0(三轨道通用;Part C / Part D profile-aware)
-**加载时机**: S0 Discovery 后期(Δ-2/Δ-3 之后)
-**主导**: Tech Lead 引导;**Customer 是答题人**(Part A 必 human-only)
-**性质**: heuristic Q&A,**非** checklist;答 ≠ 通关,答 → 触发讨论
+When a new agent / workflow / demo is being designed, walk this heuristic Q&A + inventory + tool-vs-skill decision tree + industry research. Output is a populated input pack the Research Agent uses to author `docs/research-briefs/<id>.md` (including its mandatory closure_contract per Constitution §1.7-B).
 
-## Part A — 6 mandatory questions(human-signoff required)
+This is greenfield-mode elicitation. For brownfield, see `docs/brownfield-guide.md`.
 
-| # | 问题 | 谁答 | 备注 |
-|---|---|---|---|
-| 1 | **Domain** 行业 / sub-area / 范围 | human only | 用一句话,不接受"全行业" |
-| 2 | **Goal** 1 句可量化的成功 | human only | 例:"30 天内 CSAT ≥ 4.2",不接受"提供更好服务" |
-| 3 | **Problems** 有界清单(非模糊集) | human only | Δ-2 D2 输出的 top-N intent;不接受"用户的各种问题" |
-| 4 | **Method** intent-classification + multi-phase pipeline?OR workflow?OR 单 LLM 调用? | 框架引导 + human 选 | 决定 Δ-3 Decision #1 |
-| 5 | **Knowledge** 领域知识 inventory + 来源 + freshness 策略 | human(domain)+ 框架(schema) | Δ-16 prereq #4 输入 |
-| 6 | **Boundary** agent-loop 拥有 vs 外部 harness 保证(Constitution §1.3/§1.4) | 框架 Q&A + human 选 | LLM-owns vs Runtime-owns 边界,详 §1 |
+## §1 Part A — 6 must-answer questions
 
-### Part A.Q6 boundary Q&A 范例
+These six questions are LOAD-BEARING. Skipping any one leaves a gap that surfaces at Acceptance or later — typically as `research_contract_revision` or `out_of_scope_review`.
 
-> **Q**: "用户对最近一单的退款诉求"是 agent 自己识别意图,还是 Runtime 用关键词路由?
-> **A 选**: agent 识别(LLM owns user goal,§1.3)
->
-> **Q**: "用户身份核验"是 agent 提示生成话术,还是 Runtime 调外部 SSO?
-> **A 选**: Runtime 调外部 SSO(safety floor,§1.4)
->
-> **Q**: "FAQ 引用必须 verbatim 还是允许 paraphrase"?
-> **A 选**: verbatim(grounding floor,§1.4),agent 不得修改引用文本
+### §1.1 Q1 — Domain
 
-### Δ-15.A1 human-signoff 规则
+What is the domain? Industry, customer segment, regulatory floor, time-pressure shape (synchronous vs asynchronous; real-time vs batch).
 
-- 未签字 brief 下游不得消费(Δ-3 / Δ-11 / sprint_objective 引用阻塞)
-- 已签字 brief 进入 Δ-12 intermediate 类,进 §0 cold-start 指针表
-- Brief front-matter 增字段:
+**Why it matters**: domain determines what tools are allowed, what policies apply, what user expectations exist. A customer-service agent in healthcare vs e-commerce has different Tier-0 invariants from the start.
 
-```yaml
-human_signoff:
-  signed_by: <name>
-  signed_on: <YYYY-MM-DD>
-  signed_version: <git-sha>
-```
+### §1.2 Q2 — Goal
 
-### 重签触发规则
+What does success look like? The single sentence that names the user-facing outcome the system delivers.
 
-- **重签 trigger**: 六必答任一**实质变更** / Part D 综合稿被替换
-- **不触发重签**: Part B 单纯增删工具/技能条目(增量,non-breaking)
-- **PB1 PENDING**(v3.2 §13.1):Q1/Q2/Q6 core re-sign vs Q3/Q4/Q5 amendment-with-incremental-sign 分级 — 首例 Type A 决断
+**Why it matters**: goal = the positive shape of the closure_contract. A vague goal produces a vague closure_contract produces an Acceptance verdict that nobody trusts.
 
-## Part B — 4 inventories(profile-aware,per Q3 + Δ-15)
+### §1.3 Q3 — Problems
 
-| Profile | inventory 4 槽位 |
-|---|---|
-| Type A | Knowledge / Tools / **Skills** / Policy |
-| Type B | Knowledge / Tools / **SOPs**(替代 Skills) / Policy |
-| Type C | Knowledge / Tools / **Off-the-shelf Skills**(借用社区/团队预制) / Policy(可极简) |
+What are the concrete failure shapes the system is supposed to PREVENT or RECOVER from? Typically 3-5 named problem types.
 
-每槽位记录:类目名、来源、freshness / 版本 / 维护方。
+**Why it matters**: problems = the anti-pattern shape of the closure_contract. Without them, the closure_contract is "do good things" — unjudgeable.
 
-## Part C — Tool vs Skill decision tree(仅 Type A)
+### §1.4 Q4 — Method
 
-- 原子能力 + agent 全控 → **tool**
-- 子任务有 mandatory tool sequence + adaptive logic → **skill**
-- 跨多 flow 重复模式 → 包成 **skill**
-- >15-20 skills → 检查分解(csagent 6 skills = phase × resolve-pattern granularity,VERIFIED)
+What kind of approach is the agent / workflow / demo? Specifically:
+- Type A semantic per-turn reasoning? OR
+- Type B fixed-sequence SOP? OR
+- Type C demo with off-the-shelf skills? OR
+- Type A+B hybrid?
 
-**Type B 替代**:Part C 替换为 "SOP step 划分指引" — 何时一动作独立成 step:
-- 有独立 verification gate
-- 有失败回退路径
-- 业务可观测
+**Why it matters**: method determines which T1 profile overlay applies + which Δs are READY vs DEFERRED per `process/profile-aware-maturity.md`.
 
-**Type C 简化**(PB5):不要 tool-vs-skill 决策树;只问"有没有现成的;有就用,没有拼 tool"
+### §1.5 Q5 — Knowledge
 
-## Part D — 0→1 industry research methodology(profile-aware)
+What does the agent / workflow need to KNOW? Domain knowledge corpus; canned reply templates; FAQ index; product catalog; policy manual.
 
-| Profile | Part D 行业调研 | 替代物 | 输出 |
-|---|---|---|---|
-| **A · AI Agent** | **必做**(MUST) | 无 | `discovery/industry-synthesis-<id>.md`(2-3 家方案对比 → 综合 → 本场景特化) |
-| **B · Agentic Workflow** | 不要求 | SOP / 流程设计调研(严格可选) | 若做 `discovery/sop-survey-<id>.md`;不做则 brief 显式 "SOP survey: skipped, rationale: <…>" |
-| **C · Demo App** | 不要求 | 现成技能清单(off-the-shelf inventory) | `discovery/offshelf-skill-inventory-<id>.md`(可极简,bulleted) |
+**Why it matters**: knowledge = the `knowledge_corpus` and `canned_reply` prerequisites per Δ-16. Type A needs this richly; Type B inherits from the SOP; Type C may not need at all.
 
-**Industry-synthesis 5 步骤(Type A 强制)**:
-1. Survey 2-3 同领域方案
-2. 识别 scope / assumptions / gaps
-3. Synthesize own overall plan
-4. Specialize for own context(domain knowledge / tools / policy)
-5. 产出 intermediate doc
+### §1.6 Q6 — Boundary (v4 EXTENDED)
 
-**Δ-15.A4 PB2 隐式答**:Part D Type A 是 **S0→S1 硬 gate**(与 brief 人签字并列);Type B 否;Type C 否(包含在 1-page demo brief 内即可)
+Where does the system's authority end?
 
-## Anti-pattern
+- What's runtime-owned (PII / safety floor; capability boundary; grounding floor)?
+- What's LLM-owned (user goal; topic; next action)?
+- **Where does Acceptance evaluate closure_contract** (v4 addition) — what's the evidence surface; what shape do anchor phrases take in the domain language?
 
-- 跳过 Part A 直接进 Part B 工具盘点 — 没有 goal / boundary 做锚,工具集变成 wishlist
-- Part D Type A "我们这种独特场景没有 industry 案例" — 几乎一定有相邻案例;借口跳过的代价是 Δ-17 P1 早期不知怎么走
-- 未签字 brief 被 Tech Lead 在 sprint_objective 引用 — 阻塞规则失效,Customer 后续反复修改导致 sprint 重做
+**Why it matters**: Q6 binds Δ-3 decision #7 (policy/safety surface) AND directly informs how the closure_contract's anchor phrases should read. v4's addition surfaces the Acceptance lens explicitly so the closure_contract isn't authored without considering "how do we verify this?"
+
+## §2 Part B — 4 inventories (per profile)
+
+Per track, populate the 4-inventory set:
+
+### §2.1 Type A inventories
+
+- **Knowledge inventory** — what the agent knows: corpus, FAQ, product catalog, policy index.
+- **Tool inventory** — what the agent can DO: tool catalog with ALLOW matrix per UC.
+- **Skill inventory** — what multi-step routines exist (Type A skills are LLM-orchestrated, not SOP-runner).
+- **Policy inventory** — what the agent CANNOT do alone (product policy / regulatory questions).
+
+### §2.2 Type B inventories
+
+- Knowledge (per SOP-step).
+- Tools (per SOP-step).
+- **SOP inventory** (replaces "Skill") — the actual SOP rows; each step with its slot list + verification gates.
+- Policy.
+
+### §2.3 Type C inventories
+
+- Knowledge (lightweight).
+- Tools (lightweight; mostly off-the-shelf).
+- **Off-the-shelf skill inventory** — pre-built skills the demo uses without custom logic.
+- Policy.
+
+### §2.4 v4 addition — "Claimed closure_contract draft"
+
+Per v4-plan §4.1 Δ-15 AMEND: as part of the inventory phase, the Research Agent (or human + Research) drafts a CLAIMED closure_contract — a first-pass three-component paragraph (positive shape + anti-pattern + anchor phrases). This is NOT the final closure_contract; it's a starting point that the Q1-Q6 + inventory work will refine.
+
+Including the draft in the inventory makes the closure_contract authoring an explicit STEP of elicitation, not a backwards-derived afterthought.
+
+## §3 Part C — Tool vs Skill decision tree (Type A only)
+
+For each "the agent should be able to X" candidate, walk:
+
+1. Is X a single atomic operation (e.g., "look up order status")? → tool.
+2. Is X a multi-step routine the runtime should orchestrate deterministically? → if YES, it's a Type B SOP candidate; consider whether the project is actually A+B hybrid. If NO (orchestration is per-context), → skill (LLM-orchestrated).
+3. Is X a domain question the LLM can answer from knowledge + tool calls? → not a separate skill; the LLM owns it.
+4. Is X actually a policy question (the LLM can't answer without product sign-off)? → policy inventory; not a tool.
+
+The output is a populated tool catalog + skill catalog. Constitution §1.7-A applies: pick ONE abstraction layer (tool-use default for Type A); the skill catalog is named but execution goes through the chosen surface.
+
+**Disambiguation**: the skill catalog here is the PRODUCT skill inventory — multi-step routines the product agent performs. It is distinct from **role skills** (capability packs mounted on the 5 framework roles building the product; `process/role-skill-model.md` §2 has the four-sense table).
+
+## §4 Part D — Industry research (Type A only)
+
+For greenfield Type A agents, the Research Agent runs a 0→1 industry research synthesis:
+
+- What do similar agents in this domain look like (industry analogues)?
+- What's the conventional vocabulary the user-side uses?
+- What patterns have other adopters discovered?
+- What domain-specific Tier-0 invariants are common?
+
+Output: `docs/discovery/industry-synthesis-<id>.md`. This is informational; not part of the research-brief. It feeds the closure_contract's domain language + anti-pattern shape.
+
+Type B / C projects MAY skip Part D if the SOP / off-the-shelf inventory already establishes domain language.
+
+## §5 Part E — Closure_contract finalization
+
+After Q1-Q6 + inventories + tool-vs-skill + industry research, the Research Agent finalizes the closure_contract paragraph per `templates/compact-research-brief.md`:
+
+1. Positive shape — from Q2 (Goal) + Q6 (boundary on what counts as "success").
+2. Anti-pattern — from Q3 (Problems) + industry research findings.
+3. Anchor phrases — from Q1 (Domain language) + Q5 (Knowledge corpus terms).
+
+The Research Agent runs the symmetry self-check per `role-cards/research-agent.md` §6 before requesting Customer sign-off.
+
+## §6 What this Δ does NOT cover
+
+- Phase 3+ technical decisions — `process/tech-architecture-decision-catalog.md` (Δ-3).
+- Bad-case suite seeding — `process/badcase-lifecycle.md`.
+- Brownfield elicitation — `docs/brownfield-guide.md`.
+- Domain-specific surface adapters — adopter-domain layer.
+
+## §7 Cross-references
+
+- `templates/compact-research-brief.md` — the output template Δ-15 populates.
+- `process/agent-creation-prerequisites.md` (Δ-16) — the prereq gate that consumes Δ-15 outputs.
+- `process/domain-discovery-process.md` (Δ-2) — 3-dim domain elicitation; complementary to Δ-15's 6 questions.
+- `process/profile-aware-maturity.md` (Δ-14) — per-track applicability.
+
+## §8 Editing this doc
+
+Process-tier; edits at fold-back sub-sprint cadence per Constitution §8.
+
+The 6 questions + 4-inventory shape is stable framework vocabulary. The v4 additions (Q6 boundary-includes-Acceptance-lens + Part B closure_contract draft + Part E closure_contract finalization) operationalize Constitution §3.4 invariant #4 (Research-Acceptance contract symmetry) and SHOULD NOT be elided.
+
+---
+
+End of Δ-15 Agent design elicitation.

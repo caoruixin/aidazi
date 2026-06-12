@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/deliver-plan-fix.schema.json",
+  "title": "Deliver plan-fix verdict",
+  "description": "Output shape when Deliver Agent authors a fix-iteration sub-sprint in response to Code Reviewer fix_required OR Path 3 Acceptance gap brief. Produces objective_md + dev_prompt_md as inline markdown for the orchestrator (or human) to write to filesystem.",
+  "type": "object",
+  "required": ["subsprint_id", "layers", "modules", "objective_md", "dev_prompt_md", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "subsprint_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "New sub-sprint id (e.g., 'sprint-027' or 'sprint-027-fix')."
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "infra",
+          "java_guard",
+          "runtime_guard",
+          "workflow_definition",
+          "prompt_projection",
+          "skill_state",
+          "semantic_planner",
+          "eval_spec",
+          "product_policy",
+          "judge_calibration"
+        ]
+      },
+      "minItems": 1,
+      "description": "Fix-layer set for this sub-sprint. Universal base + profile-specific extension layers."
+    },
+    "modules": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1,
+      "description": "Repo paths the sub-sprint will touch. Must be subset of charter.approved_scope.modules_in_scope per scope_envelope_check."
+    },
+    "objective_md": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline markdown body for the new docs/sprint_objective.md."
+    },
+    "dev_prompt_md": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inline markdown body for the new compact/sprint-NNN-dev-prompt.md. MUST include context_budget front-matter with self_contained: true (Constitution §1.4-i)."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_path": {
+      "type": "string",
+      "enum": ["path_1_research", "path_2_bad_case", "path_3_acceptance_gap"],
+      "description": "Which Deliver input path triggered this plan-fix."
+    },
+    "input_artifact_ref": {
+      "type": "string",
+      "description": "Optional path to triggering artifact (research-brief id, failure-brief id, or acceptance-report id + checkpoint id for Path 3)."
+    }
+  }
+}

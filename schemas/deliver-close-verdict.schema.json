@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/deliver-close-verdict.schema.json",
+  "title": "Deliver close verdict",
+  "description": "Output shape for Deliver Agent's close conversation. Verdict A/B/C/D per templates/deliver-close-taxonomy.md. Verdict C or D triggers MANDATORY_CHECKPOINT close_taxonomy_C_or_D (process/delivery-loop.md §4.2.3 item 7); in_scope: false triggers scope_deviation MANDATORY_CHECKPOINT.",
+  "type": "object",
+  "required": ["verdict", "blocking_count", "worst_severity", "in_scope", "next_subsprint", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["A", "B", "C", "D"],
+      "description": "A=clean pass; B=acceptable with minor fixes; C=scope-broadening; D=non-convergent. See templates/deliver-close-taxonomy.md for subclasses."
+    },
+    "verdict_subclass": {
+      "type": "string",
+      "description": "Optional subclass label per deliver-close-taxonomy (e.g., 'B-doc-only', 'C-adjacent-need', 'D-tier0-uncertain')."
+    },
+    "blocking_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "worst_severity": {
+      "type": "string",
+      "enum": ["P0", "P1", "P2", "none"]
+    },
+    "in_scope": {
+      "type": "boolean",
+      "description": "Deliver's claim that the sub-sprint stayed within charter.approved_scope. The orchestrator's deterministic scope_envelope_check (process/delivery-loop.md §4.2.5) is the source of truth; if scope_envelope_check disagrees, Deliver's claim is overridden and scope_deviation fires."
+    },
+    "next_subsprint": {
+      "type": ["string", "null"],
+      "description": "Sub-sprint id to advance to. null if this was the last sub-sprint of the milestone (milestone_close fires next)."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Paragraph rationale for the verdict; cites Code Reviewer's findings if relevant."
+    },
+    "code_reviewer_findings_ref": {
+      "type": "string",
+      "description": "Optional path to the codex-findings.md verdict Deliver consumed."
+    },
+    "handoff_section_12_co_signers": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional list of who co-signed handoff §12 close note (Deliver + Customer if present)."
+    }
+  }
+}

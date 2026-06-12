@@ -1,51 +1,37 @@
 ---
-title: Cross-session handoff
-doc_tier: current-runtime
+title: Acme Returns Bot — handoff
+doc_tier: adopter-state
+doc_category: live
 status: current
-implementation_status: implemented
 source_of_truth: this file
-last_reviewed: <YYYY-MM-DD>
-review_cadence: per milestone close
-notes: >
-  Cross-session continuity state file. Three sections:
-  §0 cold-start table (always current), §1 narrative (current
-  milestone only), §2 archive index. Retention rule per
-  `framework/governance/doc_governance.md`.
+last_reviewed: 2026-06-12
+review_cadence: per sprint close
+cell_size_target: 350   # overridden from 500 default; see adoption-state.md
 ---
 
-# Cross-session handoff
+# Handoff
 
-## §0. Cold-start table
+Maintained by Deliver across sprints (§0/§1/§2); Dev fills §1-§11 of the per-sprint handoff under `docs/sprints/<id>/`. This is the project-level cold-start carrier.
+
+## §0 Cold-start table
 
 | Field | Value |
-|-------|-------|
-| Current phase | <e.g., "M0 setup", "M1 S2 in flight", "M3 close in progress"> |
-| Active milestone | `docs/milestone_objective.md` (M<N>) |
-| Active sub-sprint | `docs/sprint_objective.md` (sprint-<NNN>) |
-| Last closed milestone | <id + close date + archive path> |
-| Last closed sub-sprint | <id + close date + archive path> |
-| Eval baseline | `docs/current/eval_baseline.md` (last refresh: <sprint id>) |
-| Bad-case suite size | <N> active cases (`eval/bad_cases/_manifest.md`) |
-| Open R-items | <N> in `docs/action_bank.md` §5 |
-| Next action | <e.g., "human to review sprint-002 handoff", "deliver-agent to draft sprint-003 prompt"> |
+|---|---|
+| Current milestone | M1 — refund eligibility |
+| Current sub-sprint | sprint-001 (in progress) |
+| Last close verdict | — (first sprint) |
+| Live invariants | TI-1..TI-4 (`docs/current/runtime_invariants.md`) |
+| Open blockers | none |
+| Next action | Dev implements sprint-001 per `compact/sprint-001-dev-prompt.md` |
 
-## §1. Narrative
+## §1 Narrative (most-recent first; retention rule applies)
 
-### Current milestone — M<N>: <name>
+- **2026-06-12** — M1 planned (3 sub-sprints). RB-001 signed (gate 1). sprint-001 dispatched. Δ-3 #1 = single tool-use.
 
-<2–4 paragraphs on the current milestone scope, progress, key
-findings, and pending decisions. Updated by deliver-agent at each
-sub-sprint close.>
+## §2 Archive index
 
-### Last closed milestone — M<N-1>: <name>
+(empty — no sprints closed yet)
 
-<One paragraph summary + archive pointer. Truncated at the next
-milestone close per the retention rule.>
+---
 
-## §2. Milestone archive index
-
-| Milestone | Name | Status | Close date | Archive |
-|-----------|------|--------|------------|---------|
-| M0 | <name> | <closed / open> | <date> | `docs/milestones/M0_*.md` |
-| M1 | <name> | <closed / open> | <date> | `docs/milestones/M1_*.md` |
-| ... | ... | ... | ... | ... |
+End of handoff.

@@ -1,71 +1,43 @@
 ---
-title: Sub-sprint 001 — <name>
-doc_tier: current-runtime
+title: Acme Returns Bot — sprint-001 objective
+doc_tier: adopter-state
+doc_category: live
 status: current
-implementation_status: not_started
 source_of_truth: this file
-last_reviewed: <YYYY-MM-DD>
-review_cadence: per sprint
-notes: >
-  Placeholder. Replace with a real sub-sprint contract drafted by
-  deliver-agent. Schema at
-  `framework/templates/sprint_objective.md`.
+last_reviewed: 2026-06-12
+review_cadence: per sprint close
+sprint_id: sprint-001
+milestone_id: M1
 ---
 
-# Sub-sprint 001 — <name>
+# sprint-001 — Eligibility check tool + INIT→CHECK pipeline
 
-**Parent milestone**: M0 — bring-up + baseline (`docs/milestone_objective.md`)
+## Scope
 
-## 1. Class
+Implement the deterministic eligibility-check tool and wire the INIT→CHECK phase pipeline so the bot, given an order id, calls the tool and projects the result for the LLM to phrase.
 
-- **Semantic-touching**: no (M0 sub-sprints are typically EXEMPT)
-- **§7 stanza REQUIRED**: no (reason: docs-only / pure infra /
-  characterization-test)
-- **Target layer (§3.2)**: <e.g., docs-only / infra>
+- **Layers touched**: `semantic_planner`, `prompt_projection`.
+- **Modules touched**: `src/tools/eligibility.py`, `src/pipeline/check.py`.
+- **Out of scope**: denial-reason wording (sprint-002), escalation (sprint-003).
 
-## 2. Goal
+## Test plan
 
-<one paragraph>
+- Unit: eligibility math (window boundary at exactly 30 days; non-refundable category).
+- Behaviour: 5 seed bad cases (eligible / just-expired / non-refundable item / unknown order / already-refunded).
 
-## 3. Scope
+## Bad-case suite additions
 
-1. <step 1>
-2. <step 2>
-3. <step 3>
+5 cases land in `eval/bad_cases/` (see `eval/bad_cases/_manifest.md`).
 
-## 4. Hard fences / STOP conditions
+## Sub-sprint stanza (per `aidazi/schemas/sprint_stanza.schema.json`)
 
-- <fence 1>
-- <STOP-and-surface conditions>
+```yaml
+objective: eligibility check tool + INIT→CHECK pipeline
+generalization_coverage: target (5 cases) + neighbor (boundary day) + negative (unknown order)
+rollback: none (new capability; no deprecation)
+introduced_hardcode: false
+```
 
-## 5. Test / eval requirements
+---
 
-- **Test suite**: <which suite>
-- **Real-LLM rerun**: NOT REQUIRED (M0 sub-sprint typically)
-- **Bad-case suite touch**: <list, often "none" for M0>
-
-## 6. §7 stanza
-
-NOT REQUIRED (M0 sub-sprint is EXEMPT per §7 exemption clause:
-pure docs / pure infra / characterization-test).
-
-## 7. Review plan
-
-- **Default**: deferred to milestone close.
-
-## 8. Handoff requirements
-
-Author `docs/sprints/sprint-001-handoff.md` using
-`framework/templates/handoff.md`. Fill §1–§11; LEAVE §12 EMPTY.
-
-## 9. Commit discipline
-
-- Stage only files in §3 scope. Do NOT `git add -A`.
-
-## 10. Self-check checklist
-
-- [ ] All §3 scope items: status `done` or explicit `partial`.
-- [ ] Test suite baseline preserved (if applicable).
-- [ ] No hard-fence breaches without surfaced findings.
-- [ ] Handoff §1–§11 filled; §12 left empty.
-- [ ] Commit discipline followed.
+End of sprint-001 objective.

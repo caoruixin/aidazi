@@ -1,76 +1,24 @@
-# aidazi tools
+# tools/ — referenced-but-not-yet-built scripts (OQ-V4-009)
 
-Small scripts that implement the framework's mandatory defaults (per
-`README.md` §"What this framework gives you").
+This directory tracks scripts the framework docs **reference** but the framework does not yet **ship**. They are intentionally deferred (OQ-V4-009): the framework specifies the discipline; the mechanical enforcement script is optional tooling an adopter (or a future fold-back) can build.
 
-## Installation
+Until a script exists here, the discipline it would mechanize is enforced by the human / role process described in the cited doc. None of these is required to run the framework — they reduce friction, they don't gate it.
 
-```bash
-# In your consumer project (assuming aidazi is at framework/)
-pip install jsonschema
+## Referenced scripts (not built)
 
-# Optional: install the pre-commit hook
-ln -s ../../framework/tools/precommit_bundling_check.sh .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-```
+| Script | Mechanizes | Referenced by | Manual fallback today |
+|---|---|---|---|
+| `precommit_bundling_check.sh` | Catch Deliver-owned files staged outside a close commit | `docs/friction-playbook.md` F3 | Dev stages explicit paths, not blanket `git add -A` (`role-cards/dev-agent.md` §3) |
+| `stanza_validator.py` | Validate the 4 sprint-stanza fields against the schema before dispatch | `docs/friction-playbook.md` F4 | Deliver + human eyeball the stanza against `schemas/sprint_stanza.schema.json` before dispatch |
+| `charter_validator` | Reject charters that bypass a MANDATORY_CHECKPOINT (4 shapes) or set `human_confirm_required: false` | `process/delivery-loop.md` §4.2.2; `governance/constitution.md` §1.7-D | Human reviews the charter against the §4.2.2 editing rules before boot |
+| `trace_emitter.py` | Emit the portable trace shape for F5 evidence | `modules/m-trace.md` | Adopter's runtime emits traces in the documented shape directly |
 
-## Tools
+## Building one
 
-### `stanza_validator.py`
+If you build a script here:
 
-Validates the §7 stanza in a sub-sprint objective against
-`../schemas/sprint_stanza.schema.json`.
+1. Keep it mechanical (deterministic; no LLM) — these enforce hard, checkable rules.
+2. Reference the doc it mechanizes in a header comment; the doc stays the source of truth.
+3. File a lesson (`templates/lessons-learned-template.md`) so the next fold-back can consider promoting it into the framework default.
 
-```bash
-python framework/tools/stanza_validator.py docs/sprint_objective.md
-```
-
-Exit code 0 = valid; non-zero = violation with diagnostics on stderr.
-
-The validator parses the Markdown stanza block under the heading
-`## Layer-classification + anti-hardcode stanza` and validates the
-four required fields:
-
-- `target_failure_layer` (enum)
-- `tier0_invariant` (oneOf: none / protects_existing / new_candidate)
-- `semantic_hardcode` (oneOf: introduced=false / introduced=true with
-  sunset_plan)
-- `generalization_coverage` (oneOf: declared with T/N/G/S counts /
-  deferred)
-
-### `precommit_bundling_check.sh`
-
-Git pre-commit hook that warns when dev sessions accidentally bundle
-deliver-agent owned files (per `governance/constitution.md` §8.7).
-
-Bypass for legitimate close commits: prefix the commit message with
-`[close]` or set `AIDAZI_ALLOW_DELIVER_FILES=1`.
-
-The deliver-agent owned file patterns are hard-coded near the top of
-the script. Edit the `DELIVER_OWNED_PATTERNS` array if your project
-deviates from the default layout.
-
-### `trace_emitter.py`
-
-Library for emitting structured `trace.jsonl` records from dev /
-review sessions. Per `governance/context_briefing.md`.
-
-Trace records are append-only JSON lines:
-
-```jsonl
-{"timestamp": "...", "event": "session_start", "role": "dev", ...}
-{"timestamp": "...", "event": "decision", "type": "read_file", "path": "...", ...}
-{"timestamp": "...", "event": "blocker", "type": "hard_fence_breach_attempt", ...}
-{"timestamp": "...", "event": "session_end", "verdict_summary": "..."}
-```
-
-See the module docstring for usage example.
-
-## Dependencies
-
-- Python 3.10+
-- jsonschema (for stanza_validator)
-
-No other runtime dependencies. These scripts intentionally use the
-Python standard library only (plus jsonschema) so they remain easy to
-embed in any consumer project.
+When all four are built and proven across adopters, OQ-V4-009 closes and this README becomes the tools index rather than a deferral tracker.

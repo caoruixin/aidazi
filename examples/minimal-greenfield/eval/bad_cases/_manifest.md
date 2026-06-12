@@ -1,52 +1,34 @@
 ---
-title: Bad-case suite manifest
-doc_tier: current-runtime
+title: Acme Returns Bot — bad-case suite manifest
+doc_tier: adopter-state
+doc_category: live
 status: current
-implementation_status: implemented
 source_of_truth: this file
-last_reviewed: <YYYY-MM-DD>
-review_cadence: per milestone close
-notes: >
-  Lifecycle ledger for the curated bad-case suite. Per
-  `framework/governance/constitution.md` §5.6.
+last_reviewed: 2026-06-12
+review_cadence: per sprint close
 ---
 
 # Bad-case suite manifest
 
-## Tier definitions (per §5.6.1)
+Curated regression suite (the primary acceptance gate; composite scores are observation-only per F2). Each case is a CaseSpec yaml (`aidazi/schemas/case-spec.schema.json`) with a `closure_criterion` written as a human-judgment paragraph (positive shape + anti-pattern + anchor phrases — NEVER keyword match, per §1.7-B). Human authors the `closure_criterion`; Deliver curates structure.
 
-- **`core`**: load-bearing across all milestones. Re-run at every
-  milestone close.
-- **`scope-relevant`**: relevant to specific architectural surface;
-  re-run only when closing milestone's §5 names this case.
-- **`closed-as-regression-guard`**: PASS in N≥2 consecutive closes;
-  runs automatically; auto-promotes back to active if terminal_outcome
-  re-fails.
-- **`archived`**: failure surface structurally removed; kept as
-  history; requires joint deliver + human decision.
+| Case id | Tier | UC | Shape |
+|---|---|---|---|
+| BC-001-eligible | core | UC-1 | order within window → confirm eligibility + timeline |
+| BC-002-just-expired | core | UC-1 | order at day 31 → explain the specific blocking reason |
+| BC-003-nonrefundable-item | core | UC-1 | refundable window but non-refundable category → explain |
+| BC-004-unknown-order | scope-relevant | UC-1 | order id not found → ask to confirm, don't fabricate |
+| BC-005-already-refunded | scope-relevant | UC-1 | already refunded → state it, don't re-process (TI-4) |
 
-## Active cases
+## Tiering + downgrade (per `aidazi/process/badcase-lifecycle.md`)
 
-| Case id | Tier | Source | Surfaced date | Failure shape | Closure status |
-|---------|------|--------|---------------|---------------|----------------|
-| `<id-001>` | core | <real session / sprint finding / external> | <YYYY-MM-DD> | <one line> | active |
-| `<id-002>` | scope-relevant | <source> | <date> | <one line> | active |
+- `core` runs at every milestone close (this project: every sub-sprint close — see adoption-state divergence).
+- Downgrade rule: N≥2 PASS across consecutive closes → consider `scope-relevant` → `closed-as-regression-guard`.
 
-## Closed-as-regression-guard cases
+## Dev contamination rule
 
-| Case id | Tier transition | N consecutive PASS | Last close PASS at |
-|---------|-----------------|--------------------|--------------------|
-| `<id-XXX>` | core → guard | 2 (M2 + M3) | M3 close |
+Dev sessions have NO read access to this directory (holdout; §10 anti-pattern #4). Dev may RUN the suite via the eval harness; it may not read or edit the cases.
 
-## Archived cases
+---
 
-| Case id | Original tier | Archived at | Reason |
-|---------|---------------|-------------|--------|
-| `<id-YYY>` | core | M<N> close | Structural source removed in M<N-1> S<X> |
-
-## Per-milestone manual review log
-
-| Milestone close | Cases reviewed | Verdicts (PASS/FAIL/IMPROVING) | Notes |
-|-----------------|----------------|-------------------------------|-------|
-| M0 close | <list> | <list> | <one line> |
-| M1 close | <list> | <list> | <one line> |
+End of bad-case suite manifest.

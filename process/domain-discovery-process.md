@@ -1,69 +1,120 @@
 ---
+title: Domain discovery process (Δ-2)
+doc_tier: process
 doc_category: live
-artifact_type: reference_contract
-last_reviewed: 2026-06-06
-source: v3.2 §9.1
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-07
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 10KB
+notes: >
+  Δ-2 EXTEND per v4-plan §4.1: 3-dim domain elicitation (D1 business / D2 user /
+  D3 boundary) + inheritance-table pattern from csagent foundational/phase1.
+  Loaded by Research Agent at Path 1 (Customer-driven brief authoring) and
+  jointly with Customer at failure-brief triage.
 ---
 
-# Domain Discovery Process(Δ-2)
+# Domain discovery process (Δ-2)
 
-**Tier**: T0(三轨道通用)
-**加载时机**: P0(S0 Domain Understanding)
-**主导**: Research Agent 执行;Customer 提供答案;Tech Lead 复核
+When the Research Agent or Customer + Deliver triage needs to elicit a project's domain, walk three dimensions in order. Output is the input set for the closure_contract in `docs/research-briefs/<id>.md`.
 
-## 目的
+This doc is the FRAMEWORK contract for HOW to elicit. The specific domain content (industry, customer segment, regulatory floor) is per-adopter.
 
-在任何架构 / 工具 / eval 决策之前,先把"这个 agent 要解决谁的什么问题"问清楚。Δ-2 把这件事拆成三组正交问题(D1 / D2 / D3),并以 intermediate artifact 形式落地 — 答案进 `discovery/`,而不是塞入 live constitution。
+## §1 Three dimensions of elicitation
 
-## 三维度问题集
+### §1.1 D1 — Business
 
-### D1 — 业务调研
+What is the business value the project is supposed to deliver?
 
-- agent 介入之前,该业务怎么运转?谁在干?干多久?
-- human owner 期望 agent 做什么 — 接管 / 辅助 / 兜底?
-- agent vs human-only vs human-on-loop 的切分边界在哪?
-- 业务方对"成功"的定义是什么(可量化 1 句)?
+- **Market problem** — what user / customer / business need exists; cite evidence (interviews / data / known incidents).
+- **Business KPI** — quantitative success metric (≤5 metrics; more dilutes focus).
+- **Scope IN / scope OUT** — explicit boundaries; scope OUT is tighter than "obvious things" (name adjacent-but-out-of-scope concerns).
+- **Anti-goal** — what failure mode is acceptable rather than over-building.
 
-### D2 — 用户问题分类
+The Customer is the primary source here. Research Agent asks clarifying questions; does NOT fabricate market analysis.
 
-- 真实样本 / 真实日志的问题聚类(不要从想象出发)
-- 每类频次 / 长尾占比
-- intent-switch + 复合 intent 占比(单 intent 会话 vs 多 intent 会话)
-- 已知误解 / 易混淆类别
+### §1.2 D2 — User
 
-### D3 — 边界、集成与业务指标
+Who is the human-side actor and what's their context?
 
-- 既有系统(CRM / 工单 / KB / SSO)各自身份与对接面
-- 硬边界(合规 / PII / 安全 / 法务)条目清单
-- 业务侧 metric(CSAT / 解决率 / 转人工率 / 平均处理时长)
-- agent 贡献的可分离信号(哪些指标可单独归因)
+- **Primary user type(s)** — name them; if 2+ user types, note interactions / handoffs / disagreements.
+- **Domain-specific vocabulary** — capture domain terms verbatim from real user materials (transcripts, tickets, docs); the agent's prompt-projection will need these.
+- **User-facing failure modes** — what does a bad outcome FEEL like to the user; what observable behaviors signal good vs bad.
+- **Domain handling rules** — heuristics the human side applies (rules of thumb; not formalized policy).
 
-## 输出物
+Type A AI agents need rich D2 (transcript samples drive UC inference); Type B workflows need lighter D2 (SOP defines the user-facing contract); Type C demos need a 1-page D2.
 
-| 文件 | 内容 | doc_category |
+### §1.3 D3 — Boundary
+
+Where does the system's authority end?
+
+- **External systems** — APIs / databases / services the system interacts with (e.g., Salesforce, internal CRM, payment gateway).
+- **Capability / permission boundary** — what the system MAY do; what requires human handoff.
+- **PII / safety floor** — Constitution §1.4 deterministic invariants the runtime owns.
+- **Grounding floor** — what factual claims require evidence; what is "soft semantic" vs "must be grounded."
+- **Tier-0 invariant candidates** — what conditions must always hold; promoted to `docs/current/runtime_invariants.md` after `new_tier0_candidate` MANDATORY_CHECKPOINT.
+
+D3 is typically where Constitution §1.4-Runtime-owns gets instantiated. Deliver Agent + Customer co-author; Research Agent surfaces gaps.
+
+## §2 Inheritance-table pattern
+
+A common failure mode at greenfield bootstrap: the Research Agent re-elicits everything from scratch when most domain context CAN be inherited from a closely-related adopter (e.g., another agent in the same domain) or from a higher-tier doc (e.g., the parent program's BRD).
+
+The inheritance-table pattern (carried from csagent foundational phase1 practice) makes inheritance EXPLICIT:
+
+```markdown
+| Domain dimension | Source | Status |
 |---|---|---|
-| `discovery/business-map.md` | D1 答案 | intermediate |
-| `discovery/user-problem-taxonomy.md` | D2 答案 + 样本引用 | intermediate |
-| `discovery/boundary-and-metrics.md` | D3 答案 | intermediate |
+| D1 market problem | `<parent>/brd.md §1` | inherit verbatim |
+| D1 KPI | new for this project | author fresh |
+| D2 user type | `<sibling>/docs/foundational/user-personas.md` | inherit + adjust per scope |
+| D3 PII floor | `org-wide-policy.md` | inherit verbatim (immutable) |
+| D3 Tier-0 candidates | new | author fresh; route through `new_tier0_candidate` checkpoint |
+```
 
-**命名规则**(per Δ-4):intermediate 类必须带 source sprint ID(若处于 sprint 中)或 source date。
+The table appears in Phase 1 `docs/foundational/business-need.md` and signals to Deliver + Code Reviewer what NEEDS verification at the inheriting site vs what was already validated at the source.
 
-## 下游连接
+### §2.1 Inheritance rules
 
-- **D2 → §10 Type A runtime skeleton intent 集合**:intent classification gate 的初始 intent 列表直接来自 D2 聚类。
-- **D3 → Δ-3 decision catalog**:tools / policy / eval 决策的硬约束输入。
-- **D1 → Customer barrier-break event 列表**:Δ-9 OBS 触发的业务方门铃。
+- **Inherit verbatim**: source is authoritative; do not edit at the inheriting site. If the source changes, the inheriting site re-fetches.
+- **Inherit + adjust per scope**: source is the starting point; the inheriting site MAY narrow scope (e.g., "only handle refund flows, not order modifications") but MAY NOT expand scope.
+- **Author fresh**: no relevant source exists; full Research Agent + Customer elicitation required.
+- **Inherit + flag for re-validation**: source predates a relevant change (e.g., new compliance regulation); inheritance is a starting point but the inheriting site triggers fresh validation.
 
-## Profile 适配
+## §3 Output: closure_contract input set
 
-| Profile | D1 | D2 | D3 |
-|---|---|---|---|
-| Type A | 必需(完整) | 必需(完整) | 必需(完整) |
-| Type B | 必需(精简,SOP 替代部分 D2) | 必需(SOP step ↔ intent 映射) | 必需 |
-| Type C | 必需(轻量,1-page demo brief 可吸收) | 简化(off-the-shelf skill 候选)| 必需(硬边界仍要) |
+The 3-dim elicitation produces the input set for the Research Agent's closure_contract authoring (Constitution §1.7-B; `templates/compact-research-brief.md`):
 
-## Anti-pattern
+- **Positive shape** — derived from D1 KPI + D2 user-facing observable success.
+- **Anti-pattern** — derived from D2 user-facing failure modes + D1 anti-goal.
+- **Anchor phrases** — derived from D2 domain vocabulary + sample real user materials.
 
-- 跳过 D1 直接做 D2 — 在不理解业务 owner 期望的前提下分类用户问题,结果是把"agent 不该接的"也分进 intent
-- D2 从假设样本聚类 — 真实日志没准备好就先用人造样本,Δ-16 prereq #4 未就绪,等于在沙地上盖楼
-- D3 硬边界漏列合规 — 后续 §1.4 Runtime owns 缺一条主项
+The closure_contract is NOT the elicitation itself; it's the milestone-scope contract derived from the elicitation. The elicitation may surface MORE than the closure_contract covers — the rest goes into `docs/foundational/business-need.md` (and Phase 2-5 docs).
+
+## §4 Cross-Δ relationships
+
+- **Δ-3** (tech-architecture-decision-catalog) — Phase 3 inputs; D3's external systems + capability boundary drive Δ-3 decisions #2 (context projection), #6 (tools), #7 (policy).
+- **Δ-12** (artifact-taxonomy) — `docs/research-briefs/`, `docs/foundational/business-need.md`, `docs/proposals/` all flow from this Δ-2 process.
+- **Δ-14** (profile-aware-maturity) — track choice (Type A / B / C / A+B) is driven by D2's user-interaction model (per-turn adaptive vs fixed sequence).
+- **Δ-15** (agent-design-elicitation) — the 6-question Q&A + 4 inventories operate over the Δ-2 elicitation outputs.
+- **Δ-16** (agent-creation-prerequisites) — the 7-category READY/DEFERRED/N/A gate uses Δ-2's outputs as inputs.
+
+## §5 What this Δ does NOT cover
+
+- Domain-specific schema (per-industry; per-track) — those live in `docs/current/<domain>-overlay.md` in the adopter repo.
+- Detailed Phase 1-5 funnel walkthrough — that's `docs/greenfield-guide.md` + `docs/application-funnel.md`.
+- Bad-case suite seed authoring — that's `process/badcase-lifecycle.md`.
+
+## §6 Editing this doc
+
+Process-tier; edits at fold-back sub-sprint cadence per Constitution §8.
+
+The 3-dim shape (D1 / D2 / D3) is stable framework vocabulary; the inheritance-table pattern is stable. Per-dimension question lists are SUGGESTED — adopters may extend (e.g., add D4 regulatory dimension for healthcare adopters) with rationale.
+
+---
+
+End of Δ-2 Domain discovery process.

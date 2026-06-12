@@ -1,107 +1,244 @@
 ---
+title: M-Trace module
+doc_tier: module
 doc_category: live
-artifact_type: reference_contract
-last_reviewed: 2026-06-06
-source: v3.2 §8.2
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-07
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 12KB
+notes: >
+  M-Trace module spec. Defines the portable trace shape, the run_mode field
+  (live | mock | replay | shadow), the trace contract abstraction across
+  Type A / B / C / A+B hybrid, and the F5 evidence cross-reference. Trace is
+  runtime-owned per Constitution §1.4 ("trace and eval contract"). This module
+  is CONDITIONAL T1 — applies when the adopter has a traceable runtime; not
+  required at S0 manual chain mode.
 ---
 
-# M-Trace(conditional)— Module Template
+# M-Trace module
 
-**Tier**: T1(conditional spec)
-**适用**: Type A 必需;Type B 在 S2-required event 触发后必需;Type C 不需要
-**框架立场**: 不强制特定 trace schema,但提供 portable shape + adaptation gate 模板
-**加载时机**: S1 入口(**observability FIRST**,在 eval framework 之前)
+The M-Trace module defines the portable trace shape — the runtime-emitted record of what happened during one execution unit (a turn, a SOP step, a demo run). Trace is the substrate the M-Evaluation module (`modules/m-evaluation.md`) judges against, and the substrate the F5 evidence pattern (`process/delivery-loop.md` §4.2.6) feeds to the Acceptance Agent.
 
-## 抽象 trace schema 骨架
+Trace is **runtime-owned** per Constitution §1.4 ("trace and eval contract"). The LLM does not author traces; the runtime emits them deterministically as a side-effect of execution.
 
-aidazi 推荐的 portable shape(字段名按项目命名习惯自适配):
+This module is CONDITIONAL — applies when the adopter's runtime emits traces. S0 manual-chain adopters (per `process/capability-staging-roadmap.md`) often don't have traces; they progress to traceable runtimes at S2 / S3 typically.
+
+## §1 What a trace is
+
+A trace is the structured record of one execution unit. Each turn (Type A) / SOP step (Type B) / demo run (Type C) produces ONE trace entry.
+
+A trace is:
+- **Per-execution-unit** — one trace per turn / step / run.
+- **Structured** — fields are named; not free-form prose.
+- **Runtime-emitted** — the runtime writes; the LLM does not author.
+- **Inspectable** — humans + judges + Code Reviewer can read.
+- **Comparable** — same input twice should produce nearly-identical traces (modulo non-determinism markers).
+
+A trace is NOT:
+- A debug log (too verbose; not structured).
+- A transcript (transcripts are user-facing; traces are runtime-internal).
+- An audit log (audit logs are persisted long-term for compliance; traces may be ephemeral).
+
+## §2 The portable trace shape (universal base + per-track extensions)
+
+Every trace carries a UNIVERSAL BASE — fields all adopters need — plus PER-TRACK EXTENSION fields specific to the track.
+
+### §2.1 Universal base fields
 
 ```yaml
-trace_event:
-  event_id: <uuid>
-  session_id: <uuid>             # 必填
-  turn_id: <int>                 # 必填(turn 序号)
-  phase_id: <string>             # 必填(来自 §10 phase pipeline)
-  tool_call_seq: <int>           # 必填(当 turn 内 tool call 序号)
-  timestamp: <ISO8601>
-
-  # 推荐字段
-  projection_payload:            # 送入 LLM 的上下文(redact 后)
-    system_prompt: <text>
-    context_snapshot: <object>
-  tool_call_payload:             # tool 调用入参
-    tool: <name>
-    args: <object>
-  tool_response_payload:         # tool 返回
-    status: ok | error
-    data: <object>
-  llm_response_raw: <text>       # eval 与诊断同时需要
+trace:
+  trace_id: <stable id>
+  execution_unit_id: <turn-id | step-id | run-id>
+  run_mode: live | mock | replay | shadow
+  timestamp_start: <ISO timestamp>
+  timestamp_end: <ISO timestamp>
+  input: <execution-unit input; opaque map>
+  output: <execution-unit output; opaque map>
+  tool_calls: []      # populated if applicable; empty for runtimes with no tools
+  errors: []          # populated if execution errored
   metadata:
-    redactions_applied: [<field>, ...]
+    run_id: <eval-harness run-id, if applicable>
+    case_id: <CaseSpec id, if running an eval case>
+    adopter_track: type_a | type_b | type_c | type_a_b_hybrid
 ```
 
-## 必填 vs 推荐
+`run_mode` is the load-bearing field for the F5 evidence pattern + bad-case suite lifecycle. See §3.
 
-| 类别 | 字段 | 理由 |
-|---|---|---|
-| **必填** | `session_id` / `turn_id` / `phase_id` / `tool_call_seq` | replay / debug 锚点;少一个就无法 root-cause |
-| **推荐** | `projection_payload` | 否则无法验证 LLM 看到什么 context |
-| **推荐** | `tool_call_payload` / `tool_response_payload` | tool dispatch 失败 root-cause |
-| **推荐** | `llm_response_raw` | eval 与诊断双用;省下 LLM 自描 step |
-
-## Adaptation gate 模板
-
-每个项目接入 M-Trace 时填空:
+### §2.2 Type A extension fields
 
 ```yaml
-adaptation:
-  project_field_mapping:
-    session_id: <project field>
-    turn_id: <project field>
-    phase_id: <project field>
-  redaction_pipeline:
-    pii_fields: [<list>]
-    redaction_strategy: hash | mask | drop
-  emission_path:
-    storage: <file | DB | OTLP | ...>
-    rotation: <策略>
-  retention_policy:
-    days: <int>
-    sensitive_data: <策略>
-  replay_capability:
-    can_replay_session: true | false
-    replay_tool: <path>
+trace:
+  ...universal base...
+  intent_classification:
+    primary: <classification>
+    confidence: <0..1>
+    alternatives: []
+  phase:
+    current: <phase-name>
+    entered_at: <timestamp>
+    transition_from: <prev-phase | null>
+  accumulated_tool_results:
+    <tool-name>: <result-summary>
+  intake_state:
+    fields_collected: [<field>, <field>, ...]
+    fields_pending: [...]
+  session:
+    <flag-name>_present: <bool>
+    ...
 ```
 
-**Gate 判据**(M-Trace ready for S2 entry):
-- `session_id` / `turn_id` / `phase_id` / `tool_call_seq` 字段在所有 trace event 中**实际存在**(不是 schema 里写了但代码没填)
-- 至少 1 个 session 完整 trace 已被 replay 验证
-- redaction 已通过法务 / 安全签字
+These fields back the 6-primitive trace_check DSL per `process/typeA-runtime-architecture-skeleton.md` Δ-6:
+- `tool_call_present(<tool>)` reads `accumulated_tool_results.<tool>`.
+- `tool_call_order(<a>, <b>)` reads `tool_calls[]` timeline order.
+- `slot_collected(<field>)` reads `intake_state.fields_collected`.
+- `session_flag(<flag>)` reads `session.<flag>_present`.
 
-## Reverse trigger(must add observability when ...)
+### §2.3 Type B extension fields
 
-任一发生即触发 observability 补齐:
+```yaml
+trace:
+  ...universal base...
+  sop_step:
+    sop_id: <SOP-id>
+    step_id: <step-id>
+    step_index: <integer>
+    verification_gates:
+      - gate_id: <gate-id>
+        outcome: pass | fail | n/a
+        details: <map>
+  sop_runner_state:
+    current_step: <step-id>
+    completed_steps: [<step-id>, ...]
+    skipped_steps: [<step-id>, ...]
+    retry_count: <int>
+```
 
-- session 无法 replay
-- bad-case 无法 root-cause
-- projection 漂移与代码不一致(诊断)
-- eval 信号与 manual review 持续 divergence(Δ-17 P1 症状)
+For Type B with LLM-mediated step verification, an additional field per step records the LLM's verification reasoning.
 
-## Δ-13 pre-flight schema-alignment checklist
+### §2.4 Type C extension fields
 
-进入 S2/S3 前,跑 schema alignment pre-flight:
+```yaml
+trace:
+  ...universal base...
+  demo_run:
+    demo_id: <demo-id>
+    skill_invocations: [<skill-id>, ...]
+    checklist_outcomes:
+      - item: <checklist-item-id>
+        outcome: pass | fail
+```
 
-- [ ] M-Eval 消费的 CaseSpec 字段是否能从 trace 字段重建?
-- [ ] phase_id 与 §10 phase pipeline 实际 phase 名一致?
-- [ ] tool_call_payload 与 Δ-3 Decision #6 工具定义一致?
-- [ ] redaction_pipeline 没有把 eval 必需字段(如 escalation reason)过度 redact?
-- [ ] 1 个真实 session 完整 replay → 与原 session 输出一致?
+Type C traces are typically smaller; LOCAL_ACCEPTANCE_CHECKLIST per-item outcomes are the primary content.
 
-任一不通过 → 阻止 S2 启动。
+### §2.5 Type A+B hybrid extension fields
 
-## Anti-pattern
+Hybrid traces include BOTH Type A fields (top-loop tracing) AND Type B fields (SOP-runner tracing). The top loop's `intent_classification` decides which SOP to start; the SOP-runner fields record per-step execution.
 
-- **trace 比 runtime 晚搭** — 违反 Δ-11 S1 "observability FIRST" 原则
-- **必填字段只写 schema 不写代码** — 编译过但生产 trace 字段是 null
-- **redact 过度** — eval 必需字段也被打码,导致 root-cause 无法做
-- **每 project 自创 schema** — 与 §10 phase pipeline 不对齐,M-Eval 无法消费
+## §3 The `run_mode` field
+
+`run_mode` declares what kind of execution produced the trace:
+
+- **`live`** — real production execution against real systems. Production traffic.
+- **`mock`** — execution where one or more downstream systems are mocked. Used in dev + low-cost eval. Mocking SHOULD be declared (per Constitution §1.6 + `process/badcase-lifecycle.md` §6 mocked-LLM evidence gate); judgments on mock traces are advisory unless explicit evidence supports otherwise.
+- **`replay`** — execution replaying a recorded trace + injecting variations. Used for Auto Loop experiments + counterfactual analysis.
+- **`shadow`** — execution against held-out scenarios; Dev sandbox MUST NOT have read access (per Constitution §10 anti-pattern: eval contamination).
+
+The `run_mode` field appears in F5 evidence artifact filenames (e.g., `eval/runs/<run-id>/artifacts/per-case-trace-<case-id>-live.json`) so Acceptance can verify which mode produced the evidence.
+
+### §3.1 Acceptance interaction with run_mode
+
+Acceptance verdicts MUST specify the `run_mode` of the evidence they cite. Mocked-LLM evidence + live-LLM evidence don't carry equal weight (Constitution §1.6 mocked-LLM gate).
+
+An Acceptance verdict that cites mock-mode evidence for a high-stakes ship decision triggers `needs_human` (per `role-cards/acceptance-agent.md` §8) — Customer judges whether the mock evidence is sufficient.
+
+## §4 Trace contract abstraction
+
+Adopters' runtimes vary; the trace contract abstracts over the variance:
+
+```
+Adopter runtime emits raw trace
+        ↓
+Trace contract adaptor:
+  - Map adopter-specific fields to universal base + per-track extensions.
+  - Add metadata (run_mode, run_id, case_id).
+  - Emit JSON to standardized location (eval/runs/<run-id>/artifacts/).
+        ↓
+M-Evaluation harness reads.
+Acceptance Agent reads (via F5 evidence).
+Code Reviewer reads (at §4.3 trigger; for trace-shape diff review).
+```
+
+The adaptor's responsibility is to bridge adopter-specific trace fields to the portable shape. Where adopter fields don't match portable shape, the adaptor MAY:
+- Synthesize a portable field from multiple adopter fields.
+- Mark a portable field `null` if the adopter doesn't expose the corresponding data (and document in adoption-state.md).
+- Add a `_local` namespace for adopter-specific fields that don't fit the portable shape.
+
+## §5 Trace storage + retention
+
+### §5.1 Per-eval-run storage
+
+Traces produced by F5 evidence runs live at `eval/runs/<run-id>/artifacts/per-case-trace-<case-id>.json`. These are PER-RUN — orchestrator triggers each run; artifacts accumulate per `eval/runs/` lifecycle.
+
+### §5.2 Production trace retention
+
+Production live traces are governed by the adopter's data-retention policy (PII / safety per Constitution §1.4). The framework does not specify retention windows.
+
+For Auto Loop experiments (`modules/m-autoloop.md`), production traces become candidate inputs to experiment selection; the adopter governs which traces are eligible (typically excluding PII-rich traces; redaction at production-trace storage time).
+
+### §5.3 Lifecycle integration with badcase-lifecycle
+
+When a bad case is `closed-as-regression-guard` per `process/badcase-lifecycle.md` §3, traces from the bad case's recent runs are evidence the case is no longer manifesting. Acceptance reads these at milestone close.
+
+## §6 Trace inspectability + Code Reviewer
+
+The Code Reviewer Agent reads traces at §4.3 trigger when:
+- A diff changes trace-emitting code (the runtime's trace adaptor).
+- A diff would change trace shape (added field; renamed field; removed field).
+
+Changes to trace shape are HIGH IMPACT — they break:
+- M-Evaluation cases (closure_criterion's 6-primitive trace_check DSL references field names).
+- Acceptance verdicts (evidence_path artifacts have schema expectations).
+- Bad-case manifest (per-case `tier` decisions reference trace structure).
+
+A Code Reviewer finding flagging trace-shape change MUST be P0 — the migration must be planned, not silent. Often routes to a `new_tier0_candidate` MANDATORY_CHECKPOINT if the change touches Tier-0 invariants per Constitution §1.4.
+
+## §7 Anti-patterns
+
+- **Trace bloat** — every adopter-specific field added to the universal base. Erodes portability. Mitigation: adopter-specific fields go in `_local` namespace.
+- **Trace as prose** — runtime emits trace as free-form text instead of structured JSON. Defeats 6-primitive DSL parseability. Mitigation: enforce structured trace at adaptor.
+- **`run_mode` field omitted** — judgment proceeds without knowing whether evidence is live or mock. Mitigation: schema validation at adaptor output.
+- **PII leakage via trace storage** — traces stored without PII redaction; production traces accidentally exposed. Mitigation: Constitution §1.4 PII floor applies to trace storage equally.
+- **Eval contamination via trace replay** — shadow case traces replayed against Dev sandbox; Dev tunes to shadow signals. Mitigation: `run_mode: shadow` traces explicitly excluded from Dev sandbox load_list (per Constitution §10 anti-pattern).
+
+## §8 What this module does NOT cover
+
+- Production trace storage backend choice (DB / files / cloud) — adopter-domain.
+- PII redaction implementation — adopter-domain (Constitution §1.4 sets the floor).
+- Trace visualization / dashboarding — adopter tool choice.
+- Specific 6-primitive DSL semantics — `process/typeA-runtime-architecture-skeleton.md` (Δ-6).
+- Acceptance verdict shape — `schemas/acceptance-verdict.schema.json`.
+
+## §9 Cross-references
+
+- Constitution §1.4 — Runtime-owns: trace + eval contract.
+- `process/typeA-runtime-architecture-skeleton.md` (Δ-6) — 6-primitive DSL + portable→csagent mapping.
+- `modules/m-evaluation.md` — judges read traces.
+- `modules/m-autoloop.md` — Auto Loop experiments consume traces.
+- `process/delivery-loop.md` §4.2.6 — F5 evidence pattern.
+- `process/badcase-lifecycle.md` — bad-case lifecycle interacts with trace history.
+- `schemas/case-spec.schema.json` — CaseSpec references trace fields via 6-primitive DSL.
+
+## §10 Editing this module
+
+Module-tier; edits at fold-back sub-sprint cadence per Constitution §8.
+
+The universal base fields are stable v4 vocabulary; per-track extension fields evolve as tracks mature. Adding fields to universal base requires fold-back deliberation. Trace-shape breaking changes are framework-level events (route through v5 migration guide per `process/fold-back-protocol.md`).
+
+---
+
+End of M-Trace module.

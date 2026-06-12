@@ -1,138 +1,165 @@
 ---
+title: Common detours and warnings — Type A (Δ-17-A)
+doc_tier: process
 doc_category: live
-artifact_type: reference_contract
-last_reviewed: 2026-06-06
-source: v3.2 §9.11 Δ-17
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-07
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 14KB
+notes: >
+  Δ-17-A per v4-plan §4.1 KEEP. 4 named cognitive-detour pitfalls
+  observed in Type A agent development (P1-P4) + the cognitive-detour
+  disclaimer (recognizing patterns mid-flight to self-exit). Adopters
+  mid-flight use this to spot symptoms; greenfield adopters use it to
+  pre-empt during Phase 3 planning.
 ---
 
-# Common Detours and Warnings — Type A(Δ-17)
+# Common detours and warnings — Type A (Δ-17-A)
 
-**Tier**: T0(仅 Type A AI Agent 适用)
-**加载时机**: S0 启动后、S1 进入前;每次升档前回看
-**主导**: Tech Lead 引用;Customer 复核
-**性质**: "踩过坑的过来人在旁边提醒",**不是** detour-skipper
+These are the 4 named cognitive-detour pitfalls Type A agent projects most reliably fall into. Each is detectable from observable signals. If you're here mid-flight reading this because of a symptom: the detour names are the keys; the exit routes are the body sections.
 
-## (a) Mission disclaimer + scope
+## §0 Cognitive-detour disclaimer
 
-**定位**:框架不承诺"跳过所有弯路"。每一类弯路的第一次走过都是认知升级的必经过程,因为弯路本身教你识别下一次同类弯路的预警信号。
+These aren't moral failings or skill gaps. They're cognitive detours — paths that LOOK like the right next step at the moment of decision but lead away from sustainable architecture. The patterns are predictable enough that the framework names them.
 
-**框架的价值**:
-1. **给弯路命名**
-2. **给你定位**(你现在在哪个 P 里)
-3. **给你退出方向**(不是回头路,而是更近的出口)
+Recognizing you're on a detour is most of the work; once named, exit is usually straightforward.
 
-下一个 agent 的创造者带着 Δ-17 第二次走的时候,**识别 P1 的窗口期会从 4 周缩到 1 周**。
+If you're reading this proactively (greenfield planning): use the symptom lists as planning prompts. Phase 3 review should specifically check for early P1 / P2 signals.
 
-**范围**:仅 Type A AI Agent。Δ-17-B(Type B detours)/ Δ-17-C(Type C detours)为独立 parallel docs。
+If you're reading this mid-flight (something feels wrong): walk the symptoms and pick the closest match. Apply the exit route.
 
-## (b) csagent 54-day timeline 抽取的 4 类结构性弯路
+## §1 P1 — Spec-first / data-late
 
-### P1 — Spec-first / Data-late 鬼影评测期
+### §1.1 Symptom
 
-| 维度 | 内容 |
-|---|---|
-| **症状预警(可观察)** | spec 完整(UC / FAQ / tool spec / scripts ready 4/22);真实 entity data 远晚落地(5/20,4 周 gap);eval framework 在 gap 期搭建产生**不可信信号** |
-| **实际代价(csagent)** | ~2 周 eval-driven iteration 跑在错误 baseline 上;Sprint 1-16 部分失效 |
-| **触发避免方式** | Δ-16 prereq #4(知识语料)gate 判据包含"真实数据在 repo,不只是 spec";**必须 READY** 才进 S2 |
-| **在弯路里时怎么退出** | 暂停 eval-driven iteration;补全 data load;re-baseline;前 1-2 周 iteration 视作 forensic only |
-| **对应新增 stage** | 触发 Δ-16 与 Δ-11 的 S2 进入判据 |
+- The team has written detailed prompts, defined a tool schema, specified phase pipeline behavior — all WITHOUT looking at real customer transcripts / sessions / user data.
+- Bad-case suite is small or empty; cases are hypothetical ("a customer might say...").
+- The closure_contract's anchor phrases are plausible but unattested; no real user actually said them.
+- Eval pass-rate climbs steadily; production launches; production behavior differs sharply from eval.
 
-**可观察 grep 测试**:KB JSON / mock business exports 不在 repo;eval 信号与 manual review 出现持续 divergence。
+### §1.2 Why it happens
 
-### P2 — Eval-before-architecture-stable 双修期
+Specs feel like progress; data collection feels like delay. The team can fill out a Phase 1-2 deck without leaving the desk; data requires a slower loop (real users, real sessions, real friction). Under deadline pressure, spec wins.
 
-| 维度 | 内容 |
-|---|---|
-| **症状预警** | eval v1(4/23-5/03)搭在 Agent 1.0 monolithic prompt 架构上;5/17 架构 pivot 到 Skill Registry;eval framework 5/21-5/25 (M3-Eval / M4 / M5) 再升级;L3 judge 哲学从"path checking" → "outcome-oriented" 重写 |
-| **实际代价(csagent)** | eval framework 搭了两次;~5d re-architect |
-| **触发避免方式** | **新增 S1.5 "架构压测期" 5-10d**(manual review + observability/trace coverage 检查 + 架构再评估);在搭 eval framework 之前;若 pivot 需要 → 现在 pivot |
-| **在弯路里时怎么退出** | 即使 S2 中途,architecture pivot 在 flight 中 → demote eval 回 S1.5 |
-| **对应新增 stage** | **S1.5** |
+### §1.3 Exit route
 
-**可观察 grep 测试**:5/05 单日 19 commits(Sprint 2-6 rolling);mid-milestone pivot 提议在 backlog;broad runtime restructure 提议。
+1. Halt new spec work for the duration of the data-collection effort.
+2. Collect 50-100 real transcripts (or whatever the equivalent is for your domain).
+3. Walk each transcript: does the current closure_contract handle it? does the tool schema cover the actual actions? does the phase pipeline match real conversation shape?
+4. Author 5-10 new bad cases from the transcripts — REAL session ids in `bad_case_metadata.source_session_id`.
+5. Revise closure_contract anchor phrases against the actual user language.
+6. Phase 2 / Phase 3 may need partial rework; do that explicitly, not silently.
 
-### P3 — Autoloop 暴露测量 bug 误判为 runtime bug
+### §1.4 Pre-emption (greenfield)
 
-| 维度 | 内容 |
-|---|---|
-| **症状预警** | 5/31 首个 overnight autoloop 40+ 轮全部 tier 0 discard;首次解读"runtime 有 bug";实际 6/01-6/05 trace-dive 揭示 eval framework bugs(simulator role-inversion / vacuous-pass / stall-not-gated) |
-| **实际代价(csagent)** | ~5d 误把 failure 归因 runtime;M-Auto-4 暂停 |
-| **触发避免方式** | **新增 S2.5 "评测有效性验证期" 3-5d**("intentional break → eval must catch" 验证 ≥3 examples 进 S3);**新增 S5 10-day buffer** 把 autoloop 作 eval-stress-test(planned 不是 crisis) |
-| **在弯路里时怎么退出** | 暂停 autoloop;trace-dive 手工;隔离 eval bugs vs runtime bugs |
-| **对应新增 stage** | **S2.5 + S5** |
+Phase 1 elicitation per Δ-2 D2 explicitly requires transcript samples / user data. If Phase 1 reviewers can't point at the data, P1 has not yet been started.
 
-**可观察 grep 测试**:autoloop discard rate >80% 在 tier 0 首批;manual eyeball of "discarded" candidates 与 eval verdict 持续不一致。
+## §2 P2 — Eval-before-architecture-stable
 
-### P4 — Mid-milestone 架构 pivot 实质是 S1 收敛过早信号
+### §2.1 Symptom
 
-| 维度 | 内容 |
-|---|---|
-| **症状预警** | 5/17 M2 mid-flight pivot 从 "Skill foundation" 到 "Skill Registry abstraction";pivot 本身正确(问题被识别) |
-| **实际代价(csagent)** | M1 Sprint 1-16 部分被 M2 refactor 吸收/废弃;心理成本 |
-| **触发避免方式** | **新增 S3.5 "架构 pivot buffer"** — 早期 Type A 预算 1-2 次 pivot;不 frame 为 failure |
-| **在弯路里时怎么退出** | 在 sub-sprint 边界宣告 pivot(不在 sprint 中段);作为 Δ-3 decision revision 浮出 |
-| **对应新增 stage** | **S3.5** |
+- The team rolled out a bad-case suite + Tier-1/2/3 eval pyramid.
+- The runtime architecture is still in flux — Δ-3 decisions #1, #2, #5 are being revised every milestone.
+- Eval results are ambiguous: cases pass one milestone, fail the next, after architectural changes nobody can clearly attribute.
+- Trust in eval is degrading; team starts ignoring eval verdicts.
 
-**可观察 grep 测试**:milestone 进行 1-2 sprint 后强烈感觉"we need a different abstraction"。
+### §2.2 Why it happens
 
-## (c) Actual vs Recommended timeline 对照
+Eval feels mature; "we should be measuring." But when the system being measured is still being designed, the eval surface measures the architecture's instability, not the system's quality. The eval team treats this as a quality regression; the architecture team treats this as eval noise; both are right + wrong.
 
-| Stage(recommended) | csagent actual | csagent 跳过 / 折叠 |
-|---|---|---|
-| S0 design | ①② | ✓ same |
-| S1 first runnable | ③ | ✓ same |
-| **S1.5 arch stress-test** | **SKIPPED** → ④ direct | P2 根因 |
-| S2 eval basic(Tier-0/1 only) | ④ eval v1 全 L1/L2/L3 一次性 | L3 哲学锁太早 → P2 |
-| **S2.5 eval validity check** | **SKIPPED** | P3 根因 |
-| S3 eval-driven runtime iter | ⑤ Sprint 1-35 / 5/04-5/18 | data 5/20 落地 → P1 |
-| **S3.5 arch pivot buffer** | M2 pivot 5/17 unplanned | P4 |
-| S4 eval framework upgrade | ⑥ M3-M5 5/21-5/25 | done but framed as crisis vs normal event |
-| **S5 autoloop pre-flight measurement stress-test** | **SKIPPED** → ⑦ autoloop | P3 |
-| S6 autoloop trustable signal | M-Auto-5 close 6/05 | 10d unplanned actually spent fixing eval |
+### §2.3 Exit route
 
-## (d) 3 个新增中间 stage 完整规格
+1. Acknowledge architectural instability is the root cause; eval isn't broken.
+2. Demote affected eval results to "advisory" status. Don't ship-block on them.
+3. Stabilize Δ-3 decisions #1 / #2 / #5 (per Δ-13 stage-stable heuristic checklist).
+4. Re-baseline eval AFTER architectural stabilization. Compare new baselines to post-stabilization, not pre-stabilization.
+5. Document the "eval baseline reset" event in the milestone close package.
 
-### S1.5 架构压测期(5-10d)
+### §2.4 Pre-emption (greenfield)
 
-| 字段 | 内容 |
-|---|---|
-| **Entry condition** | S1 first runnable demo 能 end-to-end 完成 ≥5 manual case scenarios |
-| **Activity** | manual case 10-15 scenarios + observability/trace coverage check + 架构再评估 |
-| **Exit gate** | 无架构 pivot 提议 pending;trace coverage ≥80% per turn |
-| **此 gate 阻断的 anti-pattern** | 在 S1.5 之前搭 eval framework(P2) |
+The Δ-11 staging roadmap puts bad-case suite at S1, AFTER S0 (manual chain mode). Adopters following the ladder don't usually hit P2; adopters skipping ahead to "let's set up eval before we're ready" do.
 
-### S2.5 评测有效性验证期(3-5d)
+## §3 P3 — Autoloop-as-eval-stress-test
 
-| 字段 | 内容 |
-|---|---|
-| **Entry condition** | Tier-0 + Tier-1 eval 能 end-to-end 跑在 ≥10 CaseSpecs 上 |
-| **Activity** | "intentional break → eval must catch" 验证 ≥3 distinct break types(semantic break / tool-call break / projection break);manual review × eval verdict cross-check on 10+ cases |
-| **Exit gate** | ≥3 intentional breaks 被捕获;manual×eval 一致率 >90% |
-| **此 gate 阻断的 anti-pattern** | 在 S2.5 之前开 autoloop(P3) |
+### §3.1 Symptom
 
-### S5 Autoloop 前置: 测量 stress-test(10d 预算)
+- Auto Loop (Concept 1 per Constitution §3.7) was set up enthusiastically.
+- Auto Loop drives many experiments per day; eval results swing wildly.
+- The team can't tell if Auto Loop's experiments are real improvements or noise.
+- Eventually Auto Loop is paused; team isn't sure what to do with it.
 
-| 字段 | 内容 |
-|---|---|
-| **Entry condition** | S4 eval framework upgrade 完成;data 完整;Δ-9 anti-gaming forbidden list 已落地 |
-| **Activity** | autoloop 首夜 **被视作 eval-framework stress test**;预期 5-10d 修测量框架(NOT runtime);planned for it |
-| **Exit gate** | 第 2 个连续 overnight autoloop run 产生 ≥1 candidate 同时通过 autoloop 与 manual review |
-| **此 gate 阻断的 anti-pattern** | 把首夜 discard 视作 runtime issue(P3) |
+### §3.2 Why it happens
 
-## (e) Pattern 通用结构
+Auto Loop's promise (the agent self-improves overnight) attracts investment before its prerequisites (stable eval surface; calibrated judge; closure_contract anchored bad cases) are in place. Auto Loop becomes a high-frequency stress test on an immature eval pipeline.
 
-每条 P 都包含 5 字段:症状预警(可观察) / 实际代价(csagent) / 触发避免方式 / 在弯路里时怎么退出 / 对应新增 stage。P5-Pn 由后续 Type A 实例 append-extend。
+### §3.3 Exit route
 
-## (f) Cognitive-detour disclaimer(MUST 写入)
+1. Pause Auto Loop. (No experiments while diagnosing.)
+2. Validate eval pipeline against manual judgments (calibration set per Δ-11 S3.5).
+3. Confirm closure_contract is stable (Δ-13 stage-stable heuristic).
+4. Re-introduce Auto Loop with bounded experiment count per day (e.g., 1-3 experiments).
+5. Auto Loop reward signal MUST be closure-contract-anchored, NOT raw pass-rate (per Δ-9 §6 anti-pattern).
 
-> 本框架无法替你跳过弯路 — 每一类弯路的第一次走过都是认知升级的必经过程,因为弯路本身教你识别下一次同类弯路的预警信号。框架的价值不是 detour-skipper,而是 **(1) 给弯路命名**;**(2) 给你定位**(你现在在哪个 P 里);**(3) 给你退出方向**(不是回头路,而是更近的出口)。下一个 agent 的创造者带着 Δ-17 第二次走的时候,识别 P1 的窗口期会从 4 周缩到 1 周。
+### §3.4 Pre-emption (greenfield)
 
-## (g) §L Worked Example cross-reference
+Auto Loop is a S2+ capability per Δ-11; deploying it before S1.5 (Code Reviewer with anti-hardcode kernel) + S3 (F5 evidence pattern) reliably hits P3.
 
-csagent 54-day timeline 是 Δ-17 的 **the** worked example。完整 date-stamped 阶段 ①-⑦ + commit counts + activity-day counts 进入 `examples/csagent-reference/timeline-54-day.md`,从本文档引用,**不**内嵌于 Δ-17。
+## §4 P4 — Mid-milestone pivot
 
-## (h) Open questions for first-trial
+### §4.1 Symptom
 
-- S1.5 / S2.5 / S5 预算天数为估计值;首例 Type A 用 Δ-17 时应微调
-- P5-Pn(更多 pattern)将随更多 Type A agent 被构建涌现;Δ-17 是 append-extensible
-- Δ-17-B / Δ-17-C placeholders 空启动;待 hermes / fortunes 各自首例 lifecycle 完成后填充
+- Mid-milestone, the team discovers a foundational issue (Δ-3 decision wrong; closure_contract was actually under-specified; a critical Tier-0 invariant was missing).
+- Instead of stopping and re-scoping the milestone, the team "pivots in flight" — silently shifts the milestone's effective scope to address the issue.
+- Milestone close conversation discovers the actual delivered scope differs from `milestone_objective.md`'s declared scope.
+- `scope_envelope_check` would have fired (if Δ-18 orchestrator was on); manual close conversation surfaces the gap.
+
+### §4.2 Why it happens
+
+Acknowledging a mid-milestone pivot feels like admitting Phase 1-3 was wrong. The team prefers to silently absorb the change and rationalize after the fact. The pivot succeeds technically (the issue is addressed) but the milestone framework's discipline (sub-sprints aligned to milestone north star) silently degrades.
+
+### §4.3 Exit route
+
+1. Stop. Convene Deliver + Customer.
+2. Make the pivot explicit. Update `milestone_objective.md` with the revised scope.
+3. The revised milestone may need to push next-milestone work later; honest planning beats silent shift.
+4. If a closure_contract clause needs revision, route through `research_contract_revision` per Constitution §3.5 — Customer re-signs at gate 1.
+5. The pivot itself becomes a R-item if the project's structure makes pivots likely again.
+
+### §4.4 Pre-emption (greenfield)
+
+`process/milestone-framework.md` §5: a sub-sprint that crosses an unrelated architectural surface is a signal that it belongs to a different milestone. Surfacing this signal at sub-sprint planning (not at sub-sprint close) pre-empts P4.
+
+## §5 Recognizing detours mid-flight
+
+Symptoms across multiple detours often appear together. Cross-cutting indicators:
+
+- Acceptance verdicts are increasingly `needs_human` (no clean PASS / FAIL).
+- Code Reviewer findings cluster in `eval_spec` or `judge_calibration` layers (not the working layers).
+- Multiple sub-sprints in a row close with `B-resolved-without-re-review` verdicts despite not meeting the 4-condition criteria.
+- Deliver close conversation feels less rigorous than at project start.
+
+When you spot these together, walk this Δ-17-A checklist explicitly before assuming everything is fine.
+
+## §6 Cross-references
+
+- `process/badcase-lifecycle.md` — bad-case suite is the regression-guard layer; P1 / P2 / P3 all interact.
+- `process/capability-staging-roadmap.md` (Δ-11) — staging ladder pre-empts most detours.
+- `process/stage-stable-heuristic.md` (Δ-13) — P2 / P4 exit reference.
+- `process/post-deployment-iteration.md` (Δ-9) — Auto Loop driver pattern; P3 exit reference.
+- `templates/deliver-close-taxonomy.md` — verdict D (non-convergent) is often a detour signal.
+- `docs/friction-playbook.md` — concrete friction patterns; Δ-17 is the pattern catalog, friction-playbook is the worked-cases catalog.
+
+## §7 Editing this doc
+
+Process-tier; edits at fold-back sub-sprint cadence per Constitution §8.
+
+The 4-pattern set (P1-P4) is the v4 baseline; adopter fold-back contributions may add P5+ for newly-discovered detours. Existing patterns SHOULD NOT be renamed (Code Reviewer prompts + planning docs may reference P-numbers).
+
+---
+
+End of Δ-17-A Common detours Type A.

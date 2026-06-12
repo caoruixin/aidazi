@@ -1,63 +1,187 @@
 ---
+title: Capability staging roadmap (Δ-11)
+doc_tier: process
 doc_category: live
-artifact_type: reference_contract
-last_reviewed: 2026-06-06
-source: v3.2 §9.6 + §9.11(d)
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-07
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 10KB
+notes: >
+  Δ-11 AMEND per v4-plan §4.1: S0-S6 staging roadmap + S5 entry condition
+  (§3.6 Acceptance judge calibration completed). Staging is suggested per
+  Constitution §7.0; adopters skip stages they don't need.
 ---
 
-# Capability Staging Roadmap(Δ-11 + Δ-17 三新增 stage)
+# Capability staging roadmap (Δ-11)
 
-**Tier**: T0(三轨道通用,profile-aware)
-**加载时机**: S0 末 / S1 入口 / 每次升档前
-**主导**: Tech Lead + Customer 联合裁决
+The framework's capabilities ladder from S0 (manual + framework default behaviors) to S6 (fully autonomous Δ-18 orchestration). Each stage adds one capability layer. Adopters do NOT have to traverse the ladder in order — most projects skip stages they don't need. The roadmap exists so the friction landing each stage is documented.
 
-## 完整 stage 序列(S1.5 / S2.5 / S3.5 / S5 为 Δ-17 新增)
+This is a SUGGESTED progression per Constitution §7.0. Adopters override the order with rationale in `adoption-state.md`.
 
-| Stage | 简称 | 关键产物 | Type A | Type B | Type C |
-|---|---|---|---|---|---|
-| **S0** | Domain understanding | Δ-2 discovery + Δ-3 decision catalog + Δ-15 brief + Δ-16 prereqs | 必需 | 必需 | 必需(轻量) |
-| **S1** | First runnable + observability | First runtime + observability/trace FIRST;manual cases;NO eval framework;NO autoloop | 必需 | 必需 | 必需 |
-| **S1.5** **NEW(Δ-17)** | Architecture stress-test 5-10d | Manual cases 10-15 / trace coverage 检查 / 架构再评估;若 pivot 在 deck → 现在 pivot | 必需 | 必需 3-5d | 可跳过 |
-| **S2** | Basic eval(Tier-0/1) | Manual CaseSpec;case→score→review chain;证明尺子准 | 必需 | S2-required event 触发后 | 不需要 |
-| **S2.5** **NEW(Δ-17)** | Eval validity check 3-5d | "Intentional break → eval must catch" ≥3 examples;manual×eval 一致率 >90% | 必需 | S2 触发后 | 不需要 |
-| **S3** | Eval-driven runtime iter | OBS-driven iteration(Δ-9);Tier-2/3 扩展 | 必需 | S2 触发后 | 不需要 |
-| **S3.5** **NEW(Δ-17)** | Architecture pivot buffer | 1-2 次 pivot 预算;不视为 failure | 必需 | 视情况 | 不需要 |
-| **S4** | Eval framework upgrade | 周期 fold-back;eval 自身随系统能力升级 | 必需 | 触发后 | 不需要 |
-| **S5** **NEW(Δ-17)** | Autoloop pre-flight measurement stress-test 10d | 首批 autoloop overnight 视作 eval framework stress test;预期 5-10d 修测量框架(NOT runtime) | 必需 | 不适用 | 不适用 |
-| **S6** | Autoloop trustable signal | Autoloop 候选可被 manual 复核通过 | 可选 | 不适用 | 不适用 |
+## §1 The stage ladder (S0 through S6 + half-stage guidance markers)
 
-## 反向触发表
+The ladder has 7 integer stages (S0 / S1 / S2 / S3 / S4 / S5 / S6) plus four half-stage markers (S1.5 / S2.5 / S3.5). **Integer stages are the planning anchors; half-stages are GUIDANCE MARKERS, not mandatory gates.**
 
-| 触发条件 | 反向行为 |
+- A half-stage marker names a frequently-useful intermediate capability — e.g., S1.5 (Code Reviewer with anti-hardcode kernel) is a strict-subset of S2 (charter authoring) commonly reached as a discrete step.
+- Adopters MAY skip half-stage markers (jump S1 → S2 directly) if their team's adoption is faster than the marker resolution.
+- Adopters MAY ALSO use half-stage markers as explicit goal labels in `docs/current/adoption-state.md` if the intermediate capability is load-bearing for their planning.
+
+Both uses are valid. The framework reserves the names so adopters share vocabulary when they DO want to mark intermediate state.
+
+
+
+### §1.1 S0 — Manual paste with role-chain discipline
+
+- Adopt the 5-role chain (Constitution §3) in pure human-paste mode.
+- No orchestrator. No charter.
+- Customer pastes activations; the human walks each role's session boundary.
+- Acceptance runs manually at milestone close; closure_contract symmetry check is human discipline.
+
+**Entry condition**: framework consumed; `AGENTS.md` references the constitution chain.
+**Exit signal**: the team is operating cleanly in 5-role mode for ≥2 milestone closes.
+
+### §1.2 S1 — Bad-case suite + Acceptance verdict discipline
+
+- Bad-case suite (`process/badcase-lifecycle.md`) is curated.
+- Tier-1 (smoke) + Tier-2 (scenario) cases exist.
+- Acceptance Agent produces JSON verdicts per `schemas/acceptance-verdict.schema.json`.
+
+**Entry condition**: S0 + at least 5 bad cases in `eval/bad_cases/`.
+**Exit signal**: Acceptance verdicts consistently reference closure_contract clauses; the team trusts the verdict format.
+
+### §1.3 S1.5 — Code Reviewer with anti-hardcode kernel
+
+- Code Reviewer Agent runs `templates/anti-hardcode-review-kernel.md` at sub-sprint close.
+- 4-line header + per-finding JSON shape adopted.
+- `docs/codex-findings.md` is part of the close conversation.
+
+**Entry condition**: S1.
+**Exit signal**: Code Reviewer findings are routinely consumed by Deliver close conversation per `templates/deliver-close-taxonomy.md`.
+
+### §1.4 S2 — Charter authoring (without orchestrator)
+
+- Adopter authors a `charter.yaml` per `templates/mission-charter.yaml`.
+- Charter is REFERENCE-ONLY (no orchestrator runs it); declares autonomy.level, approved_scope, tooling, acceptance config.
+- Customer + Deliver consult the charter at each sub-sprint dispatch.
+
+**Entry condition**: S1.5 + adopter's first formal closure_contract authored.
+**Exit signal**: charter authoring is routine; the team treats charter scope_in / out as binding.
+
+### §1.5 S2.5 — Manual scope_envelope_check
+
+- Before each sub-sprint close, Deliver + Customer manually walk `scope_envelope_check` (per `process/delivery-loop.md` §4.2.5) — verify diff stayed in modules_in_scope + layers_allowed.
+- Flag scope deviations as `scope_deviation` even without orchestrator emission.
+
+**Entry condition**: S2.
+**Exit signal**: scope_deviation detection becomes habit; few mid-milestone scope expansions.
+
+### §1.6 S3 — F5 evidence pattern (manual)
+
+- Deliver / human runs the eval harness BEFORE Acceptance (manual F5).
+- Acceptance prompt's `evidence_path` references real artifact files.
+- The Dev sandbox doesn't run the eval directly.
+
+**Entry condition**: S2.5 + eval harness in place.
+**Exit signal**: F5 evidence is the de-facto Acceptance input; code-only acceptance verdicts are flagged.
+
+### §1.7 S3.5 — Acceptance calibration set
+
+- Adopter builds labeled set: `calibration/labeled_acceptance_cases/manifest.json`.
+- Each entry: `(trace, expected_verdict ∈ {PASS, FAIL})`.
+- Run Acceptance twice per entry; compute agreement_rate + flip_rate.
+
+**Entry condition**: S3.
+**Exit signal**: calibration set has ≥10 entries spanning both PASS and FAIL; metrics stabilize.
+
+### §1.8 S4 — Charter validator (optional automation)
+
+- Tooling that validates the charter against `schemas/mission-charter.schema.json`.
+- Charter editing rules enforced (Constitution §1.7-C / §1.7-D).
+- Adopter MAY skip this stage if comfortable with manual validation.
+
+**Entry condition**: S2.
+**Exit signal**: charter changes are routinely validated before dispatch.
+
+### §1.9 S5 — Δ-18 orchestrator adoption
+
+- Orchestrator runs the state machine + spawn function set + scope_envelope_check + F5 evidence.
+- `autonomy.level: human_on_the_loop` typically.
+- MANDATORY_CHECKPOINTS fire via filesystem inbox.
+
+**Entry condition** (extended per v4): S3.5 + Acceptance judge calibration COMPLETED per Constitution §3.6 (`agreement_rate ≥ 0.9 AND flip_rate ≤ 0.1`).
+**Exit signal**: ≥3 successful orchestrator-driven milestone closes; Customer comfortable with checkpoint cadence.
+
+### §1.10 S6 — `fully_autonomous_within_budget`
+
+- Promote `autonomy.level` to `fully_autonomous_within_budget`.
+- Budget caps in `charter.budget` are binding; orchestrator halts at limits.
+- MANDATORY_CHECKPOINTS still fire (Constitution §1.7-D non-bypass).
+
+**Entry condition**: S5 + calibration current + ≥3 successful S5 milestone closes.
+**Exit signal**: this is the highest-trust mode; some adopters never need it.
+
+## §2 Reverse trigger table
+
+When a higher stage breaks, fall back to a lower stage:
+
+| Reverse trigger | Fall back to |
 |---|---|
-| Type B 发生 S2-required event(详 `profile-aware-maturity.md` §Δ-14.d) | **must add eval**(补 S2 全套) |
-| Eval Tier-0 失败率 >5% 持续 ≥3 sprint | **must demote eval**(回 S2.5 重做 validity check) |
-| autoloop overnight discard rate >80% 在 tier 0 首批 | **must pause autoloop**(回 S5 修测量框架) |
-| 真实部署后产生 OBS 量 >20 条/周持续 | **must add autoloop**(进 S5/S6) |
-| 架构 pivot 提议 mid-milestone | **must buffer**(走 S3.5 预算) |
+| Calibration invalidated (judge model swap) | S3 (manual F5; calibration re-run) |
+| Acceptance verdict consistently disagrees with Customer's manual judgment | S3.5 (re-build calibration set) |
+| Orchestrator's scope_envelope_check repeatedly fires false-positive | S2.5 (manual scope envelope; tune charter scope) |
+| Charter validator rejects routine charters (over-strict) | S2 (manual validation; revise charter template) |
+| Code Reviewer's anti-hardcode kernel returns spurious findings | S1.5 (tune kernel exemption rules; route to fold-back) |
+| Bad-case suite drifts from project goals (cases pass but closure_contract still violated) | S1 (re-curate bad cases; possibly re-author closure_contract) |
+| Role-chain boundaries blur (e.g., Deliver writing code) | S0 (return to explicit session boundaries) |
 
-## Δ-13 软化 — "stage-stable heuristic"(非门控)
+Reverse triggers are NORMAL — most adopters bounce around stages as the project's needs change.
 
-原 "F 架构锁" → "**架构相对稳定 / 阶段稳定**"。这是 per-stage 属性,**不是**永久状态、**不是**自动门控、**不是**全局锁。
+## §3 Stage-skipping
 
-**操作性启发式**:近 5-10 commit 中 runtime 路径占比 ≤ ~20% 且 semantic 路径占比 ≥ ~60%,持续 ≥ 3 个 sub-sprint;由 Tech Lead+human 主观判定,**可作为升档 S3 的一项支持证据**。
+Adopters may skip stages they don't need:
 
-**框架不提供脚本**: `git log -n 10 --stat -- <runtime-paths>` 一类 grep/git 例子作为方法论附录;判断权归 Tech Lead + human。详 `stage-stable-heuristic.md`。
+- A Type C demo can land at S0 + S1 and stay there forever.
+- A Type A hobby project might never need S5 / S6.
+- A research-only project might use S0 + S1.5 (Code Reviewer) without Acceptance enabled.
 
-## 动态过程免责(Δ-13.c)
+Skipping is documented in `docs/current/adoption-state.md` per-Δ status: stages-not-adopted are `not-applicable`.
 
-> 架构相对稳定是 per-stage 属性,不是永久状态。新增主功能 / 引入新主路径 / 跨越生产部署边界 → 预期暂时回到 S1/S2 重走 observability + eval。这是**设计期望**而非倒退。
+## §4 Per-track suggested entry stages
 
-## Anti-patterns(Δ-11 显式)
+| Track | Suggested entry | Typical max |
+|---|---|---|
+| Type A (production) | S1.5 | S6 |
+| Type A (research / prototype) | S0 | S1.5 |
+| Type B (production SOP runner) | S1 | S5 |
+| Type C demo | S0 | S1 |
+| Type A+B hybrid | S1.5 | S6 |
 
-- **S2 启用自动 case generation 放大坏 case 设计**(eval 还没证明准就开始量产 case)
-- **S1/S2 开 autoloop**(eval 不可信 → autoloop 无法分辨好坏变更)
-- **不区分 R-item vs OBS**(强迫 autoloop 做不可能的事;详 `post-deployment-iteration.md`)
-- **把 S5 首夜 discard 视为 runtime 问题**(Δ-17 P3 教训)
+These are starting points per Constitution §7.0; adopters override.
 
-## 与其他 Δ 的连接
+## §5 Cross-Δ relationships
 
-- **Δ-14 profile-aware maturity**: 矩阵的 Type A/B/C 列就是 §3.2 9-cell 表
-- **Δ-17 P1-P4**: 弯路对应阶段补丁,详 `common-detours-and-warnings-typeA.md`
-- **§5.6 bad-case suite**: 升档 S3 时主指标
-- **§5.7 mocked-LLM evidence gate**: S2.5 的"intentional break → eval must catch"是 real-LLM gate
+- **Δ-13** (stage-stable heuristic) — S5+ depends on architectural stability heuristics.
+- **Δ-14** (profile-aware maturity) — per-track suggested stages.
+- **Δ-18** (delivery loop) — S5 / S6 are where Δ-18 orchestrator is active.
+- **Constitution §3.6** — calibration gate is S5 entry condition.
+
+## §6 What this Δ does NOT cover
+
+- Specific tooling for each stage (charter validator implementation; calibration set authoring tools).
+- Domain-specific stage variants.
+- Cost/budget analysis per stage.
+
+## §7 Editing this doc
+
+Process-tier; edits at fold-back sub-sprint cadence per Constitution §8.
+
+The 7-stage shape is stable framework vocabulary. Adopters MAY add intermediate stages locally (e.g., S5.5 for orchestrator-with-experimental-features) with rationale.
+
+---
+
+End of Δ-11 Capability staging roadmap.

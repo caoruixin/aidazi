@@ -1,238 +1,134 @@
-# Brownfield adoption guide — integrating aidazi into an existing project
+---
+title: Brownfield guide — adopting aidazi into an existing project
+doc_tier: application-guide
+doc_category: live
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-12
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 20KB
+split_trigger: if the §3 decide table grows past 6KB, move per-area detail to a process/ doc and keep the recommendation column here
+notes: >
+  Brownfield adoption path — for an existing project that already has
+  agent/workflow/demo work, possibly with its own norms. Human-led: the
+  framework provides a checklist + decision tree + the three adoption
+  profiles (full / core / selective), NOT automation. INVENTORY → DECIDE →
+  RECONCILE → VALIDATE. Companion to docs/greenfield-guide.md (fast inherit)
+  and docs/adoption-overview.md. The high-value, low-risk first move is
+  adding the Acceptance gate.
+---
 
-This guide is for projects that already exist (some code, some docs,
-some history) and want to adopt `aidazi` for iteration discipline
-without disrupting current work.
+# Brownfield guide — adopting aidazi into an existing project
 
-The integration is **non-invasive and incremental**: you don't have
-to retroactively label past sprints, you don't have to rewrite your
-docs, you don't have to change your code organization. You just
-introduce the framework as the iteration discipline for **new work
-from adoption onward**.
+Use this guide when you already have a project — an agent, a workflow, or a demo — possibly with its own governance, its own backlog format, its own eval setup. Brownfield projects vary too much to automate, so this is a **human-led** path: the framework gives you a checklist, a decision tree, and three adoption profiles. You decide what to inherit, what to preserve, and what to reconcile.
 
-## Pre-adoption diagnostic
+The guiding rule: **don't rip and replace.** Adopt incrementally, document every divergence, and let the high-value pieces prove themselves before you take more.
 
-Before adopting, audit your existing project on these dimensions.
-The answers determine which integration profile fits.
+---
 
-| Dimension | Profile A (no governance) | Profile B (some governance) | Profile C (mature governance) |
-|---|---|---|---|
-| Has a constitution / governance doc? | No | Informal | Yes |
-| Has a clear LLM-vs-runtime ownership boundary? | No | Implicit | Documented |
-| Has eval / test discipline? | Ad hoc | Some tests, no eval | Tests + eval |
-| Has multi-agent sessions today? | Single agent / single dev | Sometimes | Yes (research / dev / review pattern emerges) |
-| Has cross-session continuity docs? | Chat history only | README + scattered notes | Structured handoff |
+## §1 Choose an adoption profile
 
-Most existing projects fall into Profile A or B. Profile C projects
-may not need `aidazi` (their discipline is already mature); they may
-want to adopt selectively (just the §4.1 kernel, just the milestone
-framework).
+You do not have to take all of aidazi at once. Three profiles, from heaviest to lightest:
 
-## Integration profiles
-
-### Profile A — minimal-invasive bootstrap (most common)
-
-Goal: introduce the framework as a thin layer over existing code
-without rewriting anything.
-
-Effort: 2–4 hours initial setup + first milestone.
-
-Steps:
-
-1. **Add aidazi as a submodule** at `framework/`:
-
-   ```bash
-   cd existing-project/
-   git submodule add https://github.com/your-org/aidazi.git framework
-   cd framework && git checkout v0.1.0 && cd ..
-   git add framework .gitmodules
-   git commit -m "[chore] add aidazi framework submodule"
-   ```
-
-2. **Create `AGENTS.md`** at project root, copying from
-   `framework/AGENTS.md` (consumer template):
-
-   ```bash
-   cp framework/AGENTS.md AGENTS.md
-   # Edit AGENTS.md: replace {agent_kind_one_paragraph_description}
-   # with your project's one-liner
-   ```
-
-3. **Bootstrap the three domain contracts** with minimal placeholders:
-
-   ```bash
-   mkdir -p docs/current
-   cp framework/examples/minimal-greenfield/docs/current/domain_taxonomy.md docs/current/
-   cp framework/examples/minimal-greenfield/docs/current/runtime_invariants.md docs/current/
-   cp framework/examples/minimal-greenfield/docs/current/eval_acceptance_bars.md docs/current/
-   # Edit each to reflect your project's current state. Even a 1-paragraph
-   # placeholder ("We currently have no explicit Tier-0 invariants; this
-   # file will be filled during M0") is enough to start. The first
-   # milestone can be "build the three domain contracts properly".
-   ```
-
-4. **Bootstrap the cross-session continuity scaffold**:
-
-   ```bash
-   mkdir -p docs/sprints docs/milestones docs/solutions docs/diagnostics/failure-briefs
-   mkdir -p compact eval/bad_cases
-   cp framework/examples/minimal-greenfield/docs/10-handoff.md docs/
-   cp framework/examples/minimal-greenfield/docs/action_bank.md docs/
-   cp framework/examples/minimal-greenfield/docs/milestone_objective.md docs/
-   cp framework/examples/minimal-greenfield/docs/sprint_objective.md docs/
-   cp framework/examples/minimal-greenfield/eval/bad_cases/_manifest.md eval/bad_cases/
-   ```
-
-5. **Install the pre-commit hook** (optional but recommended):
-
-   ```bash
-   ln -s ../../framework/tools/precommit_bundling_check.sh .git/hooks/pre-commit
-   chmod +x .git/hooks/pre-commit
-   ```
-
-6. **Install schema validator dependency** (optional but recommended):
-
-   ```bash
-   pip install jsonschema
-   ```
-
-7. **Commit the bootstrap**:
-
-   ```bash
-   git add -A
-   git commit -m "[chore] bootstrap aidazi integration"
-   ```
-
-After this, your project has:
-
-- The framework available at `framework/`
-- `AGENTS.md` pointing to framework governance + consumer domain
-  contracts
-- Minimal-but-valid domain contracts (you'll fill them during M0)
-- Empty scaffolds for milestones / sub-sprints / bad cases / R-items
-- Pre-commit hook + schema validator ready to use
-
-Your existing code is untouched. Your existing docs (README, design
-docs, etc.) are untouched. The framework is a **new layer**, not a
-replacement.
-
-### Profile B — governance enhancement
-
-For projects that already have informal governance (a CONTRIBUTING.md,
-some design docs, some review process). Goal: align the existing
-practice with `aidazi`'s shape without losing what already works.
-
-Steps 1–6 are the same as Profile A. Additional steps:
-
-7. **Map existing governance to framework sections**. For each
-   existing governance doc (CONTRIBUTING, ADRs, design notes),
-   classify per `framework/governance/doc_governance.md` tier model:
-
-   - Is it `current-runtime`? Move to `docs/current/` if not already.
-   - Is it `foundational`? Move to `docs/foundational/`.
-   - Is it `proposal`? Mark with `status: proposal`.
-   - Is it `archive`? Move to `docs/archive/`.
-
-8. **Annotate front matter** on existing docs (incremental; don't do
-   them all at once). Add the YAML front matter block per
-   `doc_governance.md` schema.
-
-9. **Bridge existing review process to the §4.1 kernel**. If you
-   already do code review, your reviewer should adopt the
-   nine-question kernel for semantic-touching PRs. The
-   `compact/M<N>-review-prompt.md` template is the bridge.
-
-10. **Bridge existing sprint / iteration cadence to the milestone
-    framework**. If your current cadence is "one PR at a time", group
-    3–5 related PRs into a milestone retroactively (without claiming
-    they were milestones at the time). For new work, plan in
-    milestones.
-
-### Profile C — selective adoption
-
-For projects with mature governance that don't want to fully migrate.
-Goal: adopt the parts of `aidazi` that fill specific gaps without
-rewriting your stack.
-
-Common selective adoptions:
-
-- **Adopt only the §4.1 kernel** — paste
-  `framework/templates/anti_hardcode_kernel.md` into your existing
-  review process. Don't change anything else.
-- **Adopt only the milestone framework** — group PRs into 3-5 batch
-  reviews using `framework/templates/milestone_objective.md`. Don't
-  change your sprint cadence.
-- **Adopt only the bad-case suite discipline** — use
-  `eval/bad_cases/_manifest.md` lifecycle (open / active / closed /
-  archived) without adopting the full agent role registry.
-- **Adopt only the role cards as job descriptions** — use
-  `framework/role-cards/*` as hiring / onboarding material for human
-  + AI agent roles, without enforcing the constitution chain.
-
-## Brownfield-specific cautions
-
-### Don't retroactively relabel past sprints
-
-Per `constitution.md` §8.7, the milestone framework applies
-prospectively from adoption onward. Don't go back and call your old
-sprints "milestones" — they were what they were. The framework starts
-NOW.
-
-### Don't try to back-fill all three domain contracts in one PR
-
-The three domain contracts (taxonomy, invariants, acceptance bars)
-are load-bearing. Filling them well takes thought. Bootstrap with
-minimal placeholders, then make "fill the domain contracts" your M0
-goal. By the end of M0 they'll be real.
-
-### Don't migrate code organization to match the framework
-
-The framework references `docs/current/`, `docs/sprints/`,
-`docs/milestones/`, etc. — but it makes NO claims about how your
-**code** is organized. If your code lives under `src/`, `lib/`, or
-some other layout, the framework doesn't care. Domain code
-organization is yours.
-
-### Don't lose existing forward-looking design content
-
-Brownfield projects often have valuable design notes that are
-proposals, partial designs, or "we tried this and it didn't work"
-documents. Mark them `status: proposal | partial | deferred |
-historical` per `doc_governance.md` rather than deleting. Forward-
-looking content is an asset.
-
-### Don't introduce the §4.1 kernel mid-PR
-
-If you're already mid-PR when you adopt `aidazi`, don't suddenly
-enforce the §4.1 kernel against in-flight work. Adopt for the **next**
-PR.
-
-## Brownfield first-milestone candidates
-
-Common M0 goals for brownfield adoption:
-
-- **"Fill the three domain contracts"** — taxonomy + invariants +
-  acceptance bars. Sub-sprints: audit current code → draft taxonomy
-  → draft invariants → draft acceptance bars.
-- **"Surface 5 bad cases from real sessions / production logs"** —
-  build the curated suite from existing observed failures.
-- **"Bring one existing failure mode under R-item discipline"** —
-  pick a known recurring problem; classify it per §3 layer; open R-
-  item; plan a sub-sprint to fix.
-
-These are good M0s because they fill the framework's expected
-artefacts without requiring code rewrites.
-
-## Brownfield budget
-
-| Profile | Initial setup | M0 effort |
+| Profile | What you take | Good fit when |
 |---|---|---|
-| A. Minimal | 2–4 hours | 1–2 weeks (fill domain contracts) |
-| B. Governance enhancement | 1–2 days (incremental front-matter + tier mapping) | 2–4 weeks |
-| C. Selective | 1–2 hours | varies (depends on what's adopted) |
+| **A — Full** | All 5 roles + the Δ-18 Delivery Loop orchestrator + all Δs + the three domain contracts | New team forming around the project; you want the full discipline and can invest in it |
+| **B — Core** | All 5 roles, human-paste (no orchestrator); the core Δs (constitution, role cards, bad-case lifecycle, milestone framework); the three domain contracts | Established small team; want the role discipline without automation overhead |
+| **C — Selective** | Cherry-pick high-value pieces: the anti-hardcode review kernel + the sprint stanza + the bad-case lifecycle + the Acceptance gate. Skip the rest. | Mature project with its own working process; you want specific frameworks-shaped wins, not a process transplant |
 
-## After brownfield adoption
+Most brownfield projects should **start at C or B and graduate**, not start at A. The framework is overhead-amortizing, not free; the break-even is usually around your second milestone (see `docs/friction-playbook.md` F12). Record your chosen profile in `docs/current/adoption-state.md`.
 
-Once M0 is closed, the project runs on the framework's normal cadence
-(same as greenfield from this point on). See
-`greenfield-guide.md` step 7.
+## §2 INVENTORY (read-only — change nothing yet)
+
+Before deciding anything, take stock. Do **not** edit anything in this phase.
+
+```
+□ What's the current track? (Type A AI agent / Type B workflow / Type C demo / A+B hybrid)
+  — use the profile decision tree in process/profile-aware-maturity.md (Δ-14) if unsure
+□ Does the project already have governance docs? (AGENTS.md, CLAUDE.md, role/agent docs?)
+□ Does it have an action-bank or backlog ledger? In what format?
+□ Does it have an eval framework? What CaseSpec shape?
+□ Does it use any orchestrator/automation currently?
+□ What's the current human/agent split? Pure human-paste, or some automation?
+□ Where do semantic decisions currently live — LLM-owned, or hardcoded? (this predicts §1.7 friction)
+```
+
+The honest answer to the last question is the most important: brownfield projects most often diverge from the framework on the LLM-vs-runtime boundary (keyword/regex shortcuts that the constitution §1.7 forbids). Note these now; you'll reconcile them deliberately, not in a panic mid-sprint.
+
+## §3 DECIDE (per area — you judge the tradeoffs)
+
+For each area, choose REPLACE / KEEP / MERGE. The framework gives a recommendation; you own the call.
+
+| Area | Options | Recommendation |
+|---|---|---|
+| **Constitution** | REPLACE with framework / KEEP existing / MERGE | **REPLACE** unless you have explicit documented deviation reasons. The constitution is the part that makes your project recognisable as an aidazi project. |
+| **Role definitions** | ADOPT 5-role chain / KEEP existing (e.g., 4-role) / add Acceptance only | **ADOPT the 5-role chain.** If you take only one thing, take the **Acceptance gate** — it's the highest-value, lowest-disruption add (§5). |
+| **Action bank / backlog** | MIGRATE to framework taxonomy / KEEP existing format | **KEEP your format** but add the Δ-12 sweep cadence + live/archive split. Reformatting a working backlog is pure cost. |
+| **Eval** | ADOPT M-Evaluation template / KEEP existing | **KEEP if mature**; add an adaptor to the framework's CaseSpec shape (`schemas/case-spec.schema.json`) for portability. Adopt the bad-case lifecycle (`process/badcase-lifecycle.md`) regardless — it's high value. |
+| **Δ-18 orchestrator** | ADOPT / OPT OUT | **OPT OUT** unless you have multi-sub-sprint cycles worth automating. Profile B/C stays human-paste. |
+| **Backing agents / role skills** | per role | Configure `charter.tooling.<role>.agent_kind` to whatever you already use; mount existing subagent/skill libraries as role skills (`process/role-skill-model.md`; `docs/industry-mapping.md` for the translation). |
+
+## §4 RECONCILE (write it down)
+
+Now you author the reconciliation artifact — this is the brownfield-specific deliverable.
+
+1. **Author `docs/current/adoption-state.md`** from `templates/adoption-state-template.md`. For each Δ-1..Δ-18, set a status: `at-spec` / `partial` / `divergent` / `not-applicable` / `superseded-by-framework`. For each `divergent` row, one sentence of rationale.
+2. **Map existing docs to the framework schema**; rename where it's cheap, leave where it's costly (and record the divergence).
+3. **Add @-includes** to your root `AGENTS.md` for the inherited governance chain.
+4. **Author `docs/research-briefs/`** as a new directory if you're enabling Acceptance (you need a closure_contract to judge against — see §5).
+5. **Document brownfield carve-outs** as `status: divergent` rows. A carve-out is not a failure; it's an honest record. The one thing you may NOT carve out is the §1.7 forbidden list (`governance/constitution.md` §1.8 — hard requirement, never `divergent`).
+
+The `adoption-state.md` is your living contract with the framework. At each milestone close you revisit it; at framework fold-back, your accumulated divergences become evidence (`process/fold-back-protocol.md`).
+
+## §5 The Acceptance gate — the high-value first move
+
+If you adopt nothing else, adopt the Acceptance gate. Here's why it's the best brownfield entry point:
+
+- It's **additive** — it doesn't change how your team currently builds; it adds an independent check at milestone close.
+- It surfaces the gap most brownfield projects can't see: "the code is clean and the tests pass, but did we actually build what the customer needed?"
+- It needs only two new things: a `closure_contract` (write one for your current milestone retroactively — Research role, `templates/compact-research-brief.md`) and an Acceptance run at close (Customer paste, `role-cards/acceptance-agent.md`).
+
+To add just Acceptance:
+
+1. Write a closure_contract for your current milestone's goal (three components: positive shape + anti-pattern + anchor phrases).
+2. At milestone close, spawn Acceptance from a clean session (Customer paste — never from your Deliver/Dev session; §1.7-C spawn isolation).
+3. Read the verdict. On `fix_required`, the human-confirm checkpoint decides routing (§3.5).
+
+Once the team feels the value of the outcome gate, graduating to Profile B (full 5-role chain) is an easy sell.
+
+## §6 VALIDATE
+
+Confirm the adoption actually holds before declaring it done:
+
+```
+□ Run one sprint under the new role chain (or your chosen subset).
+□ Confirm the 5-role boundary invariants hold (§3.4) — no role collapsed into another;
+  in particular, Acceptance was spawned cleanly (not from Deliver/Dev).
+□ Run one Acceptance pass with a closure_contract from any matured research brief.
+□ Update adoption-state.md based on what you observed — promote partial→at-spec where
+  it landed, add divergent rows where reality differed from intent.
+```
+
+## §7 Gradual 5-role adoption
+
+You can phase in roles rather than adopting all five at once. A common ramp:
+
+1. **Code Reviewer** first (if you don't already have an independent review) — mount the anti-hardcode kernel (`skills/anti-hardcode-review-kernel/`).
+2. **Acceptance** next (§5) — the outcome gate.
+3. **Research** — formalize "what should we build" into signed briefs with closure_contracts.
+4. **Deliver** as Tech Lead — once you have briefs to plan from.
+5. **Dev** discipline (self-contained compact prompts) — last, because it's the biggest change to day-to-day coding.
+
+Each step is recorded in `adoption-state.md`. The framework provides the menu; you choose the order.
+
+---
+
+The brownfield guide is intentionally less prescriptive than the greenfield guide. Human owners decide; the framework provides the menu and the recommendations. When something doesn't fit your context, that's a `divergent` row and a candidate lesson — not a failure.
+
+---
+
+End of brownfield guide.

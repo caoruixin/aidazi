@@ -1,275 +1,134 @@
-# Greenfield adoption guide — idea → app with aidazi
+---
+title: Greenfield guide — landing aidazi into a fresh project
+doc_tier: application-guide
+doc_category: live
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-12
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 22KB
+split_trigger: if the Phase 1-5 walk (STEP 5) grows past 8KB, move the per-phase detail to docs/application-funnel.md and keep the step skeleton here
+notes: >
+  Greenfield adoption path — for a new codebase, or an existing codebase with
+  no agent/workflow/demo yet. 7-step bootstrap: initialize → elicit → prereq
+  gate → instantiate → walk Phase 1-5 funnel → bootstrap iteration loop →
+  (optional) bootstrap orchestrator. Companion to docs/application-funnel.md
+  (the funnel reference) and docs/brownfield-guide.md (the other adoption
+  shape). Greenfield = fast inherit; brownfield = human-led reconcile.
+---
 
-This guide walks you from "I have an idea for an agentic AI" to "I
-have a working agent under aidazi iteration discipline". The example
-is a non-CS agent (e.g., shopping guide, quotation, web automation)
-so you can see the framework applied to a new domain.
+# Greenfield guide — landing aidazi into a fresh project
 
-**Expected effort**: 1–2 days for initial setup + first milestone
-planning. The first dev sub-sprint adds another 0.5–2 days depending
-on scope.
+Use this guide when you're starting clean: an empty repo, or an existing codebase that doesn't yet have an agent / workflow / demo. The greenfield path is **fast inherit** — the framework hands you scaffolding + defaults, and you fill in domain-specific values. (If you have an existing project with its own norms or agent work, use `docs/brownfield-guide.md` instead — that path is human-led reconciliation.)
 
-## Step 0 — Prerequisites
+**Mental model**: there is no "Phase 0 normative freeze." The framework *is* the norms. You don't invent governance; you inherit the constitution and spend your energy on the domain.
 
-- Git installed
-- Python 3.10+ (for stanza_validator + trace_emitter)
-- A version-controlled directory where your project will live
-- Access to one or more LLM backends (OpenAI / Anthropic / local)
-- A code agent tool stack (Claude Code / Cursor / Codex / Aider /
-  ...) you've used before
-- Read [`adoption-overview.md`](adoption-overview.md) first
+**Prerequisites to start**: (a) your track designation (Type A / B / C / A+B — use the decision tree in `process/profile-aware-maturity.md` if unsure); (b) a one-paragraph problem statement (BRD-level: problem + KPI + rough scope); (c) a repo path (may be empty).
 
-## Step 1 — Sketch the agent (idea phase)
+---
 
-Before writing any code or governance, answer these on paper or in a
-scratch doc:
+## STEP 1 — Initialize the framework
 
-1. **What does the agent DO?**
-   - Example (shopping guide): "Help users discover products matching
-     vague needs, compare them, and complete purchase."
-   - Example (quotation): "Given a request-for-quote, gather missing
-     parameters, compute price tiers, produce a structured
-     quotation."
-   - Example (web automation): "Execute a parameterized SOP on a
-     vendor portal (login, fill forms, submit, verify)."
-
-2. **Who is the user?**
-   - End user? Internal operator? Another system?
-
-3. **What does success look like?**
-   - One observable end-state per session (e.g., "purchase
-     completed", "quotation written", "SOP step N reached with
-     verification PASS").
-
-4. **What's the failure mode this agent must avoid?**
-   - Example (shopping): "Don't recommend out-of-stock products."
-   - Example (quotation): "Don't hallucinate prices."
-   - Example (automation): "Don't proceed past a CAPTCHA without
-     verification."
-
-5. **What's the LLM-vs-runtime split (first guess)?**
-   - LLM owns: user goal inference, semantic step selection, natural
-     wording.
-   - Runtime owns: tool capabilities, safety floor, persistence,
-     budget, trace.
-   - You'll refine this in step 3.
-
-Write these into a scratch file like `notes/idea.md`. You'll mine it
-when filling in domain taxonomy.
-
-## Step 2 — Set up the project skeleton
+Vendor the framework into your repo and wire the governance chain:
 
 ```bash
-mkdir my-agent && cd my-agent
-git init -b main
-
-# Add aidazi as a git submodule
-git submodule add https://github.com/your-org/aidazi.git framework
-cd framework && git checkout v0.1.0 && cd ..
-git add framework .gitmodules
-git commit -m "[chore] add aidazi framework submodule"
-
-# Copy the minimal greenfield skeleton
-cp -r framework/examples/minimal-greenfield/. .
-git add .
-git commit -m "[chore] bootstrap project skeleton from aidazi"
+git submodule add <aidazi-url> aidazi        # or copy; submodule lets you pull releases
+cp aidazi/AGENTS.md ./AGENTS.md              # consumer template — edit placeholders
 ```
 
-After this, your tree looks like:
+Edit your root `AGENTS.md` (§1 project identification + §3 ledger paths). It @-includes the always-loaded governance chain (`aidazi/governance/constitution.md` + `doc_governance.md` + `context_briefing.md`). Set `adopter_track` and `framework_version`.
 
-```
-my-agent/
-├── AGENTS.md                  ← root constitution (loads framework)
-├── docs/
-│   ├── current/
-│   │   ├── domain_taxonomy.md         ← EMPTY; fill in step 3
-│   │   ├── runtime_invariants.md      ← EMPTY; fill in step 3
-│   │   ├── eval_acceptance_bars.md    ← EMPTY; fill in step 3
-│   │   └── agent_context_guide.md     ← EMPTY; fill incrementally
-│   ├── milestone_objective.md         ← placeholder
-│   ├── sprint_objective.md            ← placeholder
-│   ├── action_bank.md                 ← empty backlog
-│   ├── 10-handoff.md                  ← cold-start scaffold
-│   ├── solutions/                     ← research proposals land here
-│   ├── sprints/                       ← sub-sprint archives
-│   ├── milestones/                    ← milestone archives
-│   └── diagnostics/
-│       └── failure-briefs/            ← failure briefs (§2)
-├── compact/                            ← dev/review prompts
-├── eval/
-│   └── bad_cases/                     ← curated bad-case suite
-│       └── _manifest.md
-└── framework/                          ← aidazi submodule
-```
+A working filled-in example of everything STEP 1-6 produces lives at `aidazi/examples/minimal-greenfield/` — copy from it rather than authoring blank.
 
-## Step 3 — Fill the three consumer-supplied domain contracts
+## STEP 2 — Run the elicitation (Δ-15)
 
-These three files specialize the framework to your domain. They are
-the most important docs you write. Without them, the framework is
-incomplete.
+Adopt the **Research** role and walk `process/agent-design-elicitation.md` (Δ-15):
 
-### 3.1 `docs/current/domain_taxonomy.md`
+- 6 must-answer questions: Domain / Goal / Problems / Method / Knowledge / Boundary.
+- 4 inventories per profile (Type A: Knowledge / Tools / Skills / Policy; Type B: K / T / SOP / P; Type C: K / T / Off-shelf-skill / P).
+- Tool-vs-Skill decision tree (Type A) — atomic op → tool; multi-step LLM-orchestrated routine → product skill. (Don't confuse the product skill inventory with the team-side **role skills** in `process/role-skill-model.md`.)
+- Part D industry research synthesis (Type A) → `docs/discovery/industry-synthesis-<id>.md`.
+- Part E: draft the `closure_contract` — the three-component paragraph (positive shape + anti-pattern + anchor phrases) that becomes your first milestone's success definition.
 
-Define your project's vocabulary. The framework references this file
-by stable name from `constitution.md`. The template at
-`framework/examples/minimal-greenfield/docs/current/domain_taxonomy.md`
-gives the structure.
+Output: a first research brief at `docs/research-briefs/<id>.md`. The Customer signs it (gate 1).
 
-Required sections:
+## STEP 3 — Run the prerequisite gate (Δ-16)
 
-- **Workflow lanes** — your project's "lanes" (analogous to CS's
-  "FAQ / wrap-up / escalation"). Each lane has: name, when it's
-  active, what tools / capabilities are available, how the LLM
-  decides to enter.
-- **Shift / drift detection** — your project's "topic shift"
-  vocabulary. When the user's intent moves between lanes, the LLM
-  needs to detect it. Define the observable signals (NOT keywords;
-  semantic categories).
-- **Escalation signals** — when the agent should hand off to a human
-  / higher-privileged path. Define the categories (NOT triggers).
-- **Grounding concepts** — what facts the agent must ground in
-  retrieved evidence vs may state freely.
-- **Layer extensions** (optional) — if your project needs to add a
-  §3.1 layer (e.g., `workflow_definition` for SOP-driven projects),
-  define it here and explain why the original nine layers don't
-  cover it.
+Walk `process/agent-creation-prerequisites.md` (Δ-16): verify the 7 categories of input artifacts at READY / DEFERRED / N/A. Any DEFERRED auto-files an OBS-item tagged `prereq-deferred` in `docs/action_bank.md`. You don't need everything READY to start — you need to know what's deferred and why.
 
-### 3.2 `docs/current/runtime_invariants.md`
+## STEP 4 — Instantiate the framework
 
-Define your Tier-0 invariants — the hard floor your runtime
-guarantees. Common candidates:
+- The constitution stays @-included; you never edit it.
+- Author your three **domain contracts** from templates (`docs/domain-adaptation.md` walks these): `docs/current/domain_taxonomy.md`, `docs/current/runtime_invariants.md`, `docs/current/eval_acceptance_bars.md`.
+- Author `docs/current/adoption-state.md` from `templates/adoption-state-template.md` — your per-Δ status + override registry.
+- Confirm the first `docs/research-briefs/<id>.md` carries its `closure_contract` and is `customer_signed: true`.
 
-- **Safety floor** — no PII leaks; no actions that bypass user
-  consent.
-- **Grounding floor** — no factual claims without retrieval evidence
-  (for retrieval-grounded agents).
-- **Capability boundary** — agent never invokes a tool not in its
-  whitelist.
-- **Persistence floor** — session state survives restart.
+## STEP 5 — Walk the Phase 1-5 funnel (framework-aware)
 
-Each Tier-0 invariant gets its own subsection with:
+The funnel turns the signed brief into a buildable plan. **Progressive disclosure** is the governing principle: each phase pulls in *only* the inputs it can use. Technical constraints arrive at Phase 3, not Phase 1. **Reverse-flow** is explicit: when a later phase finds an earlier one infeasible, you backtrack openly (not silently re-decide). Full per-phase reference: `docs/application-funnel.md`.
 
-- Statement (one sentence)
-- Why it's Tier-0 (NOT a soft signal; runtime MUST enforce)
-- How it's enforced in code
-- Detection mechanism (trace pattern that proves a violation)
+| Phase | Produces | Pulls in at this phase | Reverse-flow trigger |
+|---|---|---|---|
+| **1 — Business need & goal** | `docs/foundational/business-need.md`: market need + KPI + scope IN/OUT + anti-goal. Customer signs (gate 1). | Δ-15 Q1-Q3 + Δ-16 #1 (BRD) | source phase — none from above |
+| **2 — Product/Service design** | `docs/foundational/product-service-design.md`: UC registry + tool spec (A) / SOP step registry + per-step gates (B) / off-the-shelf skill inventory (C) | Δ-15 Part B+C inventories + Δ-3 decision #1 (abstraction-layer; default single tool-use per §1.7-A) + Δ-16 #2 (PRD) | if Phase 2 can't deliver Phase 1 → revisit scope/KPI |
+| **3 — Technical plan** | `docs/foundational/technical-plan.md`: engineering baseline + platform/system APIs + integration + Tier-0 invariants | Δ-6 runtime skeleton + Δ-3 decisions #2-#7 + Δ-16 #3/#6/#7 | if Phase 2 design is technically infeasible → re-design Phase 2 |
+| **4 — Coding packet** | `docs/foundational/coding-packet.md`: module breakdown DM1..N + delivery order + mocks + .env | Δ-16 #4 knowledge corpus + #5 canned replies | if budget/scope mismatch → back to Phase 3 or 2 |
+| **5 — Eval/Release/Feedback** | `docs/foundational/eval-design.md`: CaseSpec suite + judge rubric + (if Δ-18) charter + calibration set | M-Evaluation 4-component + 6-primitive DSL + Δ-18 charter | if reproducible failure → root-cause may push back to any earlier phase |
 
-### 3.3 `docs/current/eval_acceptance_bars.md`
+**The closure_contract from Phase 1 is the Acceptance verdict source.** Everything downstream is judged against it.
 
-Define your acceptance metrics. Framework defaults from
-`constitution.md` §5.1 require you to specialize:
+### §5.3.1 Split or merge Phase 1 and Phase 2?
 
-- **Wrong-lane containment rate** — your definition (e.g., "session
-  containment in a lane other than the one matching user intent").
-  Unit: percentage. Direction: down or unchanged.
-- **Over-escalation rate** — your definition (e.g., "session
-  escalates when LLM could have resolved in-system"). Unit:
-  percentage. Direction: down or unchanged.
-- **Grounding floor** — your definition (e.g., "fraction of factual
-  claims grounded in retrieval"). Unit: percentage. Direction:
-  unchanged.
-- **Target / neighbor / negative / shadow case definitions** — your
-  project's interpretation.
+Phase 1 (business need) and Phase 2 (product/service design) can be one document or two. Choose by complexity and stakeholder count:
 
-Also define:
+- **Merge** (one `docs/foundational/business-and-product.md`) when: Type C demos (always); single-author or seed-stage projects; the person defining the need is the person designing the service.
+- **Split** (two docs) when: medium+ complexity; multiple stakeholders; the "what customer wants" and "how we satisfy it" decisions have different owners who can disagree.
 
-- **Eval baseline pointer** — where the canonical baseline result
-  lives (`docs/current/eval_baseline.md` is the framework default
-  pointer name).
-- **Bad-case suite path** — default `eval/bad_cases/`; customize if
-  your project uses a different layout.
+If you merge and later regret it (stakeholders diverge, the need and the design start contradicting each other), see `docs/friction-playbook.md` F15 — the unwind is to split at the next milestone, not mid-flight.
 
-## Step 4 — Plan the first milestone
+## STEP 6 — Bootstrap the iteration loop
 
-The first milestone in a greenfield project is usually:
+Adopt the **Deliver** role and stand up the first cycle:
 
-- **M0 — bring-up + baseline**
-  - Sub-sprint S0.1: scaffolding (runtime skeleton, tool layer
-    skeleton, eval harness skeleton)
-  - Sub-sprint S0.2: smallest end-to-end flow (one happy-path)
-  - Sub-sprint S0.3: first three bad cases curated (from your
-    sketch's failure modes in step 1.4)
-  - Acceptance bar: end-to-end happy path works on N test cases; one
-    representative bad case is documented in `eval/bad_cases/`.
+1. Author `docs/milestone_objective.md` (cites the closure_contract as north star) from `templates/milestone-objective.md`.
+2. Author the first `docs/sprint_objective.md` from `templates/sprint-objective.md`.
+3. Author `compact/sprint-001-dev-prompt.md` from `templates/compact-dev-prompt.md` (self-contained; `context_budget` + `self_contained: true`).
+4. Run the first **Dev → Code Reviewer → close** cycle. Dev writes `handoff.md` §1-§11; Deliver + Customer write §12 close verdict.
+5. Bootstrap `docs/action_bank.md` with backlog placeholders and `handoff.md` §0 with the cold-start table.
 
-Spawn a research agent if you need to investigate any of: LLM
-provider choice, tool library choice, eval harness choice, or a
-non-trivial architectural decision.
+**Acceptance in the first milestone close**: at the end of your first milestone, run the **Acceptance** role (Customer paste at gate 2). It reads the closure_contract + the dev evidence and returns `pass` / `fix_required` / `needs_human`. This is the moment the framework's central discipline earns its keep — you find out whether you built the right thing, not just whether the code is clean. On `fix_required`, the human-confirm checkpoint fires before any fix routes back to Deliver (`governance/constitution.md` §3.5).
 
-Spawn deliver-agent (paste `framework/role-cards/deliver-activation.md`
-into a fresh session, then provide your input). Deliver-agent drafts
-`docs/milestone_objective.md` and the first `docs/sprint_objective.md`
-+ compact dev prompt.
+## STEP 7 — (Optional) Bootstrap the orchestrator (Δ-18 Delivery Loop)
 
-You (human) review and approve. Then spawn the dev session by pasting
-`compact/sprint-001-dev-prompt.md`.
+If you want automation beyond human-paste handoffs, stand up the Delivery Loop orchestrator:
 
-## Step 5 — First sub-sprint
+1. Author `charter.yaml` from `templates/mission-charter.yaml` — set `autonomy.level`, `approved_scope`, `tooling.*.agent_kind`, budget.
+2. If Acceptance will run autonomously, author the calibration set (`calibration/labeled_acceptance_cases/manifest.json`) and run the §3.6 calibration gate. Until calibrated, `fully_autonomous_within_budget` auto-degrades to `human_on_the_loop`.
+3. Run `orchestrator dispatch <milestone-id>`.
 
-The dev session:
+Full spec: `process/delivery-loop.md`. Pure human-paste adopters skip STEP 7 entirely and keep the 5-role chain with the human as orchestrator — that's a complete, valid adoption.
 
-- Reads its compact prompt (self-contained per §9).
-- Implements the scope.
-- Runs tests + emits trace.
-- Authors handoff §1–§11.
+---
 
-You commit the dev work (the pre-commit hook ensures bundling
-discipline).
+## Cross-reference: detours to watch
 
-Deliver-agent + you classify the close (A/B/C/D).
+Each phase has a known cognitive detour (`process/common-detours-and-warnings-typeA.md`, Δ-17):
 
-Iterate sub-sprints 2..N.
+- Phase 1 prerequisites ↔ P1 *spec-first / data-late* detour (don't finalize UC taxonomy before you've looked at real transcripts).
+- Phase 5 eval bootstrap ↔ P2 *eval-before-architecture-stable* detour.
+- Phase 5 + orchestrator ↔ P3 *autoloop-as-eval-stress-test* detour.
+- Phase 3 + first milestone ↔ P4 *mid-milestone-pivot* detour.
 
-## Step 6 — First milestone close
+And before your first milestone, read `docs/friction-playbook.md` end to end. It's the cheapest insurance in the framework.
 
-At milestone close:
+## Structural payoff
 
-- Deliver-agent generates `compact/M0-review-prompt.md`.
-- Spawn review session (optionally 4-parallel sub-reviewers if scope
-  crosses multiple surfaces).
-- Review agent writes `docs/codex-findings.md`.
-- Deliver-agent + you run the curated bad-case suite + conduct manual
-  review per §5.6.
-- If all hard gates pass, close. Archive. Plan M1.
+A from-scratch project with no framework can spend weeks inventing Phase 0-5 norms. A greenfield adopter inheriting v4 should compress Phase 1-2 to under a week — the schemas, decision catalogs, and role boundaries are pre-loaded; only the domain-specific values need filling.
 
-## Step 7 — Iteration cadence
+---
 
-After M0, the framework's normal cadence kicks in:
-
-- Milestones run 3–5 sub-sprints; ~2–4 weeks per milestone.
-- Path 1 (research-driven) and Path 2 (bad-case-driven) inputs flow
-  into deliver-agent's planning rounds (see
-  `framework/role-cards/deliver-agent.md` "Workflow inputs").
-- The action_bank accumulates R-items; deliver-agent + human pick
-  3–5 R-items per milestone.
-
-## Greenfield pitfalls
-
-Before your second milestone, read
-[`friction-playbook.md`](friction-playbook.md). The most common
-greenfield mistakes:
-
-1. **Skipping domain taxonomy** — agents write reasonable-looking
-   prompts that don't actually match your domain because the
-   taxonomy doc was left empty.
-2. **Inventing Tier-0 invariants mid-sprint** — sub-sprints sneak in
-   new "runtime must enforce X" claims without registration. Always
-   route to `human_review_required` instead.
-3. **Treating mocked-LLM tests as semantic evidence** — they're not.
-   Real-LLM rerun is required for any semantic change.
-4. **Letting composite eval scores gate close** — they're
-   observation-only. The curated bad-case suite is the primary gate.
-
-## Estimated greenfield budget
-
-| Activity | Effort |
-|---|---|
-| Step 1 (sketch) | 1–2 hours |
-| Step 2 (skeleton) | 30 minutes |
-| Step 3 (3 domain contracts) | 0.5–1 day |
-| Step 4 (M0 planning) | 2–4 hours |
-| Steps 5–6 (M0 execution + close) | 1–2 days |
-| **Total to first milestone close** | **2–4 days** |
-
-After M0, each subsequent milestone is faster as the project
-accumulates context (bad cases, R-items, taxonomy refinements).
+End of greenfield guide.

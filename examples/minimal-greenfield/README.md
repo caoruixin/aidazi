@@ -1,60 +1,36 @@
-# Minimal greenfield skeleton
+# minimal-greenfield — a working aidazi consumer template
 
-This directory is a **bare-bones project skeleton** you can copy
-into a new project to bootstrap `aidazi` adoption.
+This is a **filled-in, minimal** example of what an aidazi-adopted project looks like one milestone in. It is a Type A AI agent — **"Acme Returns Bot"**, a customer-service agent that judges refund eligibility — kept deliberately tiny so you can read the whole thing.
 
-## Usage
+Copy this directory as the starting skeleton for a greenfield adoption (`docs/greenfield-guide.md`), then replace the Acme-specific values with your own.
 
-From your new project root (NOT from inside `aidazi/`):
+## What's here
 
-```bash
-# Assuming you've already added aidazi as a submodule at framework/
-cp -r framework/examples/minimal-greenfield/. .
+```
+minimal-greenfield/
+├── AGENTS.md                              # consumer root: project id + @-include chain + ledger paths
+├── docs/
+│   ├── current/                           # the three domain contracts + context guide + adoption state
+│   │   ├── domain_taxonomy.md
+│   │   ├── runtime_invariants.md
+│   │   ├── eval_acceptance_bars.md
+│   │   ├── agent_context_guide.md
+│   │   └── adoption-state.md
+│   ├── milestone_objective.md             # M1 north star (cites the closure_contract)
+│   ├── sprint_objective.md                # sub-sprint 1 scope
+│   ├── 10-handoff.md                      # §0 cold-start table + §1 narrative
+│   ├── action_bank.md                     # live backlog (R-items + OBS-items)
+│   ├── research-briefs/_placeholder.md    # where signed briefs land
+│   ├── acceptance-reports/_placeholder.md # where Acceptance verdicts land
+│   └── diagnostics/failure-briefs/_placeholder.md
+├── compact/_placeholder.md                # where per-sprint dev/review/acceptance prompts land
+└── eval/bad_cases/_manifest.md            # the bad-case suite manifest
 ```
 
-This copies (without overwriting your `framework/` submodule):
+## How to use it
 
-- `AGENTS.md` — root constitution (already configured to point at
-  `framework/`)
-- `docs/current/{domain_taxonomy,runtime_invariants,eval_acceptance_bars,agent_context_guide}.md`
-  — domain contract placeholders (you fill in M0)
-- `docs/{10-handoff,action_bank,milestone_objective,sprint_objective}.md`
-  — empty scaffolds
-- Empty directories: `docs/{sprints,milestones,solutions,diagnostics/failure-briefs}/`,
-  `compact/`, `eval/bad_cases/`
+1. Read `AGENTS.md` first (same as any role session would).
+2. Read the three domain contracts in `docs/current/` — these are what make the framework about *your* domain.
+3. Follow `aidazi/docs/greenfield-guide.md` STEP 1-6, substituting your domain for Acme's.
 
-After copying, edit each file marked `<...>` placeholder to reflect
-your project. The greenfield guide
-(`framework/docs/greenfield-guide.md`) walks through this step-by-step.
-
-## What's in each file
-
-| File | Purpose | When to fill |
-|---|---|---|
-| `AGENTS.md` | Root constitution | At adoption (project description placeholder) |
-| `docs/current/domain_taxonomy.md` | Workflow lanes / shift / escalation / grounding | M0 |
-| `docs/current/runtime_invariants.md` | Tier-0 invariants | M0 |
-| `docs/current/eval_acceptance_bars.md` | Acceptance metrics | M0 |
-| `docs/current/agent_context_guide.md` | Task-type reading lists | Incrementally per task type |
-| `docs/10-handoff.md` | Cross-session state | At every milestone close |
-| `docs/action_bank.md` | R-item backlog | Continuous |
-| `docs/milestone_objective.md` | Active milestone | At each milestone start |
-| `docs/sprint_objective.md` | Active sub-sprint | At each sub-sprint start |
-| `eval/bad_cases/_manifest.md` | Bad-case ledger | As bad cases surface |
-
-## Note on the `<...>` placeholders
-
-Most files contain `<like this>` placeholders. Search-and-replace
-them to your project's content. Common placeholders:
-
-- `<project-name>`
-- `<agent_kind_one_paragraph_description>`
-- `<your-architecture-doc>`
-- `<domain task type 1>`
-
-A simple sed-driven find-and-replace works:
-
-```bash
-grep -rn "<your" . --include="*.md"
-# review hits + edit each
-```
+This example is **read-only** after snapshot (per Δ-7); it's a reference, not a live project. Don't sync framework changes into it.

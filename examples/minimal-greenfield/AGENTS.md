@@ -1,105 +1,59 @@
-# Repo Constitution
+# AGENTS.md — Acme Returns Bot (aidazi consumer)
 
-This repository builds <agent_kind_one_paragraph_description>. The
-governing principles — LLM-vs-Runtime ownership boundary, iteration
-rules, and forbidden list — are defined in
-`framework/governance/constitution.md` §1.
+This is a filled-in example of the consumer-side `AGENTS.md` (copied from `aidazi/AGENTS.md` and edited). A fresh role session reads this first at cold-start.
 
-The framework constitution and doc-governance rules live under
-`framework/governance/`. Your domain-specific contracts live under
-`docs/current/`. Active sprint scope is named in
-`docs/sprint_objective.md`; closed sprints live under `docs/sprints/`
-as immutable archives. Per-task reading lists live in
-`docs/current/agent_context_guide.md`.
+## §1 Project identification
 
-Sprint scope is decided by the human + deliver agent through
-`docs/sprint_objective.md`. A sprint that touches a semantic surface
-must include the **Layer-classification + anti-hardcode stanza**
-defined in `framework/governance/constitution.md` §7. Pure infra,
-docs-only, config-governance, and characterization-test sprints are
-exempt from the stanza.
+```yaml
+project_name: acme-returns-bot
+adopter_track: type_a
+framework_version: v4.0.0
+charter_path: ./charter.yaml          # present but orchestrator optional; this example is human-paste
+last_updated: 2026-06-12
+```
 
-## Agent role registry
+## §2 Framework governance chain (@-include)
 
-Every agent working in this repo shares the governance chain below.
-Each role has a dedicated entry doc in the framework that defines its
-responsibilities, operational procedures, and handoff format.
+Every session loads these in order before any work:
 
-| Role | Entry doc | Spawned by | Primary responsibility |
-|------|-----------|------------|----------------------|
-| **Dev agent** | `compact/sprint-NNN-dev-prompt.md` (per sub-sprint) | Human paste | Implement sub-sprint contract; run tests/eval; author handoff |
-| **Deliver agent** | `framework/role-cards/deliver-agent.md` (via `framework/role-cards/deliver-activation.md`) | Human paste | Plan milestones + sub-sprints; orchestrate close; maintain bad-case suite |
-| **Review agent** | `compact/M<N>-review-prompt.md` (per milestone) | Human / deliver agent | Anti-hardcode review at milestone close; targeted PR review |
-| **Research agent** | `framework/role-cards/research-agent.md` | Human paste | Investigate proposals + bad-case root-cause; produce deliver-consumable solutions |
+@aidazi/governance/constitution.md
+@aidazi/governance/doc_governance.md
+@aidazi/governance/context_briefing.md
 
-Role-specific entry docs reference governance sections by `§` number;
-they do not duplicate governance content. **All context passes through
-repo docs, not chat history.**
+Then the session loads its role card from `aidazi/role-cards/`.
 
-## Constitution chain
+## §3 Adopter-side state ledgers (load at cold-start)
 
-The framework governance docs below are loaded transitively for every
-agent that respects this file via `@AGENTS.md`. Read order on cold
-start: doc-governance first (tier model + decision rules),
-context-briefing second (cold-start reading discipline), constitution
-last (the operational gates).
+@./docs/current/adoption-state.md          — per-Δ status; override registry
+@./docs/current/runtime_invariants.md      — Tier-0 invariants (refund-eligibility domain)
+@./docs/current/domain_taxonomy.md         — entities + UC taxonomy + vocabulary
+@./docs/current/agent_context_guide.md     — per-task reading lists
 
-@framework/governance/doc_governance.md
+## §4 5-role chain registry
 
-@framework/governance/context_briefing.md
+This project instantiates all 5 roles, human-paste (no orchestrator yet). Backing agent for every role: Claude Code (single-developer project; one human walks multiple roles in fresh sessions per §3.4 invariant #1).
 
-@framework/governance/constitution.md
+| Role | Activation | Source spec |
+|---|---|---|
+| Customer (human) | Direct, at gates | `aidazi/process/customer-checkpoints.md` |
+| Research | Paste role card | `aidazi/role-cards/research-agent.md` |
+| Deliver | Paste role card | `aidazi/role-cards/deliver-agent.md` |
+| Dev | Paste compact dev prompt | `aidazi/role-cards/dev-agent.md` |
+| Code Reviewer | Paste compact review prompt | `aidazi/role-cards/code-reviewer-agent.md` |
+| Acceptance | Customer paste at milestone close | `aidazi/role-cards/acceptance-agent.md` |
 
-## Domain context (consumer-supplied)
+## §5 Two-loop discipline
 
-The three domain-specific docs below specialize the framework for this
-project. Without them, the framework is incomplete. Edit each file
-before your first sprint.
+This project uses only the **Delivery Loop** (Concept 2; human-paste form). No Auto Loop yet — the bot does not self-improve. If we add Auto Loop later, we name it distinctly per §1.7-E.
 
-@docs/current/domain_taxonomy.md
+## §6 Adopter-specific overrides
 
-@docs/current/runtime_invariants.md
+See `docs/current/adoption-state.md`. We override two suggested defaults (smaller bad-case suite cadence; tighter `cell_size_target`) with rationale recorded there. We diverge from nothing in the §1.7 hard set.
 
-@docs/current/eval_acceptance_bars.md
+## §7 Cold-start read order
 
-## How to use this constitution
+This file → `aidazi/docs/adoption-overview.md` → `aidazi/governance/constitution.md` → `docs/current/adoption-state.md` → the relevant role card.
 
-Every agent (dev, deliver, review, research) that loads `AGENTS.md`
-transitively loads the framework governance chain and your domain
-context. That means:
+---
 
-- The doc front-matter schema, source-of-truth rules, and fold-back
-  cadence in `framework/governance/doc_governance.md` apply to every
-  docs PR.
-- The Context Pack Prompt in `framework/governance/context_briefing.md`
-  applies before any non-trivial task.
-- The Constitution (§1), Failure Brief Template (§2), Fix Layer
-  Classification Checklist (§3), Anti-Hardcode Review Prompt (§4),
-  Eval Acceptance Rules (§5), Architecture-Health Metric definitions
-  (§6), sprint-objective stanza (§7), and Milestone framework (§8) in
-  `framework/governance/constitution.md` apply to every change that
-  touches the agent's behaviour.
-- Your domain's vocabulary, Tier-0 invariants, and acceptance bars are
-  defined in `docs/current/{domain_taxonomy,runtime_invariants,eval_acceptance_bars}.md`.
-
-Sprint-specific scope lives in `docs/sprint_objective.md` (current
-sub-sprint contract) and `docs/milestone_objective.md` (current
-milestone north star). Both are replaced when a new sub-sprint or
-milestone is promoted. The constitution itself is not edited per
-sprint; it is folded back on the cadence specified in each governance
-doc's `review_cadence` front-matter field.
-
-## Two input paths
-
-Agent evolution is driven by two input paths (operational details in
-`framework/role-cards/deliver-agent.md` "Workflow inputs"):
-
-- **Path 1 — Research-driven**: human has an architectural idea or
-  wants to consume a matured R-item from `docs/action_bank.md`.
-- **Path 2 — Bad-case-driven**: real-session bad case observed.
-
-Both converge on the same downstream loop: research proposal →
-deliver milestone plan → dev/review/close.
-
-Dev and review agents execute per `docs/sprint_objective.md` and do
-not need to know which input path produced it.
+End of AGENTS.md.

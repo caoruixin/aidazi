@@ -1,45 +1,30 @@
 ---
-title: Action bank (R-item backlog)
-doc_tier: current-runtime
+title: Acme Returns Bot — action bank (live)
+doc_tier: adopter-state
+doc_category: live
 status: current
-implementation_status: implemented
 source_of_truth: this file
-last_reviewed: <YYYY-MM-DD>
-review_cadence: continuous
-notes: >
-  R-item backlog flowing into milestones. Deliver-agent + human
-  triage at planning rounds. R-items flow in from research /
-  bad-case / sprint findings; flow out at milestone close.
+last_reviewed: 2026-06-12
+review_cadence: ongoing; swept to archive at milestone close
 ---
 
-# Action bank
+# Action bank (live)
 
-## §1. Open R-items (active backlog)
+Open items only. Closed items sweep to `action_bank_archive.md` at milestone close (Deliver-owned). R = actionable work item; OBS = single observation (matures to R if a pattern emerges).
 
-### R-001 — <one-line title>
+## R-items
 
-- **Opened**: <YYYY-MM-DD>
-- **Source**: <research-driven / bad-case-driven / sprint finding /
-  external>
-- **Description**: <one paragraph>
-- **Hypothesized layer (§3.2)**: <layer>
-- **Target milestone**: <TBD / M<N>>
-- **Status**: open | deferred | committed-to-M<N>
+| ID | Item | Milestone tag | Status |
+|---|---|---|---|
+| R-001 | Decide Δ-3 #5 (memory) + #7 (policy) — deferred from M1 | M2 | open |
+| R-002 | Consider Auto Loop for response-quality self-tuning | M3+ | open |
 
-(Add more R-items as they accumulate. New R-items go at the top.)
+## OBS-items
 
-## §2. Closed R-items index
+| ID | Observation | Tag | Status |
+|---|---|---|---|
+| OBS-001 | Some transcripts mix UC-1 and UC-3 in one turn; may need intent-blend handling | prereq-deferred | watching |
 
-| R-id | Title | Closed in milestone | Outcome |
-|------|-------|--------------------|---------|
-| R-NNN | <title> | M<N> | <one-line outcome> |
+---
 
-## §3. Deferred R-items
-
-R-items that have been triaged but explicitly deferred to a future
-planning round. Different from "open" — deferred means a deliberate
-decision NOT to act now.
-
-| R-id | Title | Deferred at | Reason |
-|------|-------|-------------|--------|
-| R-NNN | <title> | M<N> planning | <one-line> |
+End of action bank.

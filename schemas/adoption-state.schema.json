@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/adoption-state.schema.json",
+  "title": "Adoption state ledger",
+  "description": "Schema for <adopter>/docs/current/adoption-state.md. Per-Δ status + drift rationale + lessons proposed for upstream fold-back. Per Constitution §1.8: rows targeting §1.7 of constitution CANNOT have status: divergent (hard requirement; not overridable).",
+  "type": "object",
+  "required": ["adopter_name", "framework_version", "last_reviewed", "review_cadence", "per_delta_status"],
+  "additionalProperties": false,
+  "properties": {
+    "adopter_name": {"type": "string", "minLength": 1},
+    "framework_version": {
+      "type": "string",
+      "pattern": "^v\\d+\\.\\d+\\.\\d+$",
+      "description": "The aidazi framework semver the adopter is currently consuming."
+    },
+    "last_reviewed": {
+      "type": "string",
+      "format": "date"
+    },
+    "review_cadence": {
+      "type": "string",
+      "description": "Free-form, e.g., 'per milestone close' (suggested default per Constitution §7.0). Adopter may override with rationale."
+    },
+    "track": {
+      "type": "string",
+      "enum": ["type_a", "type_b", "type_c", "type_a_b_hybrid"]
+    },
+    "per_delta_status": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["delta", "spec_tier", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "delta": {
+            "type": "string",
+            "description": "Δ id (e.g., 'Δ-3', 'Δ-18'). Constitution §1.7 cannot have status: divergent (§1.8)."
+          },
+          "spec_tier": {
+            "type": "string",
+            "enum": ["T0", "T1", "T2", "T3"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["at-spec", "partial", "divergent", "not-applicable", "superseded-by-framework"]
+          },
+          "gap_notes": {"type": "string"},
+          "plan": {"type": "string"},
+          "rationale": {
+            "type": "string",
+            "description": "REQUIRED if status = divergent."
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"status": {"const": "divergent"}}},
+            "then": {"required": ["rationale"]}
+          }
+        ]
+      }
+    },
+    "drift_reasons": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Free-form prose elaborations for divergent rows (the per_delta_status rationale is short; this is the long-form)."
+    },
+    "lessons_proposed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["date", "topic", "lesson_file", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "date": {"type": "string", "format": "date"},
+          "topic": {"type": "string"},
+          "lesson_file": {
+            "type": "string",
+            "description": "Path to aidazi/lessons/<date>-<topic>.md (per process/fold-back-protocol.md §5)."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["proposed", "under-review", "accepted", "rejected"]
+          }
+        }
+      }
+    }
+  }
+}

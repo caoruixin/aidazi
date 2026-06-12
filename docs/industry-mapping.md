@@ -1,212 +1,134 @@
-# Industry mapping — how aidazi relates to 2026 best practices
+---
+title: Industry mapping — aidazi vs other agent frameworks
+doc_tier: application-guide
+doc_category: live
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-12
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 20KB
+split_trigger: if the per-framework mapping (§3) grows past 8KB, split each framework to its own sub-doc and keep the comparison table here
+notes: >
+  Translation layer for adopters arriving from another agent framework —
+  BMAD, Claude Code subagents, the Agent Skills (SKILL.md) standard, LangGraph,
+  AutoGen. Maps each onto the 5-role chain, shows what aidazi adds (gate
+  semantics, the Code Reviewer ≠ Acceptance split, F5 evidence, calibration),
+  and points to how their building blocks mount INSIDE aidazi roles via the
+  role-skill model — never as new chain roles. Lands the full mapping the
+  role-skill model (process/role-skill-model.md §8) points at.
+---
 
-This document maps `aidazi`'s primitives to widely-cited
-multi-agent-AI patterns and frameworks as of mid-2026. It is useful
-when:
+# Industry mapping — aidazi vs other agent frameworks
 
-- explaining `aidazi` to someone familiar with industry vocabulary;
-- deciding which industry tool / library to layer on top of `aidazi`;
-- evaluating whether `aidazi` covers a pattern you've read about
-  elsewhere.
+If you're coming from another multi-agent or agent-skill framework, this doc is the translation layer. It maps the building blocks you already know onto aidazi's 5-role chain, and it's explicit about the one thing that's easy to miss: **aidazi roles are accountability boundaries with gate semantics, not just prompt personas.** The other frameworks give you personas and orchestration; aidazi adds *who answers for what*, *who may grade whom*, and *what evidence a verdict must rest on*.
 
-## Patterns aidazi inherits / shares with industry
+The composition rule throughout: **mount industry building blocks INSIDE aidazi roles** (as role skills or intra-role sub-agents), never as new chain roles. The full mounting model is `process/role-skill-model.md`; this doc is the per-framework how-to.
 
-### 1. Supervisor / specialist agent topology
+## §1 The distinguishing axis
 
-**Industry**: LangGraph, AutoGen, CrewAI commonly use a supervisor
-agent that routes work to specialist agents.
+Most agent frameworks define **personas** (an "architect" agent, a "reviewer" agent) and **orchestration** (who runs after whom). aidazi defines those too, but its roles additionally carry:
 
-**aidazi mapping**:
+- **A verdict schema** — Code Reviewer, Acceptance, and Deliver-close emit machine-parseable verdicts (`schemas/*.json`), so routing is deterministic, not vibes.
+- **Spawn isolation** — Acceptance may not be spawned by the roles it judges (§1.7-C). No persona library enforces this; it's what keeps a verdict from being a rubber stamp.
+- **A calibration gate** — an autonomous judge must pass calibration before its verdict is trusted (§3.6).
+- **Execution-evidence grounding (F5)** — Acceptance judges from real execution artifacts, not code inspection; the dev sandbox stays sealed (`process/delivery-loop.md` §4.2.6).
+- **Two split gates** — "built correctly?" (Code Reviewer) and "built the right thing?" (Acceptance) are *different* gates that both run.
 
-- **Human** is the ultimate supervisor.
-- **Deliver agent** is the operational supervisor for planning +
-  orchestration.
-- **Dev / Review / Research** are specialists.
+When you read "aidazi has an Acceptance role and framework X has a QA agent," the difference is all of the above — not the name.
 
-The role boundary is similar; the distinguishing factor is
-`aidazi`'s explicit anti-shared-chat-history rule. In LangGraph etc.,
-agents typically share state through a graph; in `aidazi`, agents
-share state through versioned repo docs only.
+## §2 Comparison at a glance
 
-### 2. Pipeline-based workflows
+| Concern | BMAD | Claude Code subagents | Agent Skills (SKILL.md) | LangGraph | AutoGen | aidazi |
+|---|---|---|---|---|---|---|
+| Primary unit | Named role personas | Delegated specialist personas | Capability packs | Graph nodes (state machine) | Conversable agents | 5 roles = accountability boundaries |
+| Orchestration | Sequential artifact pipeline | In-session delegation | n/a (capabilities) | Explicit graph edges | Conversation/group chat | Delivery Loop (Δ-18) state machine, optional |
+| Gate semantics | Role hand-off (no verdict schema) | Caller decides | n/a | Edge conditions | Termination conditions | Verdict schemas + MANDATORY_CHECKPOINTS |
+| Independent QA | QA agent (no spawn isolation) | A reviewer subagent | n/a | A node | An agent | Acceptance: spawn-isolated, calibrated, peer-of-Research |
+| "Right thing" vs "well built" | Merged in QA | Merged | n/a | Up to you | Up to you | **Split**: Acceptance vs Code Reviewer |
+| Self-improvement loop | n/a | n/a | n/a | n/a | n/a | Auto Loop (Concept 1) distinct from Delivery Loop (Concept 2) |
 
-**Industry**: pipeline frameworks treat work as a directed acyclic
-graph of agent calls.
+aidazi is not "better at orchestration" than LangGraph or "better at conversation" than AutoGen — those are runtime engines. aidazi is a **delivery discipline** that can run on top of any of them (you can implement the Delivery Loop as a LangGraph graph, or run roles as AutoGen agents). The value it adds is the accountability structure, not the plumbing.
 
-**aidazi mapping**: the milestone → sub-sprint flow IS a pipeline,
-but each node is a separate session (potentially separate session
-windows) rather than a single in-memory graph.
+## §3 Per-framework mapping
 
-`aidazi` does not provide an in-process pipeline runtime. Your
-consumer project's code may include one (e.g., to run real-LLM eval)
-but the iteration loop itself runs across separate sessions.
+### §3.1 BMAD (Analyst / PM / Architect / Scrum Master / Dev / QA)
 
-### 3. Structured handoffs (JSON / Pydantic)
+BMAD is the closest cousin — an artifact-driven pipeline of agile personas. The mapping:
 
-**Industry**: OpenAI Agents SDK, Pydantic AI, LangGraph all favor
-structured handoffs over free-form text between agents.
+| BMAD role | aidazi home | Note |
+|---|---|---|
+| Analyst | **Research** slot | Market/requirements work = Δ-15 elicitation + Δ-2 domain discovery |
+| PM | **Research** + **Deliver** | Need definition → Research brief; planning → Deliver |
+| Architect | **Deliver** skill slot | Architecture decisions are Deliver's planning work (Δ-3), optionally assisted by an architect role skill/sub-agent — *not* a 6th chain role |
+| Scrum Master (story prep) | **Deliver** | Sub-sprint decomposition + compact dev prompts |
+| Dev | **Dev** | Direct match |
+| QA | **split** → **Code Reviewer** (code-side) + **Acceptance** (outcome-side) | The split is aidazi's value-add; don't collapse it back into one QA agent |
 
-**aidazi mapping**:
+The biggest translation: BMAD's Architect is a standalone role producing ADRs; in aidazi that work lives inside Deliver (with an optional architect skill), because architecture decisions have no independent verdict to carry — they're inputs to Deliver's signed plan. And BMAD's single QA becomes two gates.
 
-- Dev → review handoff is `docs/sprints/sprint-NNN-handoff.md` —
-  Markdown with a fixed section schema (template at
-  `framework/templates/handoff.md`).
-- Sprint stanza is `framework/schemas/sprint_stanza.schema.json` —
-  JSON Schema enforced by `framework/tools/stanza_validator.py`.
-- Trace records are JSON Lines (`framework/tools/trace_emitter.py`).
+### §3.2 Claude Code subagents (architect / frontend / backend / reviewer / …)
 
-`aidazi` favors Markdown-with-schema over pure JSON for handoffs
-because the primary consumer is a human-orchestrated agent session
-that reads Markdown more efficiently than JSON. The stanza schema is
-the exception (small enough to validate machine-side; humans
-co-author the Markdown form, the validator catches violations).
+Subagent libraries (e.g., the 150+ persona collections) define specialists with a `tools` whitelist and a model choice, delegated within a session. In aidazi these mount as **role skills or intra-role sub-agents**:
 
-### 4. Deterministic verification gates
+- `frontend-developer`, `backend-architect`, `database-*`, `test-author` → **Dev** role skills (Dev is the primary mount point for stack specialists). They inherit Dev's sandbox transitively.
+- `architect`, `system-designer` → **Deliver** skill slot (plan-draft fan-out; Deliver signs).
+- `code-reviewer`, `security-auditor`, `performance-reviewer` → **Code Reviewer** review-lens skills (read-only whitelist).
+- `researcher`, `market-analyst` → **Research** skill slot.
 
-**Industry**: tests, structured asserts, eval-as-code are widely
-recommended for agent verification.
+Constraint: a subagent's `tools` field must be a subset of the mounting role's whitelist (a code-writer subagent can't mount on the read-only Code Reviewer or Acceptance). And a subagent never becomes a chain role — its output is draft input to the role, which signs the artifact (`process/role-skill-model.md` §4).
 
-**aidazi mapping**:
+### §3.3 Agent Skills — the SKILL.md open standard
 
-- Test suite no new regression — HARD gate (§5.5).
-- Safety / grounding floor — HARD gate (§5.1).
-- Curated bad-case suite manual review — HARD gate (§5.6).
-- Programmatic composite scores — OBSERVATION (§5.5; demoted from
-  hard gate after years of drift evidence).
+The Agent Skills standard packages procedural knowledge as a directory with a `SKILL.md` (frontmatter `name` + `description`, markdown body, optional `scripts/`/`references/`/`assets/`, progressive disclosure). aidazi adopts this standard directly for **role skills**:
 
-The interesting deviation is `aidazi`'s §5.5 demotion of composite
-scores. Industry frameworks often hold composite scores as primary
-metrics; `aidazi` argues this is unstable in agent systems because
-of LLM provider drift + judge calibration variance + mock-vs-real
-gap. The curated bad-case suite + human-judgment-at-close replaces
-the composite-score gate.
+- A skill mounts on a role when its (experimental) `allowed-tools` fits the role's whitelist.
+- The framework ships one exemplar — `skills/anti-hardcode-review-kernel/` — packaged thin over its normative source (`templates/anti-hardcode-review-kernel.md`).
+- Off-the-shelf SKILL.md skills from any compliant ecosystem mount the same way; the dual-source rule keeps the framework's normative content authoritative.
 
-### 5. Governance as code
+This is the cleanest interop path: a SKILL.md from any of the 30+ tools that read the standard can become an aidazi role skill with no rewrite, subject to the whitelist check.
 
-**Industry**: GitOps for infrastructure; emerging "policy as code"
-for ML / LLM systems.
+### §3.4 LangGraph
 
-**aidazi mapping**: the framework itself is governance-as-code:
+LangGraph models agent systems as explicit graphs (nodes = steps, edges = transitions over shared state). It's an orchestration *engine*, not a delivery discipline. Mapping:
 
-- Constitution + governance docs are versioned Markdown.
-- Sprint stanza schema is JSON.
-- Pre-commit hook + validator are scripts.
-- `AGENTS.md` autoloads the constitution chain.
+- The Delivery Loop state machine (`process/delivery-loop.md` §4.2.4: `dev_pending → gate_pending → review_pending → close_pending → …`) maps naturally onto a LangGraph graph — nodes are spawn functions, edges are the verdict-routed transitions.
+- The MANDATORY_CHECKPOINTS become human-in-the-loop interrupts on specific edges.
+- `scope_envelope_check` and the F5 eval run are deterministic nodes (no LLM).
 
-Industry trends like Anthropic's "Agent Skills" file format are
-adjacent — they encode capability prompts as versioned files.
-`aidazi` encodes process / discipline as versioned files.
+If you already run LangGraph, you can implement the Delivery Loop *as* a graph — aidazi tells you what the nodes and gates must be; LangGraph runs them.
 
-### 6. LLM for policy authoring, not policy enforcement
+### §3.5 AutoGen
 
-**Industry**: the "LLM for plan, runtime for enforcement" split is
-widely advocated (Anthropic published guidance on this in 2026).
+AutoGen centers on conversable agents and group-chat orchestration. Mapping:
 
-**aidazi mapping**: this IS the constitution §1.3 (LLM owns) vs §1.4
-(runtime owns) split. The §3.2 layer classification operationalizes
-the split for every observed failure.
+- The 5 roles can be AutoGen agents, but the **no-shared-chat-history** invariant (§3.4 #1) is the critical divergence: aidazi roles pass context via repo docs, not conversation. An AutoGen-native group chat where all roles see all messages would violate spawn isolation and self-grading boundaries.
+- Use AutoGen for the *within-role* fan-out (a role's sub-agents conversing to draft a plan), not for *cross-role* communication. Cross-role hand-off is always a durable artifact.
+- Termination conditions map to verdict schemas + checkpoints.
 
-### 7. Observability (tracing + dashboards)
+## §4 What aidazi adds that none of these have
 
-**Industry**: OpenTelemetry, Langfuse, Helicone, Phoenix Arize, etc.
-provide trace + dashboard for LLM workflows.
+If you take only the headline: aidazi's distinguishing pattern is **F5 evidence + the two-gate split + calibration**.
 
-**aidazi mapping**:
+- **F5 evidence** — Acceptance reads real execution artifacts the orchestrator captured; it never judges from code inspection, and the dev sandbox never opens to it. No persona library or graph engine specifies this; it's what makes the outcome verdict trustworthy.
+- **Code Reviewer ≠ Acceptance** — two gates, two questions, two verdicts. Most frameworks have one "QA/review" step; aidazi insists that "clean code" and "right outcome" are independent and both gate.
+- **Calibration** — an autonomous judge proves its agreement/flip rates before its verdict counts; otherwise autonomy auto-degrades.
+- **closure_contract symmetry** — Research authors the contract; Acceptance judges against it; neither may unilaterally move it. The contract is the seam that makes the two-gate split meaningful.
+- **Two named loops** — self-improvement (Auto Loop) and team delivery (Delivery Loop) are kept distinct (`docs/two-loops-explainer.md`).
 
-- `framework/tools/trace_emitter.py` emits a basic JSONL trace per
-  session.
-- The framework does NOT ship a dashboard.
-- Consumer projects layer on top of the trace JSONL — typically
-  ingesting to their existing observability stack.
+## §5 How to bring your existing setup
 
-If your project already uses an observability platform, integrate it
-at the consumer code level; the trace.jsonl is a structured input.
+1. Keep your runtime engine (LangGraph / AutoGen / a coding-agent harness) — aidazi runs on top.
+2. Map your personas onto the 5 roles per §3; collapse extras into role skills, not new chain roles.
+3. Add the two things you're probably missing: the **Acceptance gate** (with a closure_contract) and the **Code-Reviewer/Acceptance split**.
+4. Mount your skill/subagent library via `process/role-skill-model.md`, respecting per-role whitelists.
+5. Record divergences in `docs/current/adoption-state.md`.
 
-### 8. Anthropic-style Agent Skills
+Brownfield adopters: this composes with `docs/brownfield-guide.md` — bringing an existing framework is a brownfield adoption.
 
-**Industry**: Anthropic Agent Skills are versioned `.skill` files
-that encode "how the agent does X" as composable prompts.
+---
 
-**aidazi mapping**: the `compact/sprint-NNN-dev-prompt.md` and
-`compact/M<N>-review-prompt.md` are conceptually similar — they're
-versioned files that encode "how this dev session does this scope" or
-"how this review session does this milestone". The differences:
-
-- Compact prompts are per-session-instance, not per-capability.
-- Compact prompts are generated by deliver-agent from the milestone /
-  sprint objective, not human-authored from scratch.
-- Self-containment invariant (§9) means a compact prompt is fully
-  executable — no "@-imports" of other files at session-spawn time
-  (only `AGENTS.md`).
-
-You can think of compact prompts as "ad-hoc skills" — short-lived,
-sub-sprint-scoped.
-
-## Patterns aidazi does NOT cover
-
-### 1. Agent memory / long-term context
-
-`aidazi` does not provide an agent memory architecture. The
-framework's "memory" is the versioned docs (constitution + 10-handoff
-+ archives). Per-session context lives in chat history (which
-`aidazi` explicitly does NOT share across agents).
-
-Consumer projects needing rich memory (e.g., per-user conversation
-memory, persistent reasoning chains) layer on top.
-
-### 2. Tool calling / function calling
-
-`aidazi` does not define tool schemas or function-call interfaces.
-The framework treats tools as a `runtime owned` concept (§1.4) —
-your consumer project defines them.
-
-### 3. Eval harness
-
-`aidazi` defines the **philosophy** (target / neighbor / negative /
-shadow categories; real-LLM rerun gate; curated bad-case suite). It
-does NOT ship an eval harness. Consumer projects bring their own
-(custom Python; Promptfoo; DeepEval; OpenAI evals; etc.).
-
-### 4. UI / agent runtime
-
-`aidazi` is markdown + JSON + small scripts. No agent runtime, no
-UI, no orchestrator binary.
-
-### 5. Multi-agent communication protocol
-
-`aidazi`'s "communication" between agents is asynchronous file
-writes. There's no protocol for synchronous A↔B agent messages within
-a session. If your domain needs synchronous multi-agent reasoning,
-combine `aidazi` (for process discipline) with a framework like
-AutoGen / LangGraph (for in-process orchestration).
-
-## Recommended industry combinations
-
-| If your need is... | Use `aidazi` + ... |
-|---|---|
-| In-process agent orchestration (multiple LLMs talking) | LangGraph or AutoGen |
-| Structured tool definitions | Pydantic AI or OpenAI Agents SDK |
-| Eval harness | Promptfoo, DeepEval, or custom |
-| Trace + dashboard | OpenTelemetry → Langfuse / Phoenix Arize |
-| Skill / prompt versioning | Anthropic Agent Skills (for capability-level) |
-| Per-user agent memory | Mem0, LangChain memory, or custom |
-
-`aidazi` provides the **iteration discipline** layer that's usually
-missing or ad-hoc in projects using the above. The combination is
-additive.
-
-## When aidazi is NOT the right choice
-
-- Single-developer prototypes (overhead exceeds benefit until ~3
-  iterations).
-- Pure-research projects with no production gate (no acceptance
-  bars).
-- Projects where iteration cadence is "ship daily, no planning round"
-  (the milestone framework's planning overhead doesn't fit).
-- Projects where the team has only one human (research / deliver /
-  dev / review roles collapse and discipline can't be enforced by
-  separation).
-
-For these, the framework's anti-hardcode kernel (§4.1) and sprint
-stanza schema (§7) may still be useful selectively (Profile C of
-`brownfield-guide.md`).
+End of industry mapping.

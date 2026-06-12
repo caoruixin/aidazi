@@ -1,94 +1,34 @@
 ---
-title: Eval acceptance bars
-doc_tier: current-runtime
+title: Acme Returns Bot — eval acceptance bars
+doc_tier: adopter-state
+doc_category: live
 status: current
-implementation_status: not_started
 source_of_truth: this file
-last_reviewed: <YYYY-MM-DD>
-review_cadence: every 3-5 milestones
-notes: >
-  Domain-specific definitions for the acceptance bars referenced in
-  `framework/governance/constitution.md` §5.1. Fill during M0.
+last_reviewed: 2026-06-12
+review_cadence: per milestone close
 ---
 
-# Eval acceptance bars
+# Eval acceptance bars — refund eligibility
 
-## §1. Wrong-lane containment rate
+What "shippable" means in this domain. The standing quality floor; the per-milestone closure_contract is judged on top of this.
 
-- **Definition**: <your project's definition; e.g., "fraction of
-  sessions where the LLM contains the conversation in a lane other
-  than the one matching user intent">
-- **Unit**: percentage
-- **Direction**: down or unchanged
-- **Baseline value**: <see `docs/current/eval_baseline.md` §<X>>
-- **How measured**: <judge / heuristic / human label; cite eval
-  config>
+## KPI thresholds
 
-## §2. Over-escalation rate
+| Metric | Bar | Notes |
+|---|---|---|
+| Eligibility-determination accuracy | ≥ 0.95 on the core bad-case suite | wrong eligibility = customer harm |
+| Wrong-containment (claims handled it but didn't) | ≤ 0.02 | the worst failure mode |
+| Escalation correctness (UC-4) | ≥ 0.90 | escalate when it should, don't when it shouldn't |
 
-- **Definition**: <your project's definition; e.g., "fraction of
-  sessions where the LLM escalates when it could have resolved
-  in-system">
-- **Unit**: percentage
-- **Direction**: down or unchanged
-- **Baseline value**: <see `docs/current/eval_baseline.md` §<X>>
+## Floors that may never regress (regardless of pass-rate)
 
-## §3. Grounding floor
+- **Safety/PII**: zero cross-customer PII exposure (TI-2). Any regression here blocks ship outright.
+- **Grounding**: every eligibility statement is backed by a real tool result, never an LLM guess (TI-1, TI-3).
 
-- **Definition**: <your project's definition; e.g., "fraction of
-  factual claims in responses grounded in retrieval evidence">
-- **Unit**: percentage
-- **Direction**: unchanged (hard floor)
-- **Baseline value**: <see `docs/current/eval_baseline.md` §<X>>
+## Relationship to the closure_contract
 
-## §4. Case family definitions
+These bars are the *standing* domain floor. The milestone closure_contract (in the signed research brief) is the *per-milestone* success definition. Acceptance judges against the closure_contract AND confirms these floors didn't regress. A pass-rate gain bought by loosening a floor is a §1.7 violation, not a win.
 
-Per `framework/governance/constitution.md` §5.1, each sub-sprint
-ships generalization eval coverage across four categories. Define
-each for your domain:
+---
 
-- **Target case**: <case the sub-sprint is specifically named to
-  address>
-- **Neighbor case**: <case that shares the failure shape or relevant
-  lane>
-- **Negative-control case**: <case designed to NOT trigger the new
-  behaviour; ensures no false positive>
-- **Shadow case**: <held-out case not visible to dev agent; reported
-  separately to human/review>
-
-## §5. Eval baseline pointer
-
-- **Baseline file**: `docs/current/eval_baseline.md`
-- **Last refresh**: <sprint id + date>
-- **What it covers**: <set of cases + judge config + LLM provider
-  version>
-
-## §6. Bad-case suite path
-
-- **Suite directory**: `eval/bad_cases/`
-- **Manifest**: `eval/bad_cases/_manifest.md`
-- **Eval harness command**: <e.g., `python eval/run_bad_cases.py`>
-
-## §7. Eval evidence gates (framework-default; do not weaken)
-
-Per `framework/governance/constitution.md` §5.5 / §5.6:
-
-- ✅ Curated bad-case suite manual review (HARD; primary)
-- ✅ Test suite no new regression (HARD)
-- ✅ Safety floor unchanged (HARD)
-- ✅ Grounding floor unchanged (HARD)
-- 📊 Composite eval scores (OBSERVATION ONLY; per §5.5 demotion)
-- ✅ Architecture-health metrics (§6 — per
-  `framework/governance/constitution.md`; collected if tooled)
-
-## §8. Eval harness notes
-
-- **Mocked-LLM tests vs real-LLM rerun**: mocked-LLM tests are
-  wiring-level only; semantic behaviour changes REQUIRE real-LLM
-  rerun per §5.6 eval evidence gate.
-- **Shadow case discipline**: shadow cases are readable only by human
-  / review agent; the dev agent MUST NOT consume them during
-  development.
-- **Judge calibration**: if a case flips across reruns of the same
-  prompt + spec, reclassify as `judge_calibration` per §3.2 tail
-  rule.
+End of eval acceptance bars.

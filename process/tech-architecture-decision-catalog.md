@@ -1,65 +1,169 @@
 ---
+title: Tech architecture decision catalog (Δ-3)
+doc_tier: process
 doc_category: live
-artifact_type: reference_contract
-last_reviewed: 2026-06-06
-source: v3.2 §9.2
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-07
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 12KB
+notes: >
+  Δ-3 EXTEND per v4-plan §4.1: 8 decisions catalog + decision #1's
+  abstraction-layer sub-choice (default single tool-use per Constitution
+  §1.7-A). Loaded by Deliver at Phase 3 technical-plan authoring + at
+  Δ-16 prerequisite check.
 ---
 
-# Tech Architecture Decision Catalog(Δ-3)
+# Tech architecture decision catalog (Δ-3)
 
-**Tier**: T0(决策**目录**是 T0;决策**结果**是 T2/T3)
-**加载时机**: 紧跟 Δ-2 之后(S0 末)
-**主导**: Research + Tech Lead 联合产出;Customer 签字 Decision #1 与 Decision #8
+When authoring Phase 3 technical plan, walk these 8 decisions. Each decision binds a downstream invariant; deferring or making the decision implicitly is the failure mode this Δ exists to prevent.
 
-## 核心原则
+This doc is the FRAMEWORK decision catalog. Adopters' chosen values land in `docs/foundational/technical-plan.md`.
 
-框架不替项目选,框架只确保项目**知道自己选过**。每项决策有 4 字段:
+## §1 The 8 decisions
 
-```yaml
-decision_<n>:
-  chosen: <option>
-  rationale: <一句话>
-  reversibility: hard | soft | reversible-at-cost
-  trigger_to_revisit: <事件>
+### §1.1 Decision #1 — Abstraction layer
+
+What's the agent's primary action surface?
+
+**Sub-choice** (Constitution §1.7-A; default for Type A):
+
+- **Single tool-use layer** (default) — agent's per-turn output is a tool call OR a customer-facing response. No parallel action enum.
+- **Single action enum** — small fixed enum (e.g., `escalate | resolve | clarify`) without tool-use. Type B workflows may default here when the SOP runner is the controller.
+- **Hybrid (FORBIDDEN per §1.7-A)** — a 5-action enum AND tool-use simultaneously. Constitution §1.7-A breach.
+
+### §1.2 Decision #2 — Context projection
+
+What goes into the LLM's per-turn projection?
+
+- Slot list (what state is surfaced).
+- Candidate list (e.g., possible UCs, candidate tools).
+- Diagnostic flags (e.g., low-confidence-from-retrieval flag).
+- Historical context shape (last N turns; rolling summary; selective).
+
+This binds prompt size + cache strategy.
+
+### §1.3 Decision #3 — State persistence
+
+Where does multi-turn state live + how is it serialized?
+
+- In-memory (single session; lost on session end).
+- Persistent store (DB; cache; file).
+- Event-sourced (replayable; the trace IS the state).
+
+Type A agents typically need persistent state for entity continuity. Type B workflows may use in-memory if the SOP runner is stateless.
+
+### §1.4 Decision #4 — Memory
+
+How does the agent remember beyond a single session?
+
+- None (each session starts fresh).
+- User-scoped (per-user memory).
+- Org-scoped (shared across users).
+- Combination (user + org + session).
+
+Memory is where Constitution §1.4 (PII / safety floor) often gets load-bearing.
+
+### §1.5 Decision #5 — Skill / tool set
+
+What tools does the agent have?
+
+- ALLOW matrix per UC (Type A): which tools are reachable from which use case.
+- Off-the-shelf skill inventory (Type C): named, pre-built skills.
+- SOP-step → tool mapping (Type B): each SOP row binds to a tool call.
+
+Constitution §1.7's "no UC-specific hard rules for soft semantic decisions" applies: ALLOW matrix is OK (capability declaration); semantic routing AMONG allowed tools is LLM-owned.
+
+### §1.6 Decision #6 — Escalation enum
+
+What are the escalation triggers + what action does each trigger?
+
+- Fixed enum of escalation reasons (e.g., `human_review_required` | `policy_question` | `out_of_scope`).
+- Mapping from enum value to action (e.g., handoff to live agent / route to product team / silently fail with note).
+
+NEW escalation enum values trigger `new_tier0_candidate` MANDATORY_CHECKPOINT (per `process/delivery-loop.md` §4.2.3 item 4) since they expand runtime ownership.
+
+### §1.7 Decision #7 — Policy / safety surface
+
+Which policies are runtime-owned (Constitution §1.4) vs LLM-owned (Constitution §1.3)?
+
+- PII / safety floor (always runtime).
+- Grounding floor for factual claims (runtime checks; LLM declines when unsupported).
+- Per-domain policy hooks (e.g., "no refunds over $X without human review").
+- Product-policy enum (e.g., "this is a product question, not a customer-service question; route accordingly").
+
+### §1.8 Decision #8 — Trace + eval contract
+
+What gets recorded; what gets surfaced to the eval harness?
+
+- Trace shape (per-turn fields: tool_calls, slot updates, response, diagnostics).
+- 6-primitive trace_check DSL grammar (per `process/typeA-runtime-architecture-skeleton.md` Δ-6).
+- Bad-case suite schema link (`schemas/case-spec.schema.json`).
+- F5 evidence cmd (`charter.tooling.eval.cmd`).
+
+This binds what Acceptance Agent can judge against.
+
+## §2 Decision binding + sequencing
+
+Decisions are NOT independent. Each binds the next:
+
+```
+#1 abstraction layer  → constrains #5 (skill / tool set shape)
+#2 context projection → constrains #3 (state persistence) + #4 (memory)
+#3 state persistence  → constrains #4 (memory)
+#5 skill / tool set   → constrains #6 (escalation enum) + #7 (policy surface)
+#6 escalation enum    → binds #7 policy responses
+#7 policy surface     → binds #8 trace fields (what to record)
+#8 trace + eval       → binds Acceptance + Code Reviewer surfaces
 ```
 
-`hard`(decision lock-in,Type A 切换 / 评估开关)在 sprint 中段不得反转;`soft`(投影模型、状态管理)允许下一 milestone 调整;`reversible-at-cost`(memory / tools / policy 表达式)记录代价。
+Make #1 first; make #8 last (because it depends on all upstream choices). The other 6 may iterate within a Phase 3 round.
 
-## 8 项决策表
+## §3 Decision documentation
 
-| # | 决策项 | 选项集 | 推迟许可 | reversibility 默认 |
-|---|---|---|---|---|
-| 1 | **应用类型**(轨道选择) | Type A / B / C | **不允许**(必 P0 决);**绑定 S2-required event 触发记录槽位**(Δ-14) | hard |
-| 2 | 抽象层次 | single-agent / multi-agent / no-agent | 不允许 | hard |
-| 3 | 上下文投影模型 | per-turn 全量 / 增量 / projection-by-skill | 允许 P1 | soft |
-| 4 | 状态管理 | stateless / session / cross-session / 持久 ledger | 允许 P1 | soft |
-| 5 | 记忆 | 无 / 短期 / 长期 / RAG-as-memory | 允许 P1 | reversible-at-cost |
-| 6 | 工具定义 | enum / yaml schema / dynamic registry | 允许 P1 | reversible-at-cost |
-| 7 | Policy / gadgets | prompt-level / runtime-gate / 混合 | 允许 P1 | reversible-at-cost |
-| 8 | 评估 | yes / no / spec-only(M-Eval-light)/ 全量 | **必 P0**(Type A 必 yes;Type B 看 S2-required event;Type C 必 no) | hard |
+For each decision, the Phase 3 technical plan records:
 
-## S2-required event 触发记录(绑定 Decision #1)
+```markdown
+### Decision #N — <name>
 
-Type B 项目若发生以下任一事件,Decision #1 槽位 `s2_required_event_triggered: true` 锁定,maturity 视角向 Type A 迁移(详 `profile-aware-maturity.md` §Δ-14.d):
+**Chosen**: <chosen value>
 
-- 首次接入终端用户流量
-- 承担 SLA / 合规义务
-- 引入 LLM 自主语义决策(原 deterministic step 之上加 LLM 判断)
-- PII / 安全底线进入 §1.4 Runtime owns
+**Alternatives considered**: <list>
 
-触发即必须补 M-Eval + M-Trace 全套;Δ-3 catalog 增 `triggered_on: <YYYY-MM-DD>` 字段。
+**Why this choice**: <rationale>
 
-## 输出物
+**What this binds downstream**: <which other decisions / which Δ-Y / which Tier-0 invariant>
 
-| 文件 | 内容 |
-|---|---|
-| `decisions/decision-catalog.yaml` | 8 项决策的 4 字段填空 |
-| `decisions/decision-rationale.md` | 每项 1-2 段决策原因 + 拒绝的备选 |
+**Reversibility**: easy / medium / hard / one-way-door
+**Reverse-flow triggers**: <if Phase N reveals this choice infeasible, what changes>
+```
 
-doc_category: intermediate;命名带 source sprint ID(决策是在哪轮签的)。
+Decision reversibility is honest framing: most #2/#3/#5 choices are reversible within a milestone; #1 (abstraction layer) is hard to reverse once tool catalogs accumulate (Constitution §1.7-A motivates getting this right early).
 
-## Anti-pattern
+## §4 NEW Tier-0 invariant route
 
-- 8 项一次性全填到 P0 — Δ-13 PB 提:**倾向**先决必决 3 项(#1 / #2 / #8),其余 P1
-- 不填 reversibility — sprint 中段反转 hard 决策的代价高,事先不标注 = 默认全 reversible(灾难)
-- Decision #1 不签字 — 轨道未定,后续所有 Δ-14/Δ-15/Δ-16 profile-aware 适配全失效
+A decision that introduces a NEW Tier-0 invariant (typically #1, #6, #7) routes through `new_tier0_candidate` MANDATORY_CHECKPOINT (`process/delivery-loop.md` §4.2.3 item 4). Customer approves before adoption.
+
+Per Constitution §1.5: a new Tier-0 invariant means runtime ownership has expanded. The check exists because Tier-0 expansions are durable (and removing them later breaks downstream code) — making the expansion deliberate prevents the slow Java-guard-creep failure mode.
+
+## §5 Cross-Δ relationships
+
+- **Δ-2** Domain discovery — D3 (boundary) outputs are inputs to decisions #2, #6, #7.
+- **Δ-6** Type A runtime skeleton — instantiates decisions #1, #2, #5, #8 for Type A track.
+- **Δ-9** OBS triage — uses the layer-set this catalog binds.
+- **Δ-12** Artifact taxonomy — `docs/foundational/technical-plan.md` is where chosen values land.
+- **Δ-16** Agent creation prereqs — category #3 (engineering baseline) consumes this catalog.
+
+## §6 Editing this doc
+
+Process-tier; edits at fold-back sub-sprint cadence per Constitution §8.
+
+The 8-decision shape + binding order (§2) is load-bearing framework vocabulary. Adopters MAY add a 9th decision with rationale (e.g., specific to their compliance regime) but SHOULD NOT renumber the 8 — Code Reviewer prompts + Phase 3 templates may reference decision numbers directly.
+
+---
+
+End of Δ-3 Tech architecture decision catalog.

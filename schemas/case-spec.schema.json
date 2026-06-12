@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/case-spec.schema.json",
+  "title": "CaseSpec (bad-case suite entry)",
+  "description": "Portable shape for eval/bad_cases/<id>.yaml entries. closure_criterion follows Constitution §1.7-B (positive shape + anti-pattern + anchor phrases — human-judgment paragraph, NOT keyword match). Joint authoring per Constitution §5 state ledgers: Deliver curates structure; human authors closure_criterion.",
+  "type": "object",
+  "required": ["case_id", "source_suite", "input", "expected", "scoring", "closure_criterion"],
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable id (e.g., 'cs_example_001'). Used cross-doc."
+    },
+    "source_suite": {
+      "type": "string",
+      "enum": ["target", "neighbor", "negative", "shadow_holdout", "calibration"],
+      "description": "Suite role. shadow_holdout MUST NOT be read by Dev sandbox (process/delivery-loop.md §4.2.8 anti-pattern #4)."
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["tier1_smoke", "tier2_scenario", "tier3_target_set", "tier4_shadow"],
+      "description": "4-tier pyramid per modules/m-evaluation.md."
+    },
+    "input": {
+      "type": "object",
+      "description": "Free-shape input the system under test consumes. Type A: customer message + state; Type B: SOP step + slot values; Type C: demo trigger.",
+      "additionalProperties": true
+    },
+    "expected": {
+      "type": "object",
+      "description": "Free-shape expected behavior summary. NOT the closure_criterion (which is the human-judgment paragraph). This field is for quick-glance reference; closure_criterion is the contract.",
+      "additionalProperties": true
+    },
+    "scoring": {
+      "type": "object",
+      "required": ["judge"],
+      "additionalProperties": false,
+      "properties": {
+        "judge": {
+          "type": "string",
+          "enum": ["judge_llm", "judge_rubric", "deterministic_assertion"],
+          "description": "deterministic_assertion only for tier1_smoke; semantic decisions go through judge_llm or judge_rubric (Constitution §1.5)."
+        },
+        "judge_model": {"type": "string"},
+        "rubric_path": {"type": "string"},
+        "primitives": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "tool_call_present",
+              "tool_call_order",
+              "slot_collected",
+              "session_flag",
+              "any_of",
+              "all_of"
+            ]
+          },
+          "description": "6-primitive frozen trace_check DSL per process/typeA-runtime-architecture-skeleton.md Δ-6. 4 data primitives (tool_call_present / tool_call_order / slot_collected / session_flag) + 2 combinators (any_of / all_of). The grammar is intentionally minimal and rejects keyword/regex/message-content match at parse time (Constitution §1.7-B structural defence). Adopters with domain-specific trace surfaces add Tier-3 extensions; the 6 here are the portable Tier-2 surface."
+        }
+      }
+    },
+    "closure_criterion": {
+      "type": "object",
+      "required": ["positive_shape", "anti_pattern", "anchor_phrases"],
+      "additionalProperties": false,
+      "properties": {
+        "positive_shape": {"type": "string", "minLength": 1},
+        "anti_pattern": {"type": "string", "minLength": 1},
+        "anchor_phrases": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "description": "Anchor phrases are EVIDENCE the judge cites, NOT a passing condition (Constitution §1.7-B)."
+        }
+      }
+    },
+    "failure_brief_ref": {
+      "type": "string",
+      "description": "Path to docs/diagnostics/failure-briefs/<id>.md this case was promoted from (if applicable)."
+    },
+    "tags": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

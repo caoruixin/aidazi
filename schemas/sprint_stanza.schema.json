@@ -1,147 +1,59 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.org/aidazi/schemas/sprint_stanza.schema.json",
-  "title": "aidazi Sprint Stanza",
-  "description": "JSON Schema for the §7 stanza required in semantic-touching sub-sprint objectives per framework/governance/constitution.md §7. The stanza in sprint_objective.md is Markdown for human readability; this schema validates the equivalent structured representation that can be derived from it.",
+  "$id": "https://aidazi.framework/schemas/sprint_stanza.schema.json",
+  "title": "Sprint stanza",
+  "description": "Compact 4-field machine-validated header for docs/sprint_objective.md. Carried into v4 from csagent practice. Validated at sub-sprint dispatch (orchestrator preflight: validate_stanza gate, process/delivery-loop.md §4.2.4) and at close.",
   "type": "object",
-  "required": [
-    "target_failure_layer",
-    "tier0_invariant",
-    "semantic_hardcode",
-    "generalization_coverage"
-  ],
+  "required": ["sprint_id", "scope_in", "layers", "exit_criteria"],
   "additionalProperties": false,
   "properties": {
-    "target_failure_layer": {
-      "description": "The §3.1 layer the sub-sprint targets.",
+    "sprint_id": {
       "type": "string",
-      "enum": [
-        "infra",
-        "runtime_guard",
-        "prompt_projection",
-        "skill_state",
-        "semantic_planner",
-        "eval_spec",
-        "product_policy",
-        "judge_calibration",
-        "human_review_required"
-      ]
+      "minLength": 1,
+      "description": "Stable id (e.g., 'sprint-027' or 'M5-sprint-3')."
     },
-    "tier0_invariant": {
-      "description": "Either explicit no-Tier-0 statement, or a pointer to the Tier-0 invariant being protected in docs/current/runtime_invariants.md.",
-      "oneOf": [
-        {
-          "type": "object",
-          "required": ["status"],
-          "additionalProperties": false,
-          "properties": {
-            "status": { "const": "none" },
-            "note": { "type": "string" }
-          }
-        },
-        {
-          "type": "object",
-          "required": ["status", "pointer"],
-          "additionalProperties": false,
-          "properties": {
-            "status": { "const": "protects_existing" },
-            "pointer": {
-              "type": "string",
-              "description": "Section anchor in docs/current/runtime_invariants.md, e.g. '§1.2' or '§safety_floor.message_filter'."
-            }
-          }
-        },
-        {
-          "type": "object",
-          "required": ["status", "candidate_description"],
-          "additionalProperties": false,
-          "properties": {
-            "status": { "const": "new_candidate" },
-            "candidate_description": { "type": "string" },
-            "human_review_required": { "type": "boolean", "default": true }
-          }
-        }
-      ]
+    "scope_in": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1,
+      "description": "Specific deliverables this sub-sprint produces. Must be subset of charter.approved_scope (scope_envelope_check, process/delivery-loop.md §4.2.5)."
     },
-    "semantic_hardcode": {
-      "description": "Either explicit no-hardcode statement, or a declared hardcode with justification and sunset plan.",
-      "oneOf": [
-        {
-          "type": "object",
-          "required": ["introduced"],
-          "additionalProperties": false,
-          "properties": {
-            "introduced": { "const": false }
-          }
-        },
-        {
-          "type": "object",
-          "required": [
-            "introduced",
-            "hardcode_name",
-            "justification",
-            "sunset_plan"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "introduced": { "const": true },
-            "hardcode_name": { "type": "string" },
-            "justification": {
-              "type": "string",
-              "description": "Why this hardcode is justified (typically Tier-0 protection or fix-iteration interim)."
-            },
-            "sunset_plan": {
-              "type": "object",
-              "required": ["trigger", "target_sprint_id"],
-              "additionalProperties": false,
-              "properties": {
-                "trigger": {
-                  "type": "string",
-                  "description": "The downgrade-to-signal trigger condition."
-                },
-                "target_sprint_id": {
-                  "type": "string",
-                  "description": "Sprint id where the conversion is expected to land."
-                }
-              }
-            }
-          }
-        }
-      ]
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "infra",
+          "java_guard",
+          "runtime_guard",
+          "workflow_definition",
+          "prompt_projection",
+          "skill_state",
+          "semantic_planner",
+          "eval_spec",
+          "product_policy",
+          "judge_calibration"
+        ]
+      },
+      "minItems": 1,
+      "description": "Fix-layers this sub-sprint touches. Must be subset of charter.approved_scope.layers_allowed."
     },
-    "generalization_coverage": {
-      "description": "Either declared case-family counts, or deferred-to-future-sprint marker.",
-      "oneOf": [
-        {
-          "type": "object",
-          "required": ["status", "counts"],
-          "additionalProperties": false,
-          "properties": {
-            "status": { "const": "declared" },
-            "counts": {
-              "type": "object",
-              "required": ["target", "neighbor", "negative", "shadow"],
-              "additionalProperties": false,
-              "properties": {
-                "target": { "type": "integer", "minimum": 0 },
-                "neighbor": { "type": "integer", "minimum": 0 },
-                "negative": { "type": "integer", "minimum": 0 },
-                "shadow": { "type": "integer", "minimum": 0 }
-              }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "required": ["status", "deferred_to_sprint_id"],
-          "additionalProperties": false,
-          "properties": {
-            "status": { "const": "deferred" },
-            "deferred_to_sprint_id": { "type": "string" },
-            "reason": { "type": "string" }
-          }
-        }
-      ]
+    "exit_criteria": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1,
+      "description": "Observable criteria for sub-sprint close. Distinct from milestone closure_contract — this is sub-sprint-level."
+    },
+    "modules": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional repo paths (if not enumerated, derived from charter.approved_scope.modules_in_scope ∩ scope_in)."
+    },
+    "milestone_id": {
+      "type": "string"
+    },
+    "next_subsprint": {
+      "type": ["string", "null"]
     }
   }
 }

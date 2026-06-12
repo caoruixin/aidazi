@@ -1,12 +1,30 @@
-__pycache__/
-*.pyc
+# macOS
 .DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build / temp
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+node_modules/
 .venv/
 venv/
-.env
-.env.local
-node_modules/
-.idea/
-.vscode/
-*.swp
-*~
+
+# Logs
+*.log
+
+# Orchestrator state (per adopter; gitignored if running orchestrator)
+.orchestrator/
+eval/runs/
+
+# Local override files
+*.local
+*.local.*

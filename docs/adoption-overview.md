@@ -1,149 +1,151 @@
-# aidazi adoption overview
+---
+title: Adoption overview — the aidazi mental model
+doc_tier: application-guide
+doc_category: live
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-12
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 18KB
+split_trigger: if §4 "what the framework decides" grows past 6KB, split the per-track detail to a process/ doc and keep the table here
+notes: >
+  Adopter-facing entry doc — the first thing a new adopter reads after README.
+  Establishes the cognitive shape: the 5-role chain, the three decision layers
+  (framework decides / adopter decides at adoption / per-milestone decides),
+  what the framework decides vs leaves to the adopter, the two loops, and
+  versioning. Points onward to the greenfield/brownfield guides. Does NOT
+  duplicate the constitution; it frames it.
+---
 
-This document gives the high-level model of what `aidazi` does, what
-your consumer project is responsible for, and the cognitive shape of
-the framework. For step-by-step adoption walkthroughs, see:
+# Adoption overview — the aidazi mental model
 
-- [`greenfield-guide.md`](greenfield-guide.md) — new project, idea →
-  app
-- [`brownfield-guide.md`](brownfield-guide.md) — existing project,
-  incremental integration
+This is the orientation doc. Read it after `README.md` and before the per-track guides. Its job is to install the mental model so the rest of the framework reads as a coherent whole rather than a pile of docs.
 
-## Mental model
+If you remember only one sentence: **aidazi is a way to run a multi-agent software-delivery team where the LLM owns soft semantic decisions, a deterministic runtime owns hard invariants, and five roles with real boundaries keep the two from leaking into each other.**
 
-`aidazi` ships **three layers** that you compose into your project:
+## §1 The 5-role chain (the cognitive shape)
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ Layer 3: domain solution (you write this)              │
-│  - domain_taxonomy.md (lanes / shift / escalation)     │
-│  - runtime_invariants.md (Tier-0 registry)             │
-│  - eval_acceptance_bars.md (metric definitions)        │
-│  - your agent code (runtime, prompts, tools, eval)     │
-├─────────────────────────────────────────────────────────┤
-│ Layer 2: iteration process (you instantiate this)      │
-│  - milestones / sub-sprints                            │
-│  - dev / deliver / review / research agent sessions    │
-│  - handoffs / R-items / bad-case suite                 │
-├─────────────────────────────────────────────────────────┤
-│ Layer 1: framework (this repo)                          │
-│  - governance/ — constitution + doc rules + briefing   │
-│  - role-cards/ — 4 agent roles                         │
-│  - templates/ — 8 reusable artifact templates          │
-│  - schemas/ + tools/ — schema validator, hooks, trace  │
-└─────────────────────────────────────────────────────────┘
-```
-
-Layer 1 is **fixed** and versioned (you pin a tag). Layer 2 is the
-**process** you run on your domain. Layer 3 is **your agent**.
-
-## What the framework does NOT decide
-
-The framework intentionally does not decide:
-
-- **What "lane" means in your domain.** A customer service agent has
-  "wrap-around / FAQ / escalation" lanes; a shopping guide has
-  "discovery / comparison / purchase" lanes; a web automation agent
-  has "SOP step buckets". You define these in
-  `docs/current/domain_taxonomy.md`.
-- **What "Tier-0" means in your domain.** Common Tier-0 floor items
-  are "no PII leak", "no fabricated facts", "no unsafe action without
-  human confirmation". Your project lists them in
-  `docs/current/runtime_invariants.md`.
-- **What "acceptance" means in your domain.** A CS agent measures
-  containment rate; a shopping agent measures purchase-completion
-  rate; a web automation agent measures task-success rate. You define
-  these in `docs/current/eval_acceptance_bars.md`.
-- **What "good code" looks like.** The review agent walks the §4.1
-  kernel for semantic discipline, but framework-level coding standards
-  (style, lint, test framework) are yours.
-
-## What the framework DOES decide
-
-The framework decides:
-
-- **The four-role collaboration model** — research / deliver / dev /
-  review under human orchestration. You can't just "use the framework
-  with one agent doing everything"; the roles enforce separation of
-  planning vs implementation vs verification.
-- **The constitution chain loading order** — every agent on cold
-  start loads doc_governance → context_briefing → constitution +
-  consumer domain context. This is enforced by `AGENTS.md`'s
-  `@`-prefixed lines.
-- **The anti-hardcode nine-question kernel** — non-negotiable;
-  every semantic-touching change is walked through it before merge.
-- **The sprint stanza four-field schema** — non-negotiable for
-  semantic-touching sub-sprints; validated by JSON schema.
-- **The milestone framework** — 3–5 sub-sprints per milestone, one
-  acceptance review (with per-sub-sprint triggers for Tier-0 /
-  forbidden / hard-fence / fix-required).
-- **The self-containment invariant for compact prompts** — each
-  dev/review session can be spawned by pasting a single file.
-
-These are the **invariants**; bend them and the framework's
-discipline collapses.
-
-## Cognitive shape (what an iteration feels like)
+The framework's spine is five agent roles plus a human Customer. Each role is an **accountability boundary** — it owns a specific artifact, answers a specific question, and is structurally prevented from grading its own work.
 
 ```
-Human + research agent
-    ↓ proposal
-Human + deliver agent
-    ↓ milestone_objective.md + sprint_objective.md + compact prompt
-Dev agent
-    ↓ implementation + handoff + trace
-[loop sub-sprints 2..N]
-    ↓
-Deliver agent
-    ↓ compact review prompt
-Review agent (optionally 4-parallel sub-reviewers)
-    ↓ codex-findings.md
-Deliver agent + human
-    ↓ manual bad-case review (primary acceptance gate)
-    ↓ close milestone, archive, plan next
+Customer (human)
+   │  gate 1: signs the brief                       gate 2: signs ship/no-ship
+   ↓                                                          ↑
+Research ──→ Deliver ──→ Dev ──→ Code Reviewer            Acceptance
+(intake     (Tech Lead;  (codes; (anti-hardcode +         (peer of Research;
+ gate;       plans +      no      correctness; code-side   judges delivered
+ closure_    orchestrates scope)  gate)                    behaviour vs the
+ contract)   + closes)                                     closure_contract;
+                                                           outcome gate)
 ```
 
-Each arrow above is a **file write to docs/** — not a Slack message,
-not a chat turn. The framework's core assumption is that agents do
-NOT share chat history; all context flows through versioned docs.
+- **Research** asks *"what should we build?"* and writes the `closure_contract` (the milestone's success definition).
+- **Deliver** (Tech Lead) asks *"how do we sequence and close it?"* — plans milestones/sub-sprints, orchestrates, runs the close conversation. Does **not** write code.
+- **Dev** asks *"how do I implement this sub-sprint?"* — codes within a self-contained prompt; has no scope authority.
+- **Code Reviewer** asks *"is the code well-built?"* — anti-hardcode kernel + correctness lens; read-only.
+- **Acceptance** asks *"did we build the right thing?"* — judges delivered behaviour against the closure_contract Research authored. It is the **peer of Research** and is structurally isolated from Deliver/Dev so its verdict can't be a rubber stamp.
 
-## Versioning + upgrade path
+The two questions at the bottom — "well-built?" (Code Reviewer) and "right thing?" (Acceptance) — are **different gates** and both run. A clean code review with a failing acceptance means you built brittle-free code that solves the wrong problem; the reverse means you solved the right problem with code that won't survive. Keeping them separate is the framework's core value-add.
 
-`aidazi` uses SemVer:
+Full role definitions: `role-cards/`. Boundary invariants: `governance/constitution.md` §3.4. The human Customer's gate catalog: `process/customer-checkpoints.md`.
 
-- **Major** — breaking changes to governance schema, role
-  responsibilities, or compact-prompt invariants.
-- **Minor** — additive changes (new template, new tool, new role-card
-  section).
-- **Patch** — clarifications, typo fixes.
+## §2 The three decision layers
 
-Consuming projects pin to a tag in their submodule:
+Adopters get confused about "what do I decide vs what does the framework decide?" The answer is layered:
 
-```bash
-cd framework/
-git fetch --tags
-git checkout v0.1.0    # pin
-cd ..
-git add framework/
-git commit -m "[chore] pin aidazi v0.1.0"
-```
+| Layer | Who decides | When | Examples | Where it lives |
+|---|---|---|---|---|
+| **Layer 1 — Framework** | The framework (you inherit it; you don't edit it) | Once, by adopting | LLM-vs-runtime ownership; the 5-role boundaries; the forbidden list; MANDATORY_CHECKPOINTS; calibration gate | `governance/constitution.md` (always-loaded; @-included) |
+| **Layer 2 — Adoption** | The adopter, at onboarding | Once per project (revisited at fold-back) | Track (A/B/C/A+B); profile depth; charter values; the three domain contracts; which defaults you override | `docs/current/` + `charter.yaml` + `docs/current/adoption-state.md` |
+| **Layer 3 — Per-milestone** | The roles, in flight | Every milestone/sprint | Scope IN/OUT; sub-sprint sequence; bad-case suite additions; close verdicts | `docs/research-briefs/`, `docs/milestone_objective.md`, `docs/sprint_objective.md`, etc. |
 
-Upgrade is deliberate. Read the framework's CHANGELOG (when ≥v0.2.0
-exists) before bumping the tag.
+Layer 1 is **non-negotiable** — it's what makes one aidazi project recognisable to someone coming from another. Layer 2 is **your project's identity** — domain, scale, automation level. Layer 3 is **the day-to-day work**.
 
-## Friction expectation
+The split exists so the framework can be opinionated where opinions are load-bearing and accommodating everywhere else (see §4).
 
-The framework has known frictions (the things that took 50+ sprints
-in production to discover). See
-[`friction-playbook.md`](friction-playbook.md) for the catalogue +
-remediation patterns. Two of the most common:
+## §3 The doc layers (where content lives)
 
-- **Programmatic eval scores drift** — composite scores are
-  observation-only (per `constitution.md` §5.5), the curated bad-case
-  suite (per §5.6) is the primary gate. Don't ship without a
-  bad-case-suite review pass.
-- **Dev sessions accidentally bundle deliver-agent files** — the
-  pre-commit hook catches this. Install it.
+Orthogonal to the decision layers, the framework's files sort into four content layers (`governance/constitution.md` §1.1):
 
-Read the friction playbook **before** your first milestone, not after
-your third.
+- **A — Constitution** (`governance/`): always-loaded; timeless ownership + forbidden list.
+- **B — Process** (`process/`): on-demand by role; one doc per process pattern (the numbered Δs).
+- **C — State ledgers** (adopter repo): live state — `action_bank.md`, `handoff.md`, `adoption-state.md`.
+- **D — Prompt artifacts** (adopter repo `compact/`): per-sprint self-contained job specs.
+
+When you're unsure where a piece of content belongs, `docs/directory-taxonomy.md` is the fast lookup.
+
+## §4 What the framework decides vs what you decide
+
+This is the question adopters most want answered up front. The framework draws a sharp line between **hard requirements** (it breaks if you violate them) and **suggested defaults** (good starting points you override with rationale). Full registry: `governance/constitution.md` §7.0.
+
+**The framework decides (hard — you may NOT override):**
+
+- The LLM-vs-runtime ownership boundary and the §1.7 forbidden list (no keyword/regex for soft semantic decisions; no eval-phrase encoding; etc.).
+- The 5-role boundary invariants (§3.4): no self-grading; Acceptance spawn isolation; Code Reviewer ≠ Acceptance; Research–Acceptance contract symmetry; Deliver-no-code; intra-role skills inherit the role's boundary.
+- The 8 MANDATORY_CHECKPOINTS (if you adopt the Δ-18 Delivery Loop orchestrator): charter may ADD, never bypass.
+- The Acceptance judge calibration gate for autonomous mode.
+
+**You decide (suggested defaults — override in `adoption-state.md` with a reason):**
+
+- Track and profile depth (Type A/B/C/A+B; how much of each Δ you adopt now vs later).
+- Backing coding-agent per role (`charter.tooling.<role>.agent_kind` — Claude Code / Codex / other) and any role skills (`process/role-skill-model.md`).
+- All numeric thresholds (size targets, calibration thresholds, token budgets, cadences).
+- Whether to run the orchestrator at all, or stay pure-human-paste.
+- Your domain contracts, KPIs, scope boundaries.
+
+The override path is always the same: write a `status: divergent` row in `docs/current/adoption-state.md` with a `rationale`, keep going, and the framework reviews accumulated divergences at fold-back (`process/fold-back-protocol.md`).
+
+## §5 The two loops (name them distinctly)
+
+aidazi names two different "loop" concepts that adopters routinely conflate. They are orthogonal and can coexist:
+
+- **Auto Loop** (Concept 1) — a Type A product agent improving *itself* (its prompts, skills, thresholds). Subject = the product. Lives in `modules/m-autoloop.md`.
+- **Delivery Loop** (Concept 2; Δ-18) — the multi-agent *team* delivering a milestone and self-correcting when Acceptance finds a gap. Subject = the team. Lives in `process/delivery-loop.md`.
+
+One-liners: Auto Loop = *"my agent gets better at being itself."* Delivery Loop = *"my dev team converges on what the customer asked for."*
+
+Conflating them in your docs is a §1.7-E framework breach — not pedantry, but because they have different debugging implications. Full disambiguation: `docs/two-loops-explainer.md`.
+
+## §6 Tracks (what kind of thing are you building?)
+
+The framework is track-aware but domain-agnostic. Four tracks:
+
+- **Type A** — AI agent that reasons adaptively per turn (e.g., a customer-service agent).
+- **Type B** — agentic workflow that follows a defined SOP sequence with per-step verification.
+- **Type C** — demo/POC where customer-demonstrability beats coverage; leans on off-the-shelf skills.
+- **Type A+B hybrid** — an LLM-controlled top loop *and* an SOP-runner underneath.
+
+Your track sets which Δs are necessary now vs deferred. The per-track necessary sets + the profile decision tree live in `process/profile-aware-maturity.md` (Δ-14). The five role boundaries are identical across all tracks; only depth and frequency change (e.g., Type C runs Acceptance every demo).
+
+## §7 Where to go next
+
+Pick your adoption shape:
+
+- **Greenfield** (new project, or existing codebase with no agent yet) → `docs/greenfield-guide.md`. Fast inherit: the framework provides scaffolding + defaults; you fill domain values via the Phase 1-5 funnel (`docs/application-funnel.md`).
+- **Brownfield** (existing project with its own norms/agent work) → `docs/brownfield-guide.md`. Human-led: inventory → decide what to inherit vs preserve → reconcile in `adoption-state.md` → validate.
+
+Then, regardless of shape:
+
+- `docs/domain-adaptation.md` — the three domain contracts every adopter fills.
+- `docs/directory-taxonomy.md` — where each kind of content goes.
+- `docs/friction-playbook.md` — read BEFORE your first milestone, not after your third.
+- `docs/industry-mapping.md` — if you're coming from BMAD / LangGraph / AutoGen / a Claude Code subagent library and want the translation.
+
+## §8 Versioning and consumption
+
+The framework cuts versioned releases (`governance/constitution.md` §9): `v4.0.0` stable, `v4.0.x` patches, `v4.x.0` minor (backward-compatible Δ additions), `v5.0.0` major (role-chain or breaking changes). You consume on your own cadence — there is no auto-update. When you pull a new version, refresh `docs/current/adoption-state.md` to reflect newly at-spec / partial / divergent Δs. The adopter→framework direction (your lessons) and framework→adopter direction (releases) are both human-mediated; neither is automatic (`process/fold-back-protocol.md`).
+
+## §9 What aidazi is NOT (recap)
+
+- Not a runtime — there's no server you deploy; the runtime is *your* project's.
+- Not a single tool — backing agents are configurable per role.
+- Not domain-opinionated — it's track-aware, not domain-aware.
+- Not an eval harness — it specifies an eval shape (`modules/m-evaluation.md`) you instantiate.
+
+---
+
+End of adoption overview.

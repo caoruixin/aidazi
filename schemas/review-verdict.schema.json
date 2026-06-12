@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/review-verdict.schema.json",
+  "title": "Code Reviewer verdict",
+  "description": "Output shape for the Code Reviewer Agent's sprint-close or §4.3-trigger review. Top-level decision is one of {pass | fix_required | out_of_scope_review} (per role-cards/code-reviewer-agent.md §5.2). Each finding cites severity + layer + evidence + rationale; §1.7 forbidden-list violations are P0 by default.",
+  "type": "object",
+  "required": ["decision", "blocking_count", "summary", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": ["pass", "fix_required", "out_of_scope_review"]
+    },
+    "blocking_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Count of P0 + P1 findings."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One paragraph; mirrors the 4-line header summary in docs/codex-findings.md."
+    },
+    "scope_claim": {
+      "type": "string",
+      "description": "Signed sub-sprint scope claim (the sprint-id and module set the reviewer judged against)."
+    },
+    "kernel_exemption": {
+      "type": "string",
+      "enum": ["infra_only", "docs_only", "config_governance", "characterization_test", "none"],
+      "default": "none",
+      "description": "If decision=pass via exemption (anti-hardcode kernel skipped), name which class."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "layer", "evidence", "rationale"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "severity": {
+            "type": "string",
+            "enum": ["P0", "P1", "P2"]
+          },
+          "layer": {
+            "type": "string",
+            "enum": [
+              "infra",
+              "java_guard",
+              "runtime_guard",
+              "workflow_definition",
+              "prompt_projection",
+              "skill_state",
+              "semantic_planner",
+              "eval_spec",
+              "product_policy",
+              "judge_calibration",
+              "human_review_required"
+            ],
+            "description": "Fix-layer per Constitution §1.5 / process/post-deployment-iteration.md (Δ-9). Universal base layers + profile-specific extension layers (workflow_definition for Type B / A+B hybrid)."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {"type": "string", "pattern": "^.+:\\d+(-\\d+)?$"},
+            "minItems": 1,
+            "description": "file:line or file:line-line citations."
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "constitution_clause": {
+            "type": "string",
+            "description": "Optional: which Constitution §1.7 forbidden item (if any) the finding cites. e.g., '§1.7-A', '§1.7-D'."
+          },
+          "kernel_question": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9,
+            "description": "Optional: which of the 9 anti-hardcode kernel questions (templates/anti-hardcode-review-kernel.md) the finding maps to."
+          }
+        }
+      }
+    }
+  }
+}

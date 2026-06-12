@@ -1,94 +1,186 @@
 ---
+title: Post-deployment iteration (Δ-9) — OBS triage + Auto Loop driver
+doc_tier: process
 doc_category: live
-artifact_type: reference_contract
-last_reviewed: 2026-06-06
-source: v3.2 §5 Δ-9
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-07
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 12KB
+notes: >
+  Δ-9 AMEND per v4-plan §4.1: post-deployment OBS triage L1/L2 + Auto Loop
+  driver pattern + reframed under 5-role chain (Deliver owns OBS triage;
+  Acceptance fix_required → gap brief → R-item promotion via human-confirm).
+  Includes Fix-Layer Classification Checklist (universal base layers + profile-specific extension layers routing tree).
 ---
 
-# Post-Deployment Iteration — OBS / Autoloop Role-Split(Δ-9)
+# Post-deployment iteration (Δ-9)
 
-**Tier**: T1(Type A + Type B 适用;Type C 不适用)
-**加载时机**: 系统已部署、有真实流量后
-**主导**: Tech Lead(L1 triage)+ Autoloop Driver(L2 optimization)
+When the agent is in production and observations accumulate, this Δ defines the triage discipline that decides what becomes an R-item (action_bank entry; next-sprint backlog) vs an OBS-item (observation; pattern-not-yet-load-bearing) vs an Auto Loop driver input (Type A self-improvement; per `modules/m-autoloop.md`).
 
-## 核心区分:OBS ≠ R-item
+This Δ is also where the Fix-Layer Classification Checklist lives — the routing tree that decides which fix-layer a failure targets across the **universal base layer set + profile-specific extension layers** (the full set depends on track per `process/profile-aware-maturity.md` Δ-14).
 
-| 概念 | 定义 | 谁拥有 | 触发 |
-|---|---|---|---|
-| **OBS**(Observation) | 从 case / trace / eval 得到的**行为改进候选** | Tech Lead 拥有 triage;Autoloop Driver 拥有 generation | 实地观察 / 用户反馈 / 度量降级 |
-| **R-item** | runtime / substrate 变更 | Tech Lead 编排 sprint 落地 | OBS 依赖未就绪能力时,先开 R-item |
+## §1 OBS vs R-item — two-layer triage
 
-混淆 OBS 与 R-item 是常见错误:把 OBS"agent 在 X 场景应答不够好" framing 成"Tech Lead 解决 OBS X",会让 Tech Lead 退化为 operator,而 Autoloop Driver 失业。
+When a failure is observed in production (real session; not eval), it enters as an **OBS-item** (observation):
 
-## 两层模型
+- Single observation; not yet a pattern.
+- Tech-internal description; root-cause hypothesis if available.
+- Filed in `docs/action_bank.md` under the OBS-section by Deliver Agent.
 
-### L1 — Runtime Eligibility Triage(Tech Lead 拥有)
+An OBS-item is promoted to an **R-item** (require / requirement) when:
 
-OBS 进来后,Tech Lead 先判断:
+- The pattern matures (n ≥ 2 similar observations); OR
+- The single observation is severe enough to be load-bearing alone; OR
+- Customer flags the observation as load-bearing.
 
-1. **Eligible**: 当前 runtime/substrate 已就绪,可直接进 L2 autoloop
-2. **Blocked-by-enabler**: 依赖一个尚未实现的能力(新 tool / 新 trace 维度 / 新 policy)
-   - 开 R-item;OBS 暂挂 `not eligible`;enabler 落地后回 L1 重判
+R-items live in `docs/action_bank.md` under the R-section, with stable IDs (e.g., `R-citation-display-token-url-preferred`). They are the input to milestone planning.
 
-不容许把 not-eligible OBS 直接喂 autoloop — autoloop 会无功而返。
+The csagent practice (which v4 preserves) is to be DELIBERATE about the OBS → R-item promotion: most observations stay as OBS forever; only the load-bearing ones earn R-item status. This prevents action_bank bloat.
 
-### L2 — Autoloop Optimization(Autoloop Driver 拥有)
+## §2 Two-layer triage detail
 
-进 L2 的 OBS 走**一般批量模式**:
+### §2.1 L1 — Observation capture (cheap; high throughput)
 
-- 主指标 = 整体 eval + regression profile(per Δ-11 §9.6 / §5.6 bad-case suite)
-- OBS-specific metric 仅作 **secondary diagnostic** — 用来验证候选确实修了目标 OBS,但不作为通过 gate
-- 默认运作: 多个 OBS 共享一次 outer-loop autoloop,降低批量成本
+When Dev / Code Reviewer / Customer / production monitor notices a behavior:
 
-## Role split — Tech Lead vs Autoloop Driver
+1. Capture as `docs/diagnostics/<id>.md` — tech-internal root-cause notes.
+2. Cross-reference any related R-items already tracking similar.
+3. Add OBS-id to `docs/action_bank.md` OBS-section.
 
-| 职责 | Tech Lead | Autoloop Driver |
-|---|---|---|
-| OBS triage 与 dependency gating | ✓ | — |
-| Experiment spec 编写 | ✓ | — |
-| Acceptance review | ✓ | — |
-| Candidate generation | — | ✓ |
-| Registry / procedure prompt 编辑 | — | ✓ |
-| Batch eval 调度 | — | ✓ |
-| Ranked proposals 给 Tech Lead | — | ✓ |
+L1 is cheap and high-volume. Most observations don't go further.
 
-**明令禁止 framing**:"Tech Lead solves OBS X"。这种说法把两个 role 的边界抹掉。
+### §2.2 L2 — R-item promotion (deliberate; reviewed)
 
-## Default 工作流
+At each milestone planning round, Deliver + Customer review the OBS-section and promote candidates that match the criteria above. Promotion:
 
-```
-OBS 进 → Tech Lead L1 triage
-                │
-        ┌───────┴───────┐
-        │               │
-    eligible        blocked
-        │               │
-        ▼               ▼
-   L2 batch        open R-item
-   autoloop        sprint 落 enabler
-        │               │
-        ▼          (回 L1 重判)
-   ranked proposals
-        │
-        ▼
-   Tech Lead acceptance review
-        │
-        ▼
-   入 Δ-12 sprint_objective / 上线
-```
+1. Authors an R-item entry in `action_bank.md` with stable ID.
+2. Cross-links to the contributing OBS-items + diagnostics.
+3. Sets a milestone target (current / next / future / TBD).
 
-## Anti-pattern(forbidden list)
+Promotion is a JOINT decision; Deliver MAY surface candidates but Customer signs the promotion (it shapes the next milestone's scope).
 
-显式禁列(必须写入 Autoloop Driver role doc):
+### §2.3 Pattern → failure-brief escalation
 
-- **"Tech Lead solves OBS X"** framing — 让 Tech Lead 退化为 operator,Autoloop Driver 失业
-- **每个 OBS 一个专属 autoloop** — 浪费批量成本;outer-loop 同时跑多 OBS 更经济
-- **OBS-specific metric 作为默认主 gate** — 触发 gaming(候选把 metric 推高但伤害其他 surface)
-- **L1 triage 跳过,blocked OBS 直接喂 autoloop** — autoloop 在无 enabler 的情况下产不出有意义候选
+When the L2 promotion happens AND the failure pattern has n ≥ 2 contributing diagnostics, the Deliver Agent + Customer may ALSO file a formal `docs/diagnostics/failure-briefs/<id>.md` (6-field template). The failure-brief is Path 2 input to Research Agent — the research-brief that comes back gives Deliver formal scope for the fix.
 
-## 与其他 Δ 的连接
+This is the pattern v4 §1.7-C-related boundary: significant gaps loop through Research, not via silent Deliver scope expansion.
 
-- **Δ-11(§9.6)**: S5 entry condition 要求 anti-gaming forbidden list 已落地;本文档列入
-- **Δ-12(§9.7)**: OBS 与 R-item 都进 `action_bank.md` open ledger,但分类标签不同(`obs` vs `r-item`)
-- **Δ-16(§9.10)**: prereq deferred 触发的 OBS-id 走相同 triage 流
-- **§5.6 bad-case suite**: L2 autoloop 主指标的核心组件
+## §3 The Fix-Layer Classification Checklist
+
+When a failure is observed and a fix is being considered, walk this checklist BEFORE any code is written. The checklist routes the fix to one layer drawn from the **universal base set + profile-specific extension layers** below. Walk the questions in order; the first matching question wins. The point is NOT to find the "best" layer in the abstract — it is to prevent every failure defaulting to a `java_guard` fix.
+
+### §3.1 The fix-layer set (universal base + profile-specific extensions)
+
+**Universal base layers** (apply to every track):
+
+- **`infra`** — orchestration, transport, persistence, timeouts, OOM, endpoint / credential / config wiring. Owns the run loop not crashing.
+- **`java_guard`** (Type A) / **`runtime_guard`** (Type B / Type C / hybrid) — deterministic kernel-level invariants the runtime must guarantee (Constitution §1.4). Adding one requires a CURRENT Tier-0 invariant in `docs/current/runtime_invariants.md`. (The two names refer to the same role; adopters use the term matching their stack.)
+- **`prompt_projection`** — what state, signals, candidate lists, and diagnostics are surfaced to the LLM in the per-turn projection. Owns whether the LLM has the inputs to make a correct semantic choice.
+- **`skill_state`** — multi-tool / multi-turn flow state: entity context, task status, intake fields, drift carry-over, same-UC continuity. Owns the durability of state across turns.
+- **`semantic_planner`** — the LLM's own semantic choices (UC hypothesis, next action, escalation posture, follow-up). Owned by Constitution §1.3.
+- **`eval_spec`** — the CaseSpec, the expected-behaviour rubric, the judge configuration. Owns whether the eval is asking the system to do something it can and should do.
+- **`product_policy`** — whether the underlying ask is a product / policy decision the runtime cannot make alone.
+- **`judge_calibration`** — the judge's own stability / rubric quality; flips on the same prompt + CaseSpec across reruns.
+- **`human_review_required`** — no clean classification, OR the failure looks like guard territory but no current Tier-0 invariant covers it. Escalate; do NOT invent a new Tier-0.
+
+**Profile-specific extension layers** (apply per declared track per `process/profile-aware-maturity.md` Δ-14):
+
+- **`workflow_definition`** (Type B / Type A+B hybrid) — the SOP rows; the workflow runner's contract. When the SOP is itself wrong (incomplete slot list, mis-specified verification gate), the failure is here.
+
+Schemas (`schemas/review-verdict.schema.json`, `schemas/sprint_stanza.schema.json`, `schemas/deliver-plan-fix.schema.json`) enumerate the union of universal + extension layer names so a single enum covers all profiles; adopters use the subset relevant to their declared track.
+
+### §3.2 Decision questions (first match wins)
+
+1. Is the session failing to start, crash on infra, or hit a timeout / OOM not caused by tool semantics? → **`infra`**.
+
+2. Is a current Tier-0 invariant being broken? → **`java_guard`** / **`runtime_guard`**.
+   - If the failure LOOKS like java_guard territory but no current Tier-0 invariant covers it, flag **`human_review_required`** instead of inventing a new Tier-0.
+
+3. (Type B / A+B only) Is the SOP's per-step verification gate failing because the SOP itself is wrong (e.g., the step's slot list is incomplete, the order is wrong, a verification gate has been mis-specified)? → **`workflow_definition`**.
+
+4. Did the LLM choose validly within the available options, but the projection / context handed to it was wrong or impoverished (missing slot, missing candidate, missing diagnostic)? → **`prompt_projection`**.
+
+5. Is a multi-tool / multi-turn flow losing state across turns (entity reference, task status, intake field, drift carry-over)? → **`skill_state`**.
+
+6. Is the LLM choosing a semantically wrong action even when projection and state are correct (e.g., wrong UC hypothesis, unjustified escalation, missing follow-up, paraphrasing a `retrieved_but_unresolved` hit on a FAQ-path UC)? → **`semantic_planner`**.
+
+7. Is the eval CaseSpec or judge asking the system to do something it cannot or should not do — a factual or policy impossibility, a frozen enum the CaseSpec asks to extend, a mis-rubric? → **`eval_spec`**.
+
+8. Is the underlying ask a product / policy decision (e.g., "may the bot share an advert URL", "what is the bot's refund liability posture") that the runtime cannot adjudicate without product sign-off? → **`product_policy`**.
+
+**Tail rule (judge stability)**: if the same case flips across reruns of the SAME prompt and CaseSpec, reclassify as **`judge_calibration`** regardless of which question above otherwise matched.
+
+**Default tail**: if no question matches cleanly, → **`human_review_required`**.
+
+### §3.3 Why no java_guard by default
+
+Most observed failures LOOK LIKE java_guard territory because a keyword / regex / if-else can paper over the symptom in one PR. Constitution §1.5 (Iteration rule) and §1.7 (Forbidden list) explicitly rule this out for soft semantic decisions: those belong to the LLM.
+
+A new java_guard is only justified when it protects a CURRENT Tier-0 invariant. If no current Tier-0 covers it, `human_review_required` is the correct exit — the Customer decides whether to open a new Tier-0 (which routes through `new_tier0_candidate` MANDATORY_CHECKPOINT) or to push the fix back to `prompt_projection` / `skill_state` / `semantic_planner`.
+
+## §4 Auto Loop driver pattern (Type A only)
+
+Per Constitution §3.7: Auto Loop (Concept 1) is the agent's self-improvement loop. Δ-9 OBS triage is the INPUT to Auto Loop's experiment selection — the OBS patterns become candidate optimization targets.
+
+The driver pattern:
+
+1. OBS / R-item triage surfaces a pattern of `prompt_projection` or `semantic_planner` failures.
+2. Auto Loop driver (per `modules/m-autoloop.md`) proposes an experiment — e.g., a prompt variation, a retrieval-threshold change, a skill prompt edit.
+3. Auto Loop runs the experiment in a sandboxed evaluation (NOT on production traffic).
+4. Auto Loop returns a verdict; Customer reviews; if accepted, the change lands in next milestone.
+
+Auto Loop's experiment selection is per `modules/m-autoloop.md` (anti-gaming forbidden list, OBS triage L1/L2 hookup, rollback gates). This Δ-9 doc defines the INPUT side; the module spec defines the engine.
+
+### §4.1 Anti-gaming list
+
+Auto Loop MUST NOT:
+- Modify the eval target set to make the experiment "pass."
+- Edit `closure_criterion` paragraphs (per Constitution §1.7-B).
+- Promote a winning experiment without human approval.
+- Re-run a failed experiment with adjusted thresholds without recording the original.
+
+These are framework forbidden patterns; Auto Loop's driver implementation enforces them.
+
+## §5 Acceptance gap → R-item promotion (Path 3 input)
+
+When the Acceptance Agent returns `milestone_verdict: fix_required` AND Customer confirms `route: deliver_fix_iteration` at the human-confirm checkpoint (per Constitution §3.5), the gap brief inside the acceptance report becomes Deliver's Path 3 input. The gap brief's `failure_briefs[]` entries flow into action_bank as R-items per §2.2 above — with the specific provenance "Acceptance gap, milestone <id>."
+
+This route is NORMAL post-deployment iteration. Constitution §1.7-C requires the human-confirm step BEFORE the gap brief flows; do NOT silently bypass.
+
+## §6 Anti-patterns
+
+- **OBS-item bypass** — Deliver promotes an observation directly to R-item without going through the OBS-section first; bloats action_bank with single-observation R-items.
+- **Pattern false-positive** — n=2 similar-LOOKING observations get promoted; they turn out to be different root causes; the resulting R-item is unfocused. Mitigation: file diagnostics for each observation BEFORE promoting; check root causes match.
+- **Java-guard creep** — failure routed to `java_guard` because a new Tier-0 was "obvious"; no Tier-0 actually existed. Mitigation: route through `new_tier0_candidate` MANDATORY_CHECKPOINT.
+- **Semantic-hardcode regression via "small fix"** — a `prompt_projection` fix introduces a keyword check "to be safe." Constitution §1.7 + Code Reviewer anti-hardcode kernel catches at review.
+- **Auto Loop optimizing the wrong objective** — experiment improves a Tier-2 metric while regressing a closure_contract clause. Mitigation: Auto Loop's reward signal MUST be closure-contract-anchored (not raw pass rate).
+
+## §7 Cross-references
+
+- Constitution §1.5 + §1.7 — Iteration rule + Forbidden list.
+- `process/badcase-lifecycle.md` — bad-case suite is the regression-guard layer; OBS triage feeds it.
+- `process/delivery-loop.md` §4.2.3 item 4 — `new_tier0_candidate` MANDATORY_CHECKPOINT.
+- `modules/m-autoloop.md` — Auto Loop engine spec.
+- `templates/deliver-close-taxonomy.md` — close decisions consume OBS triage state.
+
+## §8 What this Δ does NOT cover
+
+- Specific OBS / R-item ID schemes — adopter convention.
+- Auto Loop engine implementation — `modules/m-autoloop.md`.
+- Bad-case suite mechanics — `process/badcase-lifecycle.md`.
+- Architecture-health metric collection — `process/architecture-health-metrics.md`.
+
+## §9 Editing this doc
+
+Process-tier; edits at fold-back sub-sprint cadence per Constitution §8.
+
+The universal base layer set + the question-order + the OBS/R-item distinction are stable framework vocabulary. Profile-specific extensions (e.g., `workflow_definition`) MAY grow via fold-back when new tracks land. Adopters MAY add Tier-3 layers locally (e.g., a `compliance` layer for healthcare) but SHOULD NOT rename the framework defaults — Code Reviewer prompts + Acceptance prompts reference the layer names.
+
+---
+
+End of Δ-9 Post-deployment iteration.

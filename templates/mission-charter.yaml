@@ -1,0 +1,145 @@
+# Δ-18 Mission Charter — template
+#
+# Copy to your adopter repo (e.g., <adopter>/charter.yaml or as declared in adoption-state.md).
+# Replace <placeholders> with project-specific values. Schema: aidazi/schemas/mission-charter.schema.json.
+#
+# Hard requirements (charter validator rejects on violation; Constitution §7.0 + §1.7-C/D):
+# - acceptance.on_fix_required.human_confirm_required MUST be true (Constitution §1.7-C).
+# - acceptance.on_fix_required.route_options MUST be non-empty.
+# - The 8 default MANDATORY_CHECKPOINTS (process/delivery-loop.md §4.2.3) MUST NOT be bypassed in
+#   any of four shapes (omitted/emptied/disabled/overridden) per Constitution §1.7-D.
+#   Adopters may ADD checkpoints via mandatory_checkpoints_added; they may NOT redefine the
+#   8 defaults.
+# - At least one of profile_type_a / profile_type_b / profile_type_c MUST be populated.
+#
+# Suggested defaults (per Constitution §7.0; override with rationale in adoption-state.md):
+# - judge_calibration agreement_threshold 0.9; flip_threshold 0.1.
+# - tools whitelist for review + acceptance: [Read, Grep, Glob].
+# - sandbox: workspace_write for dev.
+#
+# Optional per-role role-skill fields (process/role-skill-model.md; Constitution §3.4 invariant #6):
+# - tooling.<role>.skills: [<skill-name-or-path>, ...]  — each MUST comply with the role's tool whitelist.
+# - tooling.<role>.subagent_fanout: true | false        — false forbids intra-role fan-out for that role.
+# - Changing tooling.acceptance.skills invalidates judge_calibration.status (re-calibration required).
+
+mission:
+  id: <milestone-or-mission-id>
+  goal: <one-line user-facing goal — what Customer reads at gate 2>
+
+autonomy:
+  level: human_in_the_loop  # human_in_the_loop | human_on_the_loop | fully_autonomous_within_budget
+  approved_scope:
+    subsprint_sequence:
+      - <sprint-id-1>
+      - <sprint-id-2>
+    layers_allowed:
+      - prompt_projection
+      - skill_state
+      - semantic_planner
+      # Layer set varies by track; see process/profile-aware-maturity.md (Δ-14).
+    modules_in_scope:
+      - <repo-path-1>
+      - <repo-path-2>
+    explicitly_out_of_scope:
+      - <repo-path-A>
+  auto_pass_rules:
+    clean_pass_auto_advance: false
+    auto_fix_iteration:
+      enabled: false
+      max_rounds: 0
+      only_if_findings_severity_at_most: P2
+    adaptive_insert:
+      enabled: false
+      max_inserted_subsprints: 0
+
+budget:
+  max_api_usd: 0  # caveat: doesn't track subscription-billed agents (e.g., Codex)
+  max_fix_rounds_total: 3
+  max_wall_clock_minutes: 240
+
+tooling:
+  research:
+    agent_kind: claude_code
+    model: claude-opus-4-7
+    # skills: [<industry-research-skill>]   # optional role skills (process/role-skill-model.md)
+    # subagent_fanout: true                 # e.g., parallel domain scouts
+  deliver:
+    agent_kind: claude_code
+    model: claude-opus-4-7
+    # skills: [<architecture-decision-skill>]  # optional; e.g., architect/ADR skill slot
+    # subagent_fanout: true                    # e.g., architect/frontend/backend plan-draft fan-out
+  dev:
+    agent_kind: claude_code
+    model: claude-sonnet-4-6
+    sandbox: workspace_write
+    # skills: [<frontend-skill>, <backend-skill>]  # primary mount point for stack-specialist skills
+    # subagent_fanout: true                        # sub-agents inherit the dev sandbox transitively
+  review:
+    agent_kind: codex   # different model class from dev for independence
+    model: <model-id>
+    tools: [Read, Grep, Glob]
+    # skills: [anti-hardcode-review-kernel]  # exemplar packaged skill (skills/anti-hardcode-review-kernel/)
+    # subagent_fanout: false                 # read-only lenses only if enabled
+  eval:
+    cmd: <shell-command-orchestrator-runs-for-F5-evidence>
+    timeout_seconds: 600
+  acceptance:
+    enabled: false  # set to true when ready; calibration required before fully_autonomous_within_budget
+    agent_kind: claude_code  # distinct from dev/review/research for independence
+    model: claude-opus-4-7
+    tools: [Read, Grep, Glob]
+    # skills: [<evidence-reading-skill>]  # evidence-reading ONLY; changing this list invalidates calibration
+    judge_calibration:
+      status: uncalibrated
+      agreement_threshold: 0.9
+      flip_threshold: 0.1
+      labeled_set_path: calibration/labeled_acceptance_cases/manifest.json
+    run_at: milestone_close
+    on_fix_required:
+      human_confirm_required: true  # MUST be true; Constitution §1.7-C
+      route_options:
+        - deliver_fix_iteration
+        - re_acceptance_after_evidence
+        - research_contract_revision
+
+# T1 profile overlay — populate one or more.
+
+profile_type_a:
+  layer_set:
+    - infra
+    - java_guard
+    - prompt_projection
+    - skill_state
+    - semantic_planner
+    - eval_spec
+    - product_policy
+    - judge_calibration
+    - human_review_required
+  closure_contract_source: research_brief
+  bad_case_lifecycle: process/badcase-lifecycle.md
+  phase_pipeline_required: true
+
+# profile_type_b:
+#   layer_set:
+#     - infra
+#     - runtime_guard
+#     - workflow_definition
+#     - prompt_projection
+#     - skill_state
+#     - eval_spec
+#     - product_policy
+#   sop_definition:
+#     source: <path-to-SOP-yaml-or-Excel>
+#     verification_gates_per_step: true
+#   # Full Type B spec deferred until hermes first SOP milestone (OQ-V4-001).
+
+# profile_type_c:
+#   layer_set:
+#     - infra
+#     - demo_correctness
+#   local_acceptance_checklist:
+#     source: <path-to-LOCAL_ACCEPTANCE_CHECKLIST.md>
+#   off_the_shelf_skill_inventory_required: true
+
+# Optional: adopter-added custom MANDATORY_CHECKPOINTS. The 8 defaults always fire alongside.
+mandatory_checkpoints_added: []

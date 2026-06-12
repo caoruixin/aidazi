@@ -1,175 +1,301 @@
 ---
-title: Context briefing
-doc_tier: current-runtime
+title: aidazi Context Briefing
+doc_tier: governance
+doc_category: live
 status: current
 implementation_status: implemented
 source_of_truth: this file
-last_reviewed: 2026-05-28
-review_cadence: every 3-5 sprints
+last_reviewed: 2026-06-07
+review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
+load_discipline: always-load
+size_target: 16KB
+split_trigger: if per-task reading lists grow past 6 entries each, move to a process/agent-context-guide.md
 notes: >
-  Cold-start reading discipline and the Context Pack Prompt for
-  agents briefing on non-trivial tasks. Tier and status definitions
-  live in `doc_governance.md`. The framework constitution lives in
-  `constitution.md`.
+  Layer-A always-loaded cold-start reading discipline + Context Pack Prompt.
+  Defines how every role and every session should brief itself: what to load,
+  in what order, what to verify before producing output. Adopter-facing
+  counterpart (per-task reading lists tailored to the adopter's domain) lives
+  in `docs/current/agent_context_guide.md` in the adopter repo.
 ---
 
-# Context briefing
+# aidazi Context Briefing
 
-When an agent (dev, review, research, deliver) is briefed on a
-non-trivial task, the docs it loads in the first few minutes of work
-shape what it produces over the entire session. An agent that loads
-docs in a near-arbitrary order will tend to anchor on whichever doc
-arrives first, which is often the wrong tier for the question being
-asked.
+This is the cold-start reading discipline for every agent session in the framework.
 
-This guide does two things:
+The `aidazi/` framework + an adopter repo together are large. An agent that loads docs in near-arbitrary order tends to anchor on whichever doc arrives first, which is often the wrong tier for the question being asked.
 
-1. Defines the **cold-start reading discipline** (the minimum set of
-   docs every agent must read before working).
-2. Ships a reusable **Context Pack Prompt** that asks the agent to
-   return an explicit source-of-truth decision, doc-status warnings,
-   and known risks before it starts coding.
+This file does three things:
 
-## Cold-start reading discipline
+1. Defines the **cold-start load order** that every session executes first (§1).
+2. Provides **per-role briefing lists** — what each of the 5 roles loads before doing its work (§2).
+3. Ships a reusable **Context Pack Prompt** (§3) that asks the agent to return explicit source-of-truth decisions, doc-status warnings, and known risks before it starts.
 
-Every agent in a project consuming `aidazi`, on a cold start, MUST
-read in this order:
+It also defines two pre-output verification checks: the **Research-Acceptance contract symmetry check** (§4) and the **adoption-state load order** (§5). And a pointer to the **Δ-18 trigger** (§6) — when to load the Delivery Loop spec.
 
-1. **`AGENTS.md`** — repo constitution; references the framework
-   governance chain and consumer domain context. Auto-loaded via `@`
-   directives.
-2. **Framework governance chain** (auto-loaded from AGENTS.md):
-   - `framework/governance/doc_governance.md` — tier model + decision
-     rules
-   - `framework/governance/context_briefing.md` — this file
-   - `framework/governance/constitution.md` — operational gates
-3. **Consumer domain context** (auto-loaded from AGENTS.md):
-   - `docs/current/domain_taxonomy.md` — your project's lanes /
-     escalation / grounding vocabulary
-   - `docs/current/runtime_invariants.md` — your Tier-0 registry
-   - `docs/current/eval_acceptance_bars.md` — your acceptance metric
-     definitions
-4. **Role-specific entry doc**:
-   - Deliver agent → `framework/role-cards/deliver-agent.md` (via
-     `framework/role-cards/deliver-activation.md`)
-   - Dev agent → `compact/sprint-NNN-dev-prompt.md` (self-contained
-     per §9)
-   - Review agent → `compact/M<N>-review-prompt.md` (self-contained
-     per §9)
-   - Research agent → `framework/role-cards/research-agent.md`
-5. **Active contracts** (if exist):
-   - `docs/milestone_objective.md`
-   - `docs/sprint_objective.md`
-6. **Cross-session state**:
-   - `docs/10-handoff.md` §0 (structured table) — primary cold-start
-     data
-   - §1 (narrative) — for context on the current / last closed
-     milestone only
-   - §2 (archive index) — for finding older milestones
+## §1 Cold-start load order (every session)
 
-**Rule**: agents do NOT share chat history. All context passes through
-repo docs, eval results, git diff, handoffs, and review findings.
+Before any work output, every agent session loads, in order:
 
-## Task-type starting points
+1. `aidazi/governance/constitution.md` (this is `always-load`).
+2. `aidazi/governance/doc_governance.md` (this is `always-load`).
+3. `aidazi/governance/context_briefing.md` (this file; `always-load`).
+4. The adopter's `AGENTS.md` (or `CLAUDE.md`, or `.cursor/rules`) at the adopter repo root — this names the project, the 5-role registry instantiation, and the @-includes the constitution chain.
+5. The adopter's `docs/current/adoption-state.md` — read this BEFORE loading process docs so you know which Δs are at-spec vs divergent vs not-applicable in this adopter (§5).
+6. The role card for the role you're about to play (e.g., `aidazi/role-cards/dev-agent.md`).
+7. The per-role briefing list in §2 below.
 
-For common task types, the docs and code areas an agent should sample
-first vary. The consumer project SHOULD maintain a
-`docs/current/agent_context_guide.md` listing task-type reading lists
-(see `framework/templates/agent_context_guide.md` for the structure).
-Each project's reading lists are different because the project's
-domain code organization is different.
+Then begin work.
 
-The framework does NOT prescribe task-type reading lists — these are
-domain-specific. The framework prescribes the cold-start order above
-and the Context Pack Prompt below.
+**Why this order**:
+- Steps 1-3 give you the universal framework boundaries (Constitution + how to read docs + how to brief yourself).
+- Step 4 tells you which adopter you're in.
+- Step 5 tells you what's customized vs at-spec (so you don't apply a Δ that the adopter has documented as divergent).
+- Step 6 tells you what role you're playing — different roles read different things.
+- Step 7 narrows to the task-specific context.
 
-## Context Pack Prompt
+## §2 Per-role briefing lists
 
-When briefing an agent on a non-trivial task, include a "context pack"
-step before any plan or code. Paste the prompt below, adapted to the
-task. The agent should answer **before** producing a plan or diff.
+Each list assumes steps 1-5 above are already loaded. Each list is the **starting point**, not exhaustive; if your task pulls you into territory the list doesn't cover, follow the per-task lookup in §2.6.
+
+### §2.1 Research Agent
+
+For producing `docs/research-briefs/<id>.md` with closure_contract.
+
+- `aidazi/role-cards/research-agent.md` — your activation prompt.
+- `aidazi/process/domain-discovery-process.md` (Δ-2) — D1/D2/D3 elicitation pattern.
+- `aidazi/process/agent-design-elicitation.md` (Δ-15) — 6 questions + 4 inventories + closure_contract drafting.
+- `aidazi/process/agent-creation-prerequisites.md` (Δ-16) — 7 prereq categories; check each is READY / DEFERRED / N/A.
+- `aidazi/templates/compact-research-brief.md` — output template.
+- `aidazi/schemas/research-brief.schema.json` — output schema validation.
+- Adopter inputs: Customer prompt (raw); existing `docs/proposals/<id>.md` if any; relevant transcripts / data; recent `docs/diagnostics/failure-briefs/` if Path 2 (bad-case-matured input).
+
+### §2.2 Deliver Agent (Tech Lead)
+
+For producing milestone / sub-sprint plans + close decisions.
+
+- `aidazi/role-cards/deliver-agent.md` — your activation prompt.
+- `aidazi/process/milestone-framework.md` — 3-5 sub-sprints per milestone; close cadence.
+- `aidazi/process/tech-architecture-decision-catalog.md` (Δ-3) — 8 decisions incl abstraction-layer §1.7-A.
+- `aidazi/process/typeA-runtime-architecture-skeleton.md` (Δ-6) — if Type A or A+B.
+- `aidazi/process/artifact-taxonomy.md` (Δ-12) — 14 artifacts + per-role read-list.
+- `aidazi/process/post-deployment-iteration.md` (Δ-9) — OBS triage L1/L2; how Acceptance gap routes become R-items.
+- `aidazi/process/common-detours-and-warnings-typeA.md` (or typeB/typeC) — pitfalls per track.
+- `aidazi/templates/deliver-close-taxonomy.md` — A/B/C/D verdict + subclasses.
+- `aidazi/templates/sprint-objective.md` + `aidazi/templates/milestone-objective.md` + `aidazi/templates/compact-dev-prompt.md` — output templates.
+- Adopter inputs: research brief from gate 1; action_bank.md; handoff.md §0/§1; recent codex-findings.md; if Path 3 — acceptance report + gap brief.
+
+### §2.3 Dev Agent
+
+For implementing per sprint-NNN-dev-prompt.md.
+
+- `aidazi/role-cards/dev-agent.md` — your activation prompt.
+- `aidazi/process/prompt-artifact-rules.md` (promoted from csagent §9) — self-containment invariant.
+- `aidazi/process/context-passing-efficiency.md` (Δ-5) — context budget discipline.
+- The specific `compact/sprint-NNN-dev-prompt.md` — this is your self-contained job spec; it carries everything you need.
+- Adopter `docs/current/` runtime contracts + domain context (the prompt's `load_list` names these explicitly per §1.4-i of constitution).
+
+Sandbox: workspace-write; no network; no git push (per Constitution §3.3 Dev Agent row).
+
+### §2.4 Code Reviewer Agent
+
+For producing `docs/codex-findings.md` verdict at sub-sprint close or §4.3 trigger.
+
+- `aidazi/role-cards/code-reviewer-agent.md` — your activation prompt.
+- `aidazi/templates/anti-hardcode-review-kernel.md` — 9-question kernel; the canonical lens.
+- `aidazi/schemas/review-verdict.schema.json` — output schema.
+- Adopter inputs: dev diff; handoff.md (the sub-sprint's §1-§11); sprint_objective.md; the bad-case suite (`eval/bad_cases/`).
+- Adopter `docs/current/` runtime contracts (for the §1.3/§1.4 ownership lens).
+
+Tool whitelist: Read, Grep, Glob. No edits. No network. No git push (per Constitution §3.3 Code Reviewer row).
+
+### §2.5 Acceptance Agent
+
+For producing `docs/acceptance-reports/<scope>-acceptance-report.md` at milestone close / release cut / sub-sprint close (per charter).
+
+- `aidazi/role-cards/acceptance-agent.md` — your activation prompt.
+- `aidazi/templates/compact-acceptance-prompt.md` — output template + judging discipline.
+- `aidazi/schemas/acceptance-verdict.schema.json` — output schema.
+- Adopter inputs: the research-brief's closure_contract (THE evaluation contract; §4 below has the symmetry check); dev evidence (bad-case suite results + execution trace artifacts produced by orchestrator F5 pattern per `process/delivery-loop.md` §4.2.6); Code Reviewer verdict (latest codex-findings.md).
+- (Optional) prior acceptance reports for residual risk lineage.
+
+Tool whitelist: Read, Grep, Glob. No edits. No network. No git push.
+
+**Spawn isolation** (Constitution §1.7-C): your session was spawned from Customer paste OR orchestrator with calibration passed (per `process/delivery-loop.md` §4.2.4). If you find evidence you were spawned from a Deliver or Dev session, halt and surface §1.7-C breach.
+
+**Calibration gate** (Constitution §3.6): if `charter.autonomy.level=fully_autonomous_within_budget` AND `charter.acceptance.judge_calibration.status=uncalibrated`, your verdict is advisory only; orchestrator degrades to `human_on_the_loop`. Confirm calibration status before treating verdict as authoritative.
+
+### §2.6 Per-task lookup (when the role list doesn't cover what you need)
+
+If your task pulls you into territory the role list doesn't cover, route via the task type:
+
+| Task subject | Load this first |
+|---|---|
+| Domain discovery / industry research | `process/domain-discovery-process.md` (Δ-2) + adopter `docs/foundational/business-need.md` (or merged §5.3.1 brief) |
+| Tech architecture decisions | `process/tech-architecture-decision-catalog.md` (Δ-3) + adopter `docs/foundational/technical-plan.md` |
+| Doc lifecycle question | `process/doc-lifecycle-rules.md` (Δ-4) + `governance/doc_governance.md` |
+| Type A runtime / phase pipeline | `process/typeA-runtime-architecture-skeleton.md` (Δ-6) + adopter `docs/current/runtime_invariants.md` |
+| Worked example sync question | `process/worked-example-instance.md` (Δ-7) + the specific `examples/<ref>/` |
+| Eval / bad-case lifecycle | `process/badcase-lifecycle.md` + adopter `eval/bad_cases/_manifest.md` |
+| Profile A/B/C/hybrid decision | `process/profile-aware-maturity.md` (Δ-14) + adopter charter |
+| Agent design (greenfield) | `process/agent-design-elicitation.md` (Δ-15) + `process/agent-creation-prerequisites.md` (Δ-16) |
+| Common pitfalls (mid-flight detour spotting) | `process/common-detours-and-warnings-type<A\|B\|C>.md` (Δ-17) |
+| Δ-18 Delivery Loop / orchestrator | `process/delivery-loop.md` (Δ-18) + `templates/mission-charter.yaml` + `schemas/mission-charter.schema.json` (see §6 below) |
+| Self-governance / bloat metrics | `process/self-governance.md` |
+| Fold-back / lessons | `process/fold-back-protocol.md` + `templates/lessons-learned-template.md` |
+| Directory taxonomy (where does X go?) | `docs/directory-taxonomy.md` |
+| Two Loops naming | `docs/two-loops-explainer.md` (§1.7-E enforcement) |
+| Greenfield bootstrap | `docs/greenfield-guide.md` |
+| Brownfield adoption | `docs/brownfield-guide.md` |
+| Friction pattern lookup (F1-F15) | `docs/friction-playbook.md` |
+
+This table is the framework's "yellow pages." For per-adopter task lists tailored to the adopter's domain, see the adopter repo's `docs/current/agent_context_guide.md`.
+
+## §3 Context Pack Prompt
+
+When briefing an agent on a non-trivial task, include a "context pack" step BEFORE any plan or code. Paste the prompt below, adapted to the task. The agent answers BEFORE producing a plan or diff.
 
 ```
-You are working in this repo. Before proposing a plan or any code
-change, build a context pack for the task described below. Do not
-start coding.
+You are working in this repo. Before proposing a plan or any code change,
+build a context pack for the task described below. Do not start coding.
 
 Task: <one-paragraph description of what we want to do>
 
-Read AGENTS.md (auto-loads the framework governance chain + consumer
-domain context). Then use docs/current/agent_context_guide.md to find
-the right reading list for this task type (if your project maintains
-one). Sample the docs and code paths it suggests; you do not need to
-read everything end-to-end, but you must read enough to answer the
-questions below.
+Role you are playing: <Research | Deliver | Dev | Code Reviewer | Acceptance>
+
+Read the following first (in order):
+1. aidazi/governance/constitution.md
+2. aidazi/governance/doc_governance.md
+3. aidazi/governance/context_briefing.md
+4. <adopter root>/AGENTS.md (or CLAUDE.md / .cursor/rules)
+5. <adopter root>/docs/current/adoption-state.md
+6. aidazi/role-cards/<your-role>.md
+7. The per-role briefing list in context_briefing.md §2 for your role
+
+Sample additional docs and code paths as the per-task lookup §2.6 suggests;
+you do not need to read everything end-to-end, but you must read enough to
+answer the questions below.
 
 Return your context pack in this exact shape:
 
-1. Relevant docs
-   - For each doc you actually read or sampled, give: path, the tier
-     you believe it belongs to, your best guess at its status
-     (current / proposal / partial / superseded / unknown), and one
-     line on why it is relevant to this task.
+1. Relevant docs and code paths (with tier + status if known)
+2. Source-of-truth decision: if multiple docs cover this question, which is
+   the source of truth, and why?
+3. Doc-status warnings: which docs are partial / proposal / deferred /
+   superseded / unknown and how does that affect this task?
+4. Adoption-state warnings: which Δs are marked divergent in this adopter
+   and might affect this task? Cite the rationale field if it applies.
+5. Known risks: what could go wrong; what is intentionally out of scope.
+6. Open questions: what you cannot determine from docs + code alone (incl.
+   any §1.7 forbidden-list checks that need human judgment).
+7. Proposed plan: only after answering 1-6.
 
-2. Relevant code paths
-   - List the files and directories you sampled and the specific
-     functions, classes, or config keys that govern the behavior in
-     scope. Cite paths exactly.
-
-3. Doc status warnings
-   - For any doc where you suspect drift from code, say so and name
-     the specific drift. If a doc looks forward-looking ("intended
-     to", "will"), call that out. If two docs disagree on the same
-     point, name the disagreement.
-
-4. Source-of-truth decision
-   - For the question this task is trying to answer, state which
-     artifact is authoritative: a specific code path, a specific doc,
-     or a combination. Justify the choice in one or two sentences
-     using the rules in framework/governance/doc_governance.md.
-
-5. Implementation status
-   - For the behavior in scope, classify as: implemented / partial /
-     not_started / historical / unknown. Cite the code path or
-     observation that supports the classification.
-
-6. Risks before coding
-   - List the top three to five risks of changing this area: hidden
-     coupling, stale docs that other readers may rely on, behavior
-     gaps, proposals that may be affected, sprint archives whose
-     deltas are load-bearing. Be specific; "be careful with X" is not
-     a risk.
-
-Do not edit any files yet. Do not edit docs/sprints/* or
-docs/archive/* under any circumstance. Once the context pack is
-returned, wait for confirmation before producing a plan or diff.
+If 1-6 surface a Constitution §1.7 breach (e.g., the task would require a
+new keyword/regex to fix a semantic failure), halt and surface the breach
+before proposing a plan.
 ```
 
-The context pack is cheap to produce and disproportionately reduces
-the chance of an agent anchoring on the wrong tier. Use it for any
-task that crosses module boundaries, touches a `current-runtime`
-contract, or involves a doc that may be forward-looking.
+For roles with their own activation prompts (`role-cards/*-agent.md`), the role card includes its own version of this context pack; use the role card's version when present.
 
-## Trace emission discipline (industry-best-practice default)
+## §4 Research-Acceptance contract symmetry check
 
-Each dev / review session SHOULD emit a structured `trace.jsonl` file
-to `docs/sprints/sprint-NNN/trace.jsonl` (dev) or
-`docs/milestones/M<N>/trace.jsonl` (review) for later replay /
-diagnosis. The trace records:
+Constitution §3.4 boundary invariant #4 — Research-Acceptance contract symmetry — needs an explicit pre-output check on both sides.
 
-- Session start (role, sprint id, prompt artifact hash, timestamp)
-- Key decisions (file paths read, tool calls made, choices between
-  alternatives, when the agent invoked the Context Pack Prompt)
-- Errors / blockers / STOP-and-surface events
-- Session end (handoff written, verdict, blocking findings count)
+**For the Research Agent**, before finalizing the closure_contract paragraph:
 
-A helper script lives at
-[`../tools/trace_emitter.py`](../tools/trace_emitter.py). Trace files
-are NEVER edited after session close; they are immutable diagnostic
-records (treat them as `sprint-archive` tier).
+1. Is the positive shape stated in customer-perspective language (NOT implementation language)?
+2. Is the anti-pattern named in observable terms (would the Acceptance Agent be able to spot it in delivered behavior)?
+3. Are the anchor phrases EXEMPLAR — i.e., the kind of phrasing a good response might use — NOT regex matchers?
+4. Could a peer Acceptance Agent, reading only this closure_contract + delivered evidence, return a defensible verdict? If not, the contract is under-specified; expand.
 
-The trace exists for the human and the deliver-agent at close time;
-it is not consumed by downstream agents through the constitution
-chain.
+**For the Acceptance Agent**, before evaluating delivered behavior:
+
+1. Does the closure_contract cover the criteria you're about to judge against? If you find yourself wanting to evaluate a criterion the contract doesn't specify, route via `suggested_route: research_contract_revision` instead of widening the evaluation silently.
+2. Is the contract version you're reading the version Customer signed at gate 1 (not an edit slipped in mid-milestone)? Confirm by checking `customer_signed` front-matter + `signed_date`.
+3. Has the contract changed between sign-off and now? If yes, halt; Customer re-sign-off required (gate 1 re-fires).
+
+Both sides skipping their check is what causes the "we built the wrong thing but said pass" failure mode. The two checks are cheap; perform both.
+
+## §5 Adoption-state load order
+
+`docs/current/adoption-state.md` MUST be loaded BEFORE process docs.
+
+**Why**: process docs describe framework defaults. Adoption-state names which Δs the adopter has marked divergent (with rationale) — and which framework defaults the adopter has overridden. Loading process docs before adoption-state means applying defaults that the adopter has documented as not-in-effect.
+
+The adoption-state schema (per Constitution §7.2 + `templates/adoption-state-template.md`):
+
+```yaml
+---
+title: <adopter-name> Adoption State vs aidazi framework
+adopter_name: <name>
+framework_version: v4.0.0
+last_reviewed: <YYYY-MM-DD>
+review_cadence: per milestone close
+---
+
+# Per-Δ status
+
+| Δ | v4 spec | Adopter status | Gap notes | Plan |
+|---|---|---|---|---|
+| Δ-1 Anatomy | T0 | at-spec | — | — |
+| ... | | | | |
+
+# Drift reasons (for `divergent` rows)
+
+- Δ-N: <rationale>
+
+# Lessons proposed for upstream fold-back
+
+| Date | Topic | Lesson file | Status |
+|---|---|---|---|
+| ... | | | |
+```
+
+Status enum: `at-spec | partial | divergent | not-applicable | superseded-by-framework`.
+
+**Rules of thumb when reading adoption-state**:
+
+- `at-spec` → apply the framework default as written.
+- `partial` → apply the framework default but verify which sub-parts are implemented; ask Customer / Deliver before assuming.
+- `divergent` → adopter has overridden the default. READ the rationale. Apply the adopter's override, NOT the framework default.
+- `not-applicable` → this Δ doesn't apply to this adopter's track; skip.
+- `superseded-by-framework` → adopter was at-spec at an older framework version; framework has since evolved. Check the migration guide.
+
+If an adoption-state row has `status: divergent` against §1.7 of constitution, halt: §1.7 hard requirements cannot be overridden (Constitution §1.8). Surface the contradiction; do NOT apply the divergence.
+
+## §6 Δ-18 Delivery Loop trigger
+
+Load `process/delivery-loop.md` when ANY of these is true for your session:
+
+- The adopter's charter exists at `<adopter>/charter.yaml` (or path declared in `adoption-state.md`).
+- The task involves authoring, editing, or reasoning about a `mission-charter.yaml`.
+- Your role is Acceptance Agent AND `charter.acceptance.enabled=true`.
+- The task involves resolving a MANDATORY_CHECKPOINT.
+- The task involves scope_envelope_check, F5 evidence pattern, or calibration.
+- A previous step surfaced a §1.7-D breach risk (charter editing MANDATORY_CHECKPOINTS).
+
+If none of the above is true, you are in pure human-paste mode (manual flow). The 5-role chain still applies; the orchestrator implementation does not. `process/delivery-loop.md` §4.2.1 explains this conditional adoption.
+
+## §7 Pre-output checklist (every role, every session)
+
+Before emitting your final work product:
+
+1. **Constitution §1.7 forbidden-list check** — does anything in your output trigger a forbidden pattern (keyword/regex/if-else for semantic decisions; widening eval to accept a bot mistake; Auto Loop ↔ Delivery Loop conflation)?
+2. **Role boundary check** — are you producing only what your role is authorized to produce (Dev doesn't author scope; Deliver doesn't write feature code; Acceptance doesn't widen the contract)?
+3. **Self-containment check** — if you're authoring a compact prompt, does it carry `context_budget` front-matter with `self_contained: true`? (§1.4-i of constitution.)
+4. **closure_contract / closure_criterion shape check** — if you're authoring one, are positive shape + anti-pattern + anchor phrases all present? (§1.7-B of constitution.)
+5. **Schema validation** — if your output has a JSON schema (e.g., review verdict, acceptance verdict, deliver-close verdict), does it pass the schema?
+6. **Adopter override check** — does your output respect adoption-state.md `divergent` rows?
+
+A "no" to any of the above is a halt signal: surface the issue, do not emit.
+
+## §8 Editing this doc
+
+This is a governance-tier doc. Edits land at fold-back sub-sprint cadence (per Constitution §8). The four editing-discipline checks from Constitution §8 apply (timelessness; principle vs current-state; necessity; durable shift).
+
+Adopter-specific per-task reading lists do NOT live here — they live in the adopter's `docs/current/agent_context_guide.md`. This file is the framework-level shape; the adopter copies and specializes.
+
+---
+
+End of Context Briefing.

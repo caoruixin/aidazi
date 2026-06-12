@@ -1,0 +1,536 @@
+---
+title: Delivery Loop (Δ-18)
+doc_tier: process
+doc_category: live
+status: current
+implementation_status: partial
+source_of_truth: this file
+last_reviewed: 2026-06-11
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 50KB
+split_trigger: if T1 Type B sop_definition section grows past 8KB, split to delivery-loop-typeB-extension.md
+notes: >
+  Δ-18 Delivery Loop spec (Concept 2 of the two loops; see Constitution §3.7).
+  Defines the multi-agent team collaboration pattern + the orchestrator
+  implementation that automates it (state machine, spawn functions, scope
+  envelope, F5 evidence, calibration gate, MANDATORY_CHECKPOINTS).
+  Renamed from "orchestrator-pattern" per v4. The pattern's name is
+  "Delivery Loop"; the software that implements it is conventionally called
+  "the orchestrator". Type B variant (T1') is placeholder pending hermes
+  first SOP milestone close (OQ-V4-001).
+---
+
+# Δ-18 Delivery Loop
+
+The Delivery Loop is **Concept 2** of v4's two-loop distinction (Constitution §3.7; `docs/two-loops-explainer.md`).
+
+It is the framework-level pattern for **how the 5-role multi-agent team (Research / Deliver / Dev / Code Reviewer / Acceptance + Customer) collaboratively delivers work AND autonomously discovers and corrects the gap between delivered behavior and Customer's stated need**.
+
+The Delivery Loop is universal across tracks (Type A / B / C / A+B hybrid). Its automation layer (the orchestrator implementation) is optional per `charter.autonomy.level`.
+
+**Naming**: in framework documentation, the pattern's name is **Delivery Loop**. In code or technical implementation context, the software that implements it is conventionally called **the orchestrator** (binary, state machine, spawn function set). Same physical thing, two layers of vocabulary. This file's name is `delivery-loop.md`; the binary that drives it is conventionally named `orchestrator`. Do not introduce a third name for the same concept.
+
+## §1 Scope
+
+This file covers:
+- §2 — when the Delivery Loop pattern applies (conditional vs universal).
+- §3 — the canonical 5-role chain reference (delegated to Constitution §3).
+- §4 — the orchestrator implementation: charter schema, MANDATORY_CHECKPOINTS, state machine, scope envelope, F5 evidence, spawn function set, calibration, anti-patterns.
+- §5 — adopter bootstrap pointers.
+- §6 — open questions carry.
+
+What this file does NOT cover:
+- The cross-Δ relationship to Auto Loop (Constitution §3.7 and `docs/two-loops-explainer.md`).
+- The role-card prompts themselves (those live in `role-cards/`).
+- The Application Guide / per-track adoption shape (those live in `docs/`).
+
+## §2 Conditional vs universal
+
+The Delivery Loop **pattern** (5-role chain + Acceptance fix_required → human-confirm → Deliver flow + research-brief closure_contract + boundary invariants) is **UNIVERSAL** — every adopter inherits it via Constitution §3.
+
+The Delivery Loop **orchestrator** (state machine + spawn functions + checkpoint inbox + scope envelope + F5 evidence + calibration gate) is **CONDITIONAL** — applies when `charter.autonomy.level ≠ human_in_the_loop`.
+
+Pure human-in-the-loop adopters (manual handoff via paste) do NOT need the orchestrator. They still use:
+- The 5-role chain (Constitution §3.1–§3.4).
+- The Acceptance fix_required → human-confirm → Deliver flow (Constitution §3.5).
+- The closure_contract source-of-truth invariant (Constitution §3.4 invariant #4).
+
+What the orchestrator ADDS when adopted:
+- A file-based checkpoint inbox (human-on-the-loop). Orchestrator writes `docs/checkpoints/<event>.md`; human writes the `decision:` field; orchestrator picks up.
+- Auto-dispatch of sub-sprints within charter-approved scope (no human paste per sprint dispatch).
+- §3.6 calibration-gated Acceptance judging (orchestrator enforces degradation; human cannot bypass).
+- F5 evidence pattern (orchestrator runs eval harness; dev sandbox stays sealed).
+- Scope-envelope enforcement before close (deterministic, no LLM).
+- Charter pre-authorization (autonomy level + budget caps + allowed scope + tooling assignments declared in advance).
+
+## §3 5-role chain reference
+
+The role chain, role table, and boundary invariants are defined in Constitution §3. Do NOT duplicate them here.
+
+This file references the chain at these points:
+- Spawn function set (§4.2.7) — each function spawns one of the 5 roles per `charter.tooling.<role>.agent_kind`.
+- Acceptance flow (§4.2.4 + §4.2.7) — orchestrator wires the Acceptance fix_required → checkpoint → human-confirm route per Constitution §3.5.
+- Boundary invariants (§4.2.8) — anti-patterns enforce Constitution §3.4 invariants.
+
+The Acceptance Agent in particular requires two cross-references to Constitution before reading further:
+- §1.7-C — Acceptance spawn isolation (orchestrator IS one of the two permitted spawn surfaces, gated by calibration).
+- §3.6 — Acceptance judge calibration (orchestrator enforces degradation).
+
+## §4 Orchestrator implementation
+
+### §4.1 Overview
+
+The orchestrator is a **deterministic outer loop** that drives **non-deterministic inner work** done by LLM-backed spawn functions.
+
+```
+charter.yaml ─┐
+              │   ┌──────────────────────────────────────────────┐
+              ├─→ │  Outer loop (deterministic state machine)    │
+              │   │                                              │
+              │   │  • read state                                │
+              │   │  • check MANDATORY_CHECKPOINTS / gates       │
+              │   │  • if checkpoint pending → wait for human    │
+              │   │  • else → call spawn function for next state │
+              │   │  • parse spawn function verdict (JSON)       │
+              │   │  • write state + advance / fix / checkpoint  │
+              │   │  • emit progress to docs/checkpoints/        │
+              │   └────────────────┬─────────────────────────────┘
+              │                    │
+              │   ┌────────────────┴─────────────────┐
+              └─→ │  Inner work (LLM, per spawn fn) │
+                  │                                  │
+                  │  • spawn_dev → workspace-write   │
+                  │  • spawn_deliver_close → JSON    │
+                  │  • spawn_deliver_plan_fix → JSON │
+                  │  • spawn_research → brief        │
+                  │  • run_review → JSON             │
+                  │  • run_acceptance → JSON         │
+                  └──────────────────────────────────┘
+```
+
+Determinism lives in the outer loop. Semantic judgment lives in the spawn functions. The two communicate via JSON verdicts (schemas in §4.2.7), filesystem state, and checkpoint files.
+
+### §4.2 Implementation spec
+
+#### §4.2.1 Trigger
+
+The orchestrator starts when:
+- Customer kicks off a milestone (`orchestrator dispatch <milestone-id>`).
+- Customer resumes a paused checkpoint (`orchestrator resume`).
+- A scheduled trigger fires (rare; e.g., overnight Auto Loop integration).
+
+It does NOT start spontaneously.
+
+#### §4.2.2 Charter schema (T0 base + T1 profile overlays)
+
+The charter is the YAML pre-authorization bounding what the orchestrator can do without human intervention. Loaded at boot; immutable copy stored alongside run state.
+
+**T0 base** (any track):
+
+```yaml
+mission:
+  id: <sprint-or-milestone-id>
+  goal: <one-line user-facing goal — what Customer reads at gate 2>
+
+autonomy:
+  level: human_in_the_loop | human_on_the_loop | fully_autonomous_within_budget
+  approved_scope:
+    subsprint_sequence: [<id>, ...]
+    layers_allowed: [<framework-layer-name>, ...]
+    modules_in_scope: [<repo-path>, ...]
+    explicitly_out_of_scope: [<repo-path>, ...]
+  auto_pass_rules:
+    clean_pass_auto_advance: true | false
+    auto_fix_iteration:
+      enabled: true | false
+      max_rounds: <int>
+      only_if_findings_severity_at_most: P0 | P1 | P2
+    adaptive_insert:
+      enabled: true | false
+      max_inserted_subsprints: <int>
+
+budget:
+  max_api_usd: <number>
+  max_fix_rounds_total: <int>
+  max_wall_clock_minutes: <int>
+
+tooling:
+  # Every role section also accepts OPTIONAL role-skill fields (process/role-skill-model.md §7):
+  #   skills: [<skill-name-or-path>, ...]   # MUST comply with the role's tool whitelist
+  #   subagent_fanout: true | false          # false forbids intra-role fan-out for that role
+  research:
+    agent_kind: claude_code | codex | <other>
+    model: <model-id>
+  deliver:
+    agent_kind: claude_code | codex | <other>
+    model: <model-id>
+  dev:
+    agent_kind: claude_code | codex | <other>
+    model: <model-id>
+    sandbox: workspace_write | read_only
+  review:
+    agent_kind: claude_code | codex | <other>
+    model: <model-id>
+    tools: [Read, Grep, Glob]
+  eval:
+    cmd: <shell-command>
+    timeout_seconds: <int>
+  acceptance:
+    enabled: true | false
+    agent_kind: claude_code | codex | <other>
+    model: <model-id>
+    tools: [Read, Grep, Glob]
+    judge_calibration:
+      status: uncalibrated | calibrated
+      agreement_threshold: 0.9
+      flip_threshold: 0.1
+      labeled_set_path: <path>
+    run_at: milestone_close | release_cut | both
+    on_fix_required:
+      human_confirm_required: true   # Constitution §1.7-C; charter validator rejects false
+      route_options: [deliver_fix_iteration, re_acceptance_after_evidence, research_contract_revision]
+```
+
+**T1 profile overlays** (declare ONE or both for hybrid):
+
+```yaml
+# Type A AI Agent
+profile_type_a:
+  layer_set: [infra, java_guard, prompt_projection, skill_state, semantic_planner,
+              eval_spec, product_policy, judge_calibration, human_review_required]
+  closure_contract_source: research_brief
+  bad_case_lifecycle: badcase-lifecycle.md
+  phase_pipeline_required: true
+
+# Type B Agentic Workflow (PLACEHOLDER — OQ-V4-001)
+profile_type_b:
+  layer_set: [infra, runtime_guard, workflow_definition, prompt_projection, skill_state,
+              eval_spec, product_policy]
+  sop_definition:
+    source: <path-to-SOP-Excel-or-yaml>
+    verification_gates_per_step: true
+
+# Type C Demo App
+profile_type_c:
+  layer_set: [infra, demo_correctness]
+  local_acceptance_checklist:
+    source: <path-to-LOCAL_ACCEPTANCE_CHECKLIST.md>
+  off_the_shelf_skill_inventory_required: true
+```
+
+JSON schema: `schemas/mission-charter.schema.json`. Template: `templates/mission-charter.yaml`.
+
+**Charter editing rules**:
+
+- `mission.id` and `mission.goal` frozen at boot.
+- `autonomy.approved_scope.subsprint_sequence` may be revised mid-run only through a `scope_deviation` MANDATORY_CHECKPOINT resolution.
+- `autonomy.auto_pass_rules.adaptive_insert.max_inserted_subsprints` bounds adaptive insertion; orchestrator MUST refuse to insert past this limit.
+- `tooling.acceptance.judge_calibration.status` may flip to `calibrated` only after a calibration run; flipping by hand is a framework breach.
+- The `route_options` list under `acceptance.on_fix_required` MAY be narrowed by adopter but MAY NOT be empty.
+- `acceptance.on_fix_required.human_confirm_required` MUST be `true` — Constitution §1.7-C; charter validator rejects `false`.
+- `tooling.acceptance.skills` changes invalidate `judge_calibration.status` (Constitution §3.4 invariant #6 calibration corollary); the validator SHOULD warn when `skills` changed while `status: calibrated` persists.
+- **MANDATORY_CHECKPOINTS non-bypass invariant** (Constitution §1.7-D) — the 8 default checkpoints in §4.2.3 may NOT be bypassed in any of these four shapes; charter validator MUST reject each:
+  - **Omitted** — charter does not mention the checkpoint (absence ≠ opt-out).
+  - **Emptied** — charter declares the checkpoint key with empty / null value (e.g., `mandatory_checkpoints: []`).
+  - **Disabled** — charter sets the checkpoint to falsy / inert value (e.g., `bad_case_manual_review.enabled: false`).
+  - **Overridden** — charter replaces the checkpoint's semantics with a weaker variant (e.g., redefines `scope_deviation` to auto-approve below a severity threshold; replaces `human_confirm_required: true` with `auto_confirm_if_clean: true`). Semantic override = bypass.
+  - Legitimate adopter customization: ADD a custom checkpoint with an adopter-chosen id; the default still fires alongside.
+
+#### §4.2.3 MANDATORY_CHECKPOINTS (8 — charter MAY ADD, MUST NOT BYPASS)
+
+Points where human authority is non-negotiable. Constitution §1.7-D enforces the non-bypass invariant: charter MAY NOT omit, empty, disable, or override any of the 8 defaults below (see §4.2.2 charter editing rules for the four-shape rejection). Charter validator rejects bypass in any shape; orchestrator refuses to boot.
+
+1. **`mission_start`** — orchestrator boots; human verifies `mission.goal` + `autonomy.level` + `tooling.*.agent_kind`. Once approved, only `mission_end` can revisit.
+2. **`research_proposal_selection`** — if Path 1 (research-driven), human selects from candidate proposals before Deliver consumes. Bypassed only if charter explicitly names a single research-brief id and Customer has signed it prior to dispatch.
+3. **`bad_case_manual_review`** — primary §5.6 gate (per `process/badcase-lifecycle.md`); human reads per-turn bad-case traces before milestone close. Cannot be skipped at milestone close.
+4. **`new_tier0_candidate`** — any time a Code Reviewer or Deliver proposes a new Tier-0 invariant, human approves before adoption.
+5. **`forbidden_list_redline`** — any time a change touches Constitution §1.7 forbidden list semantics, human reviews.
+6. **`scope_deviation`** — orchestrator's deterministic `scope_envelope_check` (§4.2.5) fires; human resolves before resume.
+7. **`close_taxonomy_C_or_D`** — when Deliver close verdict = C (scope-broadening) or D (non-convergent), human resolves. Maps to `templates/deliver-close-taxonomy.md` subclasses.
+8. **`gate_hard_fail`** — any deterministic gate (tests / handoff structure / trace existence / safety / grounding floor) fails AND `auto_fix_iteration` not eligible.
+
+**Checkpoint file shape** (orchestrator writes; human resolves):
+
+```
+docs/checkpoints/<YYYYMMDD-HHMMSS>__<checkpoint_id>__<scope>.md
+
+---
+checkpoint_id: <one of 8 above + adopter-added>
+scope: <sprint-id or milestone-id>
+emitted_at: <ISO timestamp>
+decision: pending | approved | rejected | <event-specific values>
+resolved_at: <ISO timestamp or null>
+resolver: <human name; or "orchestrator" if auto-degraded per §3.6>
+---
+
+# Context
+<orchestrator describes what triggered the checkpoint>
+
+# Options
+<orchestrator lists the route options the human chooses among>
+
+# Decision (human fills)
+<human writes; orchestrator picks up>
+```
+
+For Acceptance `fix_required` specifically: follows Constitution §3.5 shape; `decision: pending`; options are `deliver_fix_iteration | re_acceptance_after_evidence | research_contract_revision`; human writes `confirm: yes|no` + `route: <option>` + optional notes.
+
+#### §4.2.4 State machine (Type A driver)
+
+```
+                            ┌─────┐
+                            │idle │
+                            └──┬──┘
+                               │ (charter loaded; current_subsprint set)
+                               ↓
+                       ┌──────────────┐
+                       │ dev_pending  │ (preflight: contract present + non-empty;
+                       └──────┬───────┘  context_budget self_contained: true)
+                              ↓ spawn_dev → handoff §1-§11 written
+                       ┌──────────────┐
+                       │ gate_pending │ run gates:
+                       └──────┬───────┘   • run_tests
+                              │           • validate_stanza
+                              │           • check_handoff (§0/§1/§2)
+                              │           • check_trace (Δ-12 trace artifact)
+                              │           • [run_eval F5] (if eval.cmd present)
+                              ↓ gates pass
+                       ┌──────────────────┐
+                       │ review_pending   │ spawn run_review
+                       └──────┬───────────┘
+                              ↓ verdict (pass | fix_required | out_of_scope_review)
+                       ┌──────────────────┐
+                       │  close_pending   │ spawn spawn_deliver_close
+                       └──────┬───────────┘
+                              ↓ verdict A/B/C/D + scope_envelope_check (deterministic)
+                ┌─────────────┴─────────────┐
+                ↓                            ↓
+        ┌───────────────┐         ┌───────────────────┐
+        │   advance     │         │       fix         │
+        │ (next sub-    │         │ spawn deliver_    │
+        │ sprint OR     │         │ plan_fix → bump   │
+        │ milestone_    │         │ fix_round →       │
+        │ close)        │         │ back to dev_      │
+        └───────┬───────┘         │ pending           │
+                ↓                  └───────────────────┘
+        ┌───────────────┐
+        │ milestone_    │
+        │ close         │ ← MANDATORY_CHECKPOINT bad_case_manual_review here
+        └───────┬───────┘
+                ↓ (if charter.acceptance.enabled)
+        ┌───────────────────┐
+        │ acceptance_pending│ run F5 eval evidence → spawn run_acceptance
+        └───────┬───────────┘
+                ↓ acceptance verdict
+       ┌────────┼─────────────────────────┐
+       ↓        ↓                          ↓
+     pass   fix_required               needs_human
+       │        │                          │
+       │        ↓ post human-confirm        ↓
+       │     checkpoint (3 route options)   surface_approve
+       │        │                          checkpoint
+       │   ┌────┼──────────┐
+       │   ↓    ↓          ↓
+       │ deliver re-      research-
+       │  fix  acceptance  contract-
+       │  iter (more       revision
+       │   ↓   evidence)
+       │   ↓                                ↓
+     advance to next milestone OR halt    human writes decision
+```
+
+**Type B variant** (placeholder; OQ-V4-001): instead of `gate_pending`'s `run_tests`, run the SOP per-step verification gates from `charter.profile_type_b.sop_definition.verification_gates_per_step`. Full spec deferred.
+
+**Type C variant**: skip `acceptance_pending` if charter.profile_type_c is the only profile and `acceptance.run_at: release_cut` only; Type C usually runs Acceptance every sub-sprint via LOCAL_ACCEPTANCE_CHECKLIST.
+
+**State invariants**:
+- Skipped-but-required gate = NOT passed. No silent skip; orchestrator emits `gate_hard_fail`.
+- Charter can't widen scope mid-run; only `scope_deviation` checkpoint resolution can.
+- `close_pending`'s deterministic `scope_envelope_check` runs BEFORE LLM close verdict is trusted.
+- Acceptance only runs if `charter.acceptance.enabled` AND judge calibration passed (Constitution §3.6).
+- All decisions checkpointed to `docs/checkpoints/` filesystem so human can audit.
+- Fix-round counter bounded by `charter.budget.max_fix_rounds_total`; exceeded → halt.
+
+#### §4.2.5 scope_envelope_check (deterministic, no LLM)
+
+Pure function over `(charter.approved_scope, observed_diff, declared_next_subsprint)`. No LLM involvement; deterministic boolean output. Runs at every `close_pending`.
+
+Checks:
+1. `subsprint_id ∈ charter.approved_scope.subsprint_sequence`.
+2. Every layer claimed touched ∈ `charter.approved_scope.layers_allowed`.
+3. Every module touched ∈ `charter.approved_scope.modules_in_scope` AND ∉ `explicitly_out_of_scope`.
+4. No module touched that's not declared anywhere — flags `unknown_module`.
+
+Any failure → `scope_deviation` MANDATORY_CHECKPOINT fires. Orchestrator halts and writes the checkpoint with all 4 check results; human resolves via:
+- Accept-deviation: widen `approved_scope` (writes new charter version; orchestrator resumes).
+- Reject-deviation: orchestrator rolls back fix round; spawn_deliver_plan_fix re-runs with narrower guidance.
+- Abandon: halt the orchestrator run.
+
+The check is intentionally STATIC and BOOLEAN. No LLM judgment.
+
+#### §4.2.6 F5 evidence pattern
+
+When Acceptance needs execution evidence, orchestrator runs the eval harness and feeds artifact paths to Acceptance.
+
+```
+charter.tooling.eval.cmd = "<shell-command>"
+charter.tooling.eval.timeout_seconds = <int>
+
+acceptance_pending state:
+  orchestrator → execute charter.tooling.eval.cmd
+              → capture stdout / stderr / artifacts under eval/runs/<run-id>/
+              → on success (exit 0 within timeout):
+                  pass artifact paths to spawn run_acceptance as read-only context
+              → on failure:
+                  emit gate_hard_fail MANDATORY_CHECKPOINT;
+                  human resolves (re-run / accept-failure-and-route / abort)
+
+run_acceptance:
+  reads evidence in read-only sandbox
+  reads closure_contract from research-briefs/<id>.md
+  produces JSON verdict per schemas/acceptance-verdict.schema.json
+```
+
+**Why F5**:
+- Dev sandbox is workspace-write; orchestrator-run keeps bad-case suite outside Dev sandbox (no eval contamination).
+- Acceptance sandbox is read-only; Acceptance cannot run network/scripts. F5 lets Acceptance judge from real execution data WITHOUT giving Acceptance write access OR network OR the dev sandbox.
+- Both sandboxes stay sealed; evidence flows through filesystem.
+
+**F5 forbidden patterns** (anti-patterns; §4.2.8):
+- Letting Acceptance run the eval harness itself (sandbox breach + non-reproducible).
+- Acceptance verdict claiming pass/fail from CODE INSPECTION alone, not execution evidence.
+
+#### §4.2.7 Spawn function set + JSON verdict schemas
+
+Each spawn function has a published JSON-schema verdict shape so orchestrator parses deterministically without LLM string-matching.
+
+| Function | Backing agent (per charter) | Tools | Verdict schema |
+|---|---|---|---|
+| `spawn_dev` | `charter.tooling.dev.agent_kind` | workspace-write; no network; no git push | (none — code edits + handoff file IS the artifact) |
+| `spawn_deliver_close` | `charter.tooling.deliver.agent_kind` | default | `schemas/deliver-close-verdict.schema.json` |
+| `spawn_deliver_plan_fix` | `charter.tooling.deliver.agent_kind` | default | `schemas/deliver-plan-fix.schema.json` |
+| `spawn_research` | `charter.tooling.research.agent_kind` | default | `schemas/research-brief.schema.json` |
+| `run_review` | `charter.tooling.review.agent_kind` | Read, Grep, Glob whitelist | `schemas/review-verdict.schema.json` |
+| `run_acceptance` | `charter.tooling.acceptance.agent_kind` | Read, Grep, Glob whitelist | `schemas/acceptance-verdict.schema.json` |
+
+**Verdict-shape summaries** (full schemas in `schemas/`):
+
+- **`deliver_close_verdict`**: `{verdict: A|B|C|D, blocking_count, worst_severity, in_scope, next_subsprint, reason}`
+- **`deliver_plan_fix_verdict`**: `{subsprint_id, layers[], modules[], objective_md, dev_prompt_md, summary}`
+- **`research_brief_verdict`**: `{brief_id, brief_md, closure_contract_summary, scope_in[], scope_out[]}`
+- **`review_verdict`**: `{decision, blocking_count, summary, findings[]}` with per-finding `{id, severity, layer, evidence[], rationale}`
+- **`acceptance_verdict`**: `{milestone_verdict, cases[], failure_briefs[], suggested_route}` with per-case `{case_id, criterion, evidence_path, verdict, rationale}`
+
+**Verdict parsing**:
+- Orchestrator parses with schema validator.
+- Invalid verdict = `gate_hard_fail` MANDATORY_CHECKPOINT.
+- Schema violation does NOT silently default to permissive verdict. Agent re-runs OR human resolves.
+
+#### §4.2.8 Δ-18 anti-patterns (FORBIDDEN — extensions to Constitution §1.7)
+
+Each violation is a framework breach; orchestrator implementations MUST refuse / halt / surface.
+
+1. **Charter bypassing a default MANDATORY_CHECKPOINT in any of the four shapes — omitted / emptied / disabled / overridden** (Constitution §1.7-D + §4.2.2 charter editing rules). Charter validator rejects each shape. Semantic override counts as bypass. Legitimate path: ADD a custom checkpoint alongside default.
+2. **Running `run_acceptance` in `fully_autonomous_within_budget` mode without §3.6 calibration passed**. Orchestrator MUST degrade `autonomy.level` to `human_on_the_loop` automatically. Degradation is not optional and not opaque.
+3. **Bypassing `scope_envelope_check` on close**. Even if LLM close verdict says `in_scope: true`, scope_envelope_check is the source of truth.
+4. **Giving Dev sandbox read access to `case_specs_shadow/`** (or equivalent holdout). Eval contamination.
+5. **Acceptance verdict claiming pass/fail from CODE INSPECTION instead of execution evidence** — F5 pattern violation. Verdicts referencing only code paths and not artifact paths in `evidence_path` are invalid.
+6. **Charter defaulting `acceptance.mode=auto_iterate` while `judge_calibration.status=uncalibrated`** — degradation must be automatic, never opaque.
+7. **Spawning the Acceptance Agent from a Deliver or Dev session** (Constitution §1.7-C).
+8. **Acceptance routing `fix_required → Deliver` without a written human-confirm checkpoint decision** (Constitution §3.5).
+9. **Charter `acceptance.on_fix_required.human_confirm_required: false`** — direct violation of Constitution §1.7-C.
+10. **Charter validator silently accepting an empty `route_options` list** — at least one option must be present.
+11. **Auto-promoting an OBS-item to an R-item without human review** (per Δ-9). Orchestrator may surface candidate; promotion is human.
+12. **Mid-milestone scope expansion via adaptive_insert beyond `max_inserted_subsprints`**. Bounded; over-limit = halt.
+13. **Mounting a role skill (or spawning an intra-role sub-agent) that exceeds the role's tool whitelist or sandbox** — e.g., a review/acceptance skill declaring tools beyond `[Read, Grep, Glob]`, or a Dev sub-agent with network access (Constitution §3.4 invariant #6; `process/role-skill-model.md` §4). Inheritance is transitive; the spawning role's session owns the breach.
+
+#### §4.2.9 Filesystem layout for an orchestrator run
+
+```
+<adopter>/
+  charter.yaml
+  docs/
+    checkpoints/
+      20260611-091230__mission_start__M5.md
+      20260611-141500__bad_case_manual_review__M5.md
+    research-briefs/<id>.md
+    acceptance-reports/<scope>-acceptance-report.md
+    codex-findings.md
+  eval/
+    bad_cases/                # read by run_acceptance via F5
+    runs/<run-id>/             # per-eval-run artifact dir
+      stdout.txt
+      artifacts/
+  .orchestrator/               # state; gitignored typically
+    state.json
+    charter-snapshot.yaml      # immutable copy at boot
+    fix_round.txt
+    log/events.jsonl
+```
+
+Adopters MAY relocate `.orchestrator/`. Other paths follow Constitution §5 state-ledger conventions.
+
+### §4.3 Code Reviewer trigger conditions
+
+The orchestrator's `run_review` spawn fires at:
+- Sub-sprint close (default).
+- §4.3 fine-grained triggers (mid-sprint):
+  - Diff touches a semantic-decision surface (prompt projection / planner / judge).
+  - Diff touches a Tier-0 invariant declared in `docs/current/runtime_invariants.md`.
+  - Code Reviewer's previous verdict said `out_of_scope_review` and Deliver claims new sub-sprint resolves the gap.
+  - Bad-case suite run surfaces a new failure shape (per `process/badcase-lifecycle.md`).
+
+Adopters tighten / loosen this trigger set in `docs/current/adoption-state.md` per Constitution §7.0.
+
+### §4.4 Auto-fix iteration bounds
+
+When `run_review` returns `fix_required` AND charter permits `auto_fix_iteration.enabled: true`:
+- Orchestrator increments `fix_round` counter.
+- If `fix_round > charter.auto_pass_rules.auto_fix_iteration.max_rounds` → halt; emit `gate_hard_fail`.
+- If any finding severity > `only_if_findings_severity_at_most` → halt; emit MANDATORY_CHECKPOINT.
+- Else spawn `spawn_deliver_plan_fix` with review findings as input; produce new sub-sprint; re-enter `dev_pending`.
+
+The bound prevents infinite Dev ↔ Review ping-pong.
+
+### §4.5 Idempotency and resume
+
+- Each `spawn_*` call writes inputs hash + verdict under `.orchestrator/calls/<call-id>.json`.
+- Resume after restart: read `state.json`; re-enter from current state.
+- A spawn called twice with same input hash returns cached verdict (idempotency cache). Adopters MAY invalidate by deleting the corresponding `.orchestrator/calls/` file.
+- Matters most for `spawn_research` and `run_acceptance` (expensive).
+
+## §5 Adopter bootstrap pointers
+
+For step-by-step orchestrator adoption:
+- Greenfield: `docs/greenfield-guide.md` STEP 7 (optional bootstrap).
+- Brownfield: `docs/brownfield-guide.md` (OPT OUT recommended unless multi-sub-sprint cycles to automate).
+- Per-charter authoring: `templates/mission-charter.yaml` is starting template; `schemas/mission-charter.schema.json` validates.
+- Calibration set authoring: see `process/badcase-lifecycle.md`.
+
+Recommended adoption ladder:
+
+1. Adopt the 5-role chain (Constitution §3) in pure human-paste mode. No orchestrator. Make sure all 5 roles can execute and Acceptance fix_required → human-confirm → Deliver flow works manually.
+2. Author a minimal charter with `autonomy.level: human_in_the_loop` and `acceptance.enabled: false`. Run orchestrator on a small test milestone. Verify all checkpoints fire and you resolve via filesystem inbox.
+3. Add `acceptance.enabled: true` with `judge_calibration.status: uncalibrated`. Watch orchestrator auto-degrade `autonomy.level` to `human_on_the_loop`. Resolve first Acceptance fix_required checkpoint manually.
+4. Build the labeled calibration set (per Constitution §3.6). Re-run; verify status flips to `calibrated`.
+5. Promote `autonomy.level` to `human_on_the_loop`. Run a full milestone with only MANDATORY_CHECKPOINTS firing.
+6. (Optional) Promote to `fully_autonomous_within_budget` once multiple successful `human_on_the_loop` runs are done AND adopter is comfortable with budget caps.
+
+Skipping ladder rungs is permitted; framework does not enforce the order.
+
+## §6 Open questions / OQs carry
+
+- **OQ-V4-001** (Δ-18 Type B placeholder) — full Type B state machine + SOP per-step gate spec deferred until hermes-autoloop completes its first SOP milestone end-to-end. Lessons fold back to v5.
+- **OQ-V4-007** (calibration cost on model swap) — re-calibration runs full labeled set; potentially costly. Open question whether framework should provide "calibration cache" / labeled-set portability story. Defer to first multi-model adopter.
+- **OQ-V4-009** (`tools/precommit_bundling_check.sh` etc. referenced in friction-playbook but not built) — backlog; orchestrator does not depend.
+
+## §7 Editing this doc
+
+Process-tier; edits at fold-back sub-sprint cadence per Constitution §8. Adopter-specific orchestrator overrides (custom checkpoints, custom verdict fields, extended T1 profile) live in adopter `docs/current/adoption-state.md` divergence rows. Framework-side changes to MANDATORY_CHECKPOINTS, scope_envelope_check semantics, or state machine shape require Constitution §1.7-D-aware fold-back review.
+
+---
+
+End of Δ-18 Delivery Loop spec.

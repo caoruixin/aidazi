@@ -1,86 +1,43 @@
 ---
-title: Domain taxonomy
-doc_tier: current-runtime
+title: Acme Returns Bot — domain taxonomy
+doc_tier: adopter-state
+doc_category: live
 status: current
-implementation_status: not_started
 source_of_truth: this file
-last_reviewed: <YYYY-MM-DD>
-review_cadence: every 3-5 milestones
-notes: >
-  Project's domain vocabulary: workflow lanes, shift detection,
-  escalation, grounding concepts. Required by
-  `framework/governance/constitution.md`. Fill during M0.
+last_reviewed: 2026-06-12
+review_cadence: per milestone close
 ---
 
-# Domain taxonomy
+# Domain taxonomy — refund eligibility (Type A)
 
-## 1. Workflow lanes
+Example domain contract. Descriptive, not procedural — names what exists; handling rules live in the product/service design.
 
-Your project's "lanes" — the LLM-classified mode of conversation.
-Define each lane with: name, when active, tools/capabilities
-available, how the LLM decides to enter.
+## Entities
 
-### Lane: `<lane-name-1>`
+| Entity | States | Notes |
+|---|---|---|
+| `order` | placed / shipped / delivered / returned / refunded | has `delivered_at`, `total`, `items[]` |
+| `refund_request` | new / eligible / ineligible / processing / completed | references one `order` |
+| `refund_policy` | active | 30-day window from `delivered_at`; some item categories non-refundable |
+| `customer` | — | owns orders; PII-bearing |
 
-- **When active**: <describe the user-state / intent for this lane>
-- **Tools available**: <list>
-- **LLM entry signal** (semantic, NOT keyword): <describe>
-- **Lane exit conditions**: <describe>
+## Use-case / intent taxonomy (inferred from transcripts)
 
-### Lane: `<lane-name-2>`
+| UC id | Intent | Frequency (sample) |
+|---|---|---|
+| UC-1 | Check refund eligibility for a specific order | high |
+| UC-2 | Ask why a refund was denied | medium |
+| UC-3 | General "how do refunds work" question | medium |
+| UC-4 | Escalate to a human agent | low |
 
-(same shape)
+UC taxonomy was inferred from ~200 real transcripts, not invented up front (avoids the P1 spec-first/data-late detour).
 
-### Lane: `<lane-name-3>`
+## Vocabulary
 
-(same shape)
+- Customers say "money back" / "return" / "send it back" — all map to refund intent.
+- "Window" = the 30-day eligibility period.
+- Internal term "RMA" is NOT used customer-facing.
 
-## 2. Shift / drift detection
+---
 
-When the user moves between lanes, the LLM detects the transition.
-Define the observable signals as semantic categories, NOT keywords.
-
-- **Signal: <signal-name-1>** — <description of the semantic pattern
-  the LLM looks for; what state in the projection surfaces this>
-- **Signal: <signal-name-2>** — <description>
-
-## 3. Escalation signals
-
-When the agent should hand off to a human / higher-privileged path.
-
-- **Category: <escalation-category-1>** — <user-facing description;
-  when the LLM should escalate; what tool / capability the escalation
-  uses>
-- **Category: <escalation-category-2>** — <description>
-
-## 4. Grounding concepts
-
-What facts must be grounded in retrieved evidence vs may be stated
-freely.
-
-- **Must ground**:
-  - <fact category 1, e.g., "product specifications">
-  - <fact category 2, e.g., "current inventory">
-- **May state freely**:
-  - <category 1, e.g., "general domain knowledge">
-  - <category 2, e.g., "natural conversational filler">
-
-## 5. Layer extensions (optional)
-
-If your project adds a §3.1 layer to the framework's nine:
-
-### Layer: `<new-layer-name>`
-
-- **Why needed**: <one paragraph; what failure shape doesn't fit the
-  existing nine>
-- **Decision question for §3.2** (when to route to this layer):
-  <one or two sentences>
-- **Example failure**: <one paragraph>
-
-## Glossary
-
-- `<term-1>`: <one-line definition>
-- `<term-2>`: <definition>
-
-(Used by deliver / dev / review agents to disambiguate terms in
-sprint planning and findings.)
+End of domain taxonomy.

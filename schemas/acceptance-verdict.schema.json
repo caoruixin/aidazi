@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/acceptance-verdict.schema.json",
+  "title": "Acceptance Agent verdict",
+  "description": "Output shape for the Acceptance Agent's milestone-close / release-cut / sub-sprint judgment. Per Constitution §3.5: on milestone_verdict: fix_required, the Acceptance Agent ALSO writes a human-confirm checkpoint file (process/delivery-loop.md §4.2.3 item 'acceptance_fix_required'); Deliver picks up the gap brief ONLY after that checkpoint resolves with confirm: yes + route: deliver_fix_iteration.",
+  "type": "object",
+  "required": ["milestone_verdict", "cases", "suggested_route"],
+  "additionalProperties": false,
+  "properties": {
+    "milestone_verdict": {
+      "type": "string",
+      "enum": ["pass", "fix_required", "needs_human"]
+    },
+    "closure_contract_ref": {
+      "type": "string",
+      "description": "Path to docs/research-briefs/<id>.md whose closure_contract was the evaluation source. Front-matter sign_off_date should match milestone start (Constitution §3.4 invariant #4 — Research-Acceptance contract symmetry)."
+    },
+    "calibration_status": {
+      "type": "string",
+      "enum": ["calibrated", "uncalibrated", "not_required"],
+      "description": "Confirms §3.6 calibration gate state at verdict time. 'not_required' means autonomy.level was human_in_the_loop or human_on_the_loop."
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["case_id", "criterion", "evidence_path", "verdict", "rationale"],
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "description": "closure_contract clause ref OR bad-case suite id."
+          },
+          "criterion": {
+            "type": "string",
+            "description": "The specific clause text or summary being judged."
+          },
+          "evidence_path": {
+            "type": "string",
+            "pattern": "^eval/runs/.+",
+            "description": "Artifact path from orchestrator's F5 evidence run. Framework default: pattern starts with 'eval/runs/' (process/delivery-loop.md §4.2.6). Adopters who use a different evidence directory MUST (a) record the override in docs/current/adoption-state.md as a divergent row against Δ-18 with rationale, AND (b) maintain a local schema override that relaxes this pattern. Without both, the validator rejects. Acceptance verdicts citing code paths alone instead of execution evidence violate §4.2.8 anti-pattern #5 regardless of pattern."
+          },
+          "verdict": {
+            "type": "string",
+            "enum": ["pass", "fail", "partial"]
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Paragraph citing positive shape held, anti-pattern avoided, anchor-phrase semantic match (NOT keyword match per Constitution §1.7-B)."
+          }
+        }
+      }
+    },
+    "failure_briefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "contract_clause_violated", "proposed_scope", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "title": {"type": "string", "minLength": 1},
+          "contract_clause_violated": {"type": "string"},
+          "proposed_scope": {
+            "type": "string",
+            "description": "Paragraph describing what Deliver should fix if confirm: yes + route: deliver_fix_iteration."
+          },
+          "severity": {"type": "string", "enum": ["P0", "P1", "P2"]}
+        }
+      },
+      "description": "Required (non-empty) iff milestone_verdict = fix_required."
+    },
+    "residual_risks": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional; residual risks Customer assumes if milestone_verdict = pass."
+    },
+    "suggested_route": {
+      "type": "string",
+      "enum": [
+        "deliver_fix_iteration",
+        "re_acceptance_after_evidence",
+        "research_contract_revision",
+        "n/a"
+      ],
+      "description": "n/a applies when milestone_verdict = pass. For fix_required: pick the route that best fits the failure shape per role-cards/acceptance-agent.md §7.1."
+    },
+    "human_confirm_checkpoint_path": {
+      "type": "string",
+      "description": "Required if milestone_verdict = fix_required: path to docs/checkpoints/<timestamp>__acceptance_fix_required__<scope>.md written by Acceptance per Constitution §3.5. Verdict-without-checkpoint is a §1.7-C breach."
+    }
+  }
+}

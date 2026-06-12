@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/mission-charter.schema.json",
+  "title": "Mission charter (Δ-18)",
+  "description": "Δ-18 charter pre-authorization for an orchestrator run. T0 base + at least one T1 profile overlay. Hard validator rules (Constitution §1.7-C/§1.7-D + process/delivery-loop.md §4.2.2): MANDATORY_CHECKPOINTS cannot be bypassed in any of four shapes (omitted/emptied/disabled/overridden); acceptance.on_fix_required.human_confirm_required MUST be true; route_options MUST be non-empty.",
+  "type": "object",
+  "required": ["mission", "autonomy", "budget", "tooling"],
+  "additionalProperties": false,
+  "properties": {
+    "mission": {
+      "type": "object",
+      "required": ["id", "goal"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "goal": {"type": "string", "minLength": 1, "description": "One-line user-facing goal Customer reads at gate 2."}
+      }
+    },
+    "autonomy": {
+      "type": "object",
+      "required": ["level", "approved_scope", "auto_pass_rules"],
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["human_in_the_loop", "human_on_the_loop", "fully_autonomous_within_budget"]
+        },
+        "approved_scope": {
+          "type": "object",
+          "required": ["subsprint_sequence", "layers_allowed", "modules_in_scope"],
+          "additionalProperties": false,
+          "properties": {
+            "subsprint_sequence": {
+              "type": "array",
+              "items": {"type": "string"},
+              "minItems": 1
+            },
+            "layers_allowed": {
+              "type": "array",
+              "items": {"type": "string"},
+              "minItems": 1
+            },
+            "modules_in_scope": {
+              "type": "array",
+              "items": {"type": "string"},
+              "minItems": 1
+            },
+            "explicitly_out_of_scope": {
+              "type": "array",
+              "items": {"type": "string"},
+              "default": []
+            }
+          }
+        },
+        "auto_pass_rules": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "clean_pass_auto_advance": {"type": "boolean"},
+            "auto_fix_iteration": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "max_rounds": {"type": "integer", "minimum": 0},
+                "only_if_findings_severity_at_most": {"type": "string", "enum": ["P0", "P1", "P2"]}
+              }
+            },
+            "adaptive_insert": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "max_inserted_subsprints": {"type": "integer", "minimum": 0}
+              }
+            }
+          }
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "required": ["max_fix_rounds_total", "max_wall_clock_minutes"],
+      "additionalProperties": false,
+      "properties": {
+        "max_api_usd": {"type": "number", "minimum": 0, "description": "Caveat: doesn't track subscription-billed agents (e.g., Codex)."},
+        "max_fix_rounds_total": {"type": "integer", "minimum": 0},
+        "max_wall_clock_minutes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "tooling": {
+      "type": "object",
+      "required": ["research", "deliver", "dev", "review", "eval", "acceptance"],
+      "additionalProperties": false,
+      "properties": {
+        "research": {"$ref": "#/$defs/agent_tooling"},
+        "deliver": {"$ref": "#/$defs/agent_tooling"},
+        "dev": {
+          "allOf": [
+            {"$ref": "#/$defs/agent_tooling"},
+            {
+              "type": "object",
+              "properties": {
+                "sandbox": {"type": "string", "enum": ["workspace_write", "read_only"], "default": "workspace_write"}
+              }
+            }
+          ]
+        },
+        "review": {
+          "allOf": [
+            {"$ref": "#/$defs/agent_tooling"},
+            {
+              "type": "object",
+              "properties": {
+                "tools": {
+                  "type": "array",
+                  "items": {"type": "string", "enum": ["Read", "Grep", "Glob"]},
+                  "default": ["Read", "Grep", "Glob"]
+                }
+              }
+            }
+          ]
+        },
+        "eval": {
+          "type": "object",
+          "required": ["cmd", "timeout_seconds"],
+          "additionalProperties": false,
+          "properties": {
+            "cmd": {"type": "string", "minLength": 1, "description": "F5 pattern: orchestrator runs this (process/delivery-loop.md §4.2.6)."},
+            "timeout_seconds": {"type": "integer", "minimum": 1}
+          }
+        },
+        "acceptance": {
+          "type": "object",
+          "required": ["enabled", "on_fix_required"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "agent_kind": {"type": "string"},
+            "model": {"type": "string"},
+            "tools": {
+              "type": "array",
+              "items": {"type": "string", "enum": ["Read", "Grep", "Glob"]},
+              "default": ["Read", "Grep", "Glob"]
+            },
+            "skills": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "OPTIONAL evidence-reading role skills only (process/role-skill-model.md §5). Calibration identity covers the skill set (Constitution §3.4 invariant #6 + §3.6): any change to this list invalidates judge_calibration.status."
+            },
+            "subagent_fanout": {
+              "type": "boolean",
+              "description": "OPTIONAL. Fan-out is discouraged for Acceptance; if true, sub-agents are read-only evidence-gatherers (Constitution §3.4 invariant #6)."
+            },
+            "judge_calibration": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {"type": "string", "enum": ["calibrated", "uncalibrated"]},
+                "agreement_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.9},
+                "flip_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.1},
+                "labeled_set_path": {"type": "string"}
+              }
+            },
+            "run_at": {"type": "string", "enum": ["milestone_close", "release_cut", "both"]},
+            "on_fix_required": {
+              "type": "object",
+              "required": ["human_confirm_required", "route_options"],
+              "additionalProperties": false,
+              "properties": {
+                "human_confirm_required": {
+                  "type": "boolean",
+                  "const": true,
+                  "description": "MUST be true per Constitution §1.7-C; charter validator rejects false."
+                },
+                "route_options": {
+                  "type": "array",
+                  "items": {"type": "string", "enum": ["deliver_fix_iteration", "re_acceptance_after_evidence", "research_contract_revision"]},
+                  "minItems": 1,
+                  "description": "MAY be narrowed; MAY NOT be empty."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "profile_type_a": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Type A overlay; populate if Type A or A+B hybrid."
+    },
+    "profile_type_b": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Type B overlay (PLACEHOLDER per OQ-V4-001 — full spec deferred until hermes first SOP milestone)."
+    },
+    "profile_type_c": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Type C overlay; populate if Type C demo."
+    },
+    "mandatory_checkpoints_added": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Adopter-added custom MANDATORY_CHECKPOINTS (in addition to the 8 defaults). The 8 defaults cannot be omitted/emptied/disabled/overridden (Constitution §1.7-D; process/delivery-loop.md §4.2.2)."
+    }
+  },
+  "$defs": {
+    "agent_tooling": {
+      "type": "object",
+      "required": ["agent_kind"],
+      "additionalProperties": true,
+      "properties": {
+        "agent_kind": {"type": "string"},
+        "model": {"type": "string"},
+        "skills": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "OPTIONAL role skills mounted on this role (skill name or path; process/role-skill-model.md). Each skill MUST comply with the role's tool whitelist and sandbox (Constitution §3.4 invariant #6)."
+        },
+        "subagent_fanout": {
+          "type": "boolean",
+          "description": "OPTIONAL. false forbids intra-role sub-agent fan-out for this role; true permits it (Constitution §3.4 invariant #6 constraints apply regardless). Omitted = backing agent's default behavior."
+        }
+      }
+    }
+  }
+}

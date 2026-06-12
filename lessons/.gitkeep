@@ -1,0 +1,4 @@
+# This directory holds adopter → framework fold-back lessons.
+# Adopters file lessons here as docs/<date>-<topic>.md per process/fold-back-protocol.md.
+# Lessons are intermediate (Δ-4): frozen at creation; cleared/archived at each fold-back sub-sprint.
+# This .gitkeep keeps the empty directory tracked until the first lesson lands.

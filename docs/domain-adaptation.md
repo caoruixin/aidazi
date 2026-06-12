@@ -1,127 +1,113 @@
-# Domain adaptation checklist
+---
+title: Domain adaptation — the three domain contracts + layer extensions
+doc_tier: application-guide
+doc_category: live
+status: current
+implementation_status: implemented
+source_of_truth: this file
+last_reviewed: 2026-06-12
+review_cadence: every fold-back sub-sprint
+supersedes: []
+superseded_by: null
+load_discipline: on-demand
+size_target: 18KB
+split_trigger: if §2 per-contract detail grows past 6KB, split each contract's authoring drill to its own template and keep the summary here
+notes: >
+  How a domain-agnostic framework becomes a domain-specific project. Defines
+  the three required domain contracts (domain_taxonomy / runtime_invariants /
+  eval_acceptance_bars) every adopter authors in docs/current/, the fix-layer
+  extensions per track (workflow_definition for Type B / A+B; java_guard ↔
+  runtime_guard naming), and the per-milestone domain ops. The framework is
+  track-aware but domain-agnostic; this is where YOU make it about customer
+  service, travel SOPs, e-commerce, or whatever your domain is.
+---
 
-A short checklist for the consumer team specializing `aidazi` to
-their domain. Most teams will fill this once at adoption and revisit
-at every 3rd or 4th milestone close.
+# Domain adaptation — making a domain-agnostic framework domain-specific
 
-## Required domain contracts
+The framework is **track-aware but domain-agnostic** (`governance/constitution.md` §1.2). It knows the difference between a Type A agent and a Type B workflow; it knows nothing about *your* domain — customer service, airline rebooking, e-commerce returns, legal intake. Domain adaptation is where you supply that knowledge, in a fixed shape the roles can rely on.
 
-Three files MUST exist in `docs/current/`:
+The skipped-domain-contracts failure is one of the most common adoption regrets (`docs/friction-playbook.md` F12): a team runs the framework's machinery without filling its domain contracts, and the roles end up reasoning against vague or absent context. Fill these first.
 
-### 1. `docs/current/domain_taxonomy.md`
+---
 
-- [ ] Defines **workflow lanes** for your domain (analogous to CS's
-      FAQ / wrap-up / escalation; or shopping's discover / compare /
-      purchase; or web-automation's SOP-step-bucket).
-- [ ] Defines **shift / drift signals** the LLM should observe (NOT
-      keyword triggers; observable semantic categories).
-- [ ] Defines **escalation categories** (what counts as "hand off to
-      human / higher-privileged path" in your domain).
-- [ ] Defines **grounding concepts** (what facts must be grounded in
-      retrieval evidence; what facts may be stated freely).
-- [ ] Optional: **layer extensions** to `framework/governance/constitution.md`
-      §3.1 (e.g., a `workflow_definition` layer for SOP-driven
-      projects).
+## §1 The three domain contracts (required)
 
-### 2. `docs/current/runtime_invariants.md`
+Every adopter authors three domain contracts under `docs/current/`. They are the domain-specific counterpart to the universal constitution: the constitution says *what the LLM owns*; these say *what the LLM owns **in your domain***.
 
-- [ ] Lists **Tier-0 invariants** specific to your project — the
-      hard floor your runtime guarantees regardless of LLM behaviour.
-- [ ] Each invariant has: statement + why-Tier-0 + how-enforced +
-      detection mechanism.
-- [ ] Common categories: safety floor, grounding floor, capability
-      boundary, persistence floor.
+| Contract | File | Answers | Primary consumer |
+|---|---|---|---|
+| **Domain taxonomy** | `docs/current/domain_taxonomy.md` | What are the entities, use-cases/intents, and vocabulary of this domain? | Research (elicitation), Dev (implementation), Acceptance (judging in-domain) |
+| **Runtime invariants** | `docs/current/runtime_invariants.md` | What hard, Tier-0 invariants must the runtime enforce in this domain? | Dev, Code Reviewer (the §1.3/§1.4 ownership lens) |
+| **Eval acceptance bars** | `docs/current/eval_acceptance_bars.md` | What does "good enough to ship" mean numerically + behaviourally in this domain? | Acceptance, Deliver (close), eval design (Phase 5) |
 
-### 3. `docs/current/eval_acceptance_bars.md`
+These three are loaded at cold-start by every role session (per `governance/context_briefing.md`). A fourth `docs/current/` file — `agent_context_guide.md` — holds adopter-side per-task reading lists; it's not a domain contract but lives alongside them.
 
-- [ ] Defines **wrong-lane containment rate** for your domain.
-- [ ] Defines **over-escalation rate** for your domain.
-- [ ] Defines **grounding floor metric** for your domain.
-- [ ] Defines **target / neighbor / negative / shadow** case
-      categorization.
-- [ ] Points to your **eval baseline file** (default name:
-      `docs/current/eval_baseline.md`).
-- [ ] Points to your **bad-case suite path** (default:
-      `eval/bad_cases/`).
+### §1.1 Domain taxonomy
 
-## Optional consumer artefacts (recommended but not required)
+What it contains:
 
-### `docs/current/agent_context_guide.md`
+- **Entities** — the nouns of your domain (order, refund, booking, claim, account) with their states and relationships.
+- **Use-case / intent taxonomy** — the kinds of things a user wants. For Type A, this is the UC registry inferred from real transcripts (not invented up front — see the P1 *spec-first/data-late* detour in `process/common-detours-and-warnings-typeA.md`). For Type B, it's the SOP catalog.
+- **Vocabulary** — the conventional terms the user side uses, so the LLM's customer-facing wording matches domain expectations (fed by the Δ-15 Part D industry research synthesis).
 
-Project-specific task-type reading lists (which docs / code areas an
-agent should sample first for common task types in your project).
-Template at `framework/templates/agent_context_guide.md`.
+Authoring rule: keep it descriptive, not procedural. The taxonomy names *what exists*; the handling rules (how to respond) live in the product/service design (Phase 2), not here.
 
-### Custom layer additions
+### §1.2 Runtime invariants
 
-If your project's failures don't fit the §3.1 nine-layer taxonomy,
-define additions in `docs/current/domain_taxonomy.md` §Layer
-extensions. Examples:
+What it contains: the **Tier-0 invariants** — the hard, deterministic, kernel-level rules the runtime owns in your domain (`governance/constitution.md` §1.4). Examples by domain:
 
-- `workflow_definition` — SOP / script-table failures (for
-  state-machine-driven projects).
-- `retrieval` — RAG / KB lookup failures (for retrieval-grounded
-  projects).
-- `tool_invocation` — tool-call construction failures (for
-  multi-tool projects with rich tool surfaces).
+- Customer service: "never confirm a refund the order isn't eligible for"; "never expose another customer's PII."
+- Airline SOP: "never rebook onto a flight that's already departed"; "never skip the fare-difference confirmation step."
+- E-commerce: "never apply a discount code past its expiry"; idempotency on order submission.
 
-Adding a layer is OK; renaming existing layers is discouraged because
-it breaks framework references.
+This file is **load-bearing for the Code Reviewer**: the anti-hardcode kernel's question 2 asks whether a proposed hardcode protects a *current* Tier-0 invariant named here. A guard that protects an invariant in this list is justified; a keyword shortcut that doesn't is a §1.7 violation. So keep this list current — adding a new Tier-0 invariant is a `new_tier0_candidate` MANDATORY_CHECKPOINT (`process/delivery-loop.md` §4.2.3 #4), not a silent edit.
 
-### Domain-specific failure brief categories
+### §1.3 Eval acceptance bars
 
-If your domain has recurring failure shapes, add a brief category
-table to `docs/diagnostics/failure-briefs/_index.md` listing
-shape-categories your team uses.
+What it contains: the domain-specific definition of "shippable."
 
-## Per-milestone domain ops
+- KPI thresholds (accuracy, wrong-containment, escalation-correctness for Type A; per-step verification pass rate for Type B; LOCAL_ACCEPTANCE_CHECKLIST pass for Type C).
+- The safety / grounding / PII floors that may never regress regardless of pass-rate gains (`governance/constitution.md` §1.6).
+- The relationship between the eval suite and the closure_contract: the bars here are the *standing* domain quality floor; the closure_contract is the *per-milestone* success definition Acceptance judges against. Both apply at close.
 
-At each milestone planning:
+## §2 Fix-layer extensions per track
 
-- [ ] Review the three domain contracts. Any updates surfaced by the
-      last milestone?
-- [ ] Open R-items in `docs/action_bank.md` for taxonomy / invariant
-      / acceptance bar drift.
-- [ ] Pick which bad cases (per `eval/bad_cases/`) the milestone is
-      expected to address.
+The framework's fix-layer set (used by Δ-9 triage and the charter's `layers_allowed`) has a **universal base** plus **profile-specific extensions** (`process/post-deployment-iteration.md`). When you adapt for your track, you adopt the right layer set:
 
-At each milestone close:
+- **Universal base** (every track): `infra` / `java_guard` (Type A) or `runtime_guard` (Type B+) / `prompt_projection` / `skill_state` / `semantic_planner` / `eval_spec` / `product_policy` / `judge_calibration` / `human_review_required`.
+- **Profile-specific extension**: `workflow_definition` — added for **Type B** and **Type A+B hybrid**. This is the layer where SOP-step definitions and per-step verification gates live; pure Type A projects don't have it.
 
-- [ ] Run the bad-case suite + conduct manual review (§5.6).
-- [ ] Decide if any bad case downgrades to `closed-as-regression-guard`
-      (per §5.6.3 N≥2 rule).
-- [ ] Decide if any layer extension is needed (rare).
-- [ ] Update the three domain contracts if drift was observed.
+Naming note: `java_guard` (Type A heritage) and `runtime_guard` (Type B+) are the **same role** under different names per stack — the deterministic guard layer. Use the name that matches your stack; record the mapping in `adoption-state.md` if it isn't obvious to a newcomer.
 
-## Pitfalls
+The charter's `layers_allowed` should list only the layers your track uses; `schemas/sprint_stanza.schema.json` and the verdict schemas enumerate the full union so one enum covers all profiles — you use the relevant subset.
 
-### Don't make domain_taxonomy.md a glossary
+## §3 Per-milestone domain operations
 
-It's a working contract, not documentation. Each section should
-answer "what is THIS in our domain" with operational specificity.
-"Shift detection: the LLM observes user-intent transitions" is too
-abstract; "Shift detection: observe when user moves from
-[discover-mode] to [compare-mode]: user references multiple products,
-asks about side-by-side; the LLM should request user confirmation
-before transitioning when the new lane requires different tools" is
-operational.
+Domain adaptation is not a one-time setup; the contracts evolve as the project learns. Per-milestone domain ops:
 
-### Don't pad runtime_invariants.md with soft signals
+- **At milestone planning**: Deliver checks whether the milestone's scope touches domain vocabulary or invariants not yet in the contracts. New entities/intents → update `domain_taxonomy.md`. New hard rules → propose a `new_tier0_candidate` checkpoint for `runtime_invariants.md`.
+- **During the milestone**: when Dev or Code Reviewer discovers a domain rule the contracts don't capture, that's a `docs/diagnostics/<id>.md` note, not a silent contract edit. It matures into a contract update via triage.
+- **At milestone close**: Acceptance judges against the closure_contract *and* the standing `eval_acceptance_bars.md` floor. If the bars themselves proved wrong (too loose, too tight), that's a `research_contract_revision` or an `adoption-state.md` divergence with rationale — not an in-place loosening to make the milestone pass (which would be a §1.7 "widening eval to accept a bot mistake" violation).
 
-Tier-0 invariants are hard floor. If you're tempted to add "the
-agent should not be rude" — that's a semantic signal, not a Tier-0.
-Tier-0 = runtime MUST enforce regardless of LLM choice; soft signals
-= LLM owns and can override with context.
+## §4 Domain overlays to the forbidden list (optional)
 
-### Don't define acceptance bars without thresholds
+The constitution's §1.7 forbidden list is the framework baseline; you MAY extend it for your domain (§1.8). A healthcare adopter might add `§1.7-domain-A: no LLM-authored medical diagnosis`; a finance adopter might add a rule about unverified balance claims. Domain extensions live in `docs/current/<adopter>-domain-overlay.md` and are referenced from `adoption-state.md`. You may **add** domain forbidden items; you may never **subtract** from the framework's §1.7 (hard requirement, §1.8).
 
-If your wrong-lane containment rate definition is "we want it down",
-that's a direction, not a bar. The bar is "no regression vs baseline
-B" or "≤ N% on the M0 case set". Pick a number.
+## §5 Checklist
 
-### Don't make the bad-case suite a regression test suite
+Before your first milestone, confirm:
 
-The bad-case suite is **human-judgment first**. Composite scores are
-observation-only (§5.5). The suite holds load-bearing cases that
-require deliver + human qualitative judgment at every milestone
-close.
+```
+□ docs/current/domain_taxonomy.md authored — entities + UC/intent taxonomy + vocabulary
+□ docs/current/runtime_invariants.md authored — Tier-0 invariants for this domain
+□ docs/current/eval_acceptance_bars.md authored — KPI thresholds + safety/grounding/PII floors
+□ Fix-layer set chosen for your track (workflow_definition added iff Type B / A+B)
+□ java_guard ↔ runtime_guard naming recorded if ambiguous
+□ (optional) domain forbidden-list overlay authored + referenced from adoption-state.md
+```
+
+A milestone run with these contracts empty or hand-waved is the F12 adoption-regret trap. Fill them; the roles depend on them.
+
+---
+
+End of domain adaptation.
