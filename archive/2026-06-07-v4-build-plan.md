@@ -176,7 +176,7 @@ aidazi/                                    # framework repo
 Each file's content is sourced from one or more of:
 - **v4-plan §X.Y**: section in `compact/framework-plan-v4-2026-06-06.md`
 - **csagent §X.Y**: doc path in csagent-latest (often `docs/current/process/...` or `docs/foundational/...`)
-- **hermes §X.Y**: doc path or code in google-baidu-hermes-autoloop
+- **hermes §X.Y**: doc path or code in the hermes-autoloop donor repo
 - **old aidazi §X.Y**: content from old aidazi commit (`1b93e07`) worth salvaging
 - **fresh authored**: write new content based on v4 plan spec
 
@@ -470,7 +470,7 @@ actual state.
 PREREQUISITES:
 - Read aidazi/process/profile-aware-maturity.md (Type A+B hybrid column)
 - Read aidazi/process/delivery-loop.md (Δ-18 spec)
-- Read /Users/caoruixin/projects/google-baidu-hermes-autoloop/ — all of:
+- Read the hermes-autoloop donor repo — all of:
   - AGENTS.md
   - docs/aidazi-integration-plan.md
   - docs/upgrade-plan.md
