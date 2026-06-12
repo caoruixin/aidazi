@@ -20,7 +20,7 @@ minimal-greenfield/
 │   ├── sprint_objective.md                # sub-sprint 1 scope
 │   ├── 10-handoff.md                      # §0 cold-start table + §1 narrative
 │   ├── action_bank.md                     # live backlog (R-items + OBS-items)
-│   ├── research-briefs/_placeholder.md    # where signed briefs land
+│   ├── research-briefs/RB-001-refund-eligibility.md  # the signed brief (gate 1) M1 is built against
 │   ├── acceptance-reports/_placeholder.md # where Acceptance verdicts land
 │   └── diagnostics/failure-briefs/_placeholder.md
 ├── compact/_placeholder.md                # where per-sprint dev/review/acceptance prompts land
