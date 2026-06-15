@@ -34,10 +34,13 @@ import driver as drv  # noqa: E402
 from driver import (  # noqa: E402
     Driver, GateHardFail, BudgetExceeded, load_charter,
     load_verdict_schemas, route_for_role, validate_verdict,
-    STATE_ADVANCE, STATE_HALTED, STATE_REVIEW_PENDING, STATE_CLOSE_PENDING,
+    STATE_ADVANCE, STATE_HALTED, STATE_DONE, STATE_ACCEPTANCE_PENDING,
+    STATE_REVIEW_PENDING, STATE_CLOSE_PENDING,
 )
 
 CHARTER_PATH = os.path.join(_ORCH_DIR, "examples", "p2-charter.yaml")
+_FIXTURES_DIR = os.path.join(_TESTS_DIR, "fixtures")
+_FAKE_EVAL = os.path.join(_FIXTURES_DIR, "fake_eval.py")
 
 
 def _clock():
@@ -376,6 +379,381 @@ class TestDemoEndToEnd(unittest.TestCase):
             self.assertEqual(info["adapters"]["review"], "headless")
             # Artifacts under the /tmp run dir, NOT the repo.
             self.assertTrue(info["audit_ledger"].startswith(os.path.abspath(d)))
+
+
+# --------------------------------------------------------------------------- #
+# P3 piece 1 — ACCEPTANCE state + §3.6 calibration gate + F5 evidence.
+# All deterministic + offline: the F5 eval.cmd is a local python script writing a
+# fake artifact (NO network), and the Acceptance adapter is the MockAdapter.
+# --------------------------------------------------------------------------- #
+import sys as _sys
+
+# eval.cmd: run the deterministic local fake eval harness with THIS interpreter
+# (the venv's python). The driver sets EVAL_RUN_DIR; the script writes there.
+_EVAL_CMD = f'"{_sys.executable}" "{_FAKE_EVAL}"'
+
+# A schema-valid acceptance evidence path (matches ^eval/runs/.+). In a real run
+# the driver computes this; the mock verdict must cite the SAME shape.
+_EVID = "eval/runs/sprint-001/stdout.txt"
+
+ACC_PASS = {
+    "milestone_verdict": "pass",
+    "calibration_status": "calibrated",
+    "cases": [{
+        "case_id": "cc-1", "criterion": "refund eligibility honored",
+        "evidence_path": _EVID, "verdict": "pass",
+        "rationale": "execution evidence shows all 3 bad-cases pass; positive "
+                     "shape held, no anti-pattern; anchor-phrase semantic match.",
+    }],
+    "residual_risks": [],
+    "suggested_route": "n/a",
+}
+ACC_FIX = {
+    "milestone_verdict": "fix_required",
+    "calibration_status": "calibrated",
+    "cases": [{
+        "case_id": "cc-2", "criterion": "escalation path covered",
+        "evidence_path": _EVID, "verdict": "fail",
+        "rationale": "execution evidence shows the escalation bad-case fails; "
+                     "the closure_contract clause is violated.",
+    }],
+    "failure_briefs": [{
+        "title": "escalation gap", "contract_clause_violated": "cc-2",
+        "proposed_scope": "add an escalation branch covering the refused case.",
+        "severity": "P1",
+    }],
+    "suggested_route": "deliver_fix_iteration",
+}
+ACC_NEEDS_HUMAN = {
+    "milestone_verdict": "needs_human",
+    "calibration_status": "not_required",
+    "cases": [{
+        "case_id": "cc-3", "criterion": "ambiguous closure clause",
+        "evidence_path": _EVID, "verdict": "partial",
+        "rationale": "evidence is inconclusive; the closure_contract clause is "
+                     "ambiguous and the verdict cannot be made autonomously.",
+    }],
+    "suggested_route": "re_acceptance_after_evidence",
+}
+# Cites only a CODE path (not eval/runs/...) → schema-invalid evidence_path
+# (anti-pattern #5: code inspection, not execution evidence).
+ACC_INVALID_CODE_ONLY = {
+    "milestone_verdict": "pass",
+    "cases": [{
+        "case_id": "cc-1", "criterion": "x",
+        "evidence_path": "src/tools/eligibility.py", "verdict": "pass",
+        "rationale": "looks right from reading the code.",
+    }],
+    "suggested_route": "n/a",
+}
+
+
+def _acceptance_charter(*, level="human_on_the_loop",
+                        calibration="calibrated",
+                        eval_cmd=_EVAL_CMD,
+                        subsprint_sequence=("sprint-001",)):
+    """Build an acceptance-ENABLED charter (derived from the p2 demo charter) so
+    the milestone-close path enters acceptance_pending."""
+    charter = load_charter(CHARTER_PATH)
+    charter["autonomy"]["level"] = level
+    charter["autonomy"]["approved_scope"]["subsprint_sequence"] = \
+        list(subsprint_sequence)
+    charter["acceptance"] = {
+        "enabled": True,
+        "run_at": "milestone_close",
+        "on_fix_required": {
+            "human_confirm_required": True,
+            "route_options": ["deliver_fix_iteration",
+                              "re_acceptance_after_evidence",
+                              "research_contract_revision"],
+        },
+    }
+    tooling = charter.setdefault("tooling", {})
+    tooling["acceptance"] = {
+        "harness": "claude_code", "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "tools": ["Read", "Grep", "Glob"],
+        "judge_calibration": {"status": calibration},
+    }
+    tooling["eval"] = {"cmd": eval_cmd, "timeout_seconds": 30}
+    return charter
+
+
+def _acceptance_adapters(acc_verdict=ACC_PASS, **kw):
+    adapters = _adapters(**kw)
+    adapters["acceptance"] = MockAdapter(
+        {("acceptance",): acc_verdict}, harness="claude_code",
+        provider="anthropic", model="claude-opus-4-8")
+    return adapters
+
+
+class TestAcceptanceDisabledIsIdentical(unittest.TestCase):
+    """Backward-compat: with acceptance absent/false the driver behaves EXACTLY
+    as in P2 — ends in STATE_ADVANCE, no acceptance state/events/artifacts."""
+
+    def test_no_acceptance_key_ends_in_advance(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)  # p2 charter has NO acceptance key
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertNotIn(STATE_ACCEPTANCE_PENDING, final.history)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("acceptance_start", types)
+            # No eval/ run dir created when acceptance is disabled.
+            self.assertFalse(os.path.isdir(os.path.join(d, "eval")))
+
+    def test_acceptance_enabled_false_ends_in_advance(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = load_charter(CHARTER_PATH)
+            charter["acceptance"] = {"enabled": False}
+            drv_ = _driver(d, charter=charter)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("acceptance_start", types)
+
+
+class TestAcceptancePass(unittest.TestCase):
+    def test_pass_ships_and_advances_citing_evidence(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter()
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_PASS))
+            final = drv_.run(subsprint_id="sprint-001")
+            # Acceptance ran + passed → run completes (STATE_DONE = accepted close).
+            self.assertEqual(final.state, STATE_DONE)
+            self.assertIn(STATE_ACCEPTANCE_PENDING, final.history)
+            # The verdict cites an evidence_path under eval/runs/ (F5, not code).
+            self.assertEqual(
+                final.last_verdict["cases"][0]["evidence_path"], _EVID)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("acceptance_start", types)
+            self.assertIn("acceptance_eval_run", types)
+            self.assertIn("acceptance_spawn", types)
+            self.assertIn("acceptance_verdict", types)
+            self.assertIn("acceptance_pass", types)
+            # Audit chain across the whole (P2 + acceptance) run still verifies.
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+
+class TestAcceptanceFixRequiredHumanConfirm(unittest.TestCase):
+    def test_fix_required_writes_human_confirm_checkpoint_and_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter()
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_FIX))
+            final = drv_.run(subsprint_id="sprint-001")
+            # HALTS — never routes to Deliver without the human-confirm checkpoint.
+            self.assertEqual(final.state, STATE_HALTED)
+            cps = os.listdir(drv_.checkpoints_dir)
+            cp_name = [c for c in cps if "acceptance_fix_required" in c]
+            self.assertTrue(cp_name, cps)
+            with open(os.path.join(drv_.checkpoints_dir, cp_name[0]),
+                      encoding="utf-8") as _fh:
+                body = _fh.read()
+            # The checkpoint offers the 3 §3.5 route options.
+            self.assertIn("deliver_fix_iteration", body)
+            self.assertIn("re_acceptance_after_evidence", body)
+            self.assertIn("research_contract_revision", body)
+            # decision is pending (human writes confirm/route).
+            self.assertIn("decision: pending", body)
+            self.assertIn("confirm: yes|no", body)
+            # No silent Deliver routing: no deliver re-spawn beyond the close one.
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("acceptance_fix_required", types)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+
+class TestAcceptanceCalibrationGate(unittest.TestCase):
+    def test_uncalibrated_autonomous_auto_degrades_and_checkpoints(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(
+                level="fully_autonomous_within_budget",
+                calibration="uncalibrated")
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_PASS))
+            final = drv_.run(subsprint_id="sprint-001")
+            # Autonomy was AUTO-DEGRADED (recorded, not silent).
+            self.assertEqual(charter["autonomy"]["level"], "human_on_the_loop")
+            # A degradation checkpoint was written.
+            cps = os.listdir(drv_.checkpoints_dir)
+            deg = [c for c in cps if "acceptance_calibration_degraded" in c]
+            self.assertTrue(deg, cps)
+            # And a degradation audit event recorded the from/to levels.
+            events = audit.read_events(drv_.audit_ledger)
+            types = [e["type"] for e in events]
+            self.assertIn("acceptance_calibration_degraded", types)
+            deg_ev = next(e for e in events
+                          if e["type"] == "acceptance_calibration_degraded")
+            self.assertEqual(deg_ev["payload"]["from_level"],
+                             "fully_autonomous_within_budget")
+            self.assertEqual(deg_ev["payload"]["to_level"], "human_on_the_loop")
+            self.assertEqual(deg_ev["payload"]["calibration_status"],
+                             "uncalibrated")
+            # Acceptance still RAN (degraded, not aborted) → pass ships.
+            self.assertEqual(final.state, STATE_DONE)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_calibrated_autonomous_does_not_degrade(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(
+                level="fully_autonomous_within_budget", calibration="calibrated")
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_PASS))
+            drv_.run(subsprint_id="sprint-001")
+            # Calibrated → autonomy unchanged, no degradation checkpoint/event.
+            self.assertEqual(charter["autonomy"]["level"],
+                             "fully_autonomous_within_budget")
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("acceptance_calibration_degraded", types)
+
+
+class TestAcceptanceInvalidVerdict(unittest.TestCase):
+    def test_code_only_evidence_path_is_schema_invalid_hard_fail(self):
+        # A verdict citing a CODE path (not eval/runs/...) violates the schema's
+        # evidence_path pattern → gate_hard_fail (anti-pattern #5).
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter()
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_INVALID_CODE_ONLY))
+            with self.assertRaises(GateHardFail) as ctx:
+                drv_.run(subsprint_id="sprint-001")
+            self.assertIn("acceptance", ctx.exception.reason)
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(any("gate_hard_fail" in c for c in cps), cps)
+
+    def test_non_dict_acceptance_verdict_hard_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter()
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(["not", "a", "dict"]))
+            with self.assertRaises(GateHardFail):
+                drv_.run(subsprint_id="sprint-001")
+
+
+class TestAcceptanceNeedsHuman(unittest.TestCase):
+    def test_needs_human_surfaces_checkpoint_and_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter()
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_NEEDS_HUMAN))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(
+                any("acceptance_surface_approve" in c for c in cps), cps)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("acceptance_needs_human", types)
+
+
+class TestAcceptanceF5Evidence(unittest.TestCase):
+    def test_driver_runs_eval_and_acceptance_gets_path_not_code(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter()
+            acc_adapter = MockAdapter(
+                {("acceptance",): ACC_PASS}, harness="claude_code",
+                provider="anthropic", model="claude-opus-4-8")
+            adapters = _adapters()
+            adapters["acceptance"] = acc_adapter
+            drv_ = _driver(d, charter=charter, adapters=adapters)
+            drv_.run(subsprint_id="sprint-001")
+
+            # 1. The DRIVER ran the eval cmd + captured an artifact under eval/runs.
+            evidence_dir = os.path.join(d, "eval", "runs", "sprint-001")
+            self.assertTrue(os.path.isdir(evidence_dir))
+            self.assertTrue(os.path.isfile(os.path.join(evidence_dir,
+                                                         "evidence.json")))
+            self.assertTrue(os.path.isfile(os.path.join(evidence_dir,
+                                                        "stdout.txt")))
+            # 2. The eval-run audit event records the captured evidence path.
+            events = audit.read_events(drv_.audit_ledger)
+            run_ev = next(e for e in events
+                          if e["type"] == "acceptance_eval_run")
+            self.assertTrue(run_ev["payload"]["ok"])
+            self.assertTrue(
+                run_ev["payload"]["evidence_path"].startswith("eval/runs/"))
+            # 3. Acceptance received the artifact PATH (read-only), NOT raw code:
+            #    its prompt names the eval/runs path and forbids running the harness.
+            self.assertEqual(len(acc_adapter.history), 1)
+            spawn_ev = next(e for e in events if e["type"] == "acceptance_spawn")
+            self.assertTrue(
+                spawn_ev["payload"]["evidence_path"].startswith("eval/runs/"))
+            # §1.7-C: the spawn surface is the orchestrator, gated by calibration.
+            self.assertEqual(spawn_ev["payload"]["spawn_surface"], "orchestrator")
+
+    def test_eval_nonzero_exit_is_gate_hard_fail(self):
+        # The fake eval honors FAKE_EVAL_EXIT to simulate an eval-harness failure.
+        # Per §4.2.6 a non-zero eval exit → gate_hard_fail (human resolves), NOT a
+        # permissive pass. We set the env var via the eval.cmd itself (offline).
+        fail_cmd = (f'FAKE_EVAL_EXIT=3 "{_sys.executable}" "{_FAKE_EVAL}"')
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(eval_cmd=fail_cmd)
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_PASS))
+            with self.assertRaises(GateHardFail) as ctx:
+                drv_.run(subsprint_id="sprint-001")
+            self.assertIn("eval", ctx.exception.reason.lower())
+            # Acceptance was NOT spawned (no evidence to judge).
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("acceptance_spawn", types)
+
+
+class TestAcceptanceSpawnIsolation(unittest.TestCase):
+    def test_acceptance_only_fires_at_terminal_subsprint(self):
+        # §4.2.4: acceptance runs at MILESTONE close, i.e. the terminal sub-sprint
+        # of the approved sequence — NOT after an intermediate sub-sprint whose
+        # close hands off to a next sub-sprint still in the sequence.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(
+                subsprint_sequence=("sprint-001", "sprint-002"))
+            # close verdict points to sprint-002 (still in sequence) → NOT terminal.
+            mid_close = dict(CLEAN_CLOSE, next_subsprint="sprint-002")
+            adapters = _acceptance_adapters(ACC_PASS, close=mid_close)
+            drv_ = _driver(d, charter=charter, adapters=adapters)
+            final = drv_.run(subsprint_id="sprint-001")
+            # Intermediate close: plain advance, acceptance did NOT run.
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertNotIn(STATE_ACCEPTANCE_PENDING, final.history)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("acceptance_start", types)
+
+    def test_nonterminal_close_with_null_next_does_not_fire_acceptance(self):
+        # REGRESSION (P3 review): a Deliver OMISSION — closing a NON-terminal
+        # sub-sprint of a declared sequence with next_subsprint omitted (None) —
+        # must NOT fire milestone-close Acceptance early. Terminality is anchored
+        # to the declared subsprint_sequence, not to the (possibly forgotten)
+        # next_subsprint field (§4.2.4).
+        seq = ("sprint-001", "sprint-002", "sprint-003")
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(subsprint_sequence=seq)
+            # Deliver forgets next_subsprint at a non-terminal step (s1).
+            omitted_close = dict(CLEAN_CLOSE, next_subsprint=None)
+            adapters = _acceptance_adapters(ACC_PASS, close=omitted_close)
+            drv_ = _driver(d, charter=charter, adapters=adapters)
+            final = drv_.run(subsprint_id="sprint-001")
+            # s1 is NOT the terminal s3 → plain advance, acceptance did NOT run.
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertNotIn(STATE_ACCEPTANCE_PENDING, final.history)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("acceptance_start", types)
+
+    def test_terminal_close_with_null_next_does_fire_acceptance(self):
+        # The terminal sub-sprint of the declared sequence (s3) DOES close the
+        # milestone and fire Acceptance, even with next_subsprint None — the
+        # sequence end is authoritative (§4.2.4). Counterpart to the omission case.
+        seq = ("sprint-001", "sprint-002", "sprint-003")
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(subsprint_sequence=seq)
+            terminal_close = dict(CLEAN_CLOSE, next_subsprint=None)
+            adapters = _acceptance_adapters(ACC_PASS, close=terminal_close)
+            drv_ = _driver(d, charter=charter, adapters=adapters)
+            final = drv_.run(subsprint_id="sprint-003")
+            # s3 IS terminal → acceptance ran and (ACC_PASS) ships → STATE_DONE.
+            self.assertEqual(final.state, STATE_DONE)
+            self.assertIn(STATE_ACCEPTANCE_PENDING, final.history)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("acceptance_start", types)
+            self.assertIn("acceptance_pass", types)
 
 
 if __name__ == "__main__":

@@ -81,11 +81,16 @@ STATE_DEV_PENDING = "dev_pending"
 STATE_GATE_PENDING = "gate_pending"
 STATE_REVIEW_PENDING = "review_pending"
 STATE_CLOSE_PENDING = "close_pending"
+STATE_ACCEPTANCE_PENDING = "acceptance_pending"  # P3 piece 1 (delivery-loop §4.2.4)
 STATE_ADVANCE = "advance"
 STATE_DONE = "done"
 STATE_HALTED = "halted"
 
-# Linear MVP order (no Acceptance state — that is P3).
+# Linear MVP order (no Acceptance state — that is P3). The Acceptance state is
+# NOT in this linear order: per delivery-loop §4.2.4 it fires AFTER the milestone
+# completes (the terminal clean-pass advance of the sub-sprint sequence), gated on
+# charter.acceptance.enabled, so the close→advance path remains byte-identical when
+# acceptance is disabled (backward-compat).
 LOOP_ORDER = [
     STATE_DEV_PENDING,
     STATE_GATE_PENDING,
@@ -134,7 +139,12 @@ def _find_schemas_dir(start: str = _ENGINE_KIT_DIR) -> Optional[str]:
 
 
 def load_verdict_schemas(schemas_dir: Optional[str] = None) -> dict[str, dict]:
-    """Return {role_or_fn: schema} for the two verdicts the P2 driver parses."""
+    """Return {role_or_fn: schema} for the verdicts the driver parses.
+
+    review + close are the P2 verdicts; acceptance is the P3-piece-1 verdict
+    (schemas/acceptance-verdict.schema.json, delivery-loop §4.2.7). The acceptance
+    schema is loaded unconditionally (read-only) but only USED when the charter
+    enables acceptance — so a charter without acceptance is unaffected."""
     base = schemas_dir or _find_schemas_dir()
     if not base:
         raise FileNotFoundError(
@@ -144,6 +154,7 @@ def load_verdict_schemas(schemas_dir: Optional[str] = None) -> dict[str, dict]:
     for key, fname in (
         ("review", "review-verdict.schema.json"),
         ("close", "deliver-close-verdict.schema.json"),
+        ("acceptance", "acceptance-verdict.schema.json"),
     ):
         path = os.path.join(base, fname)
         with open(path, "r", encoding="utf-8") as fh:
@@ -319,28 +330,41 @@ class Driver:
 
     # ----- checkpoint inbox (§4.2.3 shape) --------------------------------- #
     def _write_checkpoint(self, checkpoint_id: str, scope: str,
-                          context_md: str, options_md: str) -> str:
+                          context_md: str, options_md: str,
+                          *, decision: str = "pending",
+                          resolver: str = "null",
+                          resolved_at: str = "null") -> str:
+        """Write a checkpoint file in the §4.2.3 shape. Defaults to a human-
+        pending checkpoint (decision: pending, resolver: null). The §3.6 auto-
+        degrade checkpoint overrides these to record an ALREADY-actioned,
+        orchestrator-resolved event (§4.2.3: resolver 'orchestrator' if auto-
+        degraded) so the auto-degradation is recorded, not silent."""
         ts = self.clock()
         safe_ts = ts.replace(":", "").replace("-", "").replace("T", "-")
         # squeeze "Z"/offset to keep the filename clean & deterministic
         safe_ts = safe_ts.split(".")[0].rstrip("Z")
         fname = f"{safe_ts}__{checkpoint_id}__{scope}.md"
         path = os.path.join(self.checkpoints_dir, fname)
+        decision_section = (
+            "<human writes; orchestrator picks up>\n"
+            if decision == "pending"
+            else "<orchestrator auto-resolved; recorded above>\n"
+        )
         body = (
             "---\n"
             f"checkpoint_id: {checkpoint_id}\n"
             f"scope: {scope}\n"
             f"emitted_at: {ts}\n"
-            "decision: pending\n"
-            "resolved_at: null\n"
-            "resolver: null\n"
+            f"decision: {decision}\n"
+            f"resolved_at: {resolved_at}\n"
+            f"resolver: {resolver}\n"
             "---\n\n"
             "# Context\n"
             f"{context_md}\n\n"
             "# Options\n"
             f"{options_md}\n\n"
             "# Decision (human fills)\n"
-            "<human writes; orchestrator picks up>\n"
+            f"{decision_section}"
         )
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(body)
@@ -503,6 +527,12 @@ class Driver:
         assert self.state is not None
         # Find resume index in the linear order; advance/done short-circuit.
         order = LOOP_ORDER
+        # Resume INTO acceptance: if a prior process died mid-acceptance, re-enter
+        # the acceptance state (idempotent: re-runs the F5 eval + spawn). The
+        # acceptance state is out-of-band (not in LOOP_ORDER), so handle it first.
+        if self.state.state == STATE_ACCEPTANCE_PENDING:
+            self._run_acceptance()
+            return
         if self.state.state in (STATE_ADVANCE, STATE_DONE, STATE_HALTED):
             return
         try:
@@ -619,3 +649,326 @@ class Driver:
                     {"verdict": verdict,
                      "next_subsprint": close_verdict.get("next_subsprint")})
         self._save_state()
+
+        # P3 piece 1 — after the milestone COMPLETES (the terminal clean-pass
+        # advance of the sub-sprint sequence), run Acceptance IF the charter
+        # enables it (delivery-loop §4.2.4). When acceptance is absent/disabled
+        # this is a no-op and the run ends in STATE_ADVANCE exactly as in P2.
+        if self._acceptance_enabled() and self._milestone_complete(close_verdict):
+            self._run_acceptance()
+
+    # ----- P3 piece 1: Acceptance state + §3.6 calibration + F5 evidence ---- #
+    def _acceptance_enabled(self) -> bool:
+        """True iff charter.acceptance.enabled is truthy. Absent/false → False,
+        so the P2 close→advance behaviour is byte-identical (backward-compat)."""
+        acc = self.charter.get("acceptance") or {}
+        return bool(acc.get("enabled"))
+
+    def _milestone_complete(self, close_verdict: dict) -> bool:
+        """The milestone is complete when the just-closed sub-sprint is the
+        TERMINAL one in autonomy.approved_scope.subsprint_sequence.
+
+        When a non-empty sequence is DECLARED, terminality is anchored to the
+        sequence itself — NOT to the close verdict's ``next_subsprint``. A
+        Deliver omission (forgetting ``next_subsprint``, i.e. it is ``None``) at a
+        NON-terminal step must NOT fire milestone-close Acceptance early; the
+        sequence position is authoritative. Milestone-complete iff the just-closed
+        sub-sprint is the last one in the sequence, OR the declared next is a
+        concrete value that falls outside the approved sequence (nothing left
+        in-scope to dispatch) → delivery-loop §4.2.4.
+
+        Only when NO sequence is declared does the single-sprint heuristic apply:
+        a single-shot run's close IS the milestone, so ``next_subsprint is None``
+        means done."""
+        assert self.state is not None
+        seq = (((self.charter.get("autonomy") or {}).get("approved_scope") or {})
+               .get("subsprint_sequence") or [])
+        nxt = close_verdict.get("next_subsprint")
+        if not seq:
+            # No declared sequence — single-shot: this run's close IS the
+            # milestone (the next_subsprint is None single-sprint heuristic).
+            return True
+        # Declared sequence → terminality is anchored to the SEQUENCE, not to a
+        # (possibly omitted) next_subsprint. The terminal sub-sprint closes the
+        # milestone; a non-terminal close with next_subsprint omitted (None) does
+        # NOT — that would fire Acceptance early on a Deliver omission.
+        if self.state.subsprint_id == seq[-1]:
+            return True
+        # A concrete next that is outside the approved sequence means nothing left
+        # in-scope to dispatch → milestone closed. (next_subsprint is None at a
+        # non-terminal step is an omission, NOT a milestone close.)
+        if nxt is not None and nxt not in seq:
+            return True
+        return False
+
+    def _calibration_status(self) -> str:
+        """charter.tooling.acceptance.judge_calibration.status (default
+        'uncalibrated' — absence is NOT calibrated; §3.6 fails closed)."""
+        jc = (((self.charter.get("tooling") or {}).get("acceptance") or {})
+              .get("judge_calibration") or {})
+        return str(jc.get("status") or "uncalibrated")
+
+    def _calibration_gate(self) -> str:
+        """§3.6 calibration gate. If autonomy.level is fully_autonomous_within_budget
+        AND the judge is not calibrated, AUTO-DEGRADE autonomy.level to
+        human_on_the_loop and emit a recorded checkpoint + audit event (the
+        degradation is automatic and NEVER silent/opaque — §4.2.8 anti-pattern
+        #2/#6, Constitution §3.6). Returns the calibration_status to stamp on the
+        verdict context ('calibrated' | 'uncalibrated' | 'not_required').
+
+        Returns 'not_required' when autonomy is already human_in_the_loop /
+        human_on_the_loop (calibration only gates autonomous Acceptance)."""
+        assert self.state is not None
+        level = self.autonomy.get("level", "human_in_the_loop")
+        status = self._calibration_status()
+        if level != "fully_autonomous_within_budget":
+            # Calibration only gates AUTONOMOUS acceptance; HITL/HOTL never run
+            # acceptance unattended, so the gate is not_required here.
+            return "not_required"
+        if status == "calibrated":
+            return "calibrated"
+        # Uncalibrated + autonomous → AUTO-DEGRADE (recorded, not silent).
+        self.autonomy["level"] = "human_on_the_loop"
+        self._audit("acceptance_calibration_degraded",
+                    {"from_level": "fully_autonomous_within_budget",
+                     "to_level": "human_on_the_loop",
+                     "calibration_status": status,
+                     "subsprint_id": self.state.subsprint_id})
+        self._write_checkpoint(
+            "acceptance_calibration_degraded", self.state.subsprint_id,
+            context_md=(
+                f"§3.6 calibration gate: judge_calibration.status = `{status}` "
+                f"while autonomy.level = `fully_autonomous_within_budget`. The "
+                f"orchestrator AUTO-DEGRADED autonomy.level to `human_on_the_loop` "
+                f"(Constitution §3.6; delivery-loop §4.2.8 anti-pattern #2/#6). "
+                f"Autonomous Acceptance MUST NOT run uncalibrated; the degradation "
+                f"is automatic and recorded here — never silent. The human may "
+                f"now review or calibrate-then-rerun, but acceptance proceeds "
+                f"human_on_the_loop regardless."),
+            options_md=("- proceed_human_on_the_loop\n"
+                        "- calibrate_then_rerun_autonomous\n"
+                        "- abort"),
+            # §4.2.3: resolver 'orchestrator' for an auto-degraded checkpoint —
+            # the degrade is already actioned (not a pending human decision).
+            decision="auto_degraded", resolver="orchestrator",
+            resolved_at=self.clock(),
+        )
+        return status
+
+    def _run_eval_f5(self, acc: dict) -> str:
+        """F5 evidence (delivery-loop §4.2.6): the DRIVER (orchestrator) executes
+        charter.tooling.eval.cmd, capturing artifacts under <run_dir>/eval/runs/
+        <subsprint_id>/. The eval command runs in the run dir; Acceptance NEVER
+        runs the harness itself (anti-pattern #5). Returns the evidence artifact
+        PATH (relative to run_dir, matching the schema's ^eval/runs/.+ pattern)
+        the driver will hand to the Acceptance spawn as read-only context.
+
+        On non-zero exit / timeout → gate_hard_fail (§4.2.6: human resolves)."""
+        assert self.state is not None
+        eval_cfg = (self.charter.get("tooling") or {}).get("eval") or {}
+        cmd = eval_cfg.get("cmd")
+        if not cmd:
+            raise self._gate_hard_fail(
+                "acceptance enabled but charter.tooling.eval.cmd is missing "
+                "(F5 evidence has no harness to run; §4.2.6)",
+                STATE_ACCEPTANCE_PENDING)
+        timeout = eval_cfg.get("timeout_seconds")
+        run_subdir = os.path.join("eval", "runs", self.state.subsprint_id)
+        eval_run_dir = os.path.join(self.run_dir, run_subdir)
+        os.makedirs(eval_run_dir, exist_ok=True)
+        # The eval cmd writes its artifact here; the driver passes EVAL_RUN_DIR so
+        # a deterministic local script (tests) can write a fake artifact offline.
+        env = dict(os.environ)
+        env["EVAL_RUN_DIR"] = eval_run_dir
+        stdout_path = os.path.join(eval_run_dir, "stdout.txt")
+        stderr_path = os.path.join(eval_run_dir, "stderr.txt")
+        import subprocess  # local import: only on the F5 path
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, cwd=eval_run_dir, env=env,
+                capture_output=True, text=True,
+                timeout=timeout if isinstance(timeout, (int, float)) else None,
+            )
+        except subprocess.TimeoutExpired:
+            raise self._gate_hard_fail(
+                f"F5 eval cmd timed out after {timeout}s "
+                f"(charter.tooling.eval.cmd); §4.2.6 → human resolves",
+                STATE_ACCEPTANCE_PENDING)
+        with open(stdout_path, "w", encoding="utf-8") as fh:
+            fh.write(proc.stdout or "")
+        with open(stderr_path, "w", encoding="utf-8") as fh:
+            fh.write(proc.stderr or "")
+        rel_stdout = os.path.relpath(stdout_path, self.run_dir)
+        if proc.returncode != 0:
+            self._audit("acceptance_eval_run",
+                        {"cmd": cmd, "returncode": proc.returncode,
+                         "evidence_dir": run_subdir, "ok": False})
+            raise self._gate_hard_fail(
+                f"F5 eval cmd exited {proc.returncode} "
+                f"(charter.tooling.eval.cmd); §4.2.6 → human resolves "
+                f"(re-run / accept-failure-and-route / abort)",
+                STATE_ACCEPTANCE_PENDING)
+        self._audit("acceptance_eval_run",
+                    {"cmd": cmd, "returncode": 0,
+                     "evidence_dir": run_subdir,
+                     "evidence_path": rel_stdout, "ok": True})
+        return rel_stdout
+
+    def _spawn_acceptance(self, evidence_path: str,
+                          calibration_status: str) -> dict:
+        """Spawn run_acceptance via the role adapter (§1.7-C permitted surface:
+        the calibration-gated orchestrator). Acceptance receives the F5 evidence
+        PATH (read-only) — NOT raw code (anti-pattern #5). The driver validates
+        the returned verdict against acceptance-verdict.schema.json; invalid →
+        gate_hard_fail (§4.2.7)."""
+        assert self.state is not None
+        adapter = self.adapters.get("acceptance")
+        if adapter is None:
+            raise self._gate_hard_fail(
+                "acceptance enabled but no adapter wired for role 'acceptance'",
+                STATE_ACCEPTANCE_PENDING)
+        routing = route_for_role(self.charter, "acceptance")
+        prompt = (
+            f"Acceptance for milestone close of sub-sprint "
+            f"{self.state.subsprint_id}. Read the F5 execution evidence at "
+            f"(read-only) {evidence_path}; read the closure_contract from the "
+            f"research brief; emit an acceptance-verdict. Calibration status: "
+            f"{calibration_status}. You MUST NOT run the eval harness yourself."
+        )
+        input_hash = "sha256:" + hashlib.sha256(
+            ("acceptance\x00" + prompt).encode("utf-8")).hexdigest()[:16]
+        self.state.spawn_count += 1
+        self._audit("acceptance_spawn", {
+            "role": "acceptance", "harness": adapter.harness,
+            "provider": adapter.provider, "model": adapter.model,
+            "evidence_path": evidence_path,
+            "calibration_status": calibration_status,
+            "run_mode": self.autonomy.get("level", "human_in_the_loop"),
+            "input_hash": input_hash,
+            # §1.7-C: this spawn surface is the orchestrator (NOT a Dev/Deliver
+            # session) and is gated by the calibration check above.
+            "spawn_surface": "orchestrator",
+        })
+        try:
+            verdict = adapter.spawn(
+                "acceptance", prompt, routing.tools, self.schemas["acceptance"])
+        except AdapterError as exc:
+            raise self._gate_hard_fail(
+                f"acceptance adapter failed: {exc}", STATE_ACCEPTANCE_PENDING)
+        err = validate_verdict(verdict, self.schemas["acceptance"])
+        if err is not None:
+            raise self._gate_hard_fail(
+                f"acceptance verdict failed schema validation "
+                f"(acceptance-verdict.schema.json): {err}",
+                STATE_ACCEPTANCE_PENDING)
+        self.state.last_verdict = verdict
+        return verdict
+
+    def _run_acceptance(self) -> None:
+        """Drive the acceptance_pending state (delivery-loop §4.2.4):
+          1. §3.6 calibration gate (auto-degrade if uncalibrated + autonomous);
+          2. F5 evidence — driver runs eval.cmd, captures artifact paths;
+          3. spawn run_acceptance with the evidence PATH (read-only);
+          4. validate verdict; route per Constitution §3.5.
+        The run is already in STATE_ADVANCE on entry; acceptance may move it to
+        STATE_HALTED (fix_required / needs_human) or DONE (pass)."""
+        assert self.state is not None
+        if "acceptance" not in self.schemas:
+            raise self._gate_hard_fail(
+                "acceptance enabled but acceptance-verdict schema not loaded "
+                "(pass verdict_schemas including 'acceptance' or use the default "
+                "loader)",
+                STATE_ACCEPTANCE_PENDING)
+        acc = self.charter.get("acceptance") or {}
+        self.state.state = STATE_ACCEPTANCE_PENDING
+        self.state.history.append(STATE_ACCEPTANCE_PENDING)
+        self._save_state()
+        self._audit("acceptance_start",
+                    {"subsprint_id": self.state.subsprint_id,
+                     "run_at": acc.get("run_at", "milestone_close")})
+
+        # 1. §3.6 calibration gate (may auto-degrade autonomy + checkpoint).
+        calibration_status = self._calibration_gate()
+
+        # 2. F5 evidence — the DRIVER runs the eval harness (not Acceptance).
+        evidence_path = self._run_eval_f5(acc)
+
+        # 3. spawn run_acceptance with the evidence PATH (read-only).
+        verdict = self._spawn_acceptance(evidence_path, calibration_status)
+        self._handle_acceptance_verdict(verdict, evidence_path)
+
+    def _handle_acceptance_verdict(self, verdict: dict,
+                                   evidence_path: str) -> None:
+        """Route the acceptance verdict per Constitution §3.5:
+          pass         → ship/advance (run completes in STATE_DONE);
+          fix_required → write the human-confirm checkpoint with the 3 route
+                         options and HALT (NEVER route to Deliver without it —
+                         §1.7-C behavioural counterpart);
+          needs_human  → surface_approve checkpoint + HALT."""
+        assert self.state is not None
+        mv = verdict.get("milestone_verdict")
+        self._audit("acceptance_verdict",
+                    {"milestone_verdict": mv,
+                     "suggested_route": verdict.get("suggested_route"),
+                     "evidence_path": evidence_path})
+
+        if mv == "pass":
+            # Ship: the milestone closes. STATE_DONE marks a fully-accepted close.
+            self.state.state = STATE_DONE
+            self._audit("acceptance_pass",
+                        {"subsprint_id": self.state.subsprint_id})
+            self._save_state()
+            return
+
+        if mv == "fix_required":
+            # §3.5: write the human-confirm checkpoint with the 3 route options;
+            # HALT. The route to Deliver is NEVER taken without this checkpoint.
+            acc = self.charter.get("acceptance") or {}
+            route_opts = ((acc.get("on_fix_required") or {}).get("route_options")
+                          or ["deliver_fix_iteration",
+                              "re_acceptance_after_evidence",
+                              "research_contract_revision"])
+            options_md = "\n".join(f"- {opt}" for opt in route_opts)
+            options_md += ("\n\n(human writes: `confirm: yes|no` + "
+                           "`route: <option>` + optional notes)")
+            path = self._write_checkpoint(
+                "acceptance_fix_required", self.state.subsprint_id,
+                context_md=(
+                    f"Acceptance milestone_verdict = fix_required on sub-sprint "
+                    f"{self.state.subsprint_id} (suggested_route: "
+                    f"{verdict.get('suggested_route')}). Per Constitution §3.5 / "
+                    f"§1.7-C the orchestrator HALTS here: Deliver does NOT pick up "
+                    f"any gap brief until a human writes `confirm: yes` + `route: "
+                    f"deliver_fix_iteration` in this checkpoint. F5 evidence: "
+                    f"{evidence_path}."),
+                options_md=options_md,
+            )
+            self._audit("acceptance_fix_required",
+                        {"suggested_route": verdict.get("suggested_route"),
+                         "checkpoint": os.path.relpath(path, self.run_dir),
+                         "route_options": route_opts})
+            self.state.state = STATE_HALTED
+            self._save_state()
+            return
+
+        if mv == "needs_human":
+            path = self._write_checkpoint(
+                "acceptance_surface_approve", self.state.subsprint_id,
+                context_md=(
+                    f"Acceptance milestone_verdict = needs_human on sub-sprint "
+                    f"{self.state.subsprint_id}: the Acceptance Agent could not "
+                    f"reach an autonomous verdict and surfaces the decision to the "
+                    f"Customer (surface_approve). F5 evidence: {evidence_path}."),
+                options_md=("- approve_ship\n- route_to_deliver_fix\n- abort"),
+            )
+            self._audit("acceptance_needs_human",
+                        {"checkpoint": os.path.relpath(path, self.run_dir)})
+            self.state.state = STATE_HALTED
+            self._save_state()
+            return
+
+        # Schema-valid enum guarantees mv ∈ {pass, fix_required, needs_human}; an
+        # unexpected value here is a hard fail (never a permissive default).
+        raise self._gate_hard_fail(
+            f"unexpected acceptance milestone_verdict {mv!r}",
+            STATE_ACCEPTANCE_PENDING)
