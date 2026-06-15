@@ -1,0 +1,12 @@
+# Provenance for vendored skill. normative source = upstream pin below.
+# To update: re-vendor at a new pin + re-vet (+ recalibrate if role=acceptance).
+id: code-review-excellence
+source: { repo: wshobson/agents, url: https://github.com/wshobson/agents, commit: cc37bfdd292ce520ba1c44df7a3a70d5f8137236, path: plugins/developer-essentials/skills/code-review-excellence }
+license: MIT
+copyright: "Copyright (c) 2024 Seth Hobson"
+retrieved_at: 2026-06-15T13:25:19Z
+role_default_for: code_reviewer
+tree_sha256: 8e9320caa7f326450f4159121e596a7b141ba78813bc46b84119a89378421e33
+files:
+  - { path: LICENSE, sha256: f89abb55d9f073f38f1703e4518f0613c788c6174be7f13b8dfe48a1c076c746 }
+  - { path: SKILL.md, sha256: 014fff1c8db75807106484d5b16451607f0dde266ae50182a2753d68ad3449ed }

@@ -1,0 +1,11 @@
+# skills.lock — pin + integrity lockfile for vendored skills (aidazi)
+# verify: re-hash skills/vendored/<id> tree, compare tree_sha256.
+lockfile_version: 1
+generated_at: 2026-06-15T13:25:19Z
+skills:
+  brainstorming: { repo: obra/superpowers, commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/brainstorming, license: MIT, tree_sha256: cf2b812d8cd072ea0560731218642b45133ddc4682fb783a20f20e484a66bdb5 }
+  writing-plans: { repo: obra/superpowers, commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/writing-plans, license: MIT, tree_sha256: 4c35a605bec84e1a86af3675200405094f451d115b09ced4831e6c94fa9578c9 }
+  test-driven-development: { repo: obra/superpowers, commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/test-driven-development, license: MIT, tree_sha256: d69fff777d2ece5980618d7804382d4e6ab691587bbe5eb7f7b3129c4cf3c39e }
+  architecture-decision-records: { repo: wshobson/agents, commit: cc37bfdd292ce520ba1c44df7a3a70d5f8137236, path: plugins/documentation-generation/skills/architecture-decision-records, license: MIT, tree_sha256: 3a665b80b4aebf5cd2446fe56026464d34397caac04066ccbcde9f0e66181e1d }
+  code-review-excellence: { repo: wshobson/agents, commit: cc37bfdd292ce520ba1c44df7a3a70d5f8137236, path: plugins/developer-essentials/skills/code-review-excellence, license: MIT, tree_sha256: 8e9320caa7f326450f4159121e596a7b141ba78813bc46b84119a89378421e33 }
+  advanced-evaluation: { repo: muratcankoylan/Agent-Skills-for-Context-Engineering, commit: 25e1fa79a33f0985793bcab3c64dde8d020c5132, path: skills/advanced-evaluation, license: MIT, tree_sha256: 1a135d5f7b7d3e8cc4b4d2ffec1bfc18e4a7a5f292b3b9116ddb4d0dbd5ffe66 }

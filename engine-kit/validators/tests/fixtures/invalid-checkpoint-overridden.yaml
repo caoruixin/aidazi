@@ -1,0 +1,52 @@
+# INVALID (iii): a default MANDATORY_CHECKPOINT OVERRIDDEN with an
+# auto-confirm-style key (semantic weakening = bypass).
+# Expected semantic rule: checkpoint_overridden.
+mission:
+  id: M5-charter-validator
+  goal: Ship the deterministic charter validator hard kernel.
+
+autonomy:
+  level: human_in_the_loop
+  approved_scope:
+    subsprint_sequence:
+      - S5-1
+    layers_allowed:
+      - prompt_projection
+    modules_in_scope:
+      - engine-kit/validators
+  auto_pass_rules:
+    clean_pass_auto_advance: false
+
+budget:
+  max_fix_rounds_total: 3
+  max_wall_clock_minutes: 240
+
+tooling:
+  research:
+    agent_kind: claude_code
+  deliver:
+    agent_kind: claude_code
+  dev:
+    agent_kind: claude_code
+    sandbox: workspace_write
+  review:
+    agent_kind: codex
+    tools: [Read, Grep, Glob]
+  eval:
+    cmd: pytest -q
+    timeout_seconds: 600
+  acceptance:
+    enabled: false
+    on_fix_required:
+      human_confirm_required: true
+      route_options:
+        - deliver_fix_iteration
+
+profile_type_a:
+  closure_contract_source: research_brief
+
+# The bypass: replace a checkpoint's human-authority semantics with a weaker
+# auto-confirm variant.
+mandatory_checkpoints:
+  close_taxonomy_C_or_D:
+    auto_confirm_if_clean: true

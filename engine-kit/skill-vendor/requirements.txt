@@ -1,0 +1,4 @@
+# skill_vendor runtime deps. The `verify` path is stdlib + PyYAML only (offline,
+# deterministic). The `vendor` path additionally shells out to the system `git`
+# binary (no GitPython dependency). Pinned for reproducible integrity checks.
+PyYAML==6.0.2

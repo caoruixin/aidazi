@@ -1,0 +1,17 @@
+# Valid sprint-stanza (bare mapping shape).
+# Conforms to schemas/sprint_stanza.schema.json: all 4 required fields present,
+# layers drawn from the schema enum, optional fields well-typed.
+sprint_id: M5-sprint-3
+scope_in:
+  - stanza_validator deterministic kernel
+  - F4 friction enforcement at dispatch
+layers:
+  - infra
+  - eval_spec
+exit_criteria:
+  - validator exits 0 on a schema-valid stanza
+  - validator exits non-zero with a path-tagged message on a bad stanza
+modules:
+  - engine-kit/validators/stanza_validator.py
+milestone_id: M5
+next_subsprint: null

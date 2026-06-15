@@ -1,0 +1,13 @@
+# Provenance for vendored skill. normative source = upstream pin below.
+# To update: re-vendor at a new pin + re-vet (+ recalibrate if role=acceptance).
+id: writing-plans
+source: { repo: obra/superpowers, url: https://github.com/obra/superpowers, commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/writing-plans }
+license: MIT
+copyright: "Copyright (c) 2025 Jesse Vincent"
+retrieved_at: 2026-06-15T13:25:19Z
+role_default_for: deliver
+tree_sha256: 4c35a605bec84e1a86af3675200405094f451d115b09ced4831e6c94fa9578c9
+files:
+  - { path: LICENSE, sha256: a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400 }
+  - { path: SKILL.md, sha256: 4fd4627d2c02367879c0307d7249270bed633317ff9be82e926a6d57bf5d331b }
+  - { path: plan-document-reviewer-prompt.md, sha256: 6fce2aa83c63715697e9dd86050c820716100b91efbd9f12bab8477ecc060256 }
