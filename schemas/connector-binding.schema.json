@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/connector-binding.schema.json",
+  "title": "Connector binding entry (v2 — Facet C)",
+  "description": "A single per-role connector grant as it appears in charter tooling.<role>.connectors[] (plan §4.1 Facet C + §5). Facet C is DEFAULT-DENY: a role may use ONLY the connectors explicitly granted here. Distinct from built-in `tools` (the existing whitelist) — connectors are MCP servers / HTTP APIs / CLIs. HARD RULES (Constitution §1.7 new item + §3.4 invariant #6): role grant ⊇ the connector requirements of the role's skills; connector capability class ⊆ role sandbox; secrets are referenced BY NAME only (values live in the adopter env, never the charter); MCP servers MUST be pinned + provenance-bearing (third-party = a trust decision). A scan is an authoring aid, NOT runtime authorization.",
+  "type": "object",
+  "required": ["id", "kind", "server", "scopes"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Connector id; MUST match a key in connectors/registry.yaml connectors{}."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["mcp", "http_api", "cli"],
+      "description": "Connector mechanism. mcp = MCP server; http_api = REST/HTTP endpoint; cli = local command-line tool."
+    },
+    "server": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Server/endpoint reference, pinned: '<ref>@<pin>' for MCP (pin = version/commit/digest), base URL for http_api, command for cli. Unpinned/runtime-fetched sources are FORBIDDEN (Constitution §1.7 new item)."
+    },
+    "tools": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "OPTIONAL allowlist of the specific tool/function names exposed by this connector that the role may call. Omit ⇒ all tools the connector exposes (still bounded by scopes + sandbox). Narrowing here is encouraged (least privilege)."
+    },
+    "scopes": {
+      "type": "array",
+      "items": {"type": "string", "enum": ["read", "write", "network"]},
+      "minItems": 1,
+      "description": "Capability classes this grant authorizes. MUST be ⊆ the role's sandbox (a read_only role cannot hold a write/network connector). Default-deny: a scope not listed is not granted."
+    },
+    "secrets": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9_]*$",
+        "description": "Environment variable NAME only (UPPER_SNAKE_CASE). The value is resolved from the adopter env at runtime and MUST NOT appear in the charter."
+      },
+      "description": "Names of secrets the connector requires. By-name only — values stay in the adopter env."
+    },
+    "provenance": {
+      "type": "string",
+      "enum": ["first_party", "community", "vendor", "adopter"],
+      "description": "Trust class of the connector source. Third-party MCP servers are an explicit trust decision."
+    }
+  }
+}

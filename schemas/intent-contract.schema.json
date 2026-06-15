@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/intent-contract.schema.json",
+  "title": "Intent contract (v2 — Next2.1 Loop Ingress)",
+  "description": "Captured at Loop Ingress (plan §4.6 Next2.1): the goal/standard/proof-of-done triple that anchors a loop's loop_id and maps onto the existing closure_contract, moved to ingress. Drafted via vendored brainstorming (→spec, HARD-GATE) + writing-plans; an INTAKE COMPLETENESS gate refuses to start a loop with no definition of done. Per the §1.7-D / OQ-B resolution, async MAY prepare + recommend the contract, but final human confirmation is non-negotiable: confirmed_by_human flips to true ONLY by the authorized human's explicit act — the engine never auto-confirms. Also embeddable at charter top-level intent_contract{}.",
+  "type": "object",
+  "required": ["goal", "standard", "proof_of_done", "confirmed_by_human"],
+  "additionalProperties": false,
+  "properties": {
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Objective: what this loop is for, in customer terms."
+    },
+    "standard": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The bar: what 'good' means for this loop (quality/scope standard)."
+    },
+    "proof_of_done": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Eval method / definition of done: the evidence that demonstrates the goal was met to the standard. Maps to closure_contract proof."
+    },
+    "loop_id": {
+      "type": "string",
+      "description": "The loop this contract anchors (Audit Spine loop_id; plan §4.5). Threads charter→brief→checkpoint→spawn→verdict→close."
+    },
+    "confirmed_by_human": {
+      "type": "boolean",
+      "description": "Authority gate. true ONLY by the authorized human's explicit confirmation (§1.7-D / OQ-B). The engine MUST NOT auto-confirm; async may draft + recommend, never close this gate."
+    },
+    "confirmed_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of human confirmation; null until confirmed."
+    },
+    "confirmed_by": {
+      "type": ["string", "null"],
+      "description": "Identifier of the authorized human who confirmed (audit attribution)."
+    },
+    "drafted_by": {
+      "type": "string",
+      "description": "OPTIONAL: which role/skill drafted the recommendation (e.g. research:brainstorming). Drafting is async-permitted; it does not confirm."
+    }
+  }
+}

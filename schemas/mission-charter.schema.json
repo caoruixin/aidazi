@@ -101,7 +101,11 @@
             {
               "type": "object",
               "properties": {
-                "sandbox": {"type": "string", "enum": ["workspace_write", "read_only"], "default": "workspace_write"}
+                "sandbox": {"type": "string", "enum": ["workspace_write", "read_only"], "default": "workspace_write"},
+                "tools": {
+                  "$ref": "#/$defs/tools_allow",
+                  "description": "v2 ADDITIVE (Facet C, plan §5). OPTIONAL built-in tool allowlist in object form {allow:[...]}. Default-deny beyond the listed built-ins."
+                }
               }
             }
           ]
@@ -113,9 +117,15 @@
               "type": "object",
               "properties": {
                 "tools": {
-                  "type": "array",
-                  "items": {"type": "string", "enum": ["Read", "Grep", "Glob"]},
-                  "default": ["Read", "Grep", "Glob"]
+                  "description": "Built-in tool allowlist. Legacy array form (array of Read|Grep|Glob) OR v2 object form {allow:[...]} (plan §5). Read-only reviewer whitelist either way.",
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {"type": "string", "enum": ["Read", "Grep", "Glob"]},
+                      "default": ["Read", "Grep", "Glob"]
+                    },
+                    {"$ref": "#/$defs/tools_allow"}
+                  ]
                 }
               }
             }
@@ -138,6 +148,16 @@
             "enabled": {"type": "boolean"},
             "agent_kind": {"type": "string"},
             "model": {"type": "string"},
+            "harness": {"type": "string", "description": "v2 ADDITIVE (Facet A). Execution harness. OPTIONAL; judgment roles suit headless/API-backed models."},
+            "provider": {"type": "string", "description": "v2 ADDITIVE (Facet A). Provider id. OPTIONAL. Calibration is per-(role,provider,model) — a change invalidates judge_calibration.status (Constitution §3.6)."},
+            "endpoint": {"type": "string", "description": "v2 ADDITIVE (Facet A). Base URL for OpenAI-compatible providers. OPTIONAL."},
+            "capability_ref": {"type": "string", "description": "v2 ADDITIVE (Facet A). Capability-profile id validated against schemas/model-registry.schema.json; judgment roles require a calibratable model. OPTIONAL."},
+            "connectors": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/connector_binding"},
+              "description": "v2 ADDITIVE (Facet C). Connector grants for Acceptance — default-deny; read-only evidence connectors only (judgment is not delegated)."
+            },
+            "discovery": {"$ref": "#/$defs/discovery", "description": "v2 ADDITIVE (Facet C). OPTIONAL; default off."},
             "tools": {
               "type": "array",
               "items": {"type": "string", "enum": ["Read", "Grep", "Glob"]},
@@ -204,6 +224,53 @@
       "type": "array",
       "items": {"type": "string"},
       "description": "Adopter-added custom MANDATORY_CHECKPOINTS (in addition to the 8 defaults). The 8 defaults cannot be omitted/emptied/disabled/overridden (Constitution §1.7-D; process/delivery-loop.md §4.2.2)."
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "v2 ADDITIVE (Loop Ingress, plan §4.3/§5). Per-loop isolation strategy prompted at a new-loop trigger. OPTIONAL; this is a configurable ingress prompt, NOT one of the 8 MANDATORY_CHECKPOINTS. Existing charters omit it and validate unchanged.",
+      "properties": {
+        "prompt_on_new_loop": {"type": "boolean", "default": true, "description": "Prompt the human for isolation strategy at a new-loop trigger (continuations don't re-prompt)."},
+        "default_strategy": {
+          "type": "string",
+          "enum": ["current_branch", "new_branch", "new_worktree"],
+          "default": "current_branch",
+          "description": "current_branch = in-place (default). new_branch = discrete PR unit. new_worktree = parallel / long autonomous / fan-out."
+        },
+        "worktree_root": {"type": "string", "description": "Directory under which new worktrees are created (new_worktree strategy)."},
+        "cleanup_policy": {
+          "type": "string",
+          "enum": ["keep", "remove_if_merged", "remove_if_unchanged"],
+          "description": "Disposition of an isolated branch/worktree at loop close."
+        },
+        "force_isolation_when": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["loop_active_on_branch", "dirty_tree"]},
+          "description": "Conditions under which the engine overrides toward isolation (recommend, with stated reason)."
+        }
+      }
+    },
+    "intent_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "v2 ADDITIVE (Next2.1, plan §4.6/§5). Goal/standard/proof-of-done triple captured at ingress, anchoring loop_id (mirrors schemas/intent-contract.schema.json). OPTIONAL at charter level. Per §1.7-D/OQ-B, confirmed_by_human flips true ONLY by the authorized human; the engine never auto-confirms.",
+      "properties": {
+        "goal": {"type": "string"},
+        "standard": {"type": "string"},
+        "proof_of_done": {"type": "string"},
+        "confirmed_by_human": {"type": "boolean"},
+        "confirmed_at": {"type": ["string", "null"]}
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "v2 ADDITIVE (Audit Spine, plan §4.5/§5). Per-loop append-only hash-chained ledger config. OPTIONAL; audit is runtime-owned (Constitution §1.4). Events match schemas/audit-event.schema.json.",
+      "properties": {
+        "ledger_dir": {"type": "string", "default": ".orchestrator/audit", "description": "Directory for <loop_id>.jsonl ledgers."},
+        "hash_chain": {"type": "boolean", "default": true, "description": "Tamper-evident hash chaining (each event commits to prev_hash)."},
+        "capture_execution_context": {"type": "boolean", "default": true, "description": "Capture per-spawn harness/provider/model/skill_pins/memory/tokens/cost (plan §4.5 G3)."}
+      }
     }
   },
   "$defs": {
@@ -214,15 +281,113 @@
       "properties": {
         "agent_kind": {"type": "string"},
         "model": {"type": "string"},
+        "harness": {
+          "type": "string",
+          "description": "v2 ADDITIVE (Facet A, plan §4.1/§5). Execution harness, decoupled from provider/model: claude_code | codex | headless | <other>. headless = OpenAI-compatible endpoint adapter (unlocks deepseek/moonshot/openai for non-editing roles). OPTIONAL; legacy charters use only agent_kind."
+        },
+        "provider": {
+          "type": "string",
+          "description": "v2 ADDITIVE (Facet A). Provider id: anthropic | openai | deepseek | moonshot | <other>. OPTIONAL."
+        },
+        "endpoint": {
+          "type": "string",
+          "description": "v2 ADDITIVE (Facet A). Base URL for OpenAI-compatible providers driven via the headless harness. OPTIONAL."
+        },
+        "capability_ref": {
+          "type": "string",
+          "description": "v2 ADDITIVE (Facet A). Capability-profile id validated against schemas/model-registry.schema.json (process/model-capability-registry.md). The capability gate checks the (harness, provider, model) triple against the role's requirements. OPTIONAL."
+        },
         "skills": {
           "type": "array",
-          "items": {"type": "string"},
-          "description": "OPTIONAL role skills mounted on this role (skill name or path; process/role-skill-model.md). Each skill MUST comply with the role's tool whitelist and sandbox (Constitution §3.4 invariant #6)."
+          "items": {
+            "anyOf": [
+              {"type": "string", "description": "Legacy form: skill name or path (backward-compatible)."},
+              {"$ref": "#/$defs/skill_binding", "description": "v2 object form: explicit provenance (mirror of schemas/skill-binding.schema.json)."}
+            ]
+          },
+          "description": "OPTIONAL role skills mounted on this role (process/role-skill-model.md). Each skill MUST comply with the role's tool whitelist and sandbox (Constitution §3.4 invariant #6). Entries are EITHER a bare string (skill name/path; legacy, backward-compatible) OR the v2 object form (id/source/repo/pin/license/provenance) for explicit, pinned provenance."
         },
         "subagent_fanout": {
           "type": "boolean",
           "description": "OPTIONAL. false forbids intra-role sub-agent fan-out for this role; true permits it (Constitution §3.4 invariant #6 constraints apply regardless). Omitted = backing agent's default behavior."
+        },
+        "connectors": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/connector_binding"},
+          "description": "v2 ADDITIVE (Facet C, plan §4.1/§5). Per-role connector grants — DEFAULT-DENY: a role may use only the connectors listed here (distinct from built-in `tools`). OPTIONAL; omit ⇒ no connectors. See schemas/connector-binding.schema.json + connectors/registry.yaml."
+        },
+        "discovery": {
+          "$ref": "#/$defs/discovery",
+          "description": "v2 ADDITIVE (Facet C). Connector/tool discovery posture. OPTIONAL; default off (propose_only never auto-authorizes — scan is an authoring aid)."
         }
+      }
+    },
+    "connector_binding": {
+      "type": "object",
+      "required": ["id", "kind", "server", "scopes"],
+      "additionalProperties": false,
+      "description": "v2 ADDITIVE. A per-role connector grant; mirror of schemas/connector-binding.schema.json. Default-deny; secrets by-name only; scopes ⊆ role sandbox; server pinned.",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "enum": ["mcp", "http_api", "cli"]},
+        "server": {"type": "string", "minLength": 1, "description": "Pinned '<ref>@<pin>' for mcp, base URL for http_api, command for cli. Unpinned/runtime-fetched is forbidden (Constitution §1.7 new item)."},
+        "tools": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "OPTIONAL allowlist of connector tool/function names; omit ⇒ all (still bounded by scopes + sandbox)."
+        },
+        "scopes": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["read", "write", "network"]},
+          "minItems": 1,
+          "description": "MUST be ⊆ the role's sandbox."
+        },
+        "secrets": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+          "description": "Env-var NAMES only; values stay in the adopter env."
+        },
+        "provenance": {"type": "string", "enum": ["first_party", "community", "vendor", "adopter"]}
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["off", "propose_only"],
+          "default": "off",
+          "description": "off = no discovery. propose_only = scanner suggests connectors/tools for a human to approve into the allowlist; it NEVER auto-authorizes (default-deny is preserved)."
+        }
+      }
+    },
+    "tools_allow": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "v2 ADDITIVE (Facet C). Built-in tool allowlist, object form (plan §5 tooling.<role>.tools.allow[]).",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Built-in tools this role may use. Default-deny: tools not listed are not granted."
+        }
+      }
+    },
+    "skill_binding": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "description": "v2 ADDITIVE (Facet B). A per-role skill binding with explicit provenance; mirror of schemas/skill-binding.schema.json. Vendored + pinned; NO runtime fetch; tool_requirements ⊆ role whitelist; redistributable license.",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "enum": ["vendored", "authored", "local"]},
+        "repo": {"type": "string"},
+        "pin": {"type": "string", "description": "Immutable upstream commit SHA (provenance; no runtime fetch)."},
+        "path": {"type": "string"},
+        "license": {"type": "string"},
+        "provenance": {"type": "string", "enum": ["community", "authored", "vendor", "adopter"]},
+        "calibration_coupled": {"type": "boolean"}
       }
     }
   }

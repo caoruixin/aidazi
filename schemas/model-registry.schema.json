@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/model-registry.schema.json",
+  "title": "Model capability registry (v2 — Facet A)",
+  "description": "Formalizes process/model-capability-registry.md. A registry instance maps a profile id to the per-model capability facts the capability gate validates a role's (harness × provider × model) binding against (plan §4.1 Facet A; charter tooling.<role>.capability_ref). Provider/model lock reality: claude_code↔anthropic, codex↔openai are provider-locked; the headless OpenAI-compatible endpoint is the adapter that unlocks deepseek/moonshot/openai for judgment/reasoning roles. structured_output_tier + reasoning_tier are the load-bearing fields the capability requirements table keys on (process/role-configuration-contract.md). NON-NORMATIVE thresholds; adopters tune with rationale (Constitution §7.0).",
+  "type": "object",
+  "required": ["registry_version", "models"],
+  "additionalProperties": false,
+  "properties": {
+    "registry_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Bump on incompatible shape change."
+    },
+    "last_updated": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO date the registry was last refreshed against provider docs."
+    },
+    "models": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Map of capability-profile id (the value of charter tooling.<role>.capability_ref) → model capability record.",
+      "additionalProperties": {"$ref": "#/$defs/model"}
+    }
+  },
+  "$defs": {
+    "tier": {
+      "type": "string",
+      "enum": ["high", "medium", "low", "unsupported"],
+      "description": "Reliability tier. A role's requirement is satisfied iff the model's tier is >= the required tier (unsupported < low < medium < high)."
+    },
+    "model": {
+      "type": "object",
+      "required": ["provider", "model", "context_window", "tool_use", "structured_output_tier", "reasoning_tier"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider id. Common: anthropic | openai | deepseek | moonshot. Free-form to allow new providers without a schema bump."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider model id, e.g. claude-opus-4-8, gpt-5, deepseek-chat, moonshot-v1-128k."
+        },
+        "context_window": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum context window in tokens. The capability gate compares against a role's context requirement."
+        },
+        "tool_use": {
+          "type": "boolean",
+          "description": "Whether the model supports native tool/function calling. A role that requires file edits or tool-use (Dev) needs true on a coding-agent harness."
+        },
+        "structured_output_tier": {
+          "$ref": "#/$defs/tier",
+          "description": "Reliability of schema-valid / JSON-mode output. Verdict-emitting roles (review, acceptance) require >= medium; the engine NEVER lowers the verdict-schema bar for a weaker model (model-agnostic verdict invariant)."
+        },
+        "reasoning_tier": {
+          "$ref": "#/$defs/tier",
+          "description": "Reasoning / judgment capability tier. Judgment roles (acceptance) and planning (deliver) key on this."
+        },
+        "endpoint_kind": {
+          "type": "string",
+          "enum": ["native", "openai_compatible"],
+          "description": "How the model is reached. native = provider's first-party harness (claude_code/codex). openai_compatible = reachable via the headless adapter's OpenAI-compatible endpoint (unlocks deepseek/moonshot/openai for API-only roles)."
+        },
+        "harness_compat": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["claude_code", "codex", "headless", "aider"]},
+          "description": "Harnesses that can drive this (provider, model). Coding-agent harnesses are required for file-editing roles; headless suits pure-API judgment/reasoning roles."
+        },
+        "cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Per-million-token pricing (informational; budget tracking is charter.budget). Subscription-billed agents may have null values.",
+          "properties": {
+            "currency": {"type": "string", "default": "USD"},
+            "input_per_mtok": {"type": ["number", "null"], "minimum": 0},
+            "output_per_mtok": {"type": ["number", "null"], "minimum": 0}
+          }
+        },
+        "calibratable": {
+          "type": "boolean",
+          "description": "Whether this model is eligible to back a calibration-gated judgment role (Acceptance) per Constitution §3.6. The capability gate refuses judgment roles on non-calibratable models."
+        },
+        "notes": {"type": "string"}
+      }
+    }
+  }
+}
