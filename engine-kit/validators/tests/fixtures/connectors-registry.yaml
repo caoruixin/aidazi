@@ -1,0 +1,16 @@
+# Test-fixture connector catalog (schemas/connector-catalog.schema.json). Passed
+# to the validator via the connector_catalog_path override so the live repo's
+# default behavior (no catalog ⇒ benign WARN) is unchanged. Vets the read-only
+# evidence-store connector the clean acceptance role grants.
+catalog_version: 1
+last_updated: "2026-06-15"
+connectors:
+  evidence-store:
+    title: "Evidence store (read-only HTTP API)"
+    kind: http_api
+    server: https://evidence.internal/api
+    provenance: adopter
+    capability_class: [read]
+    required_secrets: [EVIDENCE_API_TOKEN]
+    harness_compat: [claude_code, codex, headless]
+    notes: "Read-only evidence retrieval for the Acceptance judge."

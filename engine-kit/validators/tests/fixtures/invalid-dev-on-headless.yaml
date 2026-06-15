@@ -1,0 +1,105 @@
+# FAIL: Dev on 'headless' harness (no file-editing coding agent).
+# Expected rule: dev_needs_coding_agent.
+mission:
+  id: M5-charter-validator-v2
+  goal: Exercise the v2 Facet A/B/C capability gate, skill integrity, connectors.
+autonomy:
+  level: human_in_the_loop
+  approved_scope:
+    subsprint_sequence:
+    - S5-1-validator-scaffold
+    layers_allowed:
+    - prompt_projection
+    modules_in_scope:
+    - engine-kit/validators
+    explicitly_out_of_scope:
+    - schemas
+  auto_pass_rules:
+    clean_pass_auto_advance: false
+    auto_fix_iteration:
+      enabled: false
+      max_rounds: 0
+      only_if_findings_severity_at_most: P2
+    adaptive_insert:
+      enabled: false
+      max_inserted_subsprints: 0
+budget:
+  max_api_usd: 0
+  max_fix_rounds_total: 3
+  max_wall_clock_minutes: 240
+tooling:
+  research:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-opus-4-8
+    capability_ref: anthropic-opus-judge
+  deliver:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-opus-4-8
+    capability_ref: anthropic-opus-judge
+  dev:
+    agent_kind: claude_code
+    harness: headless
+    provider: deepseek
+    model: deepseek-chat
+    capability_ref: deepseek-chat-api
+    sandbox: workspace_write
+  review:
+    agent_kind: codex
+    harness: codex
+    provider: openai
+    model: gpt-5-codex
+    capability_ref: openai-gpt5-codex
+    tools:
+    - Read
+    - Grep
+    - Glob
+    skills:
+    - id: code-review-excellence
+      source: vendored
+      repo: wshobson/agents
+      pin: cc37bfdd292ce520ba1c44df7a3a70d5f8137236
+      license: MIT
+      provenance: community
+  eval:
+    cmd: pytest -q engine-kit/validators/tests
+    timeout_seconds: 600
+  acceptance:
+    enabled: true
+    agent_kind: headless
+    harness: headless
+    provider: anthropic
+    model: claude-opus-4-8
+    capability_ref: anthropic-opus-judge
+    tools:
+    - Read
+    - Grep
+    - Glob
+    connectors:
+    - id: evidence-store
+      kind: http_api
+      server: https://evidence.internal/api
+      scopes:
+      - read
+      secrets:
+      - EVIDENCE_API_TOKEN
+      provenance: adopter
+    judge_calibration:
+      status: uncalibrated
+      agreement_threshold: 0.9
+      flip_threshold: 0.1
+      labeled_set_path: calibration/labeled_acceptance_cases/manifest.json
+    run_at: milestone_close
+    on_fix_required:
+      human_confirm_required: true
+      route_options:
+      - deliver_fix_iteration
+      - re_acceptance_after_evidence
+      - research_contract_revision
+profile_type_a:
+  closure_contract_source: research_brief
+  phase_pipeline_required: true
+mandatory_checkpoints_added: []

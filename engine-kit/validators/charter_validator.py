@@ -28,6 +28,8 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import datetime
+import importlib.util
 import json
 import os
 import sys
@@ -73,6 +75,136 @@ def _find_schema_path() -> Optional[str]:
 
 
 SCHEMA_PATH = _find_schema_path()
+
+
+# --------------------------------------------------------------------------- #
+# P-0a support: locate the repo root, sibling schemas, the shipped default model
+# registry, and (read-only) reuse skill_vendor's tree-hash/verify logic.
+# --------------------------------------------------------------------------- #
+_DATA_DIR = os.path.join(_THIS_DIR, "data")
+DEFAULT_MODEL_REGISTRY_PATH = os.path.join(_DATA_DIR, "model-registry.yaml")
+
+
+def _find_repo_root() -> Optional[str]:
+    """Walk parents looking for the repo root (has a schemas/ dir)."""
+    cur = _THIS_DIR
+    while True:
+        if os.path.isdir(os.path.join(cur, "schemas")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+_REPO_ROOT = _find_repo_root()
+
+
+def _find_named_schema(name: str) -> Optional[str]:
+    """Locate schemas/<name> at or above this file."""
+    cur = _THIS_DIR
+    while True:
+        candidate = os.path.join(cur, "schemas", name)
+        if os.path.isfile(candidate):
+            return candidate
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _load_named_schema(name: str) -> Optional[dict]:
+    path = _find_named_schema(name)
+    if not path:
+        return None
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _import_skill_vendor():
+    """Import engine-kit/skill-vendor/skill_vendor.py by path (read-only reuse of
+    its tree-hash + verify logic). Returns the module or None if unavailable."""
+    if _REPO_ROOT is None:
+        return None
+    sv_path = os.path.join(_REPO_ROOT, "engine-kit", "skill-vendor", "skill_vendor.py")
+    if not os.path.isfile(sv_path):
+        return None
+    mod_name = "aidazi_skill_vendor"
+    spec = importlib.util.spec_from_file_location(mod_name, sv_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    # Register in sys.modules BEFORE exec so @dataclass (which resolves
+    # sys.modules[cls.__module__] on 3.12+/3.14) can see the defining module.
+    sys.modules[mod_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:  # pragma: no cover - defensive; skill_vendor import guard
+        sys.modules.pop(mod_name, None)
+        return None
+    return module
+
+
+def _stringify_dates(node: Any) -> Any:
+    """Recursively replace datetime.date/datetime values with ISO strings.
+
+    P-0a-2 YAML-date note: skills/registry.yaml has ``last_updated: 2026-06-15``,
+    which PyYAML parses to a ``datetime.date``. The catalog schema declares that
+    field ``{type: string, format: date}``; a parsed date would false-fail the
+    schema. Stringify before schema-validation so it doesn't."""
+    if isinstance(node, dict):
+        return {k: _stringify_dates(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_stringify_dates(v) for v in node]
+    if isinstance(node, (datetime.date, datetime.datetime)):
+        return node.isoformat()
+    return node
+
+
+def _load_yaml_file(path: str) -> Any:
+    with open(path, "r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+def load_model_registry(path: Optional[str] = None) -> Optional[dict]:
+    """Load the default (or an override) model-capability registry. Returns None
+    if the file is absent (the gate then degrades to 'unknown model' WARNs)."""
+    target = path or DEFAULT_MODEL_REGISTRY_PATH
+    if not os.path.isfile(target):
+        return None
+    return _load_yaml_file(target)
+
+
+def load_skill_catalog(path: Optional[str] = None) -> Optional[dict]:
+    """Load skills/registry.yaml (the skill catalog). Returns None if absent."""
+    if path:
+        target = path
+    elif _REPO_ROOT:
+        target = os.path.join(_REPO_ROOT, "skills", "registry.yaml")
+    else:
+        return None
+    if not os.path.isfile(target):
+        return None
+    return _load_yaml_file(target)
+
+
+# Tier ordering for the >= structured-output / reasoning checks
+# (model-capability-registry.md §1: unsupported < low < medium < high).
+_TIER_ORDER: dict[str, int] = {"unsupported": 0, "low": 1, "medium": 2, "high": 3}
+
+# Provider lock reality (role-configuration-contract.md §1): native harnesses are
+# provider-locked; headless is the OpenAI-compatible adapter (any provider).
+_NATIVE_HARNESS_PROVIDER: dict[str, str] = {
+    "claude_code": "anthropic",
+    "codex": "openai",
+}
+# Harnesses that drive a file-editing coding agent (Dev requires one of these).
+_CODING_AGENT_HARNESSES: frozenset[str] = frozenset({"claude_code", "codex", "aider"})
+
+# Roles whose output is a schema-valid verdict (structured-output floor applies).
+_VERDICT_ROLES: frozenset[str] = frozenset({"research", "deliver", "review", "acceptance"})
+# Judgment roles whose RECOMMENDED structured-output target is `high` (WARN if medium).
+_JUDGMENT_ROLES: frozenset[str] = frozenset({"acceptance", "research"})
 
 
 # The 8 default MANDATORY_CHECKPOINTS (process/delivery-loop.md §4.2.3). These
@@ -387,39 +519,451 @@ def _check_adaptive_insert_bound(charter: dict, report: Report) -> None:
 # future phases can plug in without touching the call site. See plan
 # archive/2026-06-15-v2-loop-engine-plan.md §4.1 + §5 / §7 P-0a.
 # --------------------------------------------------------------------------- #
-def _check_connector_grants(charter: dict, report: Report) -> None:
-    # TODO P-0a: connectors default-deny + role grant ⊇ skill connector
-    # requirements. See plan §4.1 facet C — schemas/connector-binding.schema.json
-    # not yet defined. No-op until P-0a lands.
-    return
+def _load_connector_catalog(path: Optional[str] = None) -> Optional[dict]:
+    """Load connectors/registry.yaml if it exists. The catalog is OPTIONAL — a
+    missing catalog is NOT a failure (default-deny holds without one)."""
+    if path:
+        target = path
+    elif _REPO_ROOT:
+        target = os.path.join(_REPO_ROOT, "connectors", "registry.yaml")
+    else:
+        return None
+    if not os.path.isfile(target):
+        return None
+    return _stringify_dates(_load_yaml_file(target))
 
 
-def _check_capability_gate(charter: dict, report: Report) -> None:
-    # TODO P-0a: validate the (harness, provider, model) triple against
-    # model-capability-registry. See plan §4.1 facet A / §5 — registry schema
-    # not yet defined. No-op until P-0a lands.
-    return
+def _check_connector_grants(
+    charter: dict,
+    report: Report,
+    *,
+    connector_catalog_path: Optional[str] = None,
+    skill_catalog_path: Optional[str] = None,
+) -> None:
+    """Facet C connector grants — DEFAULT-DENY (role-configuration-contract.md §3/§5).
+
+    A role with NO ``connectors`` block is a NO-OP (default-deny already holds).
+    For each listed connector on a role that DOES declare connectors:
+      - validate against schemas/connector-binding.schema.json;
+      - capability class ⊆ role sandbox: a read_only role may grant only read
+        scopes (write/network on a read-only role ⇒ ERROR);
+      - grant ⊇ skill requirements: if a bound skill declares connector/mcp
+        requirements, the role must grant them; missing ⇒ ERROR.
+      - catalog cross-ref (OPTIONAL): if connectors/registry.yaml exists, also
+        check ids resolve; if not, skip with a note (never blocks).
+    """
+    binding_schema = _load_named_schema("connector-binding.schema.json")
+    validator = Draft202012Validator(binding_schema) if binding_schema else None
+
+    catalog = _load_connector_catalog(connector_catalog_path)
+    cat_connectors = (catalog or {}).get("connectors", {}) or {}
+
+    skill_catalog = load_skill_catalog(skill_catalog_path)
+    skill_catalog = _stringify_dates(skill_catalog) if skill_catalog else {}
+    cat_skills = (skill_catalog.get("skills") or {}) if skill_catalog else {}
+    cat_authored = (skill_catalog.get("authored") or {}) if skill_catalog else {}
+
+    for role, cfg in _iter_roles(charter):
+        base = f"tooling.{role}.connectors"
+        read_only = _role_is_read_only(role, cfg)
+        granted_ids: set[str] = set()
+        connectors = cfg.get("connectors")
+        has_connectors = isinstance(connectors, list)
+
+        if has_connectors:
+            for idx, conn in enumerate(connectors):
+                cpath = f"{base}[{idx}]"
+                if not isinstance(conn, dict):
+                    continue
+                cid = conn.get("id")
+                if isinstance(cid, str):
+                    granted_ids.add(cid)
+
+                # --- schema validation ---------------------------------------
+                if validator is not None:
+                    for err in validator.iter_errors(conn):
+                        report.error(
+                            "connector_binding_invalid",
+                            f"connector '{cid}' on role '{role}' does not validate "
+                            f"connector-binding.schema.json: {err.message}",
+                            cpath + ("." + ".".join(str(p) for p in err.absolute_path)
+                                     if err.absolute_path else ""),
+                        )
+
+                # --- capability class ⊆ role sandbox -------------------------
+                scopes = conn.get("scopes")
+                if isinstance(scopes, list) and read_only:
+                    privileged = [s for s in scopes if s in ("write", "network")]
+                    if privileged:
+                        report.error(
+                            "connector_scope_sandbox",
+                            f"read-only role '{role}' grants connector '{cid}' with "
+                            f"privileged scope(s) {sorted(set(map(str, privileged)))}; "
+                            f"a read_only role's connectors must be read-only "
+                            f"(capability class ⊆ sandbox; "
+                            f"role-configuration-contract.md §3)",
+                            cpath + ".scopes",
+                        )
+
+                # --- catalog cross-ref (optional, never blocks) --------------
+                if catalog is not None and isinstance(cid, str) and cid not in cat_connectors:
+                    report.warn(
+                        "connector_not_in_catalog",
+                        f"connector '{cid}' on role '{role}' is not in "
+                        f"connectors/registry.yaml; granting from outside the vetted "
+                        f"catalog is an explicit trust decision "
+                        f"(role-configuration-contract.md §3)",
+                        cpath + ".id",
+                    )
+
+            if catalog is None:
+                report.warn(
+                    "connector_catalog_absent",
+                    f"role '{role}' grants connectors but connectors/registry.yaml "
+                    f"is absent; catalog cross-reference skipped (binding-level "
+                    f"checks still applied; default-deny unaffected)",
+                    base,
+                )
+
+        # --- grant ⊇ the connector requirements of the role's bound skills ----
+        # Runs whether or not the role declares a connectors block: a skill that
+        # needs a connector the role doesn't grant is a violation either way
+        # (a role with no connectors block grants nothing — default-deny).
+        skills = cfg.get("skills")
+        if isinstance(skills, list):
+            for entry in skills:
+                if isinstance(entry, str):
+                    sid = entry
+                    binding_reqs = None
+                elif isinstance(entry, dict) and isinstance(entry.get("id"), str):
+                    sid = entry["id"]
+                    binding_reqs = entry.get("connector_requirements")
+                else:
+                    continue
+                cat_entry = cat_skills.get(sid) or cat_authored.get(sid) or {}
+                reqs = binding_reqs if isinstance(binding_reqs, list) else cat_entry.get("connector_requirements")
+                if not isinstance(reqs, list):
+                    continue
+                missing = [r for r in reqs if str(r) not in granted_ids]
+                if missing:
+                    report.error(
+                        "connector_grant_insufficient",
+                        f"role '{role}' binds skill '{sid}' which requires "
+                        f"connector(s) {sorted(set(map(str, missing)))} the role does "
+                        f"not grant; a role's connector grant MUST ⊇ its skills' "
+                        f"connector requirements (role-configuration-contract.md §3)",
+                        base,
+                    )
 
 
-def _check_skill_integrity(charter: dict, report: Report) -> None:
-    # TODO P-0a: skill integrity / provenance / pin (no unpinned or
-    # runtime-fetched skill sources). See plan §4.1 facet B / §6 constitution
-    # edit #4 — skill-binding/skill-catalog schemas not yet defined. No-op.
-    return
+def _iter_roles(charter: dict):
+    """Yield (role_name, role_cfg_dict) for each LLM role under tooling. Skips
+    'eval' (not an LLM role — orchestrator runs a cmd)."""
+    tooling = charter.get("tooling")
+    if not isinstance(tooling, dict):
+        return
+    for role, cfg in tooling.items():
+        if role == "eval" or not isinstance(cfg, dict):
+            continue
+        yield role, cfg
 
 
-def validate_semantics(charter: Any, report: Report) -> None:
+def _role_tools_allow(cfg: dict) -> Optional[set[str]]:
+    """Resolve a role's built-in tool whitelist regardless of shape:
+      - acceptance/review legacy: tools: [Read, Grep, Glob]
+      - dev/review v2 object:     tools: {allow: [...]}
+    Returns the set of allowed tool names, or None if no whitelist is declared
+    (None = 'not restricted here' — the caller treats a read-only role's default
+    whitelist as {Read, Grep, Glob})."""
+    tools = cfg.get("tools")
+    if isinstance(tools, list):
+        return {str(t) for t in tools}
+    if isinstance(tools, dict) and isinstance(tools.get("allow"), list):
+        return {str(t) for t in tools["allow"]}
+    return None
+
+
+def _role_is_read_only(role: str, cfg: dict) -> bool:
+    """A role is read-only iff its sandbox is read_only, OR it is a role whose
+    default sandbox is read_only (review/acceptance are read-only judges)."""
+    sandbox = cfg.get("sandbox")
+    if sandbox == "read_only":
+        return True
+    if sandbox == "workspace_write":
+        return False
+    return role in ("review", "acceptance")
+
+
+def _check_capability_gate(charter: dict, report: Report, *, model_registry_path: Optional[str] = None) -> None:
+    """Facet A capability gate (role-configuration-contract.md §4/§5).
+
+    Fires ONLY for a role that declares the v2 execution fields
+    (tooling.<role>.{harness, provider, model}). A legacy charter (agent_kind/model
+    only) is untouched. For each such role:
+      - harness↔provider compatibility (claude_code→anthropic, codex→openai,
+        headless→OpenAI-compatible/any) — mismatch ⇒ ERROR.
+      - Dev needs a file-editing coding-agent harness — headless ⇒ ERROR.
+      - structured-output floor: verdict roles require the model's
+        structured_output_tier ≥ medium ⇒ ERROR below; judgment roles recommend
+        high ⇒ WARN if exactly medium.
+      - unknown model (not in the registry) ⇒ WARN (can't verify capability).
+    """
+    registry = load_model_registry(model_registry_path)
+    models = (registry or {}).get("models", {}) or {}
+
+    for role, cfg in _iter_roles(charter):
+        harness = cfg.get("harness")
+        provider = cfg.get("provider")
+        model = cfg.get("model")
+        # The check is GATED on the new Facet-A fields being present.
+        if harness is None and provider is None and "capability_ref" not in cfg:
+            continue
+
+        base = f"tooling.{role}"
+
+        # --- harness ↔ provider compatibility ---------------------------------
+        if isinstance(harness, str) and isinstance(provider, str):
+            locked = _NATIVE_HARNESS_PROVIDER.get(harness)
+            if locked is not None and provider != locked:
+                report.error(
+                    "harness_provider_mismatch",
+                    f"role '{role}' harness '{harness}' is provider-locked to "
+                    f"'{locked}' but provider is '{provider}' "
+                    f"(role-configuration-contract.md §1)",
+                    f"{base}.provider",
+                )
+
+        # --- Dev needs a coding-agent (file-editing) harness ------------------
+        if role == "dev" and isinstance(harness, str) and harness not in _CODING_AGENT_HARNESSES:
+            report.error(
+                "dev_needs_coding_agent",
+                f"Dev needs a coding-agent harness (claude_code/codex/aider) that "
+                f"can edit files; harness '{harness}' cannot "
+                f"(role-configuration-contract.md §4)",
+                f"{base}.harness",
+            )
+
+        # --- structured-output floor (verdict roles) --------------------------
+        # Resolve the model record: prefer capability_ref → profile id; else match
+        # provider+model against any registry record.
+        record = None
+        cap_ref = cfg.get("capability_ref")
+        if isinstance(cap_ref, str) and cap_ref in models:
+            record = models[cap_ref]
+        elif isinstance(model, str):
+            for rec in models.values():
+                if isinstance(rec, dict) and rec.get("model") == model and (
+                    provider is None or rec.get("provider") == provider
+                ):
+                    record = rec
+                    break
+
+        if record is None:
+            # Only WARN about an unverifiable model when a model/profile WAS named.
+            if isinstance(model, str) or isinstance(cap_ref, str):
+                named = cap_ref if isinstance(cap_ref, str) else model
+                report.warn(
+                    "model_unknown",
+                    f"role '{role}' references model/profile '{named}' not found in "
+                    f"the model-capability registry; cannot verify capability "
+                    f"(role-configuration-contract.md §5)",
+                    f"{base}.capability_ref" if isinstance(cap_ref, str) else f"{base}.model",
+                )
+            continue
+
+        if role in _VERDICT_ROLES:
+            tier = record.get("structured_output_tier")
+            rank = _TIER_ORDER.get(str(tier), -1)
+            floor = _TIER_ORDER["medium"]
+            if rank < floor:
+                report.error(
+                    "structured_output_floor",
+                    f"verdict-emitting role '{role}' requires structured_output_tier "
+                    f">= medium but model '{record.get('model')}' is '{tier}'; the "
+                    f"engine never lowers the verdict-schema bar for a weaker model "
+                    f"(role-configuration-contract.md §4, model-agnostic verdict invariant)",
+                    f"{base}.capability_ref" if isinstance(cap_ref, str) else f"{base}.model",
+                )
+            elif role in _JUDGMENT_ROLES and rank == floor:
+                report.warn(
+                    "structured_output_recommended_high",
+                    f"judgment role '{role}' is recommended a structured_output_tier "
+                    f"of 'high'; model '{record.get('model')}' is exactly 'medium' "
+                    f"(meets the floor, below the recommended target) "
+                    f"(role-configuration-contract.md §4)",
+                    f"{base}.capability_ref" if isinstance(cap_ref, str) else f"{base}.model",
+                )
+
+
+def _check_skill_integrity(
+    charter: dict,
+    report: Report,
+    *,
+    skill_catalog_path: Optional[str] = None,
+    skill_vendor=None,
+    repo_root: Optional[str] = None,
+) -> None:
+    """Facet B skill integrity (role-configuration-contract.md §2/§5; anti-pattern
+    #13). Fires ONLY for skills a role explicitly binds via tooling.<role>.skills[];
+    if no role binds a skill, NO-OP. For each bound skill:
+      - pinned: the binding (pin) OR its catalog entry (source.commit) must carry a
+        pin; unpinned/floating source ⇒ ERROR.
+      - integrity: the vendored tree_sha256 matches skills/skills.lock (REUSE
+        skill_vendor.verify) ⇒ mismatch ERROR.
+      - whitelist: the skill's tool_requirements ⊆ the role's tools.allow (or a
+        read-only role's {Read,Grep,Glob} default) ⇒ exceed ERROR.
+    """
+    # Gather every bound skill across roles first; if none, this check is a no-op.
+    bindings: list[tuple[str, str, Any, dict]] = []  # (role, skill_id, binding, role_cfg)
+    for role, cfg in _iter_roles(charter):
+        skills = cfg.get("skills")
+        if not isinstance(skills, list):
+            continue
+        for entry in skills:
+            if isinstance(entry, str):
+                bindings.append((role, entry, entry, cfg))
+            elif isinstance(entry, dict) and isinstance(entry.get("id"), str):
+                bindings.append((role, entry["id"], entry, cfg))
+    if not bindings:
+        return  # NO-OP — no skills bound.
+
+    catalog = load_skill_catalog(skill_catalog_path)
+    catalog = _stringify_dates(catalog) if catalog else {}
+
+    # Validate the catalog against its schema (best-effort; absence ⇒ skip cleanly).
+    cat_schema = _load_named_schema("skill-catalog.schema.json")
+    if catalog and cat_schema is not None:
+        for err in Draft202012Validator(cat_schema).iter_errors(catalog):
+            report.warn(
+                "skill_catalog_invalid",
+                f"skills/registry.yaml does not validate skill-catalog.schema.json: "
+                f"{err.message}",
+                ".".join(str(p) for p in err.absolute_path) or "<root>",
+            )
+
+    cat_skills = (catalog.get("skills") or {}) if catalog else {}
+    cat_authored = (catalog.get("authored") or {}) if catalog else {}
+
+    sv = skill_vendor if skill_vendor is not None else _import_skill_vendor()
+    root = repo_root or _REPO_ROOT
+
+    # Run skill_vendor.verify ONCE for the bound ids that are actually locked
+    # (offline, pure). We only key integrity off skills present in skills.lock —
+    # an authored/local skill not in the lock is not a vendored-integrity subject,
+    # so it is not false-failed here (its pin + whitelist are still checked).
+    verify_ok: dict[str, bool] = {}
+    verify_msgs: dict[str, list[str]] = {}
+    locked_ids: set[str] = set()
+    if sv is not None and root is not None:
+        try:
+            locked_ids = set((sv.load_lock(root).get("skills") or {}).keys())
+        except Exception:  # pragma: no cover - defensive
+            locked_ids = set()
+        wanted = sorted({sid for _, sid, _, _ in bindings} & locked_ids)
+        if wanted:
+            try:
+                vreport = sv.verify(wanted, repo_root=root)
+                for r in vreport.results:
+                    verify_ok[r.skill_id] = r.ok
+                    verify_msgs[r.skill_id] = list(r.messages)
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+    for role, sid, binding, cfg in bindings:
+        base = f"tooling.{role}.skills"
+        cat_entry = cat_skills.get(sid) or cat_authored.get(sid) or {}
+        is_object_form = isinstance(binding, dict)
+        in_catalog = bool(cat_entry)
+        in_lock = sid in locked_ids
+
+        # BACKWARD-COMPAT GATE: a bare-string skill that resolves to NOTHING the
+        # provenance system knows about (not the v2 object form, not in the
+        # catalog, not in the lock) is a LEGACY free name (schema: "Legacy form:
+        # skill name or path"). The pin/integrity discipline is a property of the
+        # v2 provenance surface, so legacy bare names are left exactly as before.
+        if not is_object_form and not in_catalog and not in_lock:
+            continue
+
+        # --- pinned: binding.pin OR catalog source.commit --------------------
+        binding_pin = binding.get("pin") if is_object_form else None
+        catalog_pin = (cat_entry.get("source") or {}).get("commit") if cat_entry else None
+        # 'local'/'authored' sources are in-repo (no upstream pin needed).
+        src_kind = (binding.get("source") if is_object_form else None) or (
+            cat_entry.get("source", {}).get("repo") if cat_entry else None
+        )
+        in_repo = src_kind in ("authored", "local") or (
+            isinstance(cat_entry.get("source"), dict)
+            and cat_entry["source"].get("repo") == "local"
+        )
+        if not in_repo and not binding_pin and not catalog_pin:
+            report.error(
+                "skill_unpinned",
+                f"role '{role}' binds skill '{sid}' with no commit/pin "
+                f"(binding.pin absent and no catalog source.commit); unpinned / "
+                f"runtime-fetched skill sources are FORBIDDEN "
+                f"(role-configuration-contract.md §2; Constitution §1.7 Δ-C4)",
+                base,
+            )
+
+        # --- integrity: vendored tree_sha256 vs skills.lock ------------------
+        if sid in verify_ok and not verify_ok[sid]:
+            detail = "; ".join(verify_msgs.get(sid, [])) or "tree_sha256 mismatch"
+            report.error(
+                "skill_integrity",
+                f"role '{role}' binds skill '{sid}' whose vendored content fails "
+                f"integrity verification against skills/skills.lock: {detail} "
+                f"(role-configuration-contract.md §5)",
+                base,
+            )
+
+        # --- whitelist: skill tool_requirements ⊆ role tools.allow -----------
+        reqs = cat_entry.get("tool_requirements") if cat_entry else None
+        if isinstance(reqs, list) and reqs:
+            allow = _role_tools_allow(cfg)
+            if allow is None and _role_is_read_only(role, cfg):
+                allow = {"Read", "Grep", "Glob"}  # read-only default whitelist
+            if allow is not None:
+                exceeded = [t for t in reqs if str(t) not in allow]
+                if exceeded:
+                    report.error(
+                        "skill_tool_whitelist",
+                        f"role '{role}' skill '{sid}' requires tools "
+                        f"{sorted(set(map(str, exceeded)))} not in the role's "
+                        f"whitelist {sorted(allow)}; a skill's tool_requirements MUST "
+                        f"be ⊆ the role whitelist (anti-pattern #13; "
+                        f"role-configuration-contract.md §2)",
+                        base,
+                    )
+
+
+@dataclass
+class Overrides:
+    """Optional override paths for the P-0a data sources (tests inject fixtures;
+    production uses the shipped defaults / repo state). All OPTIONAL."""
+
+    model_registry_path: Optional[str] = None
+    skill_catalog_path: Optional[str] = None
+    connector_catalog_path: Optional[str] = None
+
+
+def validate_semantics(charter: Any, report: Report, overrides: Optional[Overrides] = None) -> None:
     if not isinstance(charter, dict):
         report.error("structural", "charter root must be a mapping/object", "<root>")
         return
+    ov = overrides or Overrides()
     _check_mandatory_checkpoints(charter, report)
     _check_acceptance_on_fix_required(charter, report)
     _check_calibration_corollary(charter, report)
     _check_adaptive_insert_bound(charter, report)
-    # P-0a extension points (currently no-op):
-    _check_connector_grants(charter, report)
-    _check_capability_gate(charter, report)
-    _check_skill_integrity(charter, report)
+    # P-0a checks (fire ONLY when the relevant new charter fields are present):
+    _check_connector_grants(
+        charter,
+        report,
+        connector_catalog_path=ov.connector_catalog_path,
+        skill_catalog_path=ov.skill_catalog_path,
+    )
+    _check_capability_gate(charter, report, model_registry_path=ov.model_registry_path)
+    _check_skill_integrity(charter, report, skill_catalog_path=ov.skill_catalog_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -442,18 +986,26 @@ def load_charter(charter_path: str) -> Any:
         return yaml.safe_load(fh)
 
 
-def validate_charter(charter: Any, schema: Optional[dict] = None) -> Report:
+def validate_charter(
+    charter: Any,
+    schema: Optional[dict] = None,
+    overrides: Optional[Overrides] = None,
+) -> Report:
     """Validate an already-parsed charter object. Pure: no I/O beyond the schema
     (which the caller may pass in). Returns a Report (errors + warnings)."""
     if schema is None:
         schema = load_schema()
     report = Report()
     validate_structure(charter, schema, report)
-    validate_semantics(charter, report)
+    validate_semantics(charter, report, overrides)
     return report
 
 
-def validate_file(charter_path: str, schema_path: Optional[str] = None) -> Report:
+def validate_file(
+    charter_path: str,
+    schema_path: Optional[str] = None,
+    overrides: Optional[Overrides] = None,
+) -> Report:
     """Validate a charter file end-to-end. YAML parse / schema load errors are
     returned as a Report with a single error (so the CLI exits non-zero cleanly)."""
     report = Report()
@@ -470,7 +1022,7 @@ def validate_file(charter_path: str, schema_path: Optional[str] = None) -> Repor
     except yaml.YAMLError as exc:
         report.error("charter_parse", f"YAML parse error: {exc}", charter_path)
         return report
-    return validate_charter(charter, schema)
+    return validate_charter(charter, schema, overrides)
 
 
 # --------------------------------------------------------------------------- #
