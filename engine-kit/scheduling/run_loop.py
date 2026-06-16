@@ -52,11 +52,17 @@ for _p in (
 
 import audit_log as audit  # noqa: E402
 from adapters import MockAdapter, resolve_adapter_class  # noqa: E402
-from driver import Driver, load_charter, route_for_role  # noqa: E402
+from driver import (  # noqa: E402
+    Driver, load_charter, route_for_role,
+    LOOP_MODE_DELIVERY_ONLY, LOOP_MODE_FULL_CHAIN_GUIDED,
+)
 
 MODE_OVERNIGHT_AUTOLOOP = "overnight_autoloop"
 MODE_MILESTONE_DELIVERY = "milestone_delivery"
 MODES = (MODE_OVERNIGHT_AUTOLOOP, MODE_MILESTONE_DELIVERY)
+
+# P6.1 — the loop-mode CLI choices (mirrors the Driver's loop_mode param).
+LOOP_MODES = (LOOP_MODE_DELIVERY_ONLY, LOOP_MODE_FULL_CHAIN_GUIDED)
 
 # Default clean-pass canned verdicts for the offline DRY-RUN mock path. These let
 # a scheduled dry-run exercise the full P2 happy path (dev→gate→review→close→
@@ -67,6 +73,14 @@ _DRY_CLOSE = {"verdict": "A", "blocking_count": 0, "worst_severity": "none",
               "in_scope": True, "next_subsprint": None,
               "reason": "dry-run clean pass"}
 _DRY_DEV = {"artifact": "dry-run handoff"}
+# P6.1 — a dry-run deliver-plan for full_chain_guided decompose. Modules/layers
+# are left EMPTY so the scope-expansion guard treats the plan as defining scope
+# (no signed envelope to widen) on a charter with no approved_scope — a safe
+# offline default. A real run uses --allow-real + a real Deliver plan.
+_DRY_PLAN = {"sub_sprints": [{
+    "id": "sprint-001", "objective": "dry-run sub-sprint",
+    "scope_in": [], "scope_out": [], "modules": [], "layers": [],
+    "exit_criteria": []}]}
 
 
 def _roles_in_charter(charter: dict) -> list:
@@ -76,7 +90,8 @@ def _roles_in_charter(charter: dict) -> list:
             if r in tooling]
 
 
-def build_adapters(charter: dict, *, allow_real: bool = False) -> Dict[str, object]:
+def build_adapters(charter: dict, *, allow_real: bool = False,
+                   loop_mode: str = LOOP_MODE_DELIVERY_ONLY) -> Dict[str, object]:
     """Build one adapter per routed role from the charter's per-role routing.
 
     DEFAULT (``allow_real=False``) → a MockAdapter per role carrying a clean-pass
@@ -85,11 +100,22 @@ def build_adapters(charter: dict, *, allow_real: bool = False) -> Dict[str, obje
     its provider/model (+ endpoint as base_url and api_key_env when present). Real
     adapters still refuse I/O unless AIDAZI_ALLOW_REAL_ADAPTER=1 (their own gate),
     so building them is safe; only spawning with the env set reaches the network.
+
+    In full_chain_guided the deliver role serves BOTH the decompose (call_index 0
+    → deliver-plan) and the per-sub-sprint close (later calls → deliver-close), so
+    the mock is keyed accordingly. In delivery_only the deliver role is only ever
+    spawned for close, so its sole canned response is the close verdict (byte-
+    identical to the pre-P6.1 dry-run).
     """
+    deliver_canned = {("deliver",): _DRY_CLOSE}
+    if loop_mode == LOOP_MODE_FULL_CHAIN_GUIDED:
+        # ("deliver",0)=decompose plan; ("deliver",)=close for every later call.
+        deliver_canned = {("deliver", 0): _DRY_PLAN, ("deliver",): _DRY_CLOSE}
     canned_by_role = {
         "dev": {("dev",): _DRY_DEV},
         "review": {("review",): _DRY_REVIEW},
-        "deliver": {("deliver",): _DRY_CLOSE},
+        "deliver": deliver_canned,
+        "research": {("research",): _DRY_DEV},  # research drafts an ARTIFACT
     }
     adapters: Dict[str, object] = {}
     for role in _roles_in_charter(charter):
@@ -116,6 +142,43 @@ def build_adapters(charter: dict, *, allow_real: bool = False) -> Dict[str, obje
     return adapters
 
 
+def make_interactive_gate_resolver() -> Callable[[str, dict, "object"],
+                                                  Optional[dict]]:
+    """A DEFAULT interactive gate resolver for full_chain_guided runs at a TTY.
+
+    This is the HUMAN's voice (injected into the Driver like ``clock``): it prints
+    the gate context + options and reads the human's choice + optional note from
+    stdin — a SELECTION, not a file-edit. It returns
+    {"choice": ..., "note": ..., "resolver": "interactive_cli"} or None (None →
+    the driver HALTS for async resolution). The engine never auto-signs; this
+    resolver only relays an explicit human choice.
+
+    NOT used in tests / offline runs (those pass delivery_only or inject their own
+    resolver) — it is wired only when --loop-mode full_chain_guided runs at a TTY.
+    """
+    def _resolve(gate_id: str, context: dict, options) -> Optional[dict]:
+        opts = list(options)
+        print(f"\n=== HUMAN GATE: {gate_id} ===")
+        import json as _json
+        print(_json.dumps(context, indent=2, sort_keys=True, default=str))
+        print(f"\nOptions: {', '.join(opts)}")
+        try:
+            choice = input(f"Your choice [{'/'.join(opts)}] "
+                           "(blank = halt for later): ").strip()
+        except EOFError:
+            return None
+        if not choice or choice not in opts:
+            # Blank or unrecognized → no decision → the driver HALTS (async).
+            return None
+        try:
+            note = input("Optional note: ").strip()
+        except EOFError:
+            note = ""
+        return {"choice": choice, "note": note, "resolver": "interactive_cli"}
+
+    return _resolve
+
+
 def run_loop(
     charter: dict,
     *,
@@ -128,6 +191,8 @@ def run_loop(
     mode: str = MODE_MILESTONE_DELIVERY,
     repo_dir: Optional[str] = None,
     memory_root: Optional[str] = None,
+    loop_mode: str = LOOP_MODE_DELIVERY_ONLY,
+    gate_resolver: Optional[Callable] = None,
 ) -> dict:
     """Run ONE loop end-to-end and return a summary dict.
 
@@ -136,17 +201,24 @@ def run_loop(
     passes a real ISO clock; tests pass a deterministic one). ``mode`` is recorded
     in the loop_start audit context. ``repo_dir`` enables Loop Ingress;
     ``memory_root`` enables Loop Memory — both optional (off → byte-identical).
+    ``loop_mode`` selects the P6.1 bootstrap (delivery_only DEFAULT → byte-
+    identical; full_chain_guided adds the research → gate1 → decompose pre-states).
+    ``gate_resolver`` is the injected human-voice for guided gates (tests pass a
+    canned one; main() wires the interactive CLI resolver at a TTY).
     """
     if mode not in MODES:
         raise ValueError(f"mode {mode!r} not one of {MODES}")
     if adapters is None:
-        adapters = build_adapters(charter, allow_real=allow_real)
+        adapters = build_adapters(charter, allow_real=allow_real,
+                                  loop_mode=loop_mode)
 
     driver = Driver(
         charter, run_dir, adapters,
         loop_id=loop_id, clock=clock,
-        context={"schedule_mode": mode, "allow_real": allow_real},
+        context={"schedule_mode": mode, "allow_real": allow_real,
+                 "loop_mode": loop_mode},
         repo_dir=repo_dir, memory_root=memory_root,
+        loop_mode=loop_mode, gate_resolver=gate_resolver,
     )
     final = driver.run(subsprint_id=subsprint_id)
     result = audit.verify_chain(driver.audit_ledger)
@@ -191,6 +263,10 @@ def main(argv=None) -> int:
                         help="git repo for Loop Ingress (optional; off by default)")
     parser.add_argument("--memory-root", default=None,
                         help="Loop Memory root (optional; off by default)")
+    parser.add_argument("--loop-mode", choices=LOOP_MODES,
+                        default=LOOP_MODE_DELIVERY_ONLY,
+                        help="delivery_only (default) | full_chain_guided "
+                             "(adds research → gate1 → decompose pre-states)")
     parser.add_argument("--allow-real", action="store_true",
                         help="build REAL adapters (still gated by AIDAZI_ALLOW_REAL_ADAPTER)")
     args = parser.parse_args(argv)
@@ -199,11 +275,22 @@ def main(argv=None) -> int:
     run_dir = args.run_dir or tempfile.mkdtemp(prefix=f"aidazi-{args.mode}-")
     loop_id = args.loop_id or f"{args.mode}-{args.subsprint_id}"
 
+    # P6.1: for an interactive full_chain_guided run, wire the DEFAULT CLI gate
+    # resolver (prints the gate context + reads the human's selection from stdin).
+    # The offline test path never reaches here (tests pass delivery_only OR inject
+    # their own resolver); a non-TTY guided run leaves the resolver None → the
+    # driver HALTS at Gate-1 for async resolution (never auto-signs).
+    gate_resolver = None
+    if (args.loop_mode == LOOP_MODE_FULL_CHAIN_GUIDED
+            and sys.stdin is not None and sys.stdin.isatty()):
+        gate_resolver = make_interactive_gate_resolver()
+
     info = run_loop(
         charter, run_dir=run_dir, loop_id=loop_id,
         subsprint_id=args.subsprint_id, clock=_production_clock(),
         allow_real=args.allow_real, mode=args.mode,
         repo_dir=args.repo_dir, memory_root=args.memory_root,
+        loop_mode=args.loop_mode, gate_resolver=gate_resolver,
     )
 
     print(f"=== aidazi schedule run ({info['mode']}) ===")

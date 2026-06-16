@@ -1427,5 +1427,515 @@ class TestMemoryFeedbackAtClose(unittest.TestCase):
             self.assertNotIn("memory_feedback", types)
 
 
+# --------------------------------------------------------------------------- #
+# P6.1 — the OPTIONAL full_chain_guided bootstrap mode: research → gate1 →
+# decompose pre-states BEFORE the delivery loop. All deterministic + offline:
+# MockAdapter canned verdicts, injected clock, an INJECTED gate resolver standing
+# in for the human (the engine NEVER auto-signs Gate 1).
+# --------------------------------------------------------------------------- #
+from driver import (  # noqa: E402
+    STATE_RESEARCH_PENDING, STATE_GATE1_PENDING, STATE_DECOMPOSE_PENDING,
+    LOOP_MODE_DELIVERY_ONLY, LOOP_MODE_FULL_CHAIN_GUIDED,
+)
+
+# A schema-valid deliver-plan verdict whose modules/layers stay WITHIN the example
+# charter's approved_scope envelope (modules_in_scope + layers_allowed).
+GUIDED_PLAN = {
+    "sub_sprints": [{
+        "id": "sprint-001", "objective": "implement refund eligibility",
+        "scope_in": ["eligibility branches"], "scope_out": ["escalation"],
+        "modules": ["src/tools/eligibility.py"],
+        "layers": ["semantic_planner"],
+        "exit_criteria": ["all bad-cases pass"],
+    }],
+}
+# A plan that widens BEYOND the signed envelope (module + layer not in scope).
+GUIDED_PLAN_OUT_OF_ENVELOPE = {
+    "sub_sprints": [{
+        "id": "sprint-001", "objective": "widen scope",
+        "scope_in": [], "scope_out": [],
+        "modules": ["src/escalation/new_path.py"],   # NOT in modules_in_scope
+        "layers": ["infra"],                          # NOT in layers_allowed
+        "exit_criteria": [],
+    }],
+}
+RESEARCH_ARTIFACT = {"artifact": "drafted milestone brief"}
+
+
+def _sign_resolver(note="looks good"):
+    """A canned resolver returning an explicit human `sign` (the ONLY thing that
+    lets the bootstrap proceed past Gate 1)."""
+    def _r(gate_id, context, options):
+        return {"choice": "sign", "note": note, "resolver": "test-human"}
+    return _r
+
+
+def _choice_resolver(choice, note=""):
+    def _r(gate_id, context, options):
+        return {"choice": choice, "note": note, "resolver": "test-human"}
+    return _r
+
+
+def _none_resolver():
+    """A resolver that declines to decide (returns None) → the driver HALTS."""
+    def _r(gate_id, context, options):
+        return None
+    return _r
+
+
+def _guided_charter(*, subsprint_sequence=(), confirmed_by_human=False):
+    """A full_chain_guided charter derived from the p2 demo charter. By DEFAULT
+    the approved subsprint_sequence is EMPTY (so decompose runs) and the brief is
+    NOT signed upfront (so research + gate1 run)."""
+    charter = load_charter(CHARTER_PATH)
+    charter["autonomy"]["approved_scope"]["subsprint_sequence"] = \
+        list(subsprint_sequence)
+    if confirmed_by_human:
+        charter["intent_contract"] = {"confirmed_by_human": True}
+    return charter
+
+
+def _guided_adapters(plan=GUIDED_PLAN, review=CLEAN_REVIEW, close=CLEAN_CLOSE,
+                     dev=DEV_ARTIFACT, research=RESEARCH_ARTIFACT):
+    """Adapters for a guided run. The deliver role serves BOTH decompose
+    (call_index 0 → plan) and close (later → close verdict)."""
+    return {
+        "research": MockAdapter({("research",): research}, harness="claude_code",
+                                provider="anthropic", model="claude-opus-4-8"),
+        "dev": MockAdapter({("dev",): dev}, harness="claude_code",
+                           provider="anthropic", model="claude-sonnet-4-6"),
+        "review": MockAdapter({("review",): review}, harness="headless",
+                              provider="deepseek", model="deepseek-chat"),
+        "deliver": MockAdapter({("deliver", 0): plan, ("deliver",): close},
+                               harness="claude_code", provider="anthropic",
+                               model="claude-opus-4-8"),
+    }
+
+
+def _guided_driver(run_dir, *, charter=None, adapters=None,
+                   gate_resolver=None, loop_id="loop-guided-001",
+                   loop_mode=LOOP_MODE_FULL_CHAIN_GUIDED):
+    charter = charter if charter is not None else _guided_charter()
+    return Driver(charter, run_dir, adapters or _guided_adapters(),
+                  loop_id=loop_id, clock=_clock(),
+                  loop_mode=loop_mode, gate_resolver=gate_resolver)
+
+
+class TestFullChainGuided(unittest.TestCase):
+    # (a) happy path: research → gate1(sign) → decompose → dev…→ advance.
+    def test_happy_path_signs_decomposes_and_advances(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _guided_driver(d, gate_resolver=_sign_resolver())
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            # The pre-states ran IN ORDER before the delivery loop.
+            self.assertEqual(
+                final.history,
+                [STATE_RESEARCH_PENDING, STATE_GATE1_PENDING,
+                 STATE_DECOMPOSE_PENDING, "dev_pending", "gate_pending",
+                 "review_pending", "close_pending"])
+            self.assertTrue(final.brief_signed)
+            self.assertTrue(final.milestone_planned)
+            self.assertEqual(final.planned_sequence, ["sprint-001"])
+            # The new audit events fire in order.
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            order = [t for t in types if t in (
+                "guided_bootstrap_start", "research_brief_drafted",
+                "customer_gate1_signed", "milestone_decomposed", "advance")]
+            self.assertEqual(order, [
+                "guided_bootstrap_start", "research_brief_drafted",
+                "customer_gate1_signed", "milestone_decomposed", "advance"])
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    # (b) NO resolver → halt at gate1; no decompose/dev; no auto-sign.
+    def test_no_resolver_halts_at_gate1_never_auto_signs(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _guided_driver(d, gate_resolver=None)  # no human voice
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_GATE1_PENDING)
+            self.assertFalse(final.brief_signed)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("customer_gate1_halt", types)
+            # The invariant (req 3): NEVER auto-confirmed; no decompose; no advance.
+            self.assertNotIn("customer_gate1_signed", types)
+            self.assertNotIn("milestone_decomposed", types)
+            self.assertNotIn("advance", types)
+            self.assertNotIn("dev_pending", final.history)
+            # A Gate-1 sign-off checkpoint was written for async resolution.
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(any("customer_gate1_signoff" in c for c in cps), cps)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_resolver_returns_none_halts_at_gate1(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _guided_driver(d, gate_resolver=_none_resolver())
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_GATE1_PENDING)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("customer_gate1_halt", types)
+            self.assertNotIn("customer_gate1_signed", types)
+
+    # (c) resume after halt with a sign resolver → proceeds.
+    def test_resume_after_gate1_halt_with_sign_proceeds(self):
+        with tempfile.TemporaryDirectory() as d:
+            # Phase 1: halt at gate1 (no resolver).
+            drv1 = _guided_driver(d, gate_resolver=None, loop_id="loop-g-resume")
+            drv1.run(subsprint_id="sprint-001")
+            self.assertEqual(drv1.state.state, STATE_GATE1_PENDING)
+            saved = drv1._load_state()
+            self.assertEqual(saved.state, STATE_GATE1_PENDING)
+            self.assertEqual(saved.loop_mode, LOOP_MODE_FULL_CHAIN_GUIDED)
+
+            # Phase 2: fresh Driver, SAME run_dir, a sign resolver, resume=True.
+            drv2 = Driver(_guided_charter(), d, _guided_adapters(),
+                          loop_id="loop-g-resume", clock=_clock(),
+                          loop_mode=LOOP_MODE_FULL_CHAIN_GUIDED,
+                          gate_resolver=_sign_resolver())
+            final = drv2.run(resume=True)
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertTrue(final.brief_signed)
+            types = [e["type"] for e in audit.read_events(drv2.audit_ledger)]
+            self.assertIn("loop_resume", types)
+            self.assertIn("customer_gate1_signed", types)
+            self.assertIn("milestone_decomposed", types)
+            self.assertIn("advance", types)
+            # Audit chain verifies across the halt → resume boundary (req 7/j).
+            self.assertTrue(audit.verify_chain(drv2.audit_ledger).ok)
+
+    # (d) reject → halts (brief needs rework), no decompose/advance.
+    def test_reject_halts_for_rework(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _guided_driver(d, gate_resolver=_choice_resolver("reject"))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_GATE1_PENDING)
+            self.assertFalse(final.brief_signed)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("customer_gate1_rejected", types)
+            self.assertNotIn("milestone_decomposed", types)
+            self.assertNotIn("advance", types)
+
+    def test_abort_halts_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _guided_driver(d, gate_resolver=_choice_resolver("abort"))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("customer_gate1_aborted", types)
+            self.assertNotIn("advance", types)
+
+    # (e) skip rules.
+    def test_signed_brief_upfront_skips_research_and_gate1(self):
+        # intent_contract.confirmed_by_human → skip research + gate1; NO resolver
+        # is needed (nothing to sign). Decompose + delivery still run.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _guided_charter(confirmed_by_human=True)
+            drv_ = _guided_driver(d, charter=charter, gate_resolver=None)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertTrue(final.brief_signed)
+            self.assertNotIn(STATE_RESEARCH_PENDING, final.history)
+            self.assertNotIn(STATE_GATE1_PENDING, final.history)
+            self.assertIn(STATE_DECOMPOSE_PENDING, final.history)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("customer_gate1_halt", types)
+            self.assertNotIn("research_brief_drafted", types)
+            self.assertIn("milestone_decomposed", types)
+
+    def test_supplied_sequence_skips_decompose(self):
+        # A non-empty subsprint_sequence supplied upfront → decompose is skipped.
+        # The deliver adapter is only spawned for CLOSE (index 0 = close).
+        with tempfile.TemporaryDirectory() as d:
+            charter = _guided_charter(subsprint_sequence=("sprint-001",))
+            adapters = _guided_adapters()
+            adapters["deliver"] = MockAdapter(
+                {("deliver",): CLEAN_CLOSE}, harness="claude_code",
+                provider="anthropic", model="claude-opus-4-8")
+            drv_ = _guided_driver(d, charter=charter, adapters=adapters,
+                                  gate_resolver=_sign_resolver())
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertTrue(final.milestone_planned)
+            self.assertEqual(final.planned_sequence, ["sprint-001"])
+            self.assertIn(STATE_DECOMPOSE_PENDING, final.history)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("decompose_skipped", types)
+            self.assertNotIn("milestone_decomposed", types)
+
+    def test_both_supplied_behaves_like_delivery_loop(self):
+        # full_chain_guided with brief signed upfront AND sequence supplied ⇒ the
+        # pre-states all no-op; it behaves like the plain delivery loop (advance).
+        with tempfile.TemporaryDirectory() as d:
+            charter = _guided_charter(subsprint_sequence=("sprint-001",),
+                                      confirmed_by_human=True)
+            adapters = _guided_adapters()
+            adapters["deliver"] = MockAdapter(
+                {("deliver",): CLEAN_CLOSE}, harness="claude_code",
+                provider="anthropic", model="claude-opus-4-8")
+            drv_ = _guided_driver(d, charter=charter, adapters=adapters,
+                                  gate_resolver=None)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertNotIn(STATE_RESEARCH_PENDING, final.history)
+            self.assertNotIn(STATE_GATE1_PENDING, final.history)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("research_brief_drafted", types)
+            self.assertNotIn("customer_gate1_halt", types)
+            self.assertNotIn("milestone_decomposed", types)
+
+    # (f) scope-expansion guard halts on an out-of-envelope plan.
+    def test_scope_expansion_guard_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            adapters = _guided_adapters(plan=GUIDED_PLAN_OUT_OF_ENVELOPE)
+            drv_ = _guided_driver(d, adapters=adapters,
+                                  gate_resolver=_sign_resolver())
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("post_gate1_scope_expansion", types)
+            # Halted at decompose — did NOT enter the delivery loop / advance.
+            self.assertNotIn("advance", types)
+            self.assertNotIn("dev_pending", final.history)
+            exp = next(e for e in audit.read_events(drv_.audit_ledger)
+                       if e["type"] == "post_gate1_scope_expansion")
+            self.assertIn("src/escalation/new_path.py",
+                          exp["payload"]["modules_out"])
+            self.assertIn("infra", exp["payload"]["layers_out"])
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(
+                any("post_gate1_scope_expansion" in c for c in cps), cps)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_scope_envelope_unset_lets_plan_define_scope(self):
+        # No signed envelope (empty modules_in_scope + layers_allowed) → the plan
+        # defines scope; no expansion possible → scope_envelope_unset note + proceed.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _guided_charter()
+            charter["autonomy"]["approved_scope"]["modules_in_scope"] = []
+            charter["autonomy"]["approved_scope"]["layers_allowed"] = []
+            drv_ = _guided_driver(d, charter=charter,
+                                  gate_resolver=_sign_resolver())
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("scope_envelope_unset", types)
+            self.assertIn("milestone_decomposed", types)
+
+    def test_partial_envelope_empty_layers_still_constrains(self):
+        # Regression (qa-found): an envelope with modules_in_scope SET but
+        # layers_allowed EMPTY authorizes NO new layers — a plan adding any layer
+        # must HALT, not silently advance (per-dimension "empty ⇒ unconstrained"
+        # was a scope-widening blind spot). The envelope is PRESENT, so this is
+        # NOT the scope_envelope_unset path.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _guided_charter()  # modules_in_scope set (example charter)
+            charter["autonomy"]["approved_scope"]["layers_allowed"] = []
+            # GUIDED_PLAN's module is in-scope; its layer (semantic_planner) is now
+            # out of the emptied layers envelope.
+            drv_ = _guided_driver(d, charter=charter,
+                                  adapters=_guided_adapters(plan=GUIDED_PLAN),
+                                  gate_resolver=_sign_resolver())
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("post_gate1_scope_expansion", types)
+            self.assertNotIn("scope_envelope_unset", types)  # envelope IS present
+            self.assertNotIn("advance", types)
+            exp = next(e for e in audit.read_events(drv_.audit_ledger)
+                       if e["type"] == "post_gate1_scope_expansion")
+            self.assertIn("semantic_planner", exp["payload"]["layers_out"])
+            self.assertEqual(exp["payload"]["modules_out"], [])  # module in-scope
+
+    def test_partial_envelope_empty_modules_still_constrains(self):
+        # Symmetric: layers_allowed SET but modules_in_scope EMPTY authorizes NO
+        # new modules — a plan touching any module must HALT.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _guided_charter()  # layers_allowed set (example charter)
+            charter["autonomy"]["approved_scope"]["modules_in_scope"] = []
+            drv_ = _guided_driver(d, charter=charter,
+                                  adapters=_guided_adapters(plan=GUIDED_PLAN),
+                                  gate_resolver=_sign_resolver())
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("post_gate1_scope_expansion", types)
+            self.assertNotIn("scope_envelope_unset", types)
+            exp = next(e for e in audit.read_events(drv_.audit_ledger)
+                       if e["type"] == "post_gate1_scope_expansion")
+            self.assertIn("src/tools/eligibility.py", exp["payload"]["modules_out"])
+
+    # (g) invalid deliver-plan verdict → GateHardFail.
+    def test_invalid_deliver_plan_verdict_hard_fails(self):
+        bad_plan = {"sub_sprints": [{"id": "sprint-001"}]}  # missing required keys
+        with tempfile.TemporaryDirectory() as d:
+            adapters = _guided_adapters(plan=bad_plan)
+            drv_ = _guided_driver(d, adapters=adapters,
+                                  gate_resolver=_sign_resolver())
+            with self.assertRaises(GateHardFail) as ctx:
+                drv_.run(subsprint_id="sprint-001")
+            self.assertIn("deliver_plan", ctx.exception.reason)
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(any("gate_hard_fail" in c for c in cps), cps)
+
+    def test_empty_sub_sprints_plan_hard_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            adapters = _guided_adapters(plan={"sub_sprints": []})
+            drv_ = _guided_driver(d, adapters=adapters,
+                                  gate_resolver=_sign_resolver())
+            with self.assertRaises(GateHardFail):
+                drv_.run(subsprint_id="sprint-001")
+
+    # (h) resume round-trips through each pre-state (state.json persists + reload).
+    def test_runstate_guided_fields_round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _guided_driver(d)
+            drv_.state = RunState(loop_id="x", subsprint_id="sprint-001")
+            drv_.state.loop_mode = LOOP_MODE_FULL_CHAIN_GUIDED
+            drv_.state.brief_signed = True
+            drv_.state.brief_draft_ref = "docs/briefs/sprint-001__brief.md"
+            drv_.state.milestone_planned = True
+            drv_.state.planned_sequence = ["sprint-001", "sprint-002"]
+            drv_._save_state()
+            reloaded = drv_._load_state()
+            self.assertEqual(reloaded.loop_mode, LOOP_MODE_FULL_CHAIN_GUIDED)
+            self.assertTrue(reloaded.brief_signed)
+            self.assertEqual(reloaded.brief_draft_ref,
+                             "docs/briefs/sprint-001__brief.md")
+            self.assertTrue(reloaded.milestone_planned)
+            self.assertEqual(reloaded.planned_sequence,
+                             ["sprint-001", "sprint-002"])
+
+    def test_resume_at_research_pending_round_trips(self):
+        # Persist a state.json AT research_pending (brief not yet drafted) and
+        # resume with a sign resolver → the bootstrap completes from there.
+        with tempfile.TemporaryDirectory() as d:
+            seed = _guided_driver(d, loop_id="loop-g-rp")
+            seed.state = RunState(loop_id="loop-g-rp", subsprint_id="sprint-001")
+            seed.state.loop_mode = LOOP_MODE_FULL_CHAIN_GUIDED
+            seed.state.state = STATE_RESEARCH_PENDING
+            seed._save_state()
+            drv_ = Driver(_guided_charter(), d, _guided_adapters(),
+                          loop_id="loop-g-rp", clock=_clock(),
+                          loop_mode=LOOP_MODE_FULL_CHAIN_GUIDED,
+                          gate_resolver=_sign_resolver())
+            final = drv_.run(resume=True)
+            self.assertEqual(final.state, STATE_ADVANCE)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("research_brief_drafted", types)
+            self.assertIn("customer_gate1_signed", types)
+            self.assertIn("milestone_decomposed", types)
+
+    def test_resume_at_decompose_pending_round_trips(self):
+        # Persist a state.json AT decompose_pending with a signed brief, then
+        # resume → decompose + delivery complete (gate1 is skipped: already signed).
+        with tempfile.TemporaryDirectory() as d:
+            seed = _guided_driver(d, loop_id="loop-g-dp")
+            seed.state = RunState(loop_id="loop-g-dp", subsprint_id="sprint-001")
+            seed.state.loop_mode = LOOP_MODE_FULL_CHAIN_GUIDED
+            seed.state.brief_signed = True
+            seed.state.brief_draft_ref = "docs/briefs/sprint-001__brief.md"
+            seed.state.state = STATE_DECOMPOSE_PENDING
+            seed._save_state()
+            drv_ = Driver(_guided_charter(), d, _guided_adapters(),
+                          loop_id="loop-g-dp", clock=_clock(),
+                          loop_mode=LOOP_MODE_FULL_CHAIN_GUIDED,
+                          gate_resolver=_none_resolver())  # never needed (signed)
+            final = drv_.run(resume=True)
+            self.assertEqual(final.state, STATE_ADVANCE)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("customer_gate1_halt", types)
+            self.assertIn("milestone_decomposed", types)
+            self.assertIn("advance", types)
+
+    # (i) delivery_only DEFAULT emits NONE of the new events (byte-identical).
+    def test_delivery_only_default_emits_no_guided_events(self):
+        with tempfile.TemporaryDirectory() as d:
+            # The plain _driver() helper uses no loop_mode (delivery_only default)
+            # and no gate_resolver — exactly the pre-P6.1 construction.
+            drv_ = _driver(d)
+            self.assertEqual(drv_.loop_mode, LOOP_MODE_DELIVERY_ONLY)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertEqual(
+                final.history,
+                ["dev_pending", "gate_pending", "review_pending",
+                 "close_pending"])
+            self.assertEqual(final.loop_mode, LOOP_MODE_DELIVERY_ONLY)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            for t in ("guided_bootstrap_start", "research_brief_drafted",
+                      "research_skipped", "customer_gate1_signoff",
+                      "customer_gate1_signed", "customer_gate1_halt",
+                      "customer_gate1_rejected", "customer_gate1_aborted",
+                      "milestone_decomposed", "decompose_skipped",
+                      "post_gate1_scope_expansion", "scope_envelope_unset"):
+                self.assertNotIn(t, types, t)
+
+    def test_delivery_only_explicit_mode_also_skips_prestates(self):
+        # Even with a resolver wired, delivery_only must NOT run any pre-state.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _guided_driver(
+                d, gate_resolver=_sign_resolver(),
+                loop_mode=LOOP_MODE_DELIVERY_ONLY,
+                charter=_guided_charter(subsprint_sequence=("sprint-001",)))
+            # deliver adapter only needs close (no decompose in delivery_only).
+            drv_.adapters["deliver"] = MockAdapter(
+                {("deliver",): CLEAN_CLOSE}, harness="claude_code",
+                provider="anthropic", model="claude-opus-4-8")
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertNotIn(STATE_GATE1_PENDING, final.history)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("customer_gate1_signed", types)
+
+    # (j) audit chain verifies across halt/resume (also covered in (c); here for
+    # the explicit invariant with the checkpoint front-matter rewrite in between).
+    def test_audit_chain_verifies_across_gate1_signoff_rewrite(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _guided_driver(d, gate_resolver=_sign_resolver("approved"))
+            drv_.run(subsprint_id="sprint-001")
+            # The Gate-1 checkpoint records the human's resolved decision.
+            cps = [c for c in os.listdir(drv_.checkpoints_dir)
+                   if "customer_gate1_signoff" in c]
+            self.assertTrue(cps)
+            with open(os.path.join(drv_.checkpoints_dir, cps[0]),
+                      encoding="utf-8") as fh:
+                body = fh.read()
+            self.assertIn("decision: sign", body)
+            self.assertIn("resolver: test-human", body)
+            self.assertIn("note: approved", body)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_charter_loop_mode_is_honored_when_no_ctor_param(self):
+        # charter.autonomy.loop_mode = full_chain_guided + no ctor loop_mode ⇒
+        # guided mode runs (the ctor param wins, but its absence falls back here).
+        with tempfile.TemporaryDirectory() as d:
+            charter = _guided_charter()
+            charter["autonomy"]["loop_mode"] = LOOP_MODE_FULL_CHAIN_GUIDED
+            drv_ = Driver(charter, d, _guided_adapters(),
+                          loop_id="loop-g-charter", clock=_clock(),
+                          gate_resolver=_sign_resolver())  # no loop_mode param
+            self.assertEqual(drv_.loop_mode, LOOP_MODE_FULL_CHAIN_GUIDED)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("milestone_decomposed", types)
+
+    def test_ctor_loop_mode_wins_over_charter(self):
+        # ctor delivery_only beats charter full_chain_guided.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _guided_charter(subsprint_sequence=("sprint-001",))
+            charter["autonomy"]["loop_mode"] = LOOP_MODE_FULL_CHAIN_GUIDED
+            adapters = _guided_adapters()
+            adapters["deliver"] = MockAdapter(
+                {("deliver",): CLEAN_CLOSE}, harness="claude_code",
+                provider="anthropic", model="claude-opus-4-8")
+            drv_ = Driver(charter, d, adapters,
+                          loop_id="loop-g-ctor", clock=_clock(),
+                          loop_mode=LOOP_MODE_DELIVERY_ONLY)  # ctor wins
+            self.assertEqual(drv_.loop_mode, LOOP_MODE_DELIVERY_ONLY)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertNotIn(STATE_GATE1_PENDING, final.history)
+
+
 if __name__ == "__main__":
     unittest.main()

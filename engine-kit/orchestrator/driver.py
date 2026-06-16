@@ -126,6 +126,29 @@ STATE_ADVANCE = "advance"
 STATE_DONE = "done"
 STATE_HALTED = "halted"
 
+# P6.1 — OPTIONAL full_chain_guided bootstrap PRE-states (delivery-loop §4.2.4 —
+# guided pre-states). These run BEFORE the existing dev_pending flow and ONLY in
+# loop_mode == "full_chain_guided"; in the DEFAULT delivery_only mode none of them
+# run and the run() path is byte-identical to before P6.1. Like
+# acceptance_pending they are OUT-OF-BAND (NOT in LOOP_ORDER) and handled
+# explicitly in _drive() so resume re-enters at the persisted pre-state.
+STATE_RESEARCH_PENDING = "research_pending"      # draft the milestone brief (artifact)
+STATE_GATE1_PENDING = "gate1_pending"            # customer Gate-1 sign-off (injected resolver)
+STATE_DECOMPOSE_PENDING = "decompose_pending"    # decompose into the sub-sprint plan
+
+# Loop-mode values. delivery_only is the DEFAULT and MUST stay byte-identical.
+LOOP_MODE_DELIVERY_ONLY = "delivery_only"
+LOOP_MODE_FULL_CHAIN_GUIDED = "full_chain_guided"
+
+# The out-of-band guided pre-states, in the order the bootstrap drives them. Kept
+# separate from LOOP_ORDER on purpose (they are not part of the per-sub-sprint
+# linear loop) — see _drive_guided_prestates().
+GUIDED_PRESTATE_ORDER = [
+    STATE_RESEARCH_PENDING,
+    STATE_GATE1_PENDING,
+    STATE_DECOMPOSE_PENDING,
+]
+
 # Linear MVP order (no Acceptance state — that is P3). The Acceptance state is
 # NOT in this linear order: per delivery-loop §4.2.4 it fires AFTER the milestone
 # completes (the terminal clean-pass advance of the sub-sprint sequence), gated on
@@ -195,6 +218,11 @@ def load_verdict_schemas(schemas_dir: Optional[str] = None) -> dict[str, dict]:
         ("review", "review-verdict.schema.json"),
         ("close", "deliver-close-verdict.schema.json"),
         ("acceptance", "acceptance-verdict.schema.json"),
+        # P6.1 — the milestone-decomposition verdict for full_chain_guided. Loaded
+        # unconditionally (read-only) but only USED in loop_mode full_chain_guided
+        # (the decompose_pending pre-state), so existing delivery_only charters are
+        # unaffected, exactly like the acceptance schema above.
+        ("deliver_plan", "deliver-plan-verdict.schema.json"),
     ):
         path = os.path.join(base, fname)
         with open(path, "r", encoding="utf-8") as fh:
@@ -292,6 +320,22 @@ class RunState:
     seen_finding_keys: list[str] = field(default_factory=list)
     rounds_since_new_finding: int = 0
     budget_spent: float = 0.0
+    # ---- P6.1: full_chain_guided bootstrap state (persisted for resume, §4.5).
+    #      All default to the delivery_only baseline, so a delivery_only RunState
+    #      round-trips byte-identically (these keys are simply written with their
+    #      defaults; from_dict tolerates their absence in an older state.json).
+    #   loop_mode         : "delivery_only" (default) | "full_chain_guided".
+    #   brief_signed       : the milestone brief is human-signed (Gate-1 sign-off
+    #                        OR a charter intent_contract.confirmed_by_human).
+    #   brief_draft_ref    : reference to the Research-drafted brief artifact.
+    #   milestone_planned  : the milestone has been decomposed into a sub-sprint
+    #                        plan (decompose_pending completed).
+    #   planned_sequence   : the ordered sub-sprint ids from the decompose plan.
+    loop_mode: str = LOOP_MODE_DELIVERY_ONLY
+    brief_signed: bool = False
+    brief_draft_ref: Optional[str] = None
+    milestone_planned: bool = False
+    planned_sequence: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -305,6 +349,11 @@ class RunState:
             "seen_finding_keys": list(self.seen_finding_keys),
             "rounds_since_new_finding": self.rounds_since_new_finding,
             "budget_spent": self.budget_spent,
+            "loop_mode": self.loop_mode,
+            "brief_signed": self.brief_signed,
+            "brief_draft_ref": self.brief_draft_ref,
+            "milestone_planned": self.milestone_planned,
+            "planned_sequence": list(self.planned_sequence),
         }
 
     @classmethod
@@ -320,6 +369,11 @@ class RunState:
             seen_finding_keys=list(d.get("seen_finding_keys", [])),
             rounds_since_new_finding=int(d.get("rounds_since_new_finding", 0)),
             budget_spent=float(d.get("budget_spent", 0.0)),
+            loop_mode=str(d.get("loop_mode", LOOP_MODE_DELIVERY_ONLY)),
+            brief_signed=bool(d.get("brief_signed", False)),
+            brief_draft_ref=d.get("brief_draft_ref"),
+            milestone_planned=bool(d.get("milestone_planned", False)),
+            planned_sequence=list(d.get("planned_sequence", [])),
         )
 
 
@@ -350,6 +404,20 @@ class Driver:
                    (current_branch | new_branch | new_worktree). None ⇒ the
                    charter's pre-authorized default is used and any force-condition
                    escalation is RECOMMENDED (checkpoint), never auto-applied.
+    loop_mode:     P6.1 — "delivery_only" (DEFAULT — current behaviour, byte-
+                   identical) | "full_chain_guided" (adds the OPTIONAL research →
+                   gate1 → decompose bootstrap pre-states before the delivery
+                   loop). The ctor param WINS over charter.autonomy.loop_mode; an
+                   absent param falls back to the charter, else delivery_only.
+    gate_resolver: P6.1 — the HUMAN's voice at a guided decision boundary, INJECTED
+                   like ``clock``. Signature
+                       (gate_id: str, context: dict, options: Sequence[str])
+                       -> Optional[dict]
+                   returning {"choice": "sign"|"reject"|"abort", "note": str,
+                   "resolver": str} or None. The engine NEVER fabricates a sign;
+                   a missing resolver OR a None return → the driver HALTS (writes
+                   the checkpoint, exits) for async resolution. Only consulted in
+                   full_chain_guided; ignored in delivery_only.
     """
 
     def __init__(
@@ -365,6 +433,9 @@ class Driver:
         memory_root: Optional[str] = None,
         repo_dir: Optional[str] = None,
         isolation_strategy: Optional[str] = None,
+        loop_mode: Optional[str] = None,
+        gate_resolver: Optional[Callable[[str, dict, Sequence[str]],
+                                         Optional[dict]]] = None,
     ):
         self.charter = charter
         self.run_dir = os.path.abspath(run_dir)
@@ -419,6 +490,16 @@ class Driver:
 
         self.budget = charter.get("budget") or {}
         self.autonomy = charter.get("autonomy") or {}
+
+        # P6.1 — resolve the loop mode (ctor param WINS over charter, else the
+        # delivery_only default) + stash the injected gate resolver. delivery_only
+        # is the default and gates EVERY new pre-state path, so a charter / caller
+        # that says nothing is byte-identical to the pre-P6.1 driver.
+        self.loop_mode = (loop_mode
+                          or self.autonomy.get("loop_mode")
+                          or LOOP_MODE_DELIVERY_ONLY)
+        self.gate_resolver = gate_resolver
+
         self.state: Optional[RunState] = None
 
     # ----- audit ----------------------------------------------------------- #
@@ -848,6 +929,352 @@ class Driver:
         self.state.history.append(STATE_CLOSE_PENDING)
         return verdict
 
+    # ----- P6.1: full_chain_guided bootstrap pre-states -------------------- #
+    # research_pending → gate1_pending → decompose_pending, driven BEFORE the
+    # existing delivery loop and ONLY when loop_mode == full_chain_guided. Like
+    # _run_acceptance these are out-of-band (not in LOOP_ORDER): _drive() re-enters
+    # them on resume. The single most-important invariant (req 3) — the engine
+    # NEVER auto-confirms Gate 1 — is enforced in _step_gate1: there is NO code
+    # path that proceeds past gate1 without an explicit human `sign` from the
+    # injected gate_resolver; a missing/None resolver, or any non-sign choice,
+    # HALTS.
+    def _guided_enabled(self) -> bool:
+        """True iff this run is in full_chain_guided mode. Every pre-state path is
+        gated behind this so delivery_only is byte-identical to the pre-P6.1
+        driver (req: delivery_only must stay byte-identical)."""
+        return self.loop_mode == LOOP_MODE_FULL_CHAIN_GUIDED
+
+    def _intent_contract_confirmed(self) -> bool:
+        """The brief is signed UPFRONT when charter.intent_contract.confirmed_by_human
+        is true (skip rule, req 6). Absent/false ⇒ Research+Gate-1 run."""
+        ic = self.charter.get("intent_contract") or {}
+        return bool(ic.get("confirmed_by_human"))
+
+    def _supplied_sequence(self) -> list[str]:
+        """The charter's pre-supplied approved sub-sprint sequence
+        (autonomy.approved_scope.subsprint_sequence), or []. A non-empty sequence
+        supplied upfront skips decompose_pending (skip rule, req 6)."""
+        scope = self.autonomy.get("approved_scope") or {}
+        return list(scope.get("subsprint_sequence") or [])
+
+    def _layers_allowed(self) -> list[str]:
+        """The human-signed envelope's allowed Δ-9 layers (or [])."""
+        scope = self.autonomy.get("approved_scope") or {}
+        return list(scope.get("layers_allowed") or [])
+
+    def _step_research(self) -> None:
+        """research_pending — draft the milestone brief (an ARTIFACT, not a verdict
+        schema). Skipped when the brief is already signed upfront. The drafted
+        artifact reference is persisted (brief_draft_ref) and a research_brief_drafted
+        audit event is emitted.
+
+        A brief is a DOC, so the spawn uses schema_key=None (artifact handling),
+        exactly like _step_dev — _spawn still records the artifact spawn + audit."""
+        assert self.state is not None
+        self.state.state = STATE_RESEARCH_PENDING
+        if STATE_RESEARCH_PENDING not in self.state.history:
+            self.state.history.append(STATE_RESEARCH_PENDING)
+        self._save_state()
+        if self.state.brief_signed:
+            # Signed brief supplied upfront → research is skipped (no draft, no
+            # spawn). Record the skip so the audit trail is explicit.
+            self._audit("research_skipped",
+                        {"reason": "brief signed upfront "
+                                   "(intent_contract.confirmed_by_human)"})
+            return
+        prompt = (self._lessons_block("research")
+                  + f"Draft the milestone brief for mission "
+                    f"{(self.charter.get('mission') or {}).get('id')}: state the "
+                    f"intent contract (problem, in/out of scope, closure contract) "
+                    f"so the customer can sign off at Gate 1. Do NOT widen beyond "
+                    f"the stated intent — scope widening needs the Gate-1 human "
+                    f"checkpoint.")
+        # ARTIFACT spawn (a brief is a doc, NOT a verdict) → schema_key=None.
+        self._spawn("research", prompt, schema_key=None)
+        # The drafted brief is an artifact under the run dir; we persist a stable
+        # reference (deterministic — no clock/uuid; the loop_id + subsprint anchor
+        # it) so resume + Gate-1 context point at the same draft.
+        ref = f"docs/briefs/{self.state.subsprint_id}__brief.md"
+        self.state.brief_draft_ref = ref
+        self._save_state()
+        self._audit("research_brief_drafted", {"brief_ref": ref})
+
+    def _step_gate1(self) -> dict:
+        """gate1_pending — the CUSTOMER Gate-1 sign-off. Builds a context (drafted
+        brief ref + proposed approved scope), writes a customer_gate1_signoff
+        checkpoint, then consults the INJECTED gate_resolver. The engine NEVER
+        auto-signs (req 3): the only path that proceeds is an explicit human
+        choice == "sign" returned by the resolver.
+
+        Returns a small status dict {"status": "signed"|"halted"} so the driver
+        knows whether to continue to decompose or stop. A missing resolver / a
+        None return / a non-sign choice all stop the driver (HALT for async
+        resolution, REJECT for rework, ABORT to STATE_HALTED)."""
+        assert self.state is not None
+        self.state.state = STATE_GATE1_PENDING
+        if STATE_GATE1_PENDING not in self.state.history:
+            self.state.history.append(STATE_GATE1_PENDING)
+        self._save_state()
+
+        scope = self.autonomy.get("approved_scope") or {}
+        ctx = {
+            "brief_ref": self.state.brief_draft_ref,
+            "mission": (self.charter.get("mission") or {}).get("id"),
+            "proposed_approved_scope": {
+                "modules_in_scope": self._modules_in_scope(),
+                "layers_allowed": self._layers_allowed(),
+                "subsprint_sequence": self._supplied_sequence(),
+                "explicitly_out_of_scope":
+                    list(scope.get("explicitly_out_of_scope") or []),
+            },
+        }
+        options = ["sign", "reject", "abort"]
+        # The human-pending checkpoint is written FIRST so the decision is always
+        # recorded in the inbox (whether resolved now or async).
+        cp_path = self._write_checkpoint(
+            "customer_gate1_signoff", self.state.subsprint_id,
+            context_md=(
+                f"Customer Gate 1 sign-off for mission `{ctx['mission']}`.\n\n"
+                f"Drafted brief: `{ctx['brief_ref']}`.\n\n"
+                f"Proposed approved scope:\n"
+                f"- modules_in_scope: {ctx['proposed_approved_scope']['modules_in_scope']}\n"
+                f"- layers_allowed: {ctx['proposed_approved_scope']['layers_allowed']}\n"
+                f"- subsprint_sequence: {ctx['proposed_approved_scope']['subsprint_sequence']}\n"
+                f"- explicitly_out_of_scope: "
+                f"{ctx['proposed_approved_scope']['explicitly_out_of_scope']}\n\n"
+                f"The engine does NOT auto-sign (Constitution §1.7-D): it proceeds "
+                f"to milestone decomposition ONLY on an explicit human `sign`."),
+            options_md="- sign\n- reject\n- abort")
+
+        # Consult the injected resolver — the HUMAN's voice. NEVER fabricate a
+        # sign: a missing resolver OR a None return HALTS for async resolution.
+        decision = None
+        if self.gate_resolver is not None:
+            decision = self.gate_resolver("customer_gate1", ctx, options)
+
+        if not decision or decision.get("choice") not in options:
+            # No human decision available (resolver absent, returned None, or an
+            # unrecognized choice) → HALT for async resolution. The state stays
+            # gate1_pending so resume re-consults the resolver.
+            self._audit("customer_gate1_halt",
+                        {"reason": "no_resolver_decision",
+                         "brief_ref": self.state.brief_draft_ref,
+                         "checkpoint": os.path.relpath(cp_path, self.run_dir)})
+            self.state.state = STATE_GATE1_PENDING
+            self._save_state()
+            return {"status": "halted"}
+
+        choice = decision.get("choice")
+        note = str(decision.get("note") or "")
+        resolver = str(decision.get("resolver") or "human")
+
+        if choice == "sign":
+            # The ONLY path that proceeds. Record the decision into the checkpoint
+            # + audit; set RunState.brief_signed True.
+            self._record_gate_decision(cp_path, "sign", note, resolver)
+            self.state.brief_signed = True
+            self._save_state()
+            self._audit("customer_gate1_signed",
+                        {"resolver": resolver, "note": note,
+                         "brief_ref": self.state.brief_draft_ref})
+            return {"status": "signed"}
+
+        if choice == "reject":
+            # The brief needs rework — HALT (the brief is NOT signed; no proceed).
+            self._record_gate_decision(cp_path, "reject", note, resolver)
+            self.state.state = STATE_GATE1_PENDING
+            self._save_state()
+            self._audit("customer_gate1_rejected",
+                        {"resolver": resolver, "note": note,
+                         "brief_ref": self.state.brief_draft_ref})
+            return {"status": "halted"}
+
+        # choice == "abort" → terminal halt.
+        self._record_gate_decision(cp_path, "abort", note, resolver)
+        self.state.state = STATE_HALTED
+        self._save_state()
+        self._audit("customer_gate1_aborted",
+                    {"resolver": resolver, "note": note,
+                     "brief_ref": self.state.brief_draft_ref})
+        return {"status": "halted"}
+
+    def _record_gate_decision(self, checkpoint_path: str, choice: str,
+                              note: str, resolver: str) -> None:
+        """Re-write the Gate-1 checkpoint's front-matter + decision section to
+        record the human's resolved decision (choice/note/resolver). Pure file IO;
+        the clock is injected via self.clock()."""
+        resolved_at = self.clock()
+        with open(checkpoint_path, "r", encoding="utf-8") as fh:
+            body = fh.read()
+        body = body.replace("decision: pending", f"decision: {choice}")
+        body = body.replace("resolved_at: null", f"resolved_at: {resolved_at}")
+        body = body.replace("resolver: null", f"resolver: {resolver}")
+        body = body.replace(
+            "<human writes; orchestrator picks up>",
+            f"choice: {choice}\nresolver: {resolver}\nnote: {note}")
+        with open(checkpoint_path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+
+    def _step_decompose(self) -> None:
+        """decompose_pending — spawn Deliver to decompose the SIGNED milestone into
+        an ordered sub-sprint plan (validated against deliver-plan-verdict.schema).
+        Extracts sub_sprints[], sets RunState.planned_sequence + the charter's
+        approved subsprint_sequence (if not supplied), runs the scope-expansion
+        guard, then audits milestone_decomposed. Skipped when a non-empty sequence
+        was supplied upfront.
+
+        Returns nothing; on a scope-expansion violation it sets STATE_HALTED."""
+        assert self.state is not None
+        self.state.state = STATE_DECOMPOSE_PENDING
+        if STATE_DECOMPOSE_PENDING not in self.state.history:
+            self.state.history.append(STATE_DECOMPOSE_PENDING)
+        self._save_state()
+
+        supplied = self._supplied_sequence()
+        if supplied:
+            # Plan supplied upfront → decompose is skipped; the supplied sequence
+            # IS the plan. Record the skip + reflect it into RunState.
+            self.state.planned_sequence = list(supplied)
+            self.state.milestone_planned = True
+            self._save_state()
+            self._audit("decompose_skipped",
+                        {"reason": "subsprint_sequence supplied upfront",
+                         "subsprint_sequence": list(supplied)})
+            return
+
+        prompt = (self._lessons_block("deliver")
+                  + f"Decompose the SIGNED milestone brief "
+                    f"(`{self.state.brief_draft_ref}`) into an ordered list of "
+                    f"sub-sprints. Emit a deliver-plan-verdict: each sub_sprint "
+                    f"declares id, objective, scope_in, scope_out, modules, layers, "
+                    f"exit_criteria. Stay within the human-signed approved scope.")
+        verdict = self._spawn("deliver", prompt, schema_key="deliver_plan")
+        sub_sprints = list(verdict.get("sub_sprints") or [])
+        seq = [str(s.get("id")) for s in sub_sprints if isinstance(s, dict)]
+        self.state.planned_sequence = seq
+
+        # Make _milestone_complete (terminality) see the plan: set the charter's
+        # approved subsprint_sequence from the plan when none was supplied.
+        scope = self.autonomy.setdefault("approved_scope", {})
+        if not scope.get("subsprint_sequence"):
+            scope["subsprint_sequence"] = list(seq)
+        self.state.milestone_planned = True
+        self._save_state()
+
+        # SCOPE-EXPANSION GUARD (req 8): the union of every sub_sprint's modules +
+        # layers must stay within the human-signed envelope. Any out-of-envelope
+        # module/layer → checkpoint + audit + HALT (do NOT proceed to delivery).
+        if self._scope_expansion_halts(sub_sprints):
+            return
+
+        self._audit("milestone_decomposed",
+                    {"subsprint_count": len(sub_sprints),
+                     "subsprint_sequence": list(seq)})
+
+    def _scope_expansion_guard(self, sub_sprints: Sequence[dict]) -> dict:
+        """Pure: compute the union of plan modules+layers vs the human-signed
+        envelope (approved_scope.{modules_in_scope, layers_allowed}). Returns
+        {"modules_out": [...], "layers_out": [...], "envelope_unset": bool}.
+
+        If BOTH envelope dimensions are empty/absent, the plan DEFINES scope (no
+        expansion possible) → envelope_unset True, no out-of-envelope items."""
+        plan_modules: set[str] = set()
+        plan_layers: set[str] = set()
+        for s in sub_sprints:
+            if not isinstance(s, dict):
+                continue
+            plan_modules.update(str(m) for m in (s.get("modules") or []))
+            plan_layers.update(str(layer) for layer in (s.get("layers") or []))
+        env_modules = set(self._modules_in_scope())
+        env_layers = set(self._layers_allowed())
+        envelope_unset = not env_modules and not env_layers
+        if envelope_unset:
+            return {"modules_out": [], "layers_out": [], "envelope_unset": True}
+        # The envelope is PRESENT (at least one dimension is set), so BOTH
+        # dimensions are constrained: an EMPTY dimension permits NOTHING, not
+        # everything. (A human who signs modules_in_scope but leaves
+        # layers_allowed empty has authorized no new layers — any plan layer is
+        # then out of envelope.) Per-dimension "empty ⇒ unconstrained" would be a
+        # silent scope-widening past Gate-1 — the whole-envelope-unset case is the
+        # only "plan defines scope" path, handled above.
+        modules_out = sorted(plan_modules - env_modules)
+        layers_out = sorted(plan_layers - env_layers)
+        return {"modules_out": modules_out, "layers_out": layers_out,
+                "envelope_unset": False}
+
+    def _scope_expansion_halts(self, sub_sprints: Sequence[dict]) -> bool:
+        """Apply the scope-expansion guard side effects. Returns True (and sets
+        STATE_HALTED) when the plan widened beyond the signed envelope; False when
+        it is in-envelope (or the envelope is unset — the plan then defines scope,
+        with an audit note). req 8."""
+        assert self.state is not None
+        guard = self._scope_expansion_guard(sub_sprints)
+        if guard["envelope_unset"]:
+            # No signed envelope to widen → the plan defines scope. Emit a note +
+            # proceed (no expansion is possible).
+            self._audit("scope_envelope_unset",
+                        {"subsprint_count": len(list(sub_sprints))})
+            return False
+        if guard["modules_out"] or guard["layers_out"]:
+            self._write_checkpoint(
+                "post_gate1_scope_expansion", self.state.subsprint_id,
+                context_md=(
+                    f"The milestone decomposition widened beyond the human-signed "
+                    f"Gate-1 envelope. The plan touches module(s)/layer(s) NOT in "
+                    f"approved_scope:\n\n"
+                    f"- modules out of envelope: {guard['modules_out']}\n"
+                    f"- layers out of envelope: {guard['layers_out']}\n\n"
+                    f"Per delivery-loop §4.2.4/§4.2.5 the engine HALTS — it does "
+                    f"NOT widen scope mid-run. A human must confirm the expansion "
+                    f"(widen approved_scope → re-run) or narrow the plan."),
+                options_md=("- widen_approved_scope\n- narrow_plan\n- abort"))
+            self._audit("post_gate1_scope_expansion",
+                        {"modules_out": guard["modules_out"],
+                         "layers_out": guard["layers_out"]})
+            self.state.state = STATE_HALTED
+            self._save_state()
+            return True
+        return False
+
+    def _drive_guided_prestates(self) -> bool:
+        """Drive the full_chain_guided pre-states (research → gate1 → decompose)
+        in order, honoring skip rules + halts. Returns True to PROCEED into the
+        delivery loop (all pre-states cleared), False to STOP (a pre-state halted
+        — state already set + saved by the step).
+
+        Resume-safe: each step is idempotent and re-enterable. The driver re-enters
+        here from _drive() at whichever pre-state was persisted; already-completed
+        pre-states (brief_signed / milestone_planned) fast-path past."""
+        assert self.state is not None
+
+        # research_pending — draft the brief unless one is signed upfront OR a
+        # draft already exists (resume after a Gate-1 halt: the brief was drafted
+        # on the first pass, so we do NOT re-draft — we go straight to re-consult
+        # the resolver at gate1, per the spec's resume-at-gate1 rule).
+        if not self.state.brief_signed and self.state.brief_draft_ref is None:
+            self._step_research()
+
+        # gate1_pending — the sign-off. Skipped when the brief is already signed
+        # (upfront via intent_contract, OR by a prior resolved Gate-1 sign on a
+        # resume). Otherwise consult the resolver; NEVER auto-sign.
+        if not self.state.brief_signed:
+            result = self._step_gate1()
+            if result.get("status") != "signed":
+                return False  # halted (no resolver / reject / abort) — do not proceed
+
+        # decompose_pending — build the sub-sprint plan unless supplied upfront /
+        # already planned. The guard may HALT here (scope expansion).
+        if not self.state.milestone_planned:
+            self._step_decompose()
+            if self.state.state == STATE_HALTED:
+                return False  # scope-expansion guard halted the run
+
+        # All pre-states cleared → enter the delivery loop for the FIRST sub-sprint.
+        seq = self.state.planned_sequence or self._supplied_sequence()
+        if seq:
+            self.state.subsprint_id = seq[0]
+        return True
+
     # ----- the loop -------------------------------------------------------- #
     def run(self, subsprint_id: Optional[str] = None, *, resume: bool = False) -> RunState:
         """Drive one sub-sprint end-to-end (dev→gate→review→close→advance).
@@ -873,15 +1300,41 @@ class Driver:
             if subsprint_id is None:
                 raise ValueError("subsprint_id required for a fresh run")
             self.state = RunState(loop_id=self.loop_id, subsprint_id=subsprint_id)
+            # P6.1: stamp the run's mode + the upfront skip-rule flags onto the
+            # RunState (persisted for resume). delivery_only leaves these at their
+            # defaults, so the state.json + run() path are byte-identical to before.
+            self.state.loop_mode = self.loop_mode
+            self.state.brief_signed = (self._guided_enabled()
+                                       and self._intent_contract_confirmed())
             self._audit("loop_start", {
                 "charter_mission": (self.charter.get("mission") or {}).get("id"),
                 "subsprint_id": subsprint_id,
                 "autonomy": self.autonomy.get("level", "human_in_the_loop"),
+                "loop_mode": self.loop_mode,
                 "context": self.context,
             })
             # P4: Loop Ingress — decide the isolation strategy, set up the git
             # working context, register the loop. No-op when repo_dir is None.
             self._loop_init_ingress()
+
+            # P6.1: full_chain_guided — drive the research → gate1 → decompose
+            # pre-states BEFORE the delivery loop. Each may HALT (no resolver /
+            # reject / abort / scope expansion); on a halt we stop here (state is
+            # already set + saved by the step). delivery_only skips this entirely.
+            if self._guided_enabled():
+                self._save_state()
+                self._audit("guided_bootstrap_start",
+                            {"loop_mode": self.loop_mode,
+                             "brief_signed_upfront": self.state.brief_signed,
+                             "subsprint_sequence_supplied":
+                                 bool(self._supplied_sequence())})
+                if not self._drive_guided_prestates():
+                    # A pre-state halted (or aborted) → close ingress (no-op for a
+                    # non-terminal state) + return the halted/paused RunState.
+                    self._save_state()
+                    self._loop_close_ingress()
+                    return self.state
+
             self.state.state = STATE_DEV_PENDING
 
         self._save_state()
@@ -898,6 +1351,17 @@ class Driver:
         assert self.state is not None
         # Find resume index in the linear order; advance/done short-circuit.
         order = LOOP_ORDER
+        # P6.1: Resume INTO a full_chain_guided pre-state (research/gate1/decompose).
+        # These are out-of-band (not in LOOP_ORDER), like acceptance below: re-enter
+        # the bootstrap, which is idempotent + honors the persisted progress
+        # (brief_signed / milestone_planned). If it clears the pre-states it falls
+        # through into the delivery loop for the first sub-sprint; on a re-halt
+        # (resolver still says no, etc.) it returns and the state stays put.
+        if self.state.state in GUIDED_PRESTATE_ORDER:
+            if not self._drive_guided_prestates():
+                return  # still halted at a pre-state (e.g. resolver still None)
+            self.state.state = STATE_DEV_PENDING
+            self._save_state()
         # Resume INTO acceptance: if a prior process died mid-acceptance, re-enter
         # the acceptance state (idempotent: re-runs the F5 eval + spawn). The
         # acceptance state is out-of-band (not in LOOP_ORDER), so handle it first.

@@ -354,6 +354,30 @@ For Acceptance `fix_required` specifically: follows Constitution §3.5 shape; `d
 - All decisions checkpointed to `docs/checkpoints/` filesystem so human can audit.
 - Fix-round counter bounded by `charter.budget.max_fix_rounds_total`; exceeded → halt.
 
+##### §4.2.4-G `full_chain_guided` bootstrap pre-states (P6.1, ADDITIVE / OPTIONAL)
+
+The driver supports an OPTIONAL bootstrap mode selected by `loop_mode` (Driver ctor param, or `charter.autonomy.loop_mode`; the ctor param wins). Values:
+
+- `delivery_only` (**DEFAULT**) — the state machine above, unchanged (byte-identical). None of the pre-states below run.
+- `full_chain_guided` — adds three OUT-OF-BAND pre-states that run BEFORE `dev_pending`, decomposing a milestone into the sub-sprint sequence the delivery loop then executes:
+
+```
+   research_pending → gate1_pending → decompose_pending → (dev_pending …)
+```
+
+1. **`research_pending`** — `_step_research` drafts the milestone brief (an ARTIFACT — a doc, not a verdict; spawned with no verdict schema). Audit: `research_brief_drafted`. **Skipped** when a signed brief is supplied (`charter.intent_contract.confirmed_by_human == true`).
+2. **`gate1_pending`** — the **Customer Gate-1 sign-off**. The driver writes a `customer_gate1_signoff` checkpoint (drafted-brief ref + proposed approved scope), then consults an INJECTED `gate_resolver(gate_id, context, options)` — the human's voice, injected like the `clock`. **The engine NEVER auto-confirms Gate 1.** There is no default that proceeds without an explicit human `sign`:
+   - resolver **absent** or returns `None` → audit `customer_gate1_halt`; state stays `gate1_pending`; the driver HALTS for async resolution (on resume the resolver is re-consulted — still no sign ⇒ re-halt).
+   - `choice == "sign"` → record the decision (choice/note/resolver) into the checkpoint; audit `customer_gate1_signed`; set `brief_signed`; proceed.
+   - `choice == "reject"` → audit `customer_gate1_rejected` + HALT (brief needs rework).
+   - `choice == "abort"` → audit `customer_gate1_aborted` + halt the run.
+   **Skipped** together with `research_pending` when the brief is signed upfront.
+3. **`decompose_pending`** — `_step_decompose` spawns Deliver to decompose the SIGNED brief into an ordered sub-sprint plan, validated against `schemas/deliver-plan-verdict.schema.json` (invalid → `gate_hard_fail`). The plan's `sub_sprints[].id` sequence becomes `approved_scope.subsprint_sequence` (when not supplied) so milestone terminality is computable. Audit: `milestone_decomposed`. **Skipped** when a non-empty `subsprint_sequence` is supplied upfront (audit `decompose_skipped`).
+
+**Post-Gate-1 scope-expansion guard** (deterministic): after decompose, the union of every `sub_sprints[].modules` and `.layers` is compared to the human-signed envelope `approved_scope.{modules_in_scope, layers_allowed}`. Any module/layer in the plan but NOT in the envelope → `post_gate1_scope_expansion` checkpoint (human-confirm) + audit + HALT (the engine does NOT widen scope past the Gate-1 sign-off without human confirmation — same invariant as §4.2.5). If the envelope is empty/absent the plan defines scope (no expansion possible) → audit note `scope_envelope_unset` and proceed.
+
+All pre-states are out-of-band (like `acceptance_pending`): every transition persists to `state.json`, every transition emits an audit event, and `run(resume=True)` re-enters at the persisted pre-state with the hash chain intact across the halt→resume boundary. With both a signed brief and a supplied sequence, `full_chain_guided` behaves exactly like the delivery loop.
+
 #### §4.2.5 scope_envelope_check (deterministic, no LLM)
 
 Pure function over `(charter.approved_scope, observed_diff, declared_next_subsprint)`. No LLM involvement; deterministic boolean output. Runs at every `close_pending`.
