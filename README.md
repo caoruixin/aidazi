@@ -4,6 +4,8 @@
 
 aidazi is a framework for delivering software with a multi-agent team where the LLM is responsible for soft semantic decisions and a deterministic runtime owns hard kernel-level invariants. It defines a 5-role chain (Research / Deliver / Dev / Code Reviewer / Acceptance) + a human Customer + the governance + process docs + templates + schemas to run them coherently.
 
+> **Adopting aidazi?** Feed `ONBOARDING.md` to your coding agent (Claude Code / Codex / Cursor) — it drives an interactive, idempotent, non-destructive, audited one-time install into your codebase.
+
 ## What aidazi IS
 
 - A **constitution** (`governance/constitution.md`) defining LLM-vs-Runtime ownership boundaries + a forbidden list (no keyword/regex matching for semantic decisions, no eval phrase encoding into code, etc.).
