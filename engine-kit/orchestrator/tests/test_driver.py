@@ -756,5 +756,337 @@ class TestAcceptanceSpawnIsolation(unittest.TestCase):
             self.assertIn("acceptance_pass", types)
 
 
+# --------------------------------------------------------------------------- #
+# P3 INTEGRATION — Loop Controller as the fix-loop termination authority +
+# Loop Memory at ingress (read) / close (write). All deterministic + offline:
+# MockAdapter only, injected clock, temp run_dir + temp memory_root.
+# --------------------------------------------------------------------------- #
+import loop_controller as lc  # noqa: E402
+from driver import RunState, STATE_DEV_PENDING, STATE_GATE_PENDING  # noqa: E402
+
+
+# A review finding with an explicit id + severity (drives finding-key dedup +
+# the worst_severity → severity-ceiling escalation path).
+def _finding(fid, severity="P2", layer="semantic_planner"):
+    return {"id": fid, "severity": severity, "layer": layer,
+            "evidence": [f"src/x.py:{len(fid)}"], "rationale": "r"}
+
+
+def _fix_review(findings, blocking=1, summary="needs fix"):
+    return {"decision": "fix_required", "blocking_count": blocking,
+            "summary": summary, "findings": list(findings)}
+
+
+def _autofix_charter(*, enabled=True, max_rounds=3,
+                     only_if_severity_at_most="P2",
+                     dry_stop_threshold=None,
+                     max_fix_rounds_total=None):
+    """A charter with autonomy.auto_pass_rules.auto_fix_iteration configured so
+    the controller can authorize auto-iteration (NOT the HITL human-confirm
+    path)."""
+    charter = load_charter(CHARTER_PATH)
+    afi = {
+        "enabled": enabled,
+        "max_rounds": max_rounds,
+        "only_if_findings_severity_at_most": only_if_severity_at_most,
+    }
+    if dry_stop_threshold is not None:
+        afi["dry_stop_threshold"] = dry_stop_threshold
+    charter["autonomy"]["auto_pass_rules"] = {
+        "clean_pass_auto_advance": True,
+        "auto_fix_iteration": afi,
+    }
+    # Keep the hard fix-round budget OUT of the way unless a test sets it, so the
+    # controller's own max_rounds / dry-stop / severity guards are what fire.
+    if max_fix_rounds_total is None:
+        charter.get("budget", {}).pop("max_fix_rounds_total", None)
+    else:
+        charter["budget"]["max_fix_rounds_total"] = max_fix_rounds_total
+    return charter
+
+
+class _PromptCapturingMock(MockAdapter):
+    """MockAdapter that ALSO captures the prompt string it received (the base
+    mock records role/tools but not the prompt). Used to assert the Loop-Memory
+    ingress block reaches the adapter."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.prompts = []
+
+    def spawn(self, role, prompt, tools, schema):
+        self.prompts.append(prompt)
+        return super().spawn(role, prompt, tools, schema)
+
+
+class TestLoopControllerAutoFixContinue(unittest.TestCase):
+    def test_continue_spawns_another_fix_round(self):
+        # Round 1 review = fix_required; the re-review (call_index 1) = clean pass.
+        # Auto-fix enabled + within bounds → controller `continue` → the driver
+        # spawns ANOTHER dev→gate→review round, then advances on the clean verdict.
+        review_responses = {
+            ("review", 0): _fix_review([_finding("F1", "P2")]),
+            ("review", 1): CLEAN_REVIEW,
+        }
+        with tempfile.TemporaryDirectory() as d:
+            adapters = _adapters()
+            adapters["review"] = MockAdapter(
+                review_responses, harness="headless",
+                provider="deepseek", model="deepseek-chat")
+            charter = _autofix_charter(enabled=True, max_rounds=3)
+            drv_ = _driver(d, charter=charter, adapters=adapters)
+            final = drv_.run(subsprint_id="sprint-001")
+            # The fix round was bumped (one fix iteration happened) ...
+            self.assertEqual(final.fix_round, 1)
+            # ... the dev/review step RE-RAN (history has two dev_pending entries:
+            # the original + the auto-fix re-run), and the loop advanced.
+            self.assertEqual(final.history.count("dev_pending"), 2)
+            self.assertEqual(final.history.count("review_pending"), 2)
+            self.assertEqual(final.state, STATE_ADVANCE)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("auto_fix_round_spawned", types)
+            self.assertIn("controller_decision", types)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_continue_disabled_keeps_hitl_human_confirm(self):
+        # BACKWARD-COMPAT: auto_fix NOT enabled → controller `continue` must NOT
+        # auto-iterate; the existing fix_required human-confirm checkpoint fires
+        # and the loop HALTS (UNCHANGED P2/HITL behaviour, Constitution §1.7-D).
+        with tempfile.TemporaryDirectory() as d:
+            charter = _autofix_charter(enabled=False, max_rounds=3)
+            drv_ = _driver(
+                d, charter=charter,
+                adapters=_adapters(review=_fix_review([_finding("F1", "P2")])))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            self.assertEqual(final.fix_round, 1)
+            self.assertEqual(final.history.count("dev_pending"), 1)  # no re-run
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(any("gate_hard_fail" in c for c in cps), cps)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("auto_fix_round_spawned", types)
+
+
+class TestLoopControllerHalts(unittest.TestCase):
+    def _seed_review_state(self, drv_, *, budget_spent=0.0,
+                           rounds_since_new=0, fix_round=0, seen=()):
+        """Put the driver in review_pending with seeded controller-tracking
+        fields, so we can call _handle_fix_required directly + deterministically."""
+        drv_.state = RunState(loop_id=drv_.loop_id, subsprint_id="sprint-001")
+        drv_.state.state = STATE_REVIEW_PENDING
+        drv_.state.budget_spent = budget_spent
+        drv_.state.rounds_since_new_finding = rounds_since_new
+        drv_.state.fix_round = fix_round
+        drv_.state.seen_finding_keys = list(seen)
+        drv_._save_state()
+
+    def test_budget_exhausted_halts_with_checkpoint(self):
+        # budget_spent >= budget_cap (max_api_usd) → controller halt(budget).
+        with tempfile.TemporaryDirectory() as d:
+            charter = _autofix_charter(enabled=True, max_rounds=10)
+            charter["budget"]["max_api_usd"] = 5.0
+            drv_ = _driver(d, charter=charter, adapters=_adapters())
+            self._seed_review_state(drv_, budget_spent=5.0)
+            drv_._handle_fix_required(_fix_review([_finding("F1", "P2")]))
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(any("loop_controller_halt" in c for c in cps), cps)
+            events = audit.read_events(drv_.audit_ledger)
+            dec = next(e for e in events if e["type"] == "controller_decision")
+            self.assertEqual(dec["payload"]["reason"], lc.REASON_BUDGET)
+
+    def test_max_rounds_exceeded_halts(self):
+        # auto_fix max_rounds=2 (NO hard budget.max_fix_rounds_total) → with
+        # fix_round seeded at 2, the bump → 3 > 2 trips controller halt(max_rounds).
+        # No budget cap is set, so it halts WITH a checkpoint and does NOT raise.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _autofix_charter(enabled=True, max_rounds=2)
+            drv_ = _driver(d, charter=charter, adapters=_adapters())
+            self._seed_review_state(drv_, fix_round=2)
+            drv_._handle_fix_required(_fix_review([_finding("F1", "P2")]))
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+            events = audit.read_events(drv_.audit_ledger)
+            dec = next(e for e in events if e["type"] == "controller_decision")
+            self.assertEqual(dec["payload"]["reason"], lc.REASON_MAX_ROUNDS)
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(any("loop_controller_halt" in c for c in cps), cps)
+
+    def test_max_rounds_via_hard_budget_cap_raises_budget_exceeded(self):
+        # When the round cap IS the hard budget.max_fix_rounds_total, the
+        # controller halt(max_rounds) ALSO surfaces the deterministic
+        # BudgetExceeded gate (backward-compat with _check_budget's raise).
+        with tempfile.TemporaryDirectory() as d:
+            charter = _autofix_charter(enabled=True, max_rounds=10,
+                                       max_fix_rounds_total=2)
+            drv_ = _driver(d, charter=charter, adapters=_adapters())
+            self._seed_review_state(drv_, fix_round=2)  # bump → 3 > 2
+            with self.assertRaises(BudgetExceeded):
+                drv_._handle_fix_required(_fix_review([_finding("F1", "P2")]))
+
+    def test_converged_dry_halts(self):
+        # K consecutive no-new-finding rounds → halt(converged_dry). Seed the
+        # K-counter at threshold-1 and feed a round whose finding is ALREADY seen
+        # (no new finding) so the counter reaches K.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _autofix_charter(enabled=True, max_rounds=10,
+                                       dry_stop_threshold=2)
+            drv_ = _driver(d, charter=charter, adapters=_adapters())
+            # F1 already seen; rounds_since_new starts at 1, this round adds none
+            # → reaches 2 == threshold.
+            self._seed_review_state(drv_, rounds_since_new=1, seen=("F1",))
+            drv_._handle_fix_required(_fix_review([_finding("F1", "P2")]))
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+            events = audit.read_events(drv_.audit_ledger)
+            dec = next(e for e in events if e["type"] == "controller_decision")
+            self.assertEqual(dec["payload"]["reason"], lc.REASON_CONVERGED_DRY)
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(any("loop_controller_halt" in c for c in cps), cps)
+
+    def test_severity_over_ceiling_escalates(self):
+        # worst_severity P0 strictly worse than ceiling P2 → escalate(severity)
+        # → a needs-human checkpoint + halt.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _autofix_charter(enabled=True, max_rounds=10,
+                                       only_if_severity_at_most="P2")
+            drv_ = _driver(d, charter=charter, adapters=_adapters())
+            self._seed_review_state(drv_)
+            drv_._handle_fix_required(_fix_review([_finding("F0", "P0")]))
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+            events = audit.read_events(drv_.audit_ledger)
+            dec = next(e for e in events if e["type"] == "controller_decision")
+            self.assertEqual(dec["payload"]["action"], lc.ACTION_ESCALATE)
+            self.assertEqual(dec["payload"]["reason"], lc.REASON_SEVERITY)
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(
+                any("loop_controller_escalate" in c for c in cps), cps)
+
+    def test_controller_decision_recorded_in_audit(self):
+        # The controller's {action, reason} is in the ledger for auditability.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _autofix_charter(enabled=False)  # any path records it
+            drv_ = _driver(
+                d, charter=charter,
+                adapters=_adapters(review=_fix_review([_finding("F1", "P2")])))
+            drv_.run(subsprint_id="sprint-001")
+            events = audit.read_events(drv_.audit_ledger)
+            decs = [e for e in events if e["type"] == "controller_decision"]
+            self.assertTrue(decs)
+            self.assertIn(decs[0]["payload"]["action"],
+                          (lc.ACTION_CONTINUE, lc.ACTION_HALT,
+                           lc.ACTION_ESCALATE, lc.ACTION_ADVANCE))
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+
+class TestLoopMemoryIngressAndClose(unittest.TestCase):
+    def _seed_memory(self, root):
+        from memory_store import MemoryStore  # noqa: E402
+        store = MemoryStore(root)
+        store.record_observation(
+            "prefer explicit eligibility branches",
+            ts="2026-06-15", loop_id="loop-prior-001",
+            type="heuristic",
+            scope={"role": ["dev"],
+                   "module": ["src/tools/eligibility.py"]},
+            body=("When implementing eligibility, enumerate each refund branch "
+                  "explicitly rather than collapsing them — prior loops regressed "
+                  "the partial-refund branch under a catch-all."),
+        )
+        return store
+
+    def test_ingress_injects_lessons_into_prompt(self):
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            self._seed_memory(mem)
+            # Prompt-capturing mock for dev so we can read the injected block.
+            dev = _PromptCapturingMock(
+                {("dev",): DEV_ARTIFACT}, harness="claude_code",
+                provider="anthropic", model="claude-sonnet-4-6")
+            adapters = _adapters()
+            adapters["dev"] = dev
+            drv_ = Driver(load_charter(CHARTER_PATH), d, adapters,
+                          loop_id="loop-mem-001", clock=_clock(),
+                          memory_root=mem)
+            drv_.run(subsprint_id="sprint-001")
+            self.assertTrue(dev.prompts)
+            dev_prompt = dev.prompts[0]
+            # The ingress block IS present in the prompt the adapter received.
+            self.assertIn("Relevant prior lessons", dev_prompt)
+            self.assertIn("enumerate each refund branch", dev_prompt)
+            # And the spawn audit recorded which entries were injected.
+            events = audit.read_events(drv_.audit_ledger)
+            dev_spawn = next(e for e in events if e["type"] == "spawn"
+                             and e["payload"]["role"] == "dev")
+            self.assertIn("prefer-explicit-eligibility-branches",
+                          dev_spawn["payload"]["memory_injected"])
+
+    def test_close_records_observation_and_matures_l1_to_l2(self):
+        # On a fix_required finding, the driver records a generalizable lesson;
+        # a SECOND loop recording the same finding pattern matures it L1 → L2.
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            charter = _autofix_charter(enabled=False)  # HITL path still records
+            fix_review = _fix_review([_finding("F1", "P2",
+                                               layer="semantic_planner")])
+            # Loop 1.
+            drv1 = Driver(charter, d, _adapters(review=fix_review),
+                          loop_id="loop-mem-A", clock=_clock(), memory_root=mem)
+            drv1.run(subsprint_id="sprint-001")
+            from memory_store import MemoryStore, slug  # noqa: E402
+            store = MemoryStore(mem)
+            eid = slug("review fix_required at semantic_planner layer")
+            entry1 = store.get(eid)
+            self.assertIsNotNone(entry1)
+            self.assertEqual(entry1.occurrences, 1)
+            self.assertEqual(entry1.maturity, "L1")
+            # Loop 2 (same finding pattern) → occurrences=2 → L2.
+            with tempfile.TemporaryDirectory() as d2:
+                drv2 = Driver(charter, d2, _adapters(review=fix_review),
+                              loop_id="loop-mem-B", clock=_clock(),
+                              memory_root=mem)
+                drv2.run(subsprint_id="sprint-001")
+            entry2 = store.get(eid)
+            self.assertEqual(entry2.occurrences, 2)
+            self.assertEqual(entry2.maturity, "L2")
+            types = [e["type"] for e in audit.read_events(drv1.audit_ledger)]
+            self.assertIn("memory_observation_recorded", types)
+
+    def test_memory_disabled_means_no_memory_activity(self):
+        # memory_root None → no select/record; behaviour identical to current.
+        with tempfile.TemporaryDirectory() as d:
+            dev = _PromptCapturingMock(
+                {("dev",): DEV_ARTIFACT}, harness="claude_code",
+                provider="anthropic", model="claude-sonnet-4-6")
+            adapters = _adapters()
+            adapters["dev"] = dev
+            drv_ = Driver(load_charter(CHARTER_PATH), d, adapters,
+                          loop_id="loop-nomem", clock=_clock())  # no memory_root
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertIsNone(drv_.memory)
+            self.assertEqual(final.state, STATE_ADVANCE)
+            # No lessons block in the prompt; memory_injected empty in audit.
+            self.assertNotIn("Relevant prior lessons", dev.prompts[0])
+            events = audit.read_events(drv_.audit_ledger)
+            for e in events:
+                if e["type"] == "spawn":
+                    self.assertEqual(e["payload"]["memory_injected"], [])
+            types = [e["type"] for e in events]
+            self.assertNotIn("memory_observation_recorded", types)
+
+
+class TestRunStateResumeRoundTrip(unittest.TestCase):
+    def test_new_controller_fields_persist_across_save_load(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.state = RunState(loop_id="x", subsprint_id="sprint-001")
+            drv_.state.rounds_since_new_finding = 3
+            drv_.state.seen_finding_keys = ["F1", "F2"]
+            drv_.state.budget_spent = 4.5
+            drv_._save_state()
+            reloaded = drv_._load_state()
+            self.assertEqual(reloaded.rounds_since_new_finding, 3)
+            self.assertEqual(reloaded.seen_finding_keys, ["F1", "F2"])
+            self.assertEqual(reloaded.budget_spent, 4.5)
+
+
 if __name__ == "__main__":
     unittest.main()

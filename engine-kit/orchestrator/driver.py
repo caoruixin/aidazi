@@ -41,7 +41,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 try:
     import yaml
@@ -71,6 +71,27 @@ for _p in (_ENGINE_KIT_DIR, _AUDIT_DIR):
 
 import audit_log as audit  # noqa: E402  (engine-kit/audit/audit_log.py)
 from adapters import ADAPTER_REGISTRY, Adapter, AdapterError  # noqa: E402
+
+# P3 INTEGRATION 1 — the standalone Loop Controller (engine-kit/orchestrator/
+# loop_controller.py) is the fix-loop termination AUTHORITY. The driver builds a
+# LoopState from RunState + charter + the verdict and asks decide() what to do;
+# it owns the side effects (spawn / checkpoint / audit). Imported read-only.
+import loop_controller as lc  # noqa: E402
+
+# P3 INTEGRATION 2 — Loop Memory (engine-kit/memory/memory_store.py) is OPTIONAL.
+# It is imported lazily/guarded so the driver has NO hard dependency on it: a
+# Driver built without a memory_root never touches the store (behaviour is then
+# byte-identical to before this integration). The memory/ dir is a sibling of
+# orchestrator/ under engine-kit/, so put it on sys.path next to audit/.
+_MEMORY_DIR = os.path.join(_ENGINE_KIT_DIR, "memory")
+if _MEMORY_DIR not in sys.path:
+    sys.path.insert(0, _MEMORY_DIR)
+try:
+    from memory_store import MemoryStore  # noqa: E402
+    from memory_store import MemoryError as _MemoryError  # noqa: E402
+except Exception:  # pragma: no cover - memory is optional; absence must not break
+    MemoryStore = None  # type: ignore
+    _MemoryError = Exception  # type: ignore
 
 
 # --------------------------------------------------------------------------- #
@@ -229,6 +250,18 @@ class RunState:
     spawn_count: int = 0
     history: list[str] = field(default_factory=list)
     last_verdict: Optional[dict] = None
+    # ---- P3 INTEGRATION 1: Loop-Controller fix-loop tracking (persisted for
+    #      resume, §4.5). The driver maintains these ACROSS fix rounds and feeds
+    #      them into a LoopState; the controller only READS them.
+    #   seen_finding_keys      : every finding identity observed so far (dedup
+    #                            across rounds → "is this round's finding NEW?").
+    #   rounds_since_new_finding: K-counter for the dry-stop / convergence guard
+    #                            (consecutive fix rounds that added NO new finding).
+    #   budget_spent            : generic spend accumulator vs charter budget cap
+    #                            (units = the charter's; mock runs stay at 0.0).
+    seen_finding_keys: list[str] = field(default_factory=list)
+    rounds_since_new_finding: int = 0
+    budget_spent: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -239,6 +272,9 @@ class RunState:
             "spawn_count": self.spawn_count,
             "history": list(self.history),
             "last_verdict": self.last_verdict,
+            "seen_finding_keys": list(self.seen_finding_keys),
+            "rounds_since_new_finding": self.rounds_since_new_finding,
+            "budget_spent": self.budget_spent,
         }
 
     @classmethod
@@ -251,6 +287,9 @@ class RunState:
             spawn_count=int(d.get("spawn_count", 0)),
             history=list(d.get("history", [])),
             last_verdict=d.get("last_verdict"),
+            seen_finding_keys=list(d.get("seen_finding_keys", [])),
+            rounds_since_new_finding=int(d.get("rounds_since_new_finding", 0)),
+            budget_spent=float(d.get("budget_spent", 0.0)),
         )
 
 
@@ -285,6 +324,7 @@ class Driver:
         clock: Callable[[], str],
         verdict_schemas: Optional[dict[str, dict]] = None,
         context: Optional[dict] = None,
+        memory_root: Optional[str] = None,
     ):
         self.charter = charter
         self.run_dir = os.path.abspath(run_dir)
@@ -293,6 +333,20 @@ class Driver:
         self.clock = clock
         self.schemas = verdict_schemas or load_verdict_schemas()
         self.context = context or {}
+
+        # P3 INTEGRATION 2 — OPTIONAL Loop Memory. When memory_root is None the
+        # store is never constructed and NO select/record ever runs → the driver
+        # is byte-identical to the pre-integration behaviour (the existing tests
+        # pass no memory_root). When a root IS supplied we read at ingress and
+        # write at close. If the memory module failed to import, a supplied root
+        # is a hard configuration error (fail closed, never silently skip).
+        self.memory: Optional["MemoryStore"] = None
+        if memory_root is not None:
+            if MemoryStore is None:  # pragma: no cover - import guard
+                raise RuntimeError(
+                    "memory_root given but memory_store could not be imported "
+                    "(engine-kit/memory/memory_store.py)")
+            self.memory = MemoryStore(memory_root)
 
         # Filesystem layout per delivery-loop §4.2.9 (rooted at run_dir).
         self.orch_dir = os.path.join(self.run_dir, ".orchestrator")
@@ -408,6 +462,9 @@ class Driver:
         routing = route_for_role(self.charter, role)
         input_hash = "sha256:" + hashlib.sha256(
             (role + "\x00" + prompt).encode("utf-8")).hexdigest()[:16]
+        # P3 INTEGRATION 2: which Loop-Memory entries the ingress block injected
+        # (recorded on the spawn event, Audit Spine §4.5 G3). [] when memory off.
+        injected = self._injected_ids(role)
 
         self.state.spawn_count += 1
         try:
@@ -417,6 +474,7 @@ class Driver:
             self._audit("spawn", audit.make_spawn_payload(
                 role=role, harness=adapter.harness, provider=adapter.provider,
                 model=adapter.model, input_hash=input_hash,
+                memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
                 verdict_ref="adapter_error"))
             raise self._gate_hard_fail(
@@ -428,6 +486,7 @@ class Driver:
             self._audit("spawn", audit.make_spawn_payload(
                 role=role, harness=adapter.harness, provider=adapter.provider,
                 model=adapter.model, input_hash=input_hash,
+                memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
                 verdict_ref="invalid" if err else "valid"))
             if err is not None:
@@ -439,6 +498,7 @@ class Driver:
             self._audit("spawn", audit.make_spawn_payload(
                 role=role, harness=adapter.harness, provider=adapter.provider,
                 model=adapter.model, input_hash=input_hash,
+                memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
                 verdict_ref="artifact"))
         self.state.last_verdict = verdict
@@ -457,11 +517,52 @@ class Driver:
         # (run_tests / validate_stanza / check_handoff / check_trace are wired in
         #  later phases; in the P2 MVP the gate is the presence-of-artifact check.)
 
+    # ----- P3 INTEGRATION 2: Loop Memory at ingress (read) ----------------- #
+    def _modules_in_scope(self) -> list[str]:
+        """The charter's approved-scope modules (used as the memory scope's
+        ``module`` dimension at ingress). Empty list when none declared."""
+        scope = (self.autonomy.get("approved_scope") or {})
+        return list(scope.get("modules_in_scope") or [])
+
+    def _lessons_block(self, role: str) -> str:
+        """Build the "Relevant prior lessons" ingress block for ``role`` from
+        Loop Memory, or "" when memory is disabled or has nothing relevant.
+
+        Selection is the store's deterministic scope match on {role, module};
+        the block injected into the prompt is short + generalizable (the entry
+        BODIES, never case-specific input→output — that is guarded at write).
+        Returns the entry ids it injected too, so the spawn audit can record
+        ``memory_injected`` (Audit Spine §4.5 G3)."""
+        if self.memory is None:
+            return ""
+        scope = {"role": [role], "module": self._modules_in_scope()}
+        entries = self.memory.select(scope)
+        if not entries:
+            return ""
+        lines = ["## Relevant prior lessons (Loop Memory)",
+                 "(generalizable heuristics from earlier loops — not rules to "
+                 "memorize; apply judgement)"]
+        for e in entries:
+            body = (e.body or "").strip().splitlines()
+            first = body[0].strip() if body else ""
+            lines.append(f"- [{e.maturity}] {first}")
+        return "\n".join(lines) + "\n\n"
+
+    def _injected_ids(self, role: str) -> list[str]:
+        """The entry ids Loop Memory would inject for ``role`` (for the spawn
+        audit's ``memory_injected`` field). [] when memory disabled."""
+        if self.memory is None:
+            return []
+        scope = {"role": [role], "module": self._modules_in_scope()}
+        return [e.id for e in self.memory.select(scope)]
+
     # ----- state-machine steps --------------------------------------------- #
     def _step_dev(self) -> None:
+        prompt = (self._lessons_block("dev")
+                  + f"Implement sub-sprint {self.state.subsprint_id}; "
+                    f"write the handoff.")
         verdict = self._spawn(
-            "dev",
-            f"Implement sub-sprint {self.state.subsprint_id}; write the handoff.",
+            "dev", prompt,
             schema_key=None,  # spawn_dev's artifact IS the code+handoff, no verdict schema
         )
         self.state.history.append(STATE_DEV_PENDING)
@@ -471,20 +572,18 @@ class Driver:
         self.state.history.append(STATE_GATE_PENDING)
 
     def _step_review(self) -> dict:
-        verdict = self._spawn(
-            "review",
-            f"Review sub-sprint {self.state.subsprint_id}. Emit a review-verdict.",
-            schema_key="review",
-        )
+        prompt = (self._lessons_block("review")
+                  + f"Review sub-sprint {self.state.subsprint_id}. "
+                    f"Emit a review-verdict.")
+        verdict = self._spawn("review", prompt, schema_key="review")
         self.state.history.append(STATE_REVIEW_PENDING)
         return verdict
 
     def _step_close(self) -> dict:
-        verdict = self._spawn(
-            "deliver",
-            f"Close sub-sprint {self.state.subsprint_id}. Emit a deliver-close-verdict.",
-            schema_key="close",
-        )
+        prompt = (self._lessons_block("deliver")
+                  + f"Close sub-sprint {self.state.subsprint_id}. "
+                    f"Emit a deliver-close-verdict.")
+        verdict = self._spawn("deliver", prompt, schema_key="close")
         self.state.history.append(STATE_CLOSE_PENDING)
         return verdict
 
@@ -566,29 +665,282 @@ class Driver:
                 return
             self._save_state()
 
-    def _handle_fix_required(self, review_verdict: dict) -> None:
-        """Review said fix_required. Bound the fix round (§4.4); in P2
-        human_in_the_loop we surface a gate_hard_fail checkpoint (auto-fix is a
-        later-phase capability) so the human routes the fix. Bump the counter and
-        check the budget so an over-limit run halts deterministically."""
+    # ----- P3 INTEGRATION 1: Loop Controller termination authority --------- #
+    def _auto_fix_cfg(self) -> dict:
+        """charter.autonomy.auto_pass_rules.auto_fix_iteration (or {}).
+
+        Absence ⇒ {} ⇒ NOT enabled ⇒ the existing P2/HITL human-confirm path
+        (backward-compat). Constitution §1.7-D: this only enables the dev↔review
+        auto-iteration loop; it NEVER auto-passes Acceptance or a human gate."""
+        return ((self.autonomy.get("auto_pass_rules") or {})
+                .get("auto_fix_iteration") or {})
+
+    def _max_fix_rounds(self) -> Optional[int]:
+        """The round cap fed to the controller: budget.max_fix_rounds_total
+        takes precedence (§4.2.2 hard budget), else auto_fix_iteration.max_rounds
+        (§4.4). None ⇒ no round cap from the controller (budget guard may still
+        apply via _check_budget)."""
+        cap = self.budget.get("max_fix_rounds_total")
+        if isinstance(cap, int):
+            return cap
+        m = self._auto_fix_cfg().get("max_rounds")
+        return m if isinstance(m, int) else None
+
+    def _budget_cap(self) -> Optional[float]:
+        """Generic spend cap fed to the controller: charter.budget.max_api_usd
+        (the §4.2.2 budget unit). None / absent ⇒ budget guard disabled in the
+        controller. A 0 cap is a real cap (mock runs spend 0.0, so 0 never trips
+        on its own — `spent >= cap` with spent=0,cap=0 IS exhausted, so we treat
+        a 0 cap as 'no spend allowed' ONLY when a positive spend exists). We keep
+        it simple: pass the number through; the controller compares spent>=cap."""
+        cap = self.budget.get("max_api_usd")
+        if isinstance(cap, (int, float)) and cap > 0:
+            return float(cap)
+        return None
+
+    @staticmethod
+    def _finding_keys(review_verdict: dict) -> list[str]:
+        """Stable dedup keys for this round's findings (caller-owned identity,
+        per loop_controller's contract). A finding's id is its identity; absent
+        an id we fall back to (layer|first-evidence) so two reports of the same
+        issue collapse. Pure."""
+        out: list[str] = []
+        for f in review_verdict.get("findings") or []:
+            if not isinstance(f, dict):
+                continue
+            fid = f.get("id")
+            if fid:
+                out.append(str(fid))
+                continue
+            ev = f.get("evidence") or []
+            anchor = ev[0] if ev else ""
+            out.append(f"{f.get('layer', '')}|{anchor}")
+        return out
+
+    @staticmethod
+    def _worst_severity(review_verdict: dict) -> Optional[str]:
+        """The most-severe finding label this round (P0 worst). None when no
+        findings carry a severity (no actionable severity signal)."""
+        worst: Optional[str] = None
+        for f in review_verdict.get("findings") or []:
+            if not isinstance(f, dict):
+                continue
+            sev = f.get("severity")
+            if lc.severity_rank(sev) is None:
+                continue
+            if worst is None or lc.severity_rank(sev) < lc.severity_rank(worst):
+                worst = str(sev).upper()
+        return worst
+
+    def _build_loop_state(self, review_verdict: dict,
+                          new_keys: Sequence[str]) -> "lc.LoopState":
+        """Assemble the LoopState the controller decides over, from RunState +
+        charter + this verdict. The driver tracks the cross-round fields
+        (fix_round, rounds_since_new_finding, budget_spent, seen keys); the
+        controller only reads them."""
         assert self.state is not None
-        self.state.fix_round += 1
-        self._save_state()
-        self._audit("review_fix_required",
-                    {"blocking_count": review_verdict.get("blocking_count"),
-                     "fix_round": self.state.fix_round})
-        self._check_budget()  # raises BudgetExceeded → gate_hard_fail if over cap
-        # P2 MVP: no auto-fix iteration; route to human via a checkpoint.
-        path = self._write_checkpoint(
-            "gate_hard_fail", self.state.subsprint_id,
-            context_md=(f"Code Reviewer returned fix_required "
-                        f"({review_verdict.get('blocking_count')} blocking) on fix_round "
-                        f"{self.state.fix_round}. Auto-fix iteration is not enabled in the "
-                        f"P2 MVP (human_in_the_loop)."),
-            options_md="- deliver_fix_iteration\n- abort",
+        afi = self._auto_fix_cfg()
+        return lc.LoopState(
+            last_verdict=review_verdict.get("decision"),
+            fix_round=self.state.fix_round,
+            max_fix_rounds=self._max_fix_rounds(),
+            findings_this_round=len(review_verdict.get("findings") or []),
+            new_finding_keys=list(new_keys),
+            rounds_since_new_finding=self.state.rounds_since_new_finding,
+            dry_stop_threshold=afi.get("dry_stop_threshold"),
+            budget_spent=self.state.budget_spent,
+            budget_cap=self._budget_cap(),
+            worst_severity=self._worst_severity(review_verdict),
+            severity_ceiling=afi.get("only_if_findings_severity_at_most"),
         )
-        self.state.state = STATE_HALTED
-        self._save_state()
+
+    def _record_fix_lesson(self, review_verdict: dict, decision: "lc.Decision",
+                           new_keys: Sequence[str]) -> None:
+        """P3 INTEGRATION 2 (close/finding write): record a MINIMAL, generalizable
+        lesson for the fix-loop finding so recurring patterns mature L1→L2 at
+        n≥2. No-op when memory is disabled. The key is a STABLE finding pattern
+        (layer-anchored) so the same class of finding dedups across loops; the
+        body is generalizable (the memory guard rejects case-specific
+        input→output, so we keep it abstract)."""
+        if self.memory is None:
+            return
+        assert self.state is not None
+        worst = self._worst_severity(review_verdict) or "P?"
+        # Per-finding-layer keys keep the lesson generalizable + dedup-stable.
+        layers = sorted({(f.get("layer") or "unknown")
+                         for f in (review_verdict.get("findings") or [])
+                         if isinstance(f, dict)}) or ["unknown"]
+        modules = self._modules_in_scope()
+        for layer in layers:
+            key = f"review fix_required at {layer} layer"
+            body = (f"A `fix_required` review recurred at the `{layer}` fix-layer "
+                    f"(worst severity ~{worst}). When working this layer, "
+                    f"pre-check the prior failure class before handing off — "
+                    f"recurring rework here signals a missing guard at that layer.")
+            try:
+                self.memory.record_observation(
+                    key,
+                    ts=self.clock(),
+                    loop_id=self.loop_id,
+                    type="failure",
+                    scope={"role": ["review", "dev"],
+                           "module": modules,
+                           "layer": [layer]},
+                    body=body,
+                )
+            except _MemoryError:
+                # A guard/shape rejection MUST NOT crash the delivery loop; the
+                # lesson is simply not stored (recorded in audit below).
+                self._audit("memory_record_rejected", {"key": key, "layer": layer})
+                continue
+            self._audit("memory_observation_recorded",
+                        {"key": key, "layer": layer,
+                         "controller_reason": decision.reason})
+
+    def _handle_fix_required(self, review_verdict: dict) -> None:
+        """Review said fix_required. The Loop Controller (loop_controller.decide)
+        is now the TERMINATION AUTHORITY: the driver builds a LoopState from
+        RunState + charter + the verdict and maps the controller's action to a
+        side effect. Constitution §1.7-D / OQ-B: the controller NEVER auto-confirms
+        an authority gate — `continue` only auto-iterates the dev↔review loop when
+        charter.autonomy.auto_pass_rules.auto_fix_iteration.enabled is true AND
+        within bounds; otherwise the existing P2/HITL human-confirm checkpoint +
+        halt fires UNCHANGED."""
+        assert self.state is not None
+        verdict = review_verdict
+        while True:
+            self.state.fix_round += 1
+
+            # Cross-round dry-stop bookkeeping (the controller READS it, the
+            # driver maintains it). A finding key is NEW iff unseen so far.
+            keys = self._finding_keys(verdict)
+            new_keys = [k for k in keys if k not in self.state.seen_finding_keys]
+            if new_keys:
+                self.state.rounds_since_new_finding = 0
+                for k in new_keys:
+                    self.state.seen_finding_keys.append(k)
+            else:
+                self.state.rounds_since_new_finding += 1
+            self._save_state()
+
+            self._audit("review_fix_required",
+                        {"blocking_count": verdict.get("blocking_count"),
+                         "fix_round": self.state.fix_round,
+                         "new_finding_keys": list(new_keys),
+                         "rounds_since_new_finding":
+                             self.state.rounds_since_new_finding})
+
+            # Close/finding write: record a generalizable lesson (gated on memory).
+            decision = lc.decide(self._build_loop_state(verdict, new_keys))
+            self._audit("controller_decision",
+                        {"action": decision.action, "reason": decision.reason,
+                         "detail": decision.detail, "fix_round": self.state.fix_round})
+            self._record_fix_lesson(verdict, decision, new_keys)
+
+            # --- map decide() action → driver side effect --------------------- #
+            if decision.action == lc.ACTION_ADVANCE:
+                # A fix round that came back clean — leave the fix loop. (Reached
+                # only if a re-review returned a clean verdict below.)
+                self.state.state = STATE_ADVANCE
+                self._save_state()
+                return
+
+            if decision.action == lc.ACTION_HALT:
+                # budget / max_rounds / converged_dry → checkpoint (reason in the
+                # body) + halt. BUDGET still also flows through _check_budget for
+                # the hard BudgetExceeded raise when a fix-round cap is set.
+                self._halt_checkpoint(
+                    "loop_controller_halt", decision,
+                    context_extra=(
+                        f"The Loop Controller halted the fix loop: "
+                        f"`{decision.reason}` — {decision.detail}."))
+                self.state.state = STATE_HALTED
+                self._save_state()
+                # A round-cap halt must still surface as the deterministic
+                # BudgetExceeded gate_hard_fail when budget.max_fix_rounds_total
+                # is the binding cap (backward-compat with _check_budget's raise).
+                if decision.reason in (lc.REASON_MAX_ROUNDS, lc.REASON_BUDGET):
+                    self._check_budget()
+                return
+
+            if decision.action == lc.ACTION_ESCALATE:
+                # severity over ceiling → needs-human checkpoint + halt.
+                self._halt_checkpoint(
+                    "loop_controller_escalate", decision,
+                    context_extra=(
+                        f"The Loop Controller escalated to a human: "
+                        f"`{decision.reason}` — {decision.detail}. Auto-fix is not "
+                        f"permitted above the configured severity ceiling."),
+                    needs_human=True)
+                self.state.state = STATE_HALTED
+                self._save_state()
+                return
+
+            # decision.action == lc.ACTION_CONTINUE
+            if not self._auto_fix_cfg().get("enabled"):
+                # BACKWARD-COMPAT (UNCHANGED P2/HITL): auto-fix not enabled ⇒ the
+                # controller's `continue` is NOT auto-confirmed. Write the existing
+                # fix_required human-confirm checkpoint + halt, exactly as before.
+                self._check_budget()  # over-cap still raises BudgetExceeded here
+                self._write_checkpoint(
+                    "gate_hard_fail", self.state.subsprint_id,
+                    context_md=(
+                        f"Code Reviewer returned fix_required "
+                        f"({verdict.get('blocking_count')} blocking) on fix_round "
+                        f"{self.state.fix_round}. Auto-fix iteration is not enabled "
+                        f"(human_in_the_loop). Loop Controller said `continue` but "
+                        f"§1.7-D forbids auto-confirming a human gate — routing to "
+                        f"the human."),
+                    options_md="- deliver_fix_iteration\n- abort",
+                )
+                self.state.state = STATE_HALTED
+                self._save_state()
+                return
+
+            # AUTO-FIX ENABLED + within bounds → spawn another fix round: re-enter
+            # the dev → gate → review steps, then loop on the new verdict. This is
+            # the ONLY auto-iteration the controller authorizes (§1.7-D: it never
+            # auto-passes Acceptance or a human checkpoint).
+            self._check_budget()  # hard cap still guards the auto-iteration
+            self._audit("auto_fix_round_spawned",
+                        {"fix_round": self.state.fix_round,
+                         "controller_reason": decision.reason})
+            self.state.state = STATE_DEV_PENDING
+            self._save_state()
+            self._step_dev()
+            self.state.state = STATE_GATE_PENDING
+            self._save_state()
+            self._step_gate()
+            self.state.state = STATE_REVIEW_PENDING
+            self._save_state()
+            verdict = self._step_review()
+            d2 = verdict.get("decision")
+            if d2 == "out_of_scope_review":
+                self._handle_out_of_scope_review(verdict)
+                return
+            if d2 != "fix_required":
+                # The re-review came back clean (or any non-fix verdict): hand the
+                # clean verdict to the controller via the loop top, which maps it
+                # to ADVANCE. We loop with this verdict; fix_round is NOT bumped
+                # again for a clean pass, so step back one (the top re-bumps).
+                self.state.fix_round -= 1
+            # loop: re-decide on the new verdict.
+
+    def _halt_checkpoint(self, checkpoint_id: str, decision: "lc.Decision",
+                         *, context_extra: str = "",
+                         needs_human: bool = False) -> str:
+        """Write the controller-driven halt/escalate checkpoint (reason in the
+        body) + audit. A halt is orchestrator-resolved bookkeeping; an escalate
+        is a human-pending decision."""
+        assert self.state is not None
+        ctx = (f"Loop Controller decision: action=`{decision.action}` "
+               f"reason=`{decision.reason}`.\n\n{context_extra}")
+        opts = ("- review_and_route\n- accept_failure_and_route\n- abort"
+                if needs_human else "- review_outcome\n- re_run\n- abort")
+        path = self._write_checkpoint(
+            checkpoint_id, self.state.subsprint_id,
+            context_md=ctx, options_md=opts)
+        return path
 
     def _handle_out_of_scope_review(self, review_verdict: dict) -> None:
         """Review returned ``out_of_scope_review`` (review-verdict.schema.json):
