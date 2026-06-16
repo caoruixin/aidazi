@@ -80,6 +80,9 @@ class Adapter(abc.ABC):
         prompt: str,
         tools: Sequence[str],
         schema: dict,
+        *,
+        connectors: Optional[Sequence[Any]] = None,
+        sandbox: str = "workspace_write",
     ) -> dict:
         """Run one role session and return a CANDIDATE verdict dict.
 
@@ -87,6 +90,15 @@ class Adapter(abc.ABC):
         adapter must NOT pre-validate (single deterministic validation point).
         Raise ``AdapterError`` on any transport/protocol failure rather than
         returning a fabricated verdict.
+
+        Facet C (Role Configuration Contract): ``connectors`` is the role's
+        abstract connector grant (each entry ~ connector-binding.schema.json) and
+        ``sandbox`` the role's sandbox (``workspace_write`` / ``read_only``).
+        Both are keyword-only so the driver can call every adapter uniformly.
+        DEFAULT-DENY: ``connectors=None`` / empty ⇒ NO grant ⇒ the spawn path is
+        byte-identical to the pre-connector behaviour. Concrete adapters use
+        :meth:`translate_connectors` to turn a grant into harness-native config;
+        translation produces CONFIG, it does not connect (no secret values).
         """
         raise NotImplementedError
 

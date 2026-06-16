@@ -338,6 +338,64 @@ class TestCleanup(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# context_has_changes — the safe `changed` signal the driver feeds to cleanup.
+# --------------------------------------------------------------------------- #
+class TestContextHasChanges(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aidazi-ingress-chg-")
+        self.repo = _make_repo(self.tmp)
+        self.wt_root = os.path.join(self.tmp, "worktrees")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _worktree(self, loop_id, branch):
+        return setup_context(
+            STRATEGY_NEW_WORKTREE, repo_dir=self.repo, loop_id=loop_id,
+            branch_name=branch, worktree_root=self.wt_root)
+
+    def test_clean_unchanged_worktree_is_not_changed(self):
+        handle = self._worktree("U1", "loop/U1")
+        # base_ref captured at setup; no edits, no commits → unchanged.
+        self.assertEqual(handle.base_ref, "main")
+        self.assertFalse(li.context_has_changes(handle))
+
+    def test_dirty_worktree_is_changed(self):
+        handle = self._worktree("U2", "loop/U2")
+        with open(os.path.join(handle.work_dir, "file.txt"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("dirty\n")
+        self.assertTrue(li.context_has_changes(handle))
+
+    def test_committed_ahead_clean_tree_is_changed(self):
+        # A worktree that COMMITTED its work leaves a clean tree but is ahead of
+        # base — context_has_changes must catch it (else cleanup would discard
+        # committed work under remove_if_unchanged).
+        handle = self._worktree("U3", "loop/U3")
+        wt = handle.work_dir
+        with open(os.path.join(wt, "new.txt"), "w", encoding="utf-8") as fh:
+            fh.write("work\n")
+        subprocess.run(["git", "-C", wt, "add", "new.txt"], check=True,
+                       capture_output=True)
+        subprocess.run(["git", "-C", wt, "commit", "-q", "-m", "work"],
+                       check=True, capture_output=True)
+        # Tree is clean now...
+        self.assertFalse(is_dirty_tree(wt))
+        # ...but commits-ahead makes it changed.
+        self.assertTrue(li.context_has_changes(handle))
+
+    def test_unknown_base_worktree_fails_safe_to_changed(self):
+        # A handle reconstructed on resume (base_ref=None) for a worktree fails
+        # SAFE to "changed" so cleanup never removes it.
+        handle = self._worktree("U4", "loop/U4")
+        reattached = ContextHandle(
+            work_dir=handle.work_dir, branch=handle.branch,
+            strategy=STRATEGY_NEW_WORKTREE, repo_dir=self.repo,
+            created=True, base_ref=None)
+        self.assertTrue(li.context_has_changes(reattached))
+
+
+# --------------------------------------------------------------------------- #
 # LoopRegistry — register / active_loops / is_loop_active_on_branch / mark_done.
 # --------------------------------------------------------------------------- #
 class TestLoopRegistry(unittest.TestCase):

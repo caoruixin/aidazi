@@ -62,10 +62,12 @@ except ImportError:  # pragma: no cover - import guard
 # We add engine-kit/ to sys.path so both `audit.audit_log` and `adapters` resolve
 # regardless of the caller's cwd.
 # --------------------------------------------------------------------------- #
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))  # engine-kit/orchestrator/
 _ENGINE_KIT_DIR = os.path.dirname(_THIS_DIR)           # engine-kit/
 _AUDIT_DIR = os.path.join(_ENGINE_KIT_DIR, "audit")
-for _p in (_ENGINE_KIT_DIR, _AUDIT_DIR):
+# _THIS_DIR is included so the sibling orchestrator modules (loop_controller,
+# loop_ingress) resolve as bare imports regardless of the caller's cwd.
+for _p in (_THIS_DIR, _ENGINE_KIT_DIR, _AUDIT_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -77,6 +79,14 @@ from adapters import ADAPTER_REGISTRY, Adapter, AdapterError  # noqa: E402
 # LoopState from RunState + charter + the verdict and asks decide() what to do;
 # it owns the side effects (spawn / checkpoint / audit). Imported read-only.
 import loop_controller as lc  # noqa: E402
+
+# P4 INTEGRATION — Loop Ingress (engine-kit/orchestrator/loop_ingress.py) is the
+# git-isolation + loop-registry layer. Like the controller it is a standalone
+# module: the PURE decision (decide_strategy) plus git SIDE EFFECTS
+# (setup_context / cleanup) and a JSON loop registry. The driver owns the wiring
+# (decide → recommend → setup → register at start; mark_done → cleanup at close)
+# and is byte-identical to pre-P4 when no repo_dir is supplied (ingress off).
+import loop_ingress as li  # noqa: E402
 
 # P3 INTEGRATION 2 — Loop Memory (engine-kit/memory/memory_store.py) is OPTIONAL.
 # It is imported lazily/guarded so the driver has NO hard dependency on it: a
@@ -208,6 +218,12 @@ class RoleRouting:
     provider: str
     model: str
     tools: list[str] = field(default_factory=list)
+    # Facet C (Role Configuration Contract): the role's abstract connector grant
+    # (each entry ~ connector-binding.schema.json) + the role's sandbox. Threaded
+    # into adapter.spawn(...) so the adapter can translate them to harness-native
+    # config. DEFAULT-DENY: an absent `connectors` is an empty list (no grant).
+    connectors: list = field(default_factory=list)
+    sandbox: str = "workspace_write"
 
 
 def load_charter(path: str) -> dict:
@@ -235,6 +251,11 @@ def route_for_role(charter: dict, role: str) -> RoleRouting:
         provider=str(rc.get("provider") or ""),
         model=str(rc.get("model") or ""),
         tools=list(rc.get("tools") or []),
+        # Facet C: per-role connector grant (default-deny ⇒ [] when omitted) +
+        # the role's sandbox (schema default workspace_write). Read leniently,
+        # like the rest of route_for_role.
+        connectors=list(rc.get("connectors") or []),
+        sandbox=str(rc.get("sandbox") or "workspace_write"),
     )
 
 
@@ -312,6 +333,14 @@ class Driver:
     context:       read-only adopter context paths (e.g. the minimal-greenfield
                    objective files) — recorded in the loop_start audit event;
                    the driver never writes there.
+    repo_dir:      OPTIONAL git repo for Loop Ingress (P4). None ⇒ ingress OFF
+                   (byte-identical to pre-P4: no git op, no registry). When set,
+                   the loop is given a git working context at ingress and
+                   registered for cross-loop collision detection.
+    isolation_strategy: OPTIONAL human-confirmed isolation override
+                   (current_branch | new_branch | new_worktree). None ⇒ the
+                   charter's pre-authorized default is used and any force-condition
+                   escalation is RECOMMENDED (checkpoint), never auto-applied.
     """
 
     def __init__(
@@ -325,6 +354,8 @@ class Driver:
         verdict_schemas: Optional[dict[str, dict]] = None,
         context: Optional[dict] = None,
         memory_root: Optional[str] = None,
+        repo_dir: Optional[str] = None,
+        isolation_strategy: Optional[str] = None,
     ):
         self.charter = charter
         self.run_dir = os.path.abspath(run_dir)
@@ -333,6 +364,19 @@ class Driver:
         self.clock = clock
         self.schemas = verdict_schemas or load_verdict_schemas()
         self.context = context or {}
+
+        # P4 INTEGRATION — OPTIONAL Loop Ingress. When repo_dir is None the
+        # ingress is OFF: no git op, no registry, no isolation choice — the driver
+        # is byte-identical to the pre-P4 behaviour (existing tests pass no
+        # repo_dir). When a repo_dir IS supplied, the loop is given a git working
+        # context at ingress and registered for collision detection.
+        #   isolation_strategy : the HUMAN-CONFIRMED strategy override. None ⇒ the
+        #     engine uses the charter's pre-authorized default and only RECOMMENDS
+        #     (never auto-applies) any force-condition escalation (§1.7-D/OQ-B).
+        self.repo_dir = os.path.abspath(repo_dir) if repo_dir else None
+        self.isolation_strategy = isolation_strategy
+        self.registry: Optional["li.LoopRegistry"] = None
+        self.context_handle: Optional["li.ContextHandle"] = None
 
         # P3 INTEGRATION 2 — OPTIONAL Loop Memory. When memory_root is None the
         # store is never constructed and NO select/record ever runs → the driver
@@ -468,8 +512,14 @@ class Driver:
 
         self.state.spawn_count += 1
         try:
-            verdict = adapter.spawn(role, prompt, routing.tools,
-                                    self.schemas.get(schema_key, {}) if schema_key else {})
+            # Facet C: thread the role's connector grant + sandbox through the
+            # uniform spawn boundary (keyword-only). DEFAULT-DENY: an empty grant
+            # is a no-op (the adapter emits no native connector config), so the
+            # spawn is byte-identical to before for a charter without connectors.
+            verdict = adapter.spawn(
+                role, prompt, routing.tools,
+                self.schemas.get(schema_key, {}) if schema_key else {},
+                connectors=routing.connectors, sandbox=routing.sandbox)
         except AdapterError as exc:
             self._audit("spawn", audit.make_spawn_payload(
                 role=role, harness=adapter.harness, provider=adapter.provider,
@@ -556,6 +606,143 @@ class Driver:
         scope = {"role": [role], "module": self._modules_in_scope()}
         return [e.id for e in self.memory.select(scope)]
 
+    # ----- P4 INTEGRATION: Loop Ingress (git isolation + loop registry) ----- #
+    def _ingress_enabled(self) -> bool:
+        """Ingress is wired ONLY when a repo_dir was supplied; otherwise every
+        ingress hook is a no-op and the driver is byte-identical to pre-P4."""
+        return self.repo_dir is not None
+
+    def _loop_init_ingress(self) -> None:
+        """At a FRESH loop start: decide the isolation strategy, set up the git
+        working context, and register the loop (Loop Ingress, plan §4.3).
+
+        Constitution §1.7-D / OQ-B — RECOMMEND, NEVER UNILATERALLY ESCALATE: the
+        engine uses the charter's pre-authorized ``default_strategy`` (or an
+        explicit human-confirmed ``isolation_strategy``); a force-condition
+        escalation (dirty tree / loop-active-on-branch) is RECOMMENDED via a
+        human-pending checkpoint, not auto-applied. No-op when ingress is off."""
+        if not self._ingress_enabled():
+            return
+        assert self.state is not None
+        repo_dir = self.repo_dir
+        isolation_cfg = self.charter.get("isolation") or {}
+        self.registry = li.LoopRegistry(os.path.join(repo_dir, ".orchestrator"))
+
+        # Observe working-tree + collision state (read-only git). Exclude THIS
+        # loop's own record: a fresh re-run of an un-closed loop_id must not see
+        # its own stale active entry as a collision-on-branch and spuriously
+        # recommend escalation against itself.
+        target_branch = li.current_branch(repo_dir)
+        dirty = li.is_dirty_tree(repo_dir)
+        active = [r for r in self.registry.active_loops()
+                  if r.loop_id != self.loop_id]
+        decision = li.decide_strategy(
+            isolation_cfg, dirty_tree=dirty, active_loops=active,
+            target_branch=target_branch)
+
+        # The strategy actually USED: an explicit human-confirmed override wins;
+        # else the charter-default BASELINE (pre-authorized in the charter) — NOT
+        # the escalated recommendation, which needs confirmation.
+        if self.isolation_strategy is not None:
+            chosen, confirmed_via = self.isolation_strategy, "human_supplied"
+        else:
+            chosen, confirmed_via = decision.strategy, "charter_default"
+
+        # Recommend (don't auto-apply) an unconfirmed escalation.
+        if decision.escalated and self.isolation_strategy is None:
+            self._write_checkpoint(
+                "loop_isolation_recommendation", self.state.subsprint_id,
+                context_md=(
+                    f"Loop Ingress RECOMMENDS isolation strategy "
+                    f"`{decision.recommendation}` over the charter default "
+                    f"`{decision.strategy}`: {decision.reason}. Per Constitution "
+                    f"§1.7-D the engine does NOT unilaterally escalate — it is "
+                    f"proceeding on the pre-authorized default `{chosen}`. To "
+                    f"adopt the recommendation, re-run this loop with the "
+                    f"confirmed strategy (isolation_strategy)."),
+                options_md=(f"- adopt_{decision.recommendation}\n"
+                            f"- keep_{decision.strategy}\n- abort"))
+            self._audit("loop_isolation_recommendation",
+                        {"recommendation": decision.recommendation,
+                         "default": decision.strategy,
+                         "triggers": list(decision.triggers),
+                         "reason": decision.reason})
+
+        # Git side effect: create/switch the context (no-op for current_branch).
+        handle = li.setup_context(
+            chosen, repo_dir=repo_dir, loop_id=self.loop_id,
+            worktree_root=isolation_cfg.get("worktree_root"))
+        self.context_handle = handle
+        self.registry.register(
+            self.loop_id, handle.strategy, handle.branch,
+            handle.work_dir if handle.strategy == li.STRATEGY_NEW_WORKTREE else None,
+            ts=self.clock())
+        self._audit("loop_ingress", {
+            "strategy": handle.strategy,
+            "recommendation": decision.recommendation,
+            "escalated": decision.escalated,
+            "confirmed_via": confirmed_via,
+            "triggers": list(decision.triggers),
+            "branch": handle.branch,
+            "target_branch": target_branch,
+            "work_dir": (os.path.relpath(handle.work_dir, repo_dir)
+                         if handle.work_dir != repo_dir else "."),
+        })
+
+    def _loop_reattach_ingress(self) -> None:
+        """On RESUME: reconstruct the registry + context handle from the existing
+        registry record WITHOUT any git mutation (the branch/worktree already
+        exists from the original loop start). No-op when ingress is off or the
+        loop was never registered. ``base_ref`` is not persisted in the registry,
+        so the reattached handle leaves it None (cleanup's change check then fails
+        safe — see loop_ingress.context_has_changes)."""
+        if not self._ingress_enabled():
+            return
+        self.registry = li.LoopRegistry(os.path.join(self.repo_dir, ".orchestrator"))
+        rec = self.registry.get(self.loop_id)
+        if rec is None:
+            return
+        work_dir = rec.worktree or self.repo_dir
+        self.context_handle = li.ContextHandle(
+            work_dir=work_dir, branch=rec.branch, strategy=rec.strategy,
+            repo_dir=self.repo_dir,
+            created=(rec.strategy != li.STRATEGY_CURRENT_BRANCH),
+            base_ref=None)
+
+    def _loop_close_ingress(self) -> None:
+        """At a SUCCESSFUL terminal state (advance / done): mark the loop done in
+        the registry and dispose of an isolated branch/worktree per the charter's
+        ``cleanup_policy``.
+
+        A HALTED loop is NOT closed — it is paused for human resolution, keeps its
+        working context, and stays ``active`` in the registry so a concurrent loop
+        still detects the collision. ``merged`` cannot be verified inside a batch
+        loop, so it is False (conservative: ``remove_if_merged`` then keeps the
+        context for the human). ``changed`` is computed safely (commits-ahead OR
+        dirty tree) so ``remove_if_unchanged`` never discards real work. No-op
+        when ingress is off."""
+        if not self._ingress_enabled() or self.context_handle is None:
+            return
+        assert self.state is not None
+        if self.state.state not in (STATE_ADVANCE, STATE_DONE):
+            return
+        handle = self.context_handle
+        isolation_cfg = self.charter.get("isolation") or {}
+        if self.registry is not None:
+            self.registry.mark_done(self.loop_id, ts=self.clock())
+        changed = li.context_has_changes(handle)
+        action = li.cleanup(
+            handle, cleanup_policy=isolation_cfg.get("cleanup_policy"),
+            merged=False, changed=changed)
+        self._audit("loop_close", {
+            "strategy": handle.strategy,
+            "branch": handle.branch,
+            "cleanup_action": action,
+            "cleanup_policy": isolation_cfg.get("cleanup_policy"),
+            "changed": changed,
+            "final_state": self.state.state,
+        })
+
     # ----- state-machine steps --------------------------------------------- #
     def _step_dev(self) -> None:
         prompt = (self._lessons_block("dev")
@@ -605,6 +792,9 @@ class Driver:
             self.state = loaded
             self._audit("loop_resume", {"from_state": self.state.state,
                                         "subsprint_id": self.state.subsprint_id})
+            # P4: re-attach the (already-created) git context + registry record
+            # WITHOUT any git mutation — the branch/worktree already exists.
+            self._loop_reattach_ingress()
         else:
             if subsprint_id is None:
                 raise ValueError("subsprint_id required for a fresh run")
@@ -615,10 +805,16 @@ class Driver:
                 "autonomy": self.autonomy.get("level", "human_in_the_loop"),
                 "context": self.context,
             })
+            # P4: Loop Ingress — decide the isolation strategy, set up the git
+            # working context, register the loop. No-op when repo_dir is None.
+            self._loop_init_ingress()
             self.state.state = STATE_DEV_PENDING
 
         self._save_state()
         self._drive()
+        # P4: close the loop (mark_done + cleanup) ONLY on a successful terminal
+        # state — a halted loop keeps its context for human resolution.
+        self._loop_close_ingress()
         return self.state
 
     def _drive(self) -> None:
@@ -1202,8 +1398,11 @@ class Driver:
             "spawn_surface": "orchestrator",
         })
         try:
+            # Facet C: acceptance connectors are read-only evidence connectors
+            # only (judgment is never delegated); threaded through uniformly.
             verdict = adapter.spawn(
-                "acceptance", prompt, routing.tools, self.schemas["acceptance"])
+                "acceptance", prompt, routing.tools, self.schemas["acceptance"],
+                connectors=routing.connectors, sandbox=routing.sandbox)
         except AdapterError as exc:
             raise self._gate_hard_fail(
                 f"acceptance adapter failed: {exc}", STATE_ACCEPTANCE_PENDING)

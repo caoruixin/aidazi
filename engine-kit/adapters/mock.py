@@ -27,7 +27,7 @@ the environment.
 from __future__ import annotations
 
 import copy
-from typing import Any, Sequence, Union
+from typing import Any, Optional, Sequence, Union
 
 from .base import Adapter, AdapterError
 
@@ -74,12 +74,20 @@ class MockAdapter(Adapter):
         prompt: str,
         tools: Sequence[str],
         schema: dict,
+        *,
+        connectors: Optional[Sequence[Any]] = None,
+        sandbox: str = "workspace_write",
     ) -> dict:
         idx = self._calls.get(role, 0)
         self._calls[role] = idx + 1
+        # Record connectors/sandbox so tests can assert the driver threaded the
+        # role's Facet-C grant through unchanged. The mock is a pure replay and
+        # never USES them (no translation) — it only stores what it was handed.
         self.history.append(
             {"role": role, "call_index": idx, "harness": self.harness,
-             "tools": list(tools)}
+             "tools": list(tools),
+             "connectors": list(connectors) if connectors else [],
+             "sandbox": sandbox}
         )
 
         if (role, idx) in self._responses:

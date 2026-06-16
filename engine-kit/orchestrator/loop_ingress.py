@@ -299,6 +299,9 @@ class ContextHandle:
     strategy: str
     repo_dir: str
     created: bool = False
+    base_ref: Optional[str] = None  # the ref the loop branch branched FROM
+                                    # (for a safe commits-ahead change check at
+                                    # close); None ⇒ unknown (e.g. after resume).
 
     def to_dict(self) -> dict:
         return {
@@ -307,6 +310,7 @@ class ContextHandle:
             "strategy": self.strategy,
             "repo_dir": self.repo_dir,
             "created": self.created,
+            "base_ref": self.base_ref,
         }
 
 
@@ -373,6 +377,7 @@ def setup_context(
             strategy=strategy,
             repo_dir=repo_dir,
             created=False,
+            base_ref=base,
         )
 
     if strategy == STRATEGY_NEW_BRANCH:
@@ -384,6 +389,7 @@ def setup_context(
             strategy=strategy,
             repo_dir=repo_dir,
             created=True,
+            base_ref=base,
         )
 
     # STRATEGY_NEW_WORKTREE: separate working dir on its own branch (parallel).
@@ -397,6 +403,7 @@ def setup_context(
         strategy=strategy,
         repo_dir=repo_dir,
         created=True,
+        base_ref=base,
     )
 
 
@@ -447,6 +454,40 @@ def cleanup(
     # not-changed precisely so the remove is safe.
     _run_git(handle.repo_dir, ["worktree", "remove", handle.work_dir])
     return "removed"
+
+
+def context_has_changes(handle: ContextHandle) -> bool:
+    """True iff the loop's isolated context produced any change vs its base.
+
+    "Changed" = a dirty working tree (uncommitted edits) OR — when ``base_ref``
+    is known — commits on the loop branch ahead of that base. This is the
+    ``changed`` input a caller (the driver) feeds to :func:`cleanup` so a
+    ``remove_if_unchanged`` policy NEVER discards real work, including committed
+    work that leaves a clean tree.
+
+    CONSERVATIVE / FAIL-SAFE: if the state cannot be determined (a git error, or
+    an unknown ``base_ref`` after a resume), this returns ``True`` — i.e. "treat
+    it as changed, keep it" — so cleanup errs toward preserving the context.
+    Offline; never touches the network.
+    """
+    try:
+        if is_dirty_tree(handle.work_dir):
+            return True
+    except IngressError:
+        return True  # cannot tell ⇒ assume changed (keep)
+    base = handle.base_ref
+    if not base:
+        # Unknown base (e.g. reconstructed on resume) ⇒ only the dirty-tree
+        # signal is available; a clean tree with no known base reads as
+        # "unchanged" for an in-place strategy but cleanup only acts on
+        # worktrees, where committed work would have left commits we cannot see
+        # without the base — so fail safe to "changed".
+        return handle.strategy == STRATEGY_NEW_WORKTREE
+    try:
+        out = _run_git(handle.work_dir, ["rev-list", "--count", f"{base}..HEAD"])
+        return int(out.strip() or "0") > 0
+    except (IngressError, ValueError):
+        return True  # cannot tell ⇒ assume changed (keep)
 
 
 def _default_branch_name(loop_id: str) -> str:

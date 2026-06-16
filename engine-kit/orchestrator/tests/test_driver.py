@@ -14,6 +14,8 @@ Covers (per the P2 task):
 """
 
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -26,6 +28,7 @@ for _p in (_ENGINE_KIT_DIR, os.path.join(_ENGINE_KIT_DIR, "audit"), _ORCH_DIR):
         sys.path.insert(0, _p)
 
 import audit_log as audit  # noqa: E402
+import loop_ingress as li  # noqa: E402
 from adapters import (  # noqa: E402
     MockAdapter, AdapterError, ClaudeCodeAdapter, HeadlessAdapter,
     resolve_adapter_class,
@@ -814,9 +817,9 @@ class _PromptCapturingMock(MockAdapter):
         super().__init__(*a, **k)
         self.prompts = []
 
-    def spawn(self, role, prompt, tools, schema):
+    def spawn(self, role, prompt, tools, schema, **kwargs):
         self.prompts.append(prompt)
-        return super().spawn(role, prompt, tools, schema)
+        return super().spawn(role, prompt, tools, schema, **kwargs)
 
 
 class TestLoopControllerAutoFixContinue(unittest.TestCase):
@@ -1086,6 +1089,253 @@ class TestRunStateResumeRoundTrip(unittest.TestCase):
             self.assertEqual(reloaded.rounds_since_new_finding, 3)
             self.assertEqual(reloaded.seen_finding_keys, ["F1", "F2"])
             self.assertEqual(reloaded.budget_spent, 4.5)
+
+
+_CONNECTOR_GRANT = [{"id": "gh", "kind": "mcp", "server": "gh-mcp@v1.0.0",
+                     "scopes": ["read"], "tools": ["search_issues"]}]
+
+
+class TestConnectorPassThrough(unittest.TestCase):
+    """P4 follow-up: the driver threads each role's Facet-C connector grant +
+    sandbox through adapter.spawn(...) (the mock records them in history)."""
+
+    def test_driver_threads_role_connectors_and_sandbox(self):
+        charter = load_charter(CHARTER_PATH)
+        charter["tooling"]["dev"]["connectors"] = _CONNECTOR_GRANT
+        charter["tooling"]["dev"]["sandbox"] = "read_only"
+        with tempfile.TemporaryDirectory() as d:
+            adapters = _adapters()
+            drv_ = _driver(d, charter=charter, adapters=adapters)
+            drv_.run(subsprint_id="sprint-001")
+        dev_hist = adapters["dev"].history[0]
+        self.assertEqual(dev_hist["connectors"], _CONNECTOR_GRANT)
+        self.assertEqual(dev_hist["sandbox"], "read_only")
+        # Review declared no connectors → default-deny ([]) + schema-default
+        # sandbox (the example charter gives review no sandbox field).
+        rev_hist = adapters["review"].history[0]
+        self.assertEqual(rev_hist["connectors"], [])
+        self.assertEqual(rev_hist["sandbox"], "workspace_write")
+
+    def test_no_connectors_passes_empty_grant(self):
+        # The unmodified example charter grants no connectors to any role.
+        with tempfile.TemporaryDirectory() as d:
+            adapters = _adapters()
+            _driver(d, adapters=adapters).run(subsprint_id="sprint-001")
+        for role in ("dev", "review", "deliver"):
+            self.assertEqual(adapters[role].history[0]["connectors"], [])
+
+
+def _make_git_repo(root):
+    """A throwaway git repo with one commit on `main` (offline, deterministic)."""
+    repo = os.path.join(root, "repo")
+    os.makedirs(repo)
+    def _g(*a):
+        subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True)
+    _g("init", "-q", "-b", "main")
+    _g("config", "user.email", "test@example.invalid")
+    _g("config", "user.name", "Driver Ingress Test")
+    _g("config", "commit.gpgsign", "false")
+    with open(os.path.join(repo, "seed.txt"), "w", encoding="utf-8") as fh:
+        fh.write("seed\n")
+    _g("add", "seed.txt")
+    _g("commit", "-q", "-m", "init")
+    return repo
+
+
+class TestLoopIngressWiring(unittest.TestCase):
+    """P4 integration: loop_ingress wired into the driver's loop start/close.
+
+    run_dir (artifacts) is a SEPARATE /tmp dir from repo_dir (the git repo); the
+    loop registry lives in <repo>/.orchestrator/loops.json.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aidazi-drv-ingress-")
+        self.repo = _make_git_repo(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _registry(self):
+        return li.LoopRegistry(os.path.join(self.repo, ".orchestrator"))
+
+    def _events(self, drv_, type_):
+        return [e for e in audit.read_events(drv_.audit_ledger)
+                if e["type"] == type_]
+
+    def test_repo_dir_none_is_byte_identical_no_ingress(self):
+        # Backward-compat: no repo_dir ⇒ no registry, no ingress/close audit.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("loop_ingress", types)
+            self.assertNotIn("loop_close", types)
+            self.assertIsNone(drv_.registry)
+            self.assertIsNone(drv_.context_handle)
+
+    def test_current_branch_default_registers_and_closes(self):
+        run_dir = os.path.join(self.tmp, "run1")
+        drv_ = Driver(load_charter(CHARTER_PATH), run_dir, _adapters(),
+                      loop_id="loop-ing-001", clock=_clock(), repo_dir=self.repo)
+        final = drv_.run(subsprint_id="sprint-001")
+        self.assertEqual(final.state, STATE_ADVANCE)
+        rec = self._registry().get("loop-ing-001")
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.strategy, "current_branch")
+        self.assertEqual(rec.status, "done")  # closed on a clean advance
+        self.assertEqual(li.current_branch(self.repo), "main")  # in-place
+        self.assertEqual(len(self._events(drv_, "loop_ingress")), 1)
+        close = self._events(drv_, "loop_close")
+        self.assertEqual(len(close), 1)
+        self.assertEqual(close[0]["payload"]["cleanup_action"], "noop")
+
+    def test_new_branch_strategy_switches_and_keeps_branch(self):
+        run_dir = os.path.join(self.tmp, "run2")
+        charter = load_charter(CHARTER_PATH)
+        charter["isolation"] = {"default_strategy": "new_branch",
+                                "cleanup_policy": "remove_if_merged"}
+        drv_ = Driver(charter, run_dir, _adapters(),
+                      loop_id="loop-ing-002", clock=_clock(), repo_dir=self.repo)
+        final = drv_.run(subsprint_id="sprint-001")
+        self.assertEqual(final.state, STATE_ADVANCE)
+        self.assertEqual(li.current_branch(self.repo), "loop/loop-ing-002")
+        rec = self._registry().get("loop-ing-002")
+        self.assertEqual(rec.strategy, "new_branch")
+        self.assertEqual(rec.status, "done")
+        # A branch is the PR unit — cleanup keeps it even under remove_if_merged.
+        self.assertEqual(
+            self._events(drv_, "loop_close")[0]["payload"]["cleanup_action"],
+            "kept")
+
+    def test_new_worktree_unchanged_is_removed_at_close(self):
+        run_dir = os.path.join(self.tmp, "run3")
+        wt_root = os.path.join(self.tmp, "wts3")
+        charter = load_charter(CHARTER_PATH)
+        charter["isolation"] = {"default_strategy": "new_worktree",
+                                "worktree_root": wt_root,
+                                "cleanup_policy": "remove_if_unchanged"}
+        drv_ = Driver(charter, run_dir, _adapters(),
+                      loop_id="loop-ing-003", clock=_clock(), repo_dir=self.repo)
+        final = drv_.run(subsprint_id="sprint-001")
+        self.assertEqual(final.state, STATE_ADVANCE)
+        self.assertEqual(li.current_branch(self.repo), "main")  # isolated
+        rec = self._registry().get("loop-ing-003")
+        self.assertEqual(rec.strategy, "new_worktree")
+        self.assertEqual(rec.status, "done")
+        # The mock run touches no files in the worktree → unchanged → removed.
+        self.assertEqual(
+            self._events(drv_, "loop_close")[0]["payload"]["cleanup_action"],
+            "removed")
+        self.assertFalse(os.path.isdir(rec.worktree))
+
+    def test_dirty_tree_escalation_recommends_but_keeps_default(self):
+        # Dirty repo + force_isolation_when:[dirty_tree] + default current_branch:
+        # the engine RECOMMENDS new_branch (checkpoint) but proceeds on the
+        # pre-authorized default (no unilateral escalate, §1.7-D).
+        with open(os.path.join(self.repo, "dirty.txt"), "w", encoding="utf-8") as fh:
+            fh.write("uncommitted\n")
+        run_dir = os.path.join(self.tmp, "run4")
+        charter = load_charter(CHARTER_PATH)
+        charter["isolation"] = {"default_strategy": "current_branch",
+                                "force_isolation_when": ["dirty_tree"]}
+        drv_ = Driver(charter, run_dir, _adapters(),
+                      loop_id="loop-ing-004", clock=_clock(), repo_dir=self.repo)
+        final = drv_.run(subsprint_id="sprint-001")
+        self.assertEqual(final.state, STATE_ADVANCE)
+        # Proceeded on the default — did NOT auto-switch to new_branch.
+        self.assertEqual(li.current_branch(self.repo), "main")
+        self.assertEqual(self._registry().get("loop-ing-004").strategy,
+                         "current_branch")
+        cps = os.listdir(drv_.checkpoints_dir)
+        self.assertTrue(
+            any("loop_isolation_recommendation" in c for c in cps), cps)
+        rec_evt = self._events(drv_, "loop_isolation_recommendation")
+        self.assertEqual(len(rec_evt), 1)
+        self.assertEqual(rec_evt[0]["payload"]["recommendation"], "new_branch")
+        ing = self._events(drv_, "loop_ingress")[0]["payload"]
+        self.assertTrue(ing["escalated"])
+        self.assertEqual(ing["strategy"], "current_branch")  # used default
+
+    def test_human_supplied_isolation_strategy_is_used(self):
+        run_dir = os.path.join(self.tmp, "run5")
+        drv_ = Driver(load_charter(CHARTER_PATH), run_dir, _adapters(),
+                      loop_id="loop-ing-005", clock=_clock(), repo_dir=self.repo,
+                      isolation_strategy="new_branch")
+        final = drv_.run(subsprint_id="sprint-001")
+        self.assertEqual(final.state, STATE_ADVANCE)
+        self.assertEqual(li.current_branch(self.repo), "loop/loop-ing-005")
+        ing = self._events(drv_, "loop_ingress")[0]["payload"]
+        self.assertEqual(ing["confirmed_via"], "human_supplied")
+
+    def test_halted_loop_is_not_closed(self):
+        # fix_required halts the loop → it must stay active (not done) and keep
+        # its worktree for human resolution.
+        fix_review = {"decision": "fix_required", "blocking_count": 1,
+                      "summary": "one P1", "findings": []}
+        run_dir = os.path.join(self.tmp, "run6")
+        charter = load_charter(CHARTER_PATH)
+        charter["isolation"] = {"default_strategy": "new_worktree",
+                                "worktree_root": os.path.join(self.tmp, "wts6"),
+                                "cleanup_policy": "remove_if_unchanged"}
+        drv_ = Driver(charter, run_dir, _adapters(review=fix_review),
+                      loop_id="loop-ing-006", clock=_clock(), repo_dir=self.repo)
+        final = drv_.run(subsprint_id="sprint-001")
+        self.assertEqual(final.state, STATE_HALTED)
+        rec = self._registry().get("loop-ing-006")
+        self.assertEqual(rec.status, "active")          # NOT closed
+        self.assertTrue(os.path.isdir(rec.worktree))    # worktree kept
+        types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+        self.assertNotIn("loop_close", types)
+
+    def test_fresh_rerun_does_not_self_collide(self):
+        # A fresh re-run of a loop_id already active on the branch must NOT treat
+        # its OWN stale record as a collision (no spurious self-escalation).
+        run_dir = os.path.join(self.tmp, "run8")
+        charter = load_charter(CHARTER_PATH)
+        charter["isolation"] = {"default_strategy": "current_branch",
+                                "force_isolation_when": ["loop_active_on_branch"]}
+        reg = self._registry()
+        reg.register("loop-ing-008", "current_branch", "main", None,
+                     ts="2026-06-15T00:00:00Z")  # the SAME loop_id, pre-active
+        drv_ = Driver(charter, run_dir, _adapters(), loop_id="loop-ing-008",
+                      clock=_clock(), repo_dir=self.repo)
+        final = drv_.run(subsprint_id="sprint-001")
+        self.assertEqual(final.state, STATE_ADVANCE)
+        ing = self._events(drv_, "loop_ingress")[0]["payload"]
+        self.assertFalse(ing["escalated"])  # did NOT collide with itself
+        self.assertEqual(self._events(drv_, "loop_isolation_recommendation"), [])
+
+    def test_resume_reattaches_without_git_mutation(self):
+        run_dir = os.path.join(self.tmp, "run7")
+        charter = load_charter(CHARTER_PATH)
+        charter["isolation"] = {"default_strategy": "new_branch"}
+        # Phase 1: deliver crashes AFTER the branch is created.
+        kill = _adapters()
+        kill["deliver"] = MockAdapter(
+            {("deliver",): AdapterError("crash before close")},
+            harness="claude_code", provider="anthropic", model="claude-opus-4-8")
+        drv1 = Driver(charter, run_dir, kill, loop_id="loop-ing-007",
+                      clock=_clock(), repo_dir=self.repo)
+        with self.assertRaises(GateHardFail):
+            drv1.run(subsprint_id="sprint-001")
+        self.assertEqual(li.current_branch(self.repo), "loop/loop-ing-007")
+        self.assertEqual(self._registry().get("loop-ing-007").status, "active")
+
+        # Phase 2: resume with a healthy deliver. Reattach must NOT re-run
+        # setup_context (a second `git switch -c` on the existing branch errors).
+        drv2 = Driver(charter, run_dir, _adapters(), loop_id="loop-ing-007",
+                      clock=_clock(), repo_dir=self.repo)
+        final = drv2.run(resume=True)
+        self.assertEqual(final.state, STATE_ADVANCE)
+        self.assertEqual(self._registry().get("loop-ing-007").status, "done")
+        # The ledger is cumulative across both process lifetimes (same run_dir +
+        # loop_id). Resume re-attached WITHOUT re-running ingress: exactly ONE
+        # loop_ingress (phase 1), a loop_resume, and the phase-2 loop_close.
+        types = [e["type"] for e in audit.read_events(drv2.audit_ledger)]
+        self.assertEqual(types.count("loop_ingress"), 1)  # NOT re-run on resume
+        self.assertIn("loop_resume", types)
+        self.assertIn("loop_close", types)
 
 
 if __name__ == "__main__":

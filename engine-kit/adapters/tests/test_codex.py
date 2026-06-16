@@ -128,6 +128,64 @@ class CodexArgvTests(unittest.TestCase):
         self.assertEqual(argv[-1], "hello prompt")
 
 
+_GRANT = [{"id": "gh", "kind": "mcp", "server": "gh-mcp@v1.0.0",
+           "scopes": ["read"], "tools": ["search_issues"]}]
+
+
+class CodexConnectorsSandboxTests(unittest.TestCase):
+    """Facet C wiring on the codex adapter (P4 integration follow-up):
+    sandbox maps aidazi→codex-native; a granted connector FAILS CLOSED (codex
+    exec has no confirmed per-call injection form — never silently drop)."""
+
+    def test_codex_sandbox_mapping(self):
+        a = CodexAdapter(sandbox="read-only")  # codex-native ctor default
+        self.assertEqual(a._codex_sandbox("read_only"), "read-only")
+        self.assertEqual(a._codex_sandbox("workspace_write"), "workspace-write")
+        self.assertEqual(a._codex_sandbox(None), "read-only")  # ctor default
+        # An already-codex-native value passes through unchanged.
+        self.assertEqual(a._codex_sandbox("danger-full-access"),
+                         "danger-full-access")
+
+    def test_build_argv_sandbox_override(self):
+        a = CodexAdapter(model="m")  # ctor sandbox default "read-only"
+        argv = a._build_argv("p", [], sandbox="workspace-write")
+        self.assertIn("--sandbox", argv)
+        self.assertIn("workspace-write", argv)
+        self.assertNotIn("read-only", argv)
+
+    def test_spawn_maps_aidazi_sandbox_into_argv(self):
+        a = CodexAdapter(model="m", allow_subprocess=True, binary="codex")
+        captured = {}
+
+        def _fake_run(argv, **kw):
+            captured["argv"] = argv
+            raise OSError("stop after capture")  # bail; we only want the argv
+
+        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+            with self.assertRaises(AdapterError):
+                a.spawn("dev", "p", [], _SCHEMA, sandbox="workspace_write")
+        self.assertIn("workspace-write", captured["argv"])
+
+    def test_granted_connector_fails_closed_before_subprocess(self):
+        a = CodexAdapter(model="m", allow_subprocess=True)  # gate OPEN
+        with mock.patch("adapters.codex.subprocess.run") as run_mock:
+            with self.assertRaises(AdapterError) as ctx:
+                a.spawn("dev", "p", [], _SCHEMA, connectors=_GRANT)
+        # Fail-closed: it raised BEFORE any subprocess, and says so.
+        run_mock.assert_not_called()
+        self.assertIn("Failing closed", str(ctx.exception))
+        self.assertEqual(ctx.exception.role, "dev")
+
+    def test_no_connectors_reaches_exec_unchanged(self):
+        # No connectors (default-deny) ⇒ the fail-closed guard is a no-op and the
+        # spawn proceeds to exec exactly as before (bogus binary ⇒ exec fails).
+        bogus = "aidazi-nonexistent-codex-binary-conn-3e8b"
+        a = CodexAdapter(binary=bogus, allow_subprocess=True)
+        with self.assertRaises(AdapterError) as ctx:
+            a.spawn("dev", "p", [], _SCHEMA, connectors=None)
+        self.assertIn("failed to run", str(ctx.exception))
+
+
 class CodexVerdictParseTests(unittest.TestCase):
     """The JSONL final-message parser is pure (no I/O) — exercise it directly."""
 

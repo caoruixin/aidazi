@@ -75,17 +75,38 @@ class CodexAdapter(Adapter):
     def _enabled(self) -> bool:
         return self.allow_subprocess or os.environ.get(_ALLOW_ENV) == "1"
 
-    def _build_argv(self, prompt: str, tools: Sequence[str]) -> list[str]:
+    def _codex_sandbox(self, sandbox: Optional[str]) -> str:
+        """Map the aidazi role sandbox (``read_only`` / ``workspace_write``) to
+        codex's native ``--sandbox`` value (``read-only`` / ``workspace-write``).
+
+        ``None`` ⇒ the ctor default (``self.sandbox``). A value already in
+        codex-native form passes through unchanged (so a caller may set the
+        codex value directly via the ctor)."""
+        if sandbox is None:
+            return self.sandbox
+        return {
+            "read_only": "read-only",
+            "workspace_write": "workspace-write",
+        }.get(sandbox, sandbox)
+
+    def _build_argv(
+        self,
+        prompt: str,
+        tools: Sequence[str],
+        *,
+        sandbox: Optional[str] = None,
+    ) -> list[str]:
         # `codex exec --json <prompt>` runs non-interactively and streams the
         # session as JSONL events; the final agent message is the verdict. The
         # role prompt (built by the driver) already embeds the verdict schema and
         # any tool whitelist; codex exec exposes no per-call allowed-tools flag,
         # so tool-gating for this harness lives in the prompt/sandbox, not argv.
+        sb = sandbox if sandbox is not None else self.sandbox
         argv = [self.binary, "exec", "--json"]
         if self.model:
             argv += ["--model", self.model]
-        if self.sandbox:
-            argv += ["--sandbox", self.sandbox]
+        if sb:
+            argv += ["--sandbox", sb]
         if self.cwd:
             argv += ["-C", self.cwd]
         # The prompt is the final positional arg.
@@ -98,6 +119,9 @@ class CodexAdapter(Adapter):
         prompt: str,
         tools: Sequence[str],
         schema: dict,
+        *,
+        connectors: Optional[Sequence[Any]] = None,
+        sandbox: Optional[str] = None,
     ) -> dict:
         if not self._enabled():
             raise AdapterError(
@@ -105,8 +129,25 @@ class CodexAdapter(Adapter):
                 f"{_ALLOW_ENV}=1 to run the real harness); role={role!r}",
                 role=role,
             )
+        # Facet C: translate any granted connectors → codex tool-config (parity
+        # with claude_code/headless; deterministic, no I/O). DEFAULT-DENY → empty
+        # for None/[]. `codex exec` has NO confirmed per-call connector-injection
+        # flag (MCP servers live in codex config.toml; see the module TODO(human)
+        # on the exact CLI form), so rather than SILENTLY DROP a real grant we
+        # FAIL CLOSED here. No connectors ⇒ this is a no-op and the spawn path is
+        # byte-identical to before.
+        cfg = self.translate_connectors(connectors, sandbox=sandbox or "workspace_write")
+        if cfg.get("tools"):
+            raise AdapterError(
+                f"codex adapter received {len(cfg['tools'])} connector tool "
+                f"grant(s) for role {role!r}, but `codex exec` has no confirmed "
+                f"per-call connector-injection form (MCP lives in codex "
+                f"config.toml; see TODO(human)). Failing closed rather than "
+                f"silently dropping the grant.",
+                role=role,
+            )
         # --- below here is NEVER exercised in offline tests ------------------- #
-        argv = self._build_argv(prompt, tools)
+        argv = self._build_argv(prompt, tools, sandbox=self._codex_sandbox(sandbox))
         try:
             proc = subprocess.run(  # noqa: S603 - argv is a fixed CLI, no shell
                 argv,
