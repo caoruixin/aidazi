@@ -40,6 +40,7 @@ from driver import (  # noqa: E402
     STATE_ADVANCE, STATE_HALTED, STATE_DONE, STATE_ACCEPTANCE_PENDING,
     STATE_REVIEW_PENDING, STATE_CLOSE_PENDING,
 )
+import memory_store as ms  # noqa: E402  (driver put engine-kit/memory on sys.path)
 
 CHARTER_PATH = os.path.join(_ORCH_DIR, "examples", "p2-charter.yaml")
 _FIXTURES_DIR = os.path.join(_TESTS_DIR, "fixtures")
@@ -1336,6 +1337,94 @@ class TestLoopIngressWiring(unittest.TestCase):
         self.assertEqual(types.count("loop_ingress"), 1)  # NOT re-run on resume
         self.assertIn("loop_resume", types)
         self.assertIn("loop_close", types)
+
+
+class TestMemoryFeedbackAtClose(unittest.TestCase):
+    """P5: the propose-only Loop Memory feedback stage runs at a successful
+    MILESTONE close (memory enabled) — report + checkpoint + audit, no mutation."""
+
+    def _seed_l2_memory(self, root):
+        """Pre-seed an L2 (matured) entry scoped to the dev role so the feedback
+        engine produces a skill_edit proposal. Two observations → occurrences=2 → L2."""
+        store = ms.MemoryStore(root)
+        for lp in ("seed-1", "seed-2"):
+            store.record_observation(
+                "dev: guard the handoff", ts="2026-06-15", loop_id=lp,
+                type="failure", scope={"role": ["dev"]},
+                body="When the dev handoff omits a guard, reviews recur; add the "
+                     "guard before handoff.")
+        return store
+
+    def test_feedback_fires_at_milestone_close(self):
+        with tempfile.TemporaryDirectory() as run_d, \
+                tempfile.TemporaryDirectory() as mem_d:
+            store = self._seed_l2_memory(mem_d)
+            before = len(store.load_all())
+            drv_ = Driver(load_charter(CHARTER_PATH), run_d, _adapters(),
+                          loop_id="loop-fb-1", clock=_clock(), memory_root=mem_d)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            # A memory_feedback audit event was emitted with ≥1 proposal.
+            fb_events = [e for e in audit.read_events(drv_.audit_ledger)
+                         if e["type"] == "memory_feedback"]
+            self.assertEqual(len(fb_events), 1)
+            self.assertGreaterEqual(fb_events[0]["payload"]["proposal_count"], 1)
+            self.assertIn("skill_edit", fb_events[0]["payload"]["by_path"])
+            # A propose-only report file was written under the run dir.
+            report = os.path.join(run_d, "memory-feedback", "loop-fb-1.md")
+            self.assertTrue(os.path.isfile(report))
+            with open(report, encoding="utf-8") as fh:
+                self.assertIn("PROPOSE-ONLY", fh.read())
+            # A human-pending checkpoint was written.
+            cps = os.listdir(drv_.checkpoints_dir)
+            self.assertTrue(any("memory_feedback" in c for c in cps), cps)
+            # PROPOSE-ONLY: the memory store was NOT mutated by feedback.
+            self.assertEqual(len(ms.MemoryStore(mem_d).load_all()), before)
+
+    def test_no_feedback_when_memory_off(self):
+        # memory_root=None ⇒ no feedback stage at all (byte-identical to pre-P5).
+        with tempfile.TemporaryDirectory() as run_d:
+            drv_ = Driver(load_charter(CHARTER_PATH), run_d, _adapters(),
+                          loop_id="loop-fb-2", clock=_clock())
+            drv_.run(subsprint_id="sprint-001")
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("memory_feedback", types)
+            self.assertFalse(os.path.isdir(os.path.join(run_d, "memory-feedback")))
+
+    def test_no_feedback_on_non_terminal_subsprint(self):
+        # A multi-sprint sequence: closing a NON-terminal sub-sprint is not a
+        # milestone close → no feedback (it runs at milestone close only).
+        with tempfile.TemporaryDirectory() as run_d, \
+                tempfile.TemporaryDirectory() as mem_d:
+            self._seed_l2_memory(mem_d)
+            charter = load_charter(CHARTER_PATH)
+            charter["autonomy"]["approved_scope"]["subsprint_sequence"] = \
+                ["sprint-001", "sprint-002"]
+            # close verdict points to the next sub-sprint (non-terminal).
+            close = {"verdict": "A", "blocking_count": 0, "worst_severity": "none",
+                     "in_scope": True, "next_subsprint": "sprint-002",
+                     "reason": "clean pass, more to do"}
+            drv_ = Driver(charter, run_d, _adapters(close=close),
+                          loop_id="loop-fb-3", clock=_clock(), memory_root=mem_d)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("memory_feedback", types)
+
+    def test_no_feedback_on_halt(self):
+        # A fix_required halt is not a milestone close → no feedback.
+        fix_review = {"decision": "fix_required", "blocking_count": 1,
+                      "summary": "one P1", "findings": []}
+        with tempfile.TemporaryDirectory() as run_d, \
+                tempfile.TemporaryDirectory() as mem_d:
+            self._seed_l2_memory(mem_d)
+            drv_ = Driver(load_charter(CHARTER_PATH), run_d,
+                          _adapters(review=fix_review),
+                          loop_id="loop-fb-4", clock=_clock(), memory_root=mem_d)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("memory_feedback", types)
 
 
 if __name__ == "__main__":

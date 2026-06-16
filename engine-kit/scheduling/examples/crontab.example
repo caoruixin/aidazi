@@ -1,0 +1,17 @@
+# aidazi scheduling — example crontab (plain cron; NOT a harness scheduler).
+#
+# Install with:  crontab engine-kit/scheduling/examples/crontab.example
+# Adjust ABSOLUTE paths (cron has a minimal PATH/env). Each line runs ONE loop;
+# artifacts go to a dated run dir OUTSIDE the repo.
+#
+# Columns:  m  h  dom mon dow   command
+
+# --- Overnight Auto Loop (Type A self-improvement), 02:30 nightly -------------
+# Real run: operator opts into I/O via AIDAZI_ALLOW_REAL_ADAPTER=1 + --allow-real.
+30 2 * * *  AIDAZI_ALLOW_REAL_ADAPTER=1 /usr/bin/python3 /srv/aidazi/engine-kit/scheduling/run_loop.py --charter /srv/aidazi/charters/autoloop.yaml --mode overnight_autoloop --allow-real --run-dir /var/aidazi/runs/autoloop-$(date +\%F) >> /var/log/aidazi/autoloop.log 2>&1
+
+# --- Milestone Delivery Loop, Mondays 09:00 (example; usually event-triggered) -
+# 0 9 * * 1  AIDAZI_ALLOW_REAL_ADAPTER=1 /usr/bin/python3 /srv/aidazi/engine-kit/scheduling/run_loop.py --charter /srv/aidazi/charters/milestone.yaml --mode milestone_delivery --allow-real --repo-dir /srv/app --run-dir /var/aidazi/runs/milestone-$(date +\%F) >> /var/log/aidazi/milestone.log 2>&1
+
+# --- Safe offline DRY-RUN smoke test, hourly (no network; no env, no --allow-real) ---
+# 0 * * * *  /usr/bin/python3 /srv/aidazi/engine-kit/scheduling/run_loop.py --charter /srv/aidazi/charters/autoloop.yaml --mode overnight_autoloop --run-dir /var/aidazi/runs/dryrun-$(date +\%F-\%H) >> /var/log/aidazi/dryrun.log 2>&1

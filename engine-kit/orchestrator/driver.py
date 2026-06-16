@@ -103,6 +103,15 @@ except Exception:  # pragma: no cover - memory is optional; absence must not bre
     MemoryStore = None  # type: ignore
     _MemoryError = Exception  # type: ignore
 
+# P5 — the Loop Memory FEEDBACK engine (engine-kit/memory/feedback.py). Optional,
+# read-only, PROPOSE-ONLY: at a successful milestone close (memory enabled) it
+# reads matured (L2) entries and emits self-evolution PROPOSALS (m-memory §5) for
+# the human to approve — it NEVER applies a change. Guarded import like memory.
+try:
+    import feedback as _feedback  # noqa: E402  (engine-kit/memory/feedback.py)
+except Exception:  # pragma: no cover - optional; absence must not break the loop
+    _feedback = None  # type: ignore
+
 
 # --------------------------------------------------------------------------- #
 # States + a typed control-flow error for the gate_hard_fail MANDATORY_CHECKPOINT.
@@ -377,6 +386,11 @@ class Driver:
         self.isolation_strategy = isolation_strategy
         self.registry: Optional["li.LoopRegistry"] = None
         self.context_handle: Optional["li.ContextHandle"] = None
+
+        # P5 — set True at a clean MILESTONE close (the terminal sub-sprint of the
+        # approved sequence), so the propose-only Loop Memory feedback stage runs
+        # at milestone close, not on every per-sub-sprint advance.
+        self._milestone_closed = False
 
         # P3 INTEGRATION 2 — OPTIONAL Loop Memory. When memory_root is None the
         # store is never constructed and NO select/record ever runs → the driver
@@ -743,6 +757,66 @@ class Driver:
             "final_state": self.state.state,
         })
 
+    # ----- P5: Loop Memory feedback at milestone close (PROPOSE-ONLY) ------- #
+    def _loop_feedback(self) -> None:
+        """At a successful MILESTONE close (memory enabled): read matured (L2)
+        Loop-Memory entries and emit self-evolution PROPOSALS (m-memory §5 paths
+        2–5) for the human.
+
+        PROPOSE-ONLY (HARD — m-memory §1.2/§5, Constitution §1.7-D): this writes a
+        feedback REPORT + a human-pending checkpoint + an audit event and NEVER
+        applies a change. No-op when memory is off, the milestone didn't close, or
+        the terminal state isn't a clean success (advance/done)."""
+        if self.memory is None or not self._milestone_closed:
+            return
+        assert self.state is not None
+        if self.state.state not in (STATE_ADVANCE, STATE_DONE):
+            return
+        if _feedback is None:  # pragma: no cover - feedback import is optional
+            self._audit("memory_feedback_unavailable", {})
+            return
+
+        # Read-only: propose() never mutates the store; render_report() takes the
+        # injected clock (no bare clock here → determinism preserved).
+        proposals = _feedback.propose(self.memory)
+        report = _feedback.render_report(proposals, ts=self.clock())
+        fb_dir = os.path.join(self.run_dir, "memory-feedback")
+        os.makedirs(fb_dir, exist_ok=True)
+        report_path = os.path.join(fb_dir, f"{self.loop_id}.md")
+        with open(report_path, "w", encoding="utf-8") as fh:
+            fh.write(report)
+        rel_report = os.path.relpath(report_path, self.run_dir)
+
+        by_path: dict[str, int] = {}
+        for p in proposals:
+            by_path[p.path] = by_path.get(p.path, 0) + 1
+        recal = any(p.recalibration_required for p in proposals)
+        self._audit("memory_feedback", {
+            "proposal_count": len(proposals),
+            "by_path": by_path,
+            "recalibration_required": recal,
+            "report": rel_report,
+        })
+
+        # A human-pending checkpoint ONLY when there is something to approve. The
+        # human reviews the report and approves each load-bearing change; the
+        # engine applies NOTHING (§1.7-D — every skill/charter/prompt edit folds
+        # back to the human).
+        if proposals:
+            summary = ", ".join(f"{k}×{v}" for k, v in sorted(by_path.items()))
+            self._write_checkpoint(
+                "memory_feedback", self.state.subsprint_id,
+                context_md=(
+                    f"Loop Memory feedback at milestone close: {len(proposals)} "
+                    f"PROPOSE-ONLY self-evolution suggestion(s) ({summary}) "
+                    f"distilled from matured (L2) lessons. Nothing is applied "
+                    f"automatically — review `{rel_report}` and approve each "
+                    f"load-bearing change (m-memory §5; Constitution §1.7-D)."
+                    + (" ⚠ Some touch the Acceptance skill → recalibration "
+                       "required (Constitution §3.6)." if recal else "")),
+                options_md=("- review_and_approve_selected\n"
+                            "- defer\n- dismiss"))
+
     # ----- state-machine steps --------------------------------------------- #
     def _step_dev(self) -> None:
         prompt = (self._lessons_block("dev")
@@ -815,6 +889,8 @@ class Driver:
         # P4: close the loop (mark_done + cleanup) ONLY on a successful terminal
         # state — a halted loop keeps its context for human resolution.
         self._loop_close_ingress()
+        # P5: propose-only Loop Memory feedback at a successful milestone close.
+        self._loop_feedback()
         return self.state
 
     def _drive(self) -> None:
@@ -1196,6 +1272,9 @@ class Driver:
         self._audit("advance",
                     {"verdict": verdict,
                      "next_subsprint": close_verdict.get("next_subsprint")})
+        # P5: record whether THIS clean close completes the milestone (terminal
+        # sub-sprint), so the propose-only feedback stage runs at milestone close.
+        self._milestone_closed = self._milestone_complete(close_verdict)
         self._save_state()
 
         # P3 piece 1 — after the milestone COMPLETES (the terminal clean-pass
@@ -1431,6 +1510,10 @@ class Driver:
                 "loader)",
                 STATE_ACCEPTANCE_PENDING)
         acc = self.charter.get("acceptance") or {}
+        # Acceptance only runs at MILESTONE close, so mark it (covers a resume that
+        # re-enters at acceptance_pending, where _handle_close didn't run) — this
+        # gates the P5 propose-only feedback stage.
+        self._milestone_closed = True
         self.state.state = STATE_ACCEPTANCE_PENDING
         self.state.history.append(STATE_ACCEPTANCE_PENDING)
         self._save_state()

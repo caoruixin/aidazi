@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/memory-feedback.schema.json",
+  "title": "Loop Memory feedback proposal (v2 — m-memory §5 paths 2–5)",
+  "description": "Shape of one serialized FeedbackProposal emitted by the Loop Memory feedback engine (engine-kit/memory/feedback.py) at the lifecycle stage AFTER close. The engine is PROPOSE-ONLY (m-memory §5/§1.2 — 'Memory informs; it does not decide'; Constitution §1.7-D): a proposal is DATA, never an applied change. Each proposal surfaces a load-bearing suggestion derived from a MATURED (L2) memory entry along one of m-memory §5's feedback paths 2–5 (skill_edit / charter_tuning / autoloop_candidate / fold_back). Every proposal carries an explicit HUMAN gate; only L2/active entries are eligible (m-memory §4.4/§5). Path 1 (role context) is handled at ingress by the driver and is NOT a proposal. The top-level may be a single proposal or an array of proposals.",
+  "$defs": {
+    "proposal": {
+      "type": "object",
+      "required": ["path", "target", "source_entry_ids", "rationale", "gate", "maturity"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "enum": ["skill_edit", "charter_tuning", "autoloop_candidate", "fold_back"],
+          "description": "Which m-memory §5 feedback path this proposal walks. Path 1 (role context) is NOT a proposal (auto/safe ingress injection); paths 2–5 are the load-bearing, human-gated paths the engine surfaces."
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What the proposal targets: a vendored-skill id (skill_edit), a charter key (charter_tuning), an Auto Loop fix-layer (autoloop_candidate), or a fold-back topic/layer (fold_back)."
+        },
+        "source_entry_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "description": "id(s) of the matured (L2) memory entry/entries this proposal was derived from. Threads the proposal back to the auditable Loop Memory record + Audit Spine (via the entry's source_loops)."
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable justification: the generalizable lesson and why it suggests this load-bearing change. Never a case-specific input→output recipe (m-memory §6.1)."
+        },
+        "gate": {
+          "type": "string",
+          "enum": ["human_approval", "fold_back"],
+          "description": "The explicit human gate every load-bearing change must clear. 'human_approval' = Auto Loop §3.3 human-approval (skill_edit / charter_tuning / autoloop_candidate). 'fold_back' = fold-back deliberation per Constitution §8 (path 5). The engine NEVER auto-applies — the gate is mandatory."
+        },
+        "recalibration_required": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when adopting the proposal invalidates Acceptance judge calibration (m-memory §5 row 2; Constitution §3.6): a skill_edit to the calibration-coupled Acceptance skill REQUIRES recalibration. Default false."
+        },
+        "maturity": {
+          "type": "string",
+          "enum": ["L2"],
+          "description": "Source-entry maturity. Only L2 (matured/confirmed) entries feed load-bearing feedback paths without re-confirmation (m-memory §4.4/§5); L1 candidates are never proposed."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Carried for charter_tuning proposals derived from a calibration-note: calibration is per-(provider,model) (m-memory §6.2; Constitution §3.6)."
+        },
+        "model": {
+          "type": "string",
+          "description": "Carried for charter_tuning proposals derived from a calibration-note: the model the calibration observation is tagged to (m-memory §6.2)."
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/$defs/proposal"},
+    {
+      "type": "array",
+      "items": {"$ref": "#/$defs/proposal"}
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+# aidazi scheduling — example GitHub Actions workflow (CI cron; NOT a harness scheduler).
+#
+# Copy to .github/workflows/aidazi-loop.yml in the adopter repo and adjust.
+# By DEFAULT this runs the SAFE offline dry-run (no network, no secrets). To run a
+# real loop, set the AIDAZI_ALLOW_REAL_ADAPTER env + pass --allow-real and provide
+# the provider API keys as repo secrets (referenced BY NAME in the charter).
+
+name: aidazi-loop
+
+on:
+  schedule:
+    # Overnight Auto Loop — 02:30 UTC nightly (cron is UTC on GitHub).
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "loop mode"
+        type: choice
+        options: [overnight_autoloop, milestone_delivery]
+        default: overnight_autoloop
+      allow_real:
+        description: "run real adapters (needs provider secrets)"
+        type: boolean
+        default: false
+
+jobs:
+  run-loop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: python -m pip install pyyaml jsonschema
+
+      - name: Run loop (dry-run by default; real when allow_real=true)
+        env:
+          # Only set when running real adapters; left empty for the safe dry-run.
+          AIDAZI_ALLOW_REAL_ADAPTER: ${{ (inputs.allow_real == true) && '1' || '' }}
+          # Provider keys referenced BY NAME from the charter (add as repo secrets):
+          # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          python engine-kit/scheduling/run_loop.py \
+            --charter charters/autoloop.yaml \
+            --mode "${{ inputs.mode || 'overnight_autoloop' }}" \
+            --run-dir "${RUNNER_TEMP}/aidazi-run" \
+            ${{ (inputs.allow_real == true) && '--allow-real' || '' }}
+
+      - name: Upload run artifacts (audit ledger, checkpoints, state)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aidazi-loop-artifacts
+          path: ${{ runner.temp }}/aidazi-run
+          if-no-files-found: ignore

@@ -152,6 +152,8 @@ At close, matured (L2) entries can drive five feedback paths. Load-bearing chang
 
 Path 1 (role context) is the only "auto/safe" path because it changes nothing load-bearing — it injects a lesson into a prompt, it does not edit a skill, a charter, a prompt artifact, or the eval surface. Every path that touches a load-bearing artifact folds back to the human (Constitution §1.7-D; Auto Loop §3.3). Loop Memory NEVER auto-promotes a load-bearing change.
 
+**Implementation (P5).** Paths 2–5 are realized by `engine-kit/memory/feedback.py`: at a successful **milestone close** the driver calls `feedback.propose(store)`, which reads only the matured (**L2**, `status: active`) entries and emits PROPOSE-ONLY `FeedbackProposal`s — one per (path, target), each citing its source entry ids, carrying an explicit `gate` (`human_approval` for paths 2–4; `fold_back` for path 5), and (for a calibration-note-derived charter_tuning) keeping `(provider, model)`. A skill_edit touching the Acceptance skill sets `recalibration_required: true` (Constitution §3.6). Each proposal validates against `schemas/memory-feedback.schema.json`. The engine is deterministic (no clock/randomness; the report takes an injected `ts`) and **read-only** — `propose`/`render_report` mutate nothing. The driver writes the rendered report as a run artifact and a human-pending `memory_feedback` checkpoint; it applies NOTHING (plan §1 conflict rule still holds: the spec, not the kit, is source-of-truth).
+
 ## §6 Discipline (HARD)
 
 ### §6.1 Store generalizable heuristics, NOT case-specific input→output
@@ -206,7 +208,9 @@ Per Constitution §1.7-E + §3.7, name each distinctly. "The memory loop improve
 - Constitution §8 — fold-back cadence (feedback path 5).
 - `archive/2026-06-15-v2-loop-engine-plan.md` §4.4 — Loop Memory design (structure, lifecycle, L1/L2, anti-gaming, md-only, calibration-note).
 - `schemas/memory-entry.schema.json` — validates the entry front-matter (matches §3).
+- `schemas/memory-feedback.schema.json` — validates a §5 feedback PROPOSAL (paths 2–5; propose-only; human-gated).
 - `engine-kit/memory/memory_store.py` — the reference implementation of this contract: `select` / `load_index` (read), `write_entry` / `record_observation` (write, dedup by `key`), L1→L2 maturity-promote, and the anti-gaming `guard_entry` (reference impl of §4 + §6.1).
+- `engine-kit/memory/feedback.py` — the reference implementation of the §5 feedback stage (P5): deterministic, read-only, PROPOSE-ONLY generation of paths 2–5 from matured (L2) entries; wired into the driver's milestone close as a human-pending checkpoint (it applies nothing).
 - `engine-kit/memory/README.md` — the kit's usage + determinism notes for `memory_store.py`.
 - `modules/m-autoloop.md` — Auto Loop (Concept 1); §3.3 human-approval rule (feedback gating); §4.2 cheat-vs-learn distinction; §5 L1/L2 hookup.
 - `process/delivery-loop.md` — Delivery Loop (Concept 2); ingress/close wiring (where memory is read/written).
