@@ -62,11 +62,19 @@ class HeadlessAdapter(Adapter):
     def _enabled(self) -> bool:
         return self.allow_http or os.environ.get(_ALLOW_ENV) == "1"
 
-    def _build_payload(self, prompt: str, schema: dict) -> dict:
+    def _build_payload(
+        self,
+        prompt: str,
+        schema: dict,
+        *,
+        functions: Optional[Sequence[dict]] = None,
+    ) -> dict:
         # response_format=json_object asks the endpoint for a JSON-only reply;
         # the schema is embedded in the prompt by the driver (role-card duty),
-        # and re-validated by the driver after parsing.
-        return {
+        # and re-validated by the driver after parsing. Granted connectors add an
+        # OpenAI-compatible `tools` (function-calling) list; when none are granted
+        # the key is omitted entirely (default-deny → identical payload to before).
+        payload = {
             "model": self.model,
             "temperature": self.temperature,
             "response_format": {"type": "json_object"},
@@ -80,6 +88,9 @@ class HeadlessAdapter(Adapter):
                 {"role": "user", "content": prompt},
             ],
         }
+        if functions:
+            payload["tools"] = list(functions)
+        return payload
 
     def spawn(
         self,
@@ -87,6 +98,9 @@ class HeadlessAdapter(Adapter):
         prompt: str,
         tools: Sequence[str],
         schema: dict,
+        *,
+        connectors: Optional[Sequence[Any]] = None,
+        sandbox: str = "workspace_write",
     ) -> dict:
         if not self._enabled():
             raise AdapterError(
@@ -97,8 +111,14 @@ class HeadlessAdapter(Adapter):
         if not self.base_url:
             raise AdapterError("headless adapter missing base_url", role=role)
         api_key = os.environ.get(self.api_key_env, "") if self.api_key_env else ""
+        # Facet C: translate granted connectors → an OpenAI function list. NO-OP
+        # (empty) when none are passed (default-deny).
+        cfg = self.translate_connectors(connectors, sandbox=sandbox)
+        functions = cfg.get("tools") or None
         # --- below here is NEVER exercised in offline tests ------------------- #
-        body = json.dumps(self._build_payload(prompt, schema)).encode("utf-8")
+        body = json.dumps(
+            self._build_payload(prompt, schema, functions=functions)
+        ).encode("utf-8")
         req = urllib.request.Request(  # noqa: S310 - explicit https base_url
             f"{self.base_url}/chat/completions",
             data=body,

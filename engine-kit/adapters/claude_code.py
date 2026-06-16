@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 from typing import Any, Optional, Sequence
 
 from .base import Adapter, AdapterError
@@ -54,15 +55,30 @@ class ClaudeCodeAdapter(Adapter):
     def _enabled(self) -> bool:
         return self.allow_subprocess or os.environ.get(_ALLOW_ENV) == "1"
 
-    def _build_argv(self, prompt: str, tools: Sequence[str]) -> list[str]:
+    def _build_argv(
+        self,
+        prompt: str,
+        tools: Sequence[str],
+        *,
+        extra_allowed_tools: Optional[Sequence[str]] = None,
+        mcp_config_path: Optional[str] = None,
+    ) -> list[str]:
         # `claude -p <prompt>` runs headless and prints the result; JSON output
         # format makes the result machine-parseable. allowed-tools enforces the
-        # role's tool whitelist at the harness boundary.
+        # role's tool whitelist at the harness boundary. Granted connectors
+        # contribute extra allowed-tools (mcp__<id>[__tool]) + an --mcp-config
+        # fragment; when no connectors are granted these are omitted entirely
+        # (default-deny, and spawn stays byte-for-byte identical to before).
         argv = [self.binary, "-p", prompt, "--output-format", "json"]
         if self.model:
             argv += ["--model", self.model]
-        if tools:
-            argv += ["--allowed-tools", ",".join(tools)]
+        merged_tools = list(tools)
+        if extra_allowed_tools:
+            merged_tools += [t for t in extra_allowed_tools if t not in merged_tools]
+        if merged_tools:
+            argv += ["--allowed-tools", ",".join(merged_tools)]
+        if mcp_config_path:
+            argv += ["--mcp-config", mcp_config_path]
         return argv
 
     def spawn(
@@ -71,6 +87,9 @@ class ClaudeCodeAdapter(Adapter):
         prompt: str,
         tools: Sequence[str],
         schema: dict,
+        *,
+        connectors: Optional[Sequence[Any]] = None,
+        sandbox: str = "workspace_write",
     ) -> dict:
         if not self._enabled():
             raise AdapterError(
@@ -78,28 +97,45 @@ class ClaudeCodeAdapter(Adapter):
                 f"{_ALLOW_ENV}=1 to run the real harness); role={role!r}",
                 role=role,
             )
+        # Facet C: translate any granted connectors → .mcp.json fragment +
+        # allowed-tools. GATED/NO-OP when none are passed (default-deny) — the
+        # argv is then identical to the pre-connector behavior.
+        cfg = self.translate_connectors(connectors, sandbox=sandbox)
+        extra_allowed = cfg.get("allowed_tools") or None
+        mcp_config = cfg.get("mcp_config") or None
         # --- below here is NEVER exercised in offline tests ------------------- #
-        argv = self._build_argv(prompt, tools)
+        mcp_path: Optional[str] = None
+        if mcp_config:
+            fd, mcp_path = tempfile.mkstemp(prefix="aidazi-mcp-", suffix=".json")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(mcp_config, fh)
+        argv = self._build_argv(
+            prompt, tools,
+            extra_allowed_tools=extra_allowed, mcp_config_path=mcp_path)
         try:
-            proc = subprocess.run(  # noqa: S603 - argv is a fixed CLI, no shell
-                argv,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                cwd=self.cwd,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise AdapterError(
-                f"claude_code spawn failed to run {self.binary!r}: {exc}",
-                role=role,
-            ) from exc
-        if proc.returncode != 0:
-            raise AdapterError(
-                f"claude_code spawn exited {proc.returncode}: "
-                f"{proc.stderr.strip()[:500]}",
-                role=role,
-            )
-        return self._extract_verdict(proc.stdout, role)
+            try:
+                proc = subprocess.run(  # noqa: S603 - argv is a fixed CLI, no shell
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_seconds,
+                    cwd=self.cwd,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise AdapterError(
+                    f"claude_code spawn failed to run {self.binary!r}: {exc}",
+                    role=role,
+                ) from exc
+            if proc.returncode != 0:
+                raise AdapterError(
+                    f"claude_code spawn exited {proc.returncode}: "
+                    f"{proc.stderr.strip()[:500]}",
+                    role=role,
+                )
+            return self._extract_verdict(proc.stdout, role)
+        finally:
+            if mcp_path and os.path.exists(mcp_path):
+                os.unlink(mcp_path)
 
     @staticmethod
     def _extract_verdict(stdout: str, role: str) -> dict:

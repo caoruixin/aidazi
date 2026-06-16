@@ -106,6 +106,18 @@ skills:
     vendored: true
     calibration_coupled: true      # §3.6: changing/updating this invalidates acceptance `calibrated`
 
+  using-git-worktrees:
+    title: "Using git worktrees for isolated parallel work"
+    role_default_for: engine/dev          # engine/dev utility skill — NOT a role default
+    source: { repo: obra/superpowers, url: "https://github.com/obra/superpowers", commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/using-git-worktrees }
+    license: MIT
+    provenance: community
+    recognition: { stars: 228000, maintained: true }
+    tool_requirements: []          # read-only-safe methodology; no `allowed-tools` in frontmatter (uses Dev's own git tooling)
+    harness_compat: [claude_code, codex, headless]
+    status: active
+    vendored: true
+
 # Authored (non-vendored) exemplar already in repo; normative source in templates/.
 authored:
   anti-hardcode-review-kernel:
@@ -140,14 +152,6 @@ candidates:
     not_vendored_reason: >
       requires external `firecrawl` + `exa` MCP connectors (runtime web
       dependency). Revisit once the connector layer (R4) lands.
-  using-git-worktrees:
-    title: "Using git worktrees for isolated parallel work"
-    intended_role: engine/dev
-    source: { repo: obra/superpowers, url: "https://github.com/obra/superpowers", commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/using-git-worktrees }
-    license: MIT
-    not_vendored_reason: >
-      relevant to the Loop Ingress worktree option (R3); candidate to vendor
-      when worktree isolation is implemented (P4).
   verification-before-completion:
     title: "Verification before completion (evidence before claims)"
     intended_role: dev

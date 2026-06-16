@@ -10,12 +10,14 @@ from .base import Adapter, AdapterError
 from .mock import MockAdapter
 from .claude_code import ClaudeCodeAdapter
 from .headless import HeadlessAdapter
+from .codex import CodexAdapter
 
 #: harness id → adapter class, for charter-driven routing in the driver.
 ADAPTER_REGISTRY = {
     "mock": MockAdapter,
     "claude_code": ClaudeCodeAdapter,
     "headless": HeadlessAdapter,
+    "codex": CodexAdapter,
 }
 
 
@@ -45,6 +47,7 @@ __all__ = [
     "MockAdapter",
     "ClaudeCodeAdapter",
     "HeadlessAdapter",
+    "CodexAdapter",
     "ADAPTER_REGISTRY",
     "resolve_adapter_class",
 ]

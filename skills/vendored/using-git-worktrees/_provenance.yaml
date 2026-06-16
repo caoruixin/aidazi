@@ -1,0 +1,12 @@
+# Provenance for vendored skill. normative source = upstream pin below.
+# To update: re-vendor at a new pin + re-vet (+ recalibrate if role=acceptance).
+id: using-git-worktrees
+source: { repo: obra/superpowers, url: https://github.com/obra/superpowers, commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/using-git-worktrees }
+license: MIT
+copyright: "Copyright (c) 2025 Jesse Vincent"
+retrieved_at: 2026-06-16T00:00:00Z
+role_default_for: none
+tree_sha256: 32be3a4291ee620aa1ee998d3e43938a758d8bca802da5806baa15ff5afdebd7
+files:
+  - { path: LICENSE, sha256: a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400 }
+  - { path: SKILL.md, sha256: 085a45ee3de432bdb2768011591d9a882cb6c759e2317f379226451c5618fe8e }

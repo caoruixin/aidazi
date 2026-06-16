@@ -90,6 +90,40 @@ class Adapter(abc.ABC):
         """
         raise NotImplementedError
 
+    def translate_connectors(
+        self,
+        connectors: Optional[Sequence[Any]],
+        *,
+        sandbox: str = "workspace_write",
+    ) -> dict:
+        """Translate a role's abstract connector grants → THIS harness's config.
+
+        Facet C of the Role Configuration Contract (plan §4.1; contract §3). The
+        default implementation delegates to ``connectors.translate`` for this
+        adapter's ``harness`` id, so every adapter gets connector translation for
+        free. TRANSLATION PRODUCES CONFIG; IT DOES NOT CONNECT — no network, no
+        MCP handshake, no secret values (secrets stay env-name placeholders).
+
+        Default-deny: ``None`` / empty ⇒ an empty config (no grant). A harness
+        whose id ``connectors.translate`` does not support (or if the connector
+        layer is absent) yields an empty config rather than raising, so the
+        spawn path stays backward-compatible when no connectors are passed.
+        """
+        if not connectors:
+            return {}
+        try:
+            from connectors import translate as _translate  # type: ignore
+        except Exception:  # pragma: no cover - connector layer optional
+            try:
+                from ..connectors import translate as _translate  # type: ignore
+            except Exception:
+                return {}
+        try:
+            return _translate(connectors, self.harness, sandbox=sandbox)
+        except ValueError:
+            # harness not supported by the connector layer ⇒ no native config.
+            return {}
+
     def describe(self) -> dict:
         """Routing summary for audit/checkpoint context (no I/O)."""
         return {

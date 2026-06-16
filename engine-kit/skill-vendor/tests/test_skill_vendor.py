@@ -39,8 +39,13 @@ class VerifyRealSkillsTests(unittest.TestCase):
             report.ok,
             msg=f"verify against committed skills.lock must pass:\n{report.render()}",
         )
-        # The committed lock pins exactly 6 vendored skills.
-        self.assertEqual(len(report.results), 6, msg=report.render())
+        # verify() covers every vendored skill: lock count == vendored dirs.
+        vendored_dir = os.path.join(sv.REPO_ROOT, "skills", "vendored")
+        n_vendored = len(
+            [d for d in os.listdir(vendored_dir)
+             if os.path.isdir(os.path.join(vendored_dir, d))]
+        )
+        self.assertEqual(len(report.results), n_vendored, msg=report.render())
         for r in report.results:
             self.assertTrue(r.ok, msg=f"{r.skill_id} failed: {r.messages}")
 
