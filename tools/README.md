@@ -1,24 +1,22 @@
-# tools/ — referenced-but-not-yet-built scripts (OQ-V4-009)
+# tools/ — optional convenience scripts (OQ-V4-009: RESOLVED)
 
-This directory tracks scripts the framework docs **reference** but the framework does not yet **ship**. They are intentionally deferred (OQ-V4-009): the framework specifies the discipline; the mechanical enforcement script is optional tooling an adopter (or a future fold-back) can build.
+aidazi specifies the **discipline**; a mechanical enforcement script is, where it exists at all, **optional convenience tooling**. OQ-V4-009 — which tracked "scripts the docs *reference* but the framework does not yet *ship*" — is **RESOLVED** (2026-06-17): the two governance-critical validators ship + are tested in the kit, and the two remaining referenced scripts are deliberately optional / adopter-side. **None of these gates the framework.**
 
-Until a script exists here, the discipline it would mechanize is enforced by the human / role process described in the cited doc. None of these is required to run the framework — they reduce friction, they don't gate it.
+## Status
 
-## Referenced scripts (not built)
+| Script | Mechanizes | Status |
+|---|---|---|
+| `charter_validator` | reject charters that bypass a MANDATORY_CHECKPOINT (4 shapes) / set `human_confirm_required: false` / fail the Facet A·B·C gates | ✅ **SHIPPED + tested** — `engine-kit/validators/charter_validator.py` |
+| `stanza_validator.py` | validate the 4 sprint-stanza fields against the schema before dispatch | ✅ **SHIPPED + tested** — `engine-kit/validators/stanza_validator.py` |
+| `precommit_bundling_check.sh` | catch Deliver-owned files staged outside a close commit | ⚪ **OPTIONAL adopter convenience** — build it if you want it; **not framework-blocking**. Manual fallback (sufficient): Dev stages explicit paths, never blanket `git add -A` (`role-cards/dev-agent.md` §3). |
+| `trace_emitter.py` | emit the portable F5 trace shape | ⚪ **Adopter-runtime concern** — aidazi **defines** the portable trace *contract* (`modules/m-trace.md`); the **adopter's runtime emits** traces in that shape. aidazi is not a runtime, so there is no framework script to ship here. |
 
-| Script | Mechanizes | Referenced by | Manual fallback today |
-|---|---|---|---|
-| `precommit_bundling_check.sh` | Catch Deliver-owned files staged outside a close commit | `docs/friction-playbook.md` F3 | Dev stages explicit paths, not blanket `git add -A` (`role-cards/dev-agent.md` §3) |
-| `stanza_validator.py` | Validate the 4 sprint-stanza fields against the schema before dispatch | `docs/friction-playbook.md` F4 | Deliver + human eyeball the stanza against `schemas/sprint_stanza.schema.json` before dispatch |
-| `charter_validator` | Reject charters that bypass a MANDATORY_CHECKPOINT (4 shapes) or set `human_confirm_required: false` | `process/delivery-loop.md` §4.2.2; `governance/constitution.md` §1.7-D | Human reviews the charter against the §4.2.2 editing rules before boot |
-| `trace_emitter.py` | Emit the portable trace shape for F5 evidence | `modules/m-trace.md` | Adopter's runtime emits traces in the documented shape directly |
+## Why OQ-V4-009 is closed
 
-## Building one
+The open question was whether the framework needed to *ship* these referenced scripts. Resolution: the two that enforce hard, checkable governance rules are shipped in `engine-kit/validators/` (deterministic, no-LLM, tested). The other two are **not** framework-blocking — `precommit_bundling_check.sh` is a friction-reducer with a working manual fallback, and `trace_emitter.py` is inherently adopter-runtime-specific (the framework owns the trace *contract*, not its *emission*). Both remain **build-if-needed** for an adopter, and a future fold-back MAY promote a proven one into the kit — but the framework runs without them.
 
-If you build a script here:
+## Building one (if you choose to)
 
 1. Keep it mechanical (deterministic; no LLM) — these enforce hard, checkable rules.
 2. Reference the doc it mechanizes in a header comment; the doc stays the source of truth.
 3. File a lesson (`templates/lessons-learned-template.md`) so the next fold-back can consider promoting it into the framework default.
-
-When all four are built and proven across adopters, OQ-V4-009 closes and this README becomes the tools index rather than a deferral tracker.

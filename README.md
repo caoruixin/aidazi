@@ -110,7 +110,7 @@ aidazi/
 │   ├── hermes-reference/        — Type A+B hybrid snapshot (build-trigger)
 │   └── fortunes-reference-placeholder/  — Type C placeholder
 ├── lessons/                     — adopter → framework fold-back inbox (.gitkeep until first lesson)
-├── tools/                       — referenced-but-deferred scripts (OQ-V4-009 tracker)
+├── tools/                       — optional convenience scripts (OQ-V4-009 resolved; governance validators ship in engine-kit/validators/)
 └── archive/                     — v3.2 + v4 design-history snapshots (read-only)
 ```
 

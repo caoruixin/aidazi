@@ -59,7 +59,7 @@ Frictions come in two kinds: ones the framework already addresses by default (yo
 
 - **Symptom**: a Dev session stages `sprint_objective.md` / `handoff.md` / other Deliver-owned files (e.g., via `git add -A`); at close, Deliver has to unpick them.
 - **Why it happens**: Dev sessions don't track which files are Deliver-owned; broad staging commands; commit discipline isn't enforced by the constitution alone.
-- **What to do**: Dev stages only the files in its sub-sprint's declared modules + its own `handoff.md` §1-§11. Use explicit paths, not blanket staging. A pre-commit bundling check (deferred tooling — see `tools/README.md`, OQ-V4-009) can mechanize this when built.
+- **What to do**: Dev stages only the files in its sub-sprint's declared modules + its own `handoff.md` §1-§11. Use explicit paths, not blanket staging. A pre-commit bundling check (optional adopter tooling — see `tools/README.md`) can mechanize this if an adopter builds it; the explicit-path discipline is the sufficient default.
 - **What not to do**: rely on Deliver to clean up at close — that pushes ownership confusion downstream and risks a Dev edit to a Deliver artifact slipping through.
 - **Pointer**: `governance/constitution.md` §5 (state-ledger ownership); `role-cards/dev-agent.md` §3; `process/artifact-taxonomy.md` (Δ-12).
 

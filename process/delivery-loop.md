@@ -549,7 +549,7 @@ Skipping ladder rungs is permitted; framework does not enforce the order.
 
 - **OQ-V4-001** (Δ-18 Type B placeholder) — full Type B state machine + SOP per-step gate spec deferred until hermes-autoloop completes its first SOP milestone end-to-end. Lessons fold back to v5.
 - **OQ-V4-007** (calibration cost on model swap) — re-calibration runs full labeled set; potentially costly. Open question whether framework should provide "calibration cache" / labeled-set portability story. Defer to first multi-model adopter.
-- **OQ-V4-009** (`tools/precommit_bundling_check.sh` etc. referenced in friction-playbook but not built) — backlog; orchestrator does not depend.
+- **OQ-V4-009** — **RESOLVED** (2026-06-17): the governance validators (`charter_validator`, `stanza_validator`) ship + are tested in `engine-kit/validators/`; the remaining referenced scripts (`precommit_bundling_check.sh`, `trace_emitter.py`) are optional adopter / adopter-runtime tooling — not framework-blocking (`tools/README.md`). The orchestrator does not depend on any of them.
 
 ## §7 Editing this doc
 
