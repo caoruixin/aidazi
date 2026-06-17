@@ -13,6 +13,7 @@ or, from this dir's sys.path shim, simply:
 """
 
 import os
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -127,6 +128,31 @@ class CodexArgvTests(unittest.TestCase):
         # Prompt is the final positional arg.
         self.assertEqual(argv[-1], "hello prompt")
 
+    def test_argv_includes_output_last_message_when_path_given(self):
+        # `-o <file>` is appended when a last-message path is supplied; the
+        # prompt still ends up as the final positional arg.
+        adapter = CodexAdapter(model="m")
+        argv = adapter._build_argv("p", [], last_message_path="/tmp/x/last.txt")
+        self.assertIn("-o", argv)
+        self.assertIn("/tmp/x/last.txt", argv)
+        self.assertEqual(argv[-1], "p")
+        # No path supplied ⇒ no `-o` (e.g. the pure argv-shape test above).
+        self.assertNotIn("-o", CodexAdapter(model="m")._build_argv("p", []))
+
+    def test_argv_skip_git_repo_check_is_opt_in(self):
+        on = CodexAdapter(model="m", skip_git_repo_check=True)._build_argv("p", [])
+        self.assertIn("--skip-git-repo-check", on)
+        off = CodexAdapter(model="m")._build_argv("p", [])
+        self.assertNotIn("--skip-git-repo-check", off)
+
+
+def _arg_after(argv, flags):
+    """Return the argv token following the first of ``flags`` (e.g. after -o)."""
+    for i, tok in enumerate(argv):
+        if tok in flags:
+            return argv[i + 1]
+    raise AssertionError(f"none of {flags} found in {argv}")
+
 
 _GRANT = [{"id": "gh", "kind": "mcp", "server": "gh-mcp@v1.0.0",
            "scopes": ["read"], "tools": ["search_issues"]}]
@@ -228,6 +254,53 @@ class CodexVerdictParseTests(unittest.TestCase):
         stdout = '{"type":"agent_message","message":"[1, 2, 3]"}'
         with self.assertRaises(AdapterError):
             CodexAdapter._extract_verdict(stdout, "dev")
+
+
+class CodexOutputFilePrimaryTests(unittest.TestCase):
+    """The verdict is read from the `-o` output file (version-stable primary),
+    falling back to the JSONL stdout stream only when the file is empty/missing.
+
+    Still NO real codex: subprocess.run is mocked to emulate codex writing (or
+    not writing) the last-message file. This is what makes the final-message
+    event ``type`` non-load-bearing — the TODO(human) the module used to carry.
+    """
+
+    def test_spawn_prefers_output_last_message_file(self):
+        a = CodexAdapter(model="m", allow_subprocess=True, binary="codex")
+
+        def _fake_run(argv, **kw):
+            # Emulate codex writing its final message to the `-o` path.
+            path = _arg_after(argv, ("-o", "--output-last-message"))
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('{"status": "draft"}')
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+            verdict = a.spawn("dev", "p", [], _SCHEMA)
+        self.assertEqual(verdict, {"status": "draft"})
+
+    def test_spawn_falls_back_to_jsonl_when_output_file_empty(self):
+        a = CodexAdapter(model="m", allow_subprocess=True, binary="codex")
+        jsonl = '{"type":"agent_message","message":"{\\"ok\\":true}"}'
+
+        def _fake_run(argv, **kw):
+            # Leave the `-o` file UNWRITTEN ⇒ spawn must fall back to stdout JSONL.
+            return subprocess.CompletedProcess(argv, 0, stdout=jsonl, stderr="")
+
+        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+            verdict = a.spawn("dev", "p", [], _SCHEMA)
+        self.assertEqual(verdict, {"ok": True})
+
+    def test_spawn_nonzero_exit_raises_before_reading_file(self):
+        a = CodexAdapter(model="m", allow_subprocess=True, binary="codex")
+
+        def _fake_run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 2, stdout="", stderr="boom")
+
+        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+            with self.assertRaises(AdapterError) as ctx:
+                a.spawn("dev", "p", [], _SCHEMA)
+        self.assertIn("exited 2", str(ctx.exception))
 
 
 class RegistryTests(unittest.TestCase):

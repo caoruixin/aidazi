@@ -92,7 +92,7 @@ This is the question adopters most want answered up front. The framework draws a
 **You decide (suggested defaults — override in `adoption-state.md` with a reason):**
 
 - Track and profile depth (Type A/B/C/A+B; how much of each Δ you adopt now vs later).
-- Backing coding-agent per role (`charter.tooling.<role>.agent_kind` — Claude Code / Codex / other) and any role skills (`process/role-skill-model.md`).
+- Backing harness × provider/model per role (`charter.tooling.<role>` execution facet — `harness`/`provider`/`model`, or legacy `agent_kind`; e.g. Claude Code↔Anthropic, Codex↔OpenAI, or `headless` against an OpenAI-compatible endpoint for DeepSeek/Kimi/other) and any role skills. Full binding contract: `process/role-configuration-contract.md`; skills: `process/role-skill-model.md`.
 - All numeric thresholds (size targets, calibration thresholds, token budgets, cadences).
 - Whether to run the orchestrator at all, or stay pure-human-paste.
 - Your domain contracts, KPIs, scope boundaries.

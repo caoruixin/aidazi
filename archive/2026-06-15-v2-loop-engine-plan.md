@@ -406,21 +406,29 @@ engine-kit/
 
 > Critical path to "it's a loop engine": **P-0a → P1(charter_validator) → P2 → P3.**
 > P4–P6 are multipliers.
+>
+> **Status (2026-06-17):** P-0a · P0 · P1 · P2 · P3 · P4 (+ integration) · P5 · P6
+> all SHIPPED on `v2-loop-engine` (@ `763cfb2`). Boxes below reconciled to the
+> handoff pack; items intentionally **DEFERRED** or **DROPPED** are annotated
+> inline rather than ticked.
 
 ### P-0a — Role Configuration Contract + foundations (CORE spec; no engine)
-- [ ] `process/role-configuration-contract.md` (3 facets) + `model-capability-registry.md`
-- [ ] schemas: model-registry, skill-binding, skill-catalog, connector-binding,
+- [x] `process/role-configuration-contract.md` (3 facets) + `model-capability-registry.md`
+- [x] schemas: model-registry, skill-binding, skill-catalog, connector-binding,
       connector-catalog, intent-contract, memory-entry, audit-event
-- [ ] charter schema additions (§5 above)
-- [ ] Audit Spine contract + Loop Memory spec + Loop Ingress spec + intent-contract
-      + gate Recommendation field (spec only)
-- [ ] Constitution edits 1–6 drafted (7 flagged for fold-back; 8 LICENSE)
-- [ ] wizard spec (decision tree + principles)
+- [x] charter schema additions (§5 above)
+- [x] Audit Spine contract + Loop Memory spec + Loop Ingress spec + intent-contract
+      + gate Recommendation field (spec only) — specs DONE; the engine-filled gate
+      `# Recommendation` field stays a tracked loose end (Next2; precedent shipped
+      via the `loop_isolation_recommendation` checkpoint)
+- [x] Constitution edits 1–6 drafted (7 flagged for fold-back; 8 LICENSE) — PROPOSED
+      in `process/role-configuration-contract.md §7`; LICENSE (MIT) added
+- [x] wizard spec (decision tree + principles) — `ONBOARDING.md`
 
 ### P0 — Substrate ADR + engine-kit skeleton
-- [ ] ADR: standalone driver (Workflow at most optional backend) + adapter
-      interface + **driver language = Python (decided)**
-- [ ] `engine-kit/` skeleton + README boundary rule
+- [x] ADR: standalone driver (Workflow at most optional backend) + adapter
+      interface + **driver language = Python (decided)** — `docs/adr/ADR-0001-engine-substrate.md`
+- [x] `engine-kit/` skeleton + README boundary rule
 
 ### P1 — Hard kernel (KIT; deterministic, no LLM) — closes OQ-V4-009 in part
 - [x] `charter_validator` — non-bypass (4 shapes)+human_confirm+route_options+calibration-warn
@@ -431,42 +439,50 @@ engine-kit/
       implemented (not run against live repo)
 - [x] Audit Spine — hash-chain ledger + verify_chain + execution-context payload helper +
       reconstruction report DONE; per-spawn capture INTO the driver wires in P2
-- [ ] on-demand audit tooling — report generator DONE; filters/queries pending (→ P6)
+- [x] on-demand audit tooling — report generator DONE; filters/queries DEFERRED
+      (adopter-runtime concern per the OQ-V4-009 reframe, not framework-blocking)
 - [x] robustness: guarded ledger/lock parse (corrupt input → clean error, non-zero) [2026-06-15 fix]
 
 ### P2 — Engine MVP (KIT) — proves outer-loop/spawn/verdict + multi-model + ingress
-- [ ] standalone driver: `dev → gate → review → close` on `examples/minimal-greenfield`,
+- [x] standalone driver: `dev → gate → review → close` on `examples/minimal-greenfield`,
       `human_in_the_loop`, filesystem checkpoints, **no Acceptance yet**
-- [ ] adapters: `claude_code` + `headless` (demo: Dev on Claude Code, a role on DeepSeek/Kimi)
-- [ ] Loop Ingress options 1 (current branch) + 2 (new branch)
-- [ ] intent contract capture + intake completeness gate (uses brainstorming/writing-plans)
-- [ ] emit Audit Spine from day one
-- [ ] `ONBOARDING.md` wizard MVP (greenfield path) ending in `charter_validator` green
+- [x] adapters: `claude_code` + `headless` (demo: Dev on Claude Code, a role on DeepSeek/Kimi)
+- [x] Loop Ingress options 1 (current branch) + 2 (new branch)
+- [x] intent contract capture + intake completeness gate (uses brainstorming/writing-plans)
+- [x] emit Audit Spine from day one
+- [x] `ONBOARDING.md` wizard MVP (greenfield path) ending in `charter_validator` green
 
 ### P3 — The verifier loop (becomes a real loop engine)
-- [ ] Acceptance + §3.6 calibration gate (per-model) + F5 evidence
-- [ ] **Loop Controller** (loop-until-condition / convergence / dry-stop / budget)
-- [ ] gate `# Recommendation` filled (LLM-assisted)
-- [ ] Loop Memory minimal read/write (lessons mostly from review/acceptance)
-- [ ] Acceptance skill calibration-coupling enforced
+- [x] Acceptance + §3.6 calibration gate (per-model) + F5 evidence
+- [x] **Loop Controller** (loop-until-condition / convergence / dry-stop / budget)
+- [ ] gate `# Recommendation` filled (LLM-assisted) — DEFERRED (Next2 loose end;
+      engine-filled recommendation on must-have checkpoints)
+- [x] Loop Memory minimal read/write (lessons mostly from review/acceptance)
+- [x] Acceptance skill calibration-coupling enforced
 
 ### P4 — Parallelism & reach
-- [ ] worktree isolation (Loop Ingress option 3) + parallel loop registry/cleanup
-- [ ] connectors: adapter MCP/api/cli translation + `propose_only` discovery scanner
-- [ ] vendor `using-git-worktrees`; revisit `deep-research` once connectors exist
-- [ ] `codex` adapter
+- [x] worktree isolation (Loop Ingress option 3) + parallel loop registry/cleanup
+- [x] connectors: adapter MCP/api/cli translation + `propose_only` discovery scanner
+- [x] vendor `using-git-worktrees`; revisit `deep-research` once connectors exist
+      (`using-git-worktrees` vendored; `deep-research` left as an opt-in candidate
+      now the connector layer exists)
+- [x] `codex` adapter
 
 ### P5 — Memory & scheduling (continuous self-evolution)
-- [ ] full Loop Memory feedback (skill-edit suggestion, charter tuning, Auto Loop
+- [x] full Loop Memory feedback (skill-edit suggestion, charter tuning, Auto Loop
       Δ-9 hookup, fold-back); maturity L1→L2
-- [ ] scheduling: cron/CI wiring (overnight Auto Loop + milestone Delivery Loop)
+- [x] scheduling: cron/CI wiring (overnight Auto Loop + milestone Delivery Loop)
 
 ### P6 — Adoption ritual + harden + fold back
-- [ ] full wizard (brownfield scan, connector propose, autonomy tuning, resumable/audited)
-- [ ] greenfield scaffold / brownfield mount finalized in guides
-- [ ] role cards packaged as skills/sub-agent defs
-- [ ] `examples/minimal-greenfield` end-to-end recorded run (proof)
-- [ ] vendoring CI; promote spec deltas via fold-back; close OQ-V4-009
+- [x] full wizard (brownfield scan, connector propose, autonomy tuning, resumable/audited)
+- [x] greenfield scaffold / brownfield mount finalized in guides
+- [ ] role cards packaged as skills/sub-agent defs — DROPPED (reframed as the P6.1
+      `full_chain_guided` bootstrap mode)
+- [x] `examples/minimal-greenfield` end-to-end recorded run (proof)
+- [x] close OQ-V4-009 (RESOLVED — validators shipped in `engine-kit/validators/`;
+      precommit-check + trace_emitter reframed as adopter-runtime tooling) ·
+      vendoring CI **DROPPED** · spec-delta fold-back **DEFERRED** (single
+      maintainer, no external adopters) — see handoff §7
 
 ---
 

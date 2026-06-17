@@ -16,21 +16,28 @@ never-run ``vendor`` path: the code is IMPLEMENTED and reviewable, but the
 offline test suite + the demo use the mock adapter and never touch this
 subprocess path.
 
-EXACT CLI FORM ASSUMED (verified against `codex exec --help`, Codex CLI; flag for
-human confirmation later):
-    codex exec --json [--model M] [--sandbox read-only] [-C cwd] [--skip-git-repo-check] <prompt>
-  - ``exec``  : the documented non-interactive subcommand (alias ``e``).
-  - ``--json``: emit the session as JSONL events on stdout. The FINAL agent
-    message carries the model's last message; the role prompt instructs the
-    model to emit ONLY a JSON verdict there. We scan the JSONL stream for that
-    final message and parse it as the verdict.
-  - ``--sandbox read-only`` is passed by default: a verdict-producing role
-    session should not need to write, and read-only is the safest gate-side
-    default. Override via the ``sandbox`` ctor arg if a role needs writes.
+EXACT CLI FORM — CONFIRMED against codex-cli 0.134.0 (`codex exec --help`):
+    codex exec --json -o <last_message_file> [--model M] [--sandbox read-only]
+              [-C cwd] [--skip-git-repo-check] <prompt>
+  - ``exec``  : the documented non-interactive subcommand.
+  - ``-o/--output-last-message <FILE>`` : codex writes the model's FINAL message
+    to this file. This is the PRIMARY, version-stable way to read the verdict —
+    the role prompt instructs the model to emit ONLY a JSON verdict as its final
+    message, so the file's contents ARE the verdict. No event-``type`` guessing.
+  - ``--json``: also stream the session as JSONL events on stdout. Kept for audit
+    / event capture, and as a FALLBACK verdict source if the output file is empty.
+  - ``--sandbox`` takes exactly ``read-only | workspace-write |
+    danger-full-access``; ``read-only`` is the gate-side default (a verdict-
+    producing role should not need to write). Override via the ``sandbox`` arg.
+  - ``--skip-git-repo-check`` (optional, OFF by default) lets codex run outside a
+    git repo; enable via the ``skip_git_repo_check`` ctor flag.
   Codex has NO single-envelope ``--output-format json`` like claude; ``--json``
-  is JSONL. TODO(human): confirm the exact event ``type`` of the final agent
-  message for this Codex CLI version (current parser accepts the common shapes
-  seen in the event stream — see ``_extract_verdict``).
+  is JSONL — which is exactly why the verdict is captured via ``-o`` rather than
+  by scanning events. (``--output-schema <FILE>`` is also available to enforce
+  the final-message shape natively; the DRIVER already validates against the role
+  schema, so it is intentionally left unwired here.) The JSONL fallback parser
+  (``_extract_verdict``) stays tolerant of the common event shapes so a
+  CLI-version skew never silently drops a verdict.
 
 NORMATIVE SOURCE: docs/adr/ADR-0001-engine-substrate.md; process/delivery-loop.md
 §4.2.7. Spec wins on any conflict; fix this file.
@@ -41,6 +48,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 from typing import Any, Optional, Sequence
 
 from .base import Adapter, AdapterError
@@ -63,6 +71,7 @@ class CodexAdapter(Adapter):
         allow_subprocess: bool = False,
         timeout_seconds: int = 600,
         cwd: Optional[str] = None,
+        skip_git_repo_check: bool = False,
         **kwargs: Any,
     ):
         super().__init__(provider=provider, model=model, **kwargs)
@@ -71,6 +80,7 @@ class CodexAdapter(Adapter):
         self.allow_subprocess = allow_subprocess
         self.timeout_seconds = timeout_seconds
         self.cwd = cwd
+        self.skip_git_repo_check = skip_git_repo_check
 
     def _enabled(self) -> bool:
         return self.allow_subprocess or os.environ.get(_ALLOW_ENV) == "1"
@@ -95,20 +105,28 @@ class CodexAdapter(Adapter):
         tools: Sequence[str],
         *,
         sandbox: Optional[str] = None,
+        last_message_path: Optional[str] = None,
     ) -> list[str]:
         # `codex exec --json <prompt>` runs non-interactively and streams the
-        # session as JSONL events; the final agent message is the verdict. The
-        # role prompt (built by the driver) already embeds the verdict schema and
-        # any tool whitelist; codex exec exposes no per-call allowed-tools flag,
-        # so tool-gating for this harness lives in the prompt/sandbox, not argv.
+        # session as JSONL events. The verdict is read from the final agent
+        # message, which codex writes verbatim to ``-o <last_message_path>`` when
+        # supplied (the version-stable primary path); ``--json`` stdout is kept
+        # for audit + as a fallback. The role prompt (built by the driver) already
+        # embeds the verdict schema and any tool whitelist; codex exec exposes no
+        # per-call allowed-tools flag, so tool-gating for this harness lives in
+        # the prompt/sandbox, not argv.
         sb = sandbox if sandbox is not None else self.sandbox
         argv = [self.binary, "exec", "--json"]
+        if last_message_path:
+            argv += ["-o", last_message_path]
         if self.model:
             argv += ["--model", self.model]
         if sb:
             argv += ["--sandbox", sb]
         if self.cwd:
             argv += ["-C", self.cwd]
+        if self.skip_git_repo_check:
+            argv.append("--skip-git-repo-check")
         # The prompt is the final positional arg.
         argv.append(prompt)
         return argv
@@ -147,44 +165,85 @@ class CodexAdapter(Adapter):
                 role=role,
             )
         # --- below here is NEVER exercised in offline tests ------------------- #
-        argv = self._build_argv(prompt, tools, sandbox=self._codex_sandbox(sandbox))
-        try:
-            proc = subprocess.run(  # noqa: S603 - argv is a fixed CLI, no shell
-                argv,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                cwd=self.cwd,
+        # Ask codex to write its FINAL message to a private temp file via `-o`;
+        # that file's contents are the verdict (version-stable, no event-`type`
+        # guessing). The JSONL stdout is the fallback if the file comes back empty.
+        with tempfile.TemporaryDirectory(prefix="aidazi-codex-") as tmpdir:
+            last_message_path = os.path.join(tmpdir, "last_message.txt")
+            argv = self._build_argv(
+                prompt,
+                tools,
+                sandbox=self._codex_sandbox(sandbox),
+                last_message_path=last_message_path,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
+            try:
+                proc = subprocess.run(  # noqa: S603 - argv is a fixed CLI, no shell
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_seconds,
+                    cwd=self.cwd,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise AdapterError(
+                    f"codex spawn failed to run {self.binary!r}: {exc}",
+                    role=role,
+                ) from exc
+            if proc.returncode != 0:
+                raise AdapterError(
+                    f"codex spawn exited {proc.returncode}: "
+                    f"{proc.stderr.strip()[:500]}",
+                    role=role,
+                )
+            # PRIMARY: the final agent message codex wrote to the output file.
+            verdict_text: Optional[str] = None
+            try:
+                with open(last_message_path, "r", encoding="utf-8") as fh:
+                    verdict_text = fh.read().strip()
+            except OSError:
+                verdict_text = None
+            if verdict_text:
+                return self._parse_verdict_text(verdict_text, role)
+            # FALLBACK: scan the JSONL event stream for the final agent message.
+            return self._extract_verdict(proc.stdout, role)
+
+    @staticmethod
+    def _parse_verdict_text(text: str, role: str) -> dict:
+        """Parse one text blob (the model's FINAL message) into a verdict dict.
+
+        Used by BOTH the primary ``-o`` output-file path and the JSONL fallback.
+        Any non-JSON / non-object shape is an ``AdapterError`` (the driver →
+        gate_hard_fail), never a permissive default.
+        """
+        try:
+            verdict = json.loads(text)
+        except json.JSONDecodeError as exc:
             raise AdapterError(
-                f"codex spawn failed to run {self.binary!r}: {exc}",
+                f"codex final agent message was not a JSON verdict: {exc}",
                 role=role,
             ) from exc
-        if proc.returncode != 0:
+        if not isinstance(verdict, dict):
             raise AdapterError(
-                f"codex spawn exited {proc.returncode}: "
-                f"{proc.stderr.strip()[:500]}",
+                f"codex verdict was not a JSON object "
+                f"(got {type(verdict).__name__})",
                 role=role,
             )
-        return self._extract_verdict(proc.stdout, role)
+        return verdict
 
     @staticmethod
     def _extract_verdict(stdout: str, role: str) -> dict:
-        """Parse the `codex exec --json` JSONL stream and pull the verdict.
+        """FALLBACK: pull the verdict from the `codex exec --json` JSONL stream.
 
-        Unlike claude's single ``--output-format json`` envelope, codex emits one
-        JSON object PER LINE (a JSONL event stream). The model's FINAL message is
-        the verdict; the role prompt instructs the model to emit ONLY a JSON
-        verdict there. We walk the events, keep the last agent/assistant message
-        text we see, then parse that text as the verdict.
+        Used only when the ``-o`` output file is missing/empty. Unlike claude's
+        single ``--output-format json`` envelope, codex emits one JSON object PER
+        LINE (a JSONL event stream). The model's FINAL message is the verdict; we
+        walk the events, keep the last agent/assistant message text we see, then
+        parse that text as the verdict.
 
-        Any non-JSON / no-message shape is an ``AdapterError`` (the driver →
-        gate_hard_fail), never a permissive default.
-
-        TODO(human): confirm the exact final-message event ``type`` for this
-        Codex CLI version; this parser accepts the common shapes
-        (``agent_message`` / ``item.completed`` text / a final-message field).
+        This parser stays tolerant of the common event shapes (``agent_message``
+        / ``item.completed`` text / a final-message field) so a CLI-version skew
+        never silently drops a verdict — the primary ``-o`` path makes the exact
+        event ``type`` non-load-bearing.
         """
         last_text: Optional[str] = None
         for line in stdout.splitlines():
@@ -205,28 +264,15 @@ class CodexAdapter(Adapter):
                 "codex output had no parseable agent message in the JSONL stream",
                 role=role,
             )
-        try:
-            verdict = json.loads(last_text)
-        except json.JSONDecodeError as exc:
-            raise AdapterError(
-                f"codex final agent message was not a JSON verdict: {exc}",
-                role=role,
-            ) from exc
-        if not isinstance(verdict, dict):
-            raise AdapterError(
-                f"codex verdict was not a JSON object "
-                f"(got {type(verdict).__name__})",
-                role=role,
-            )
-        return verdict
+        return CodexAdapter._parse_verdict_text(last_text, role)
 
 
 def _event_message_text(event: Any) -> Optional[str]:
     """Return the agent/assistant message text from a codex JSONL event, or None.
 
-    Tolerant of the few documented/observed event shapes so a CLI-version skew
-    does not silently drop the verdict. TODO(human): pin to the exact event
-    ``type`` once confirmed for the target Codex CLI build.
+    Only the FALLBACK path uses this (the primary verdict source is the ``-o``
+    output file). Tolerant of the few documented/observed event shapes so a
+    CLI-version skew does not silently drop the verdict.
     """
     if not isinstance(event, dict):
         return None
