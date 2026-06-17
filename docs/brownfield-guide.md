@@ -70,7 +70,8 @@ For each area, choose REPLACE / KEEP / MERGE. The framework gives a recommendati
 | **Action bank / backlog** | MIGRATE to framework taxonomy / KEEP existing format | **KEEP your format** but add the Δ-12 sweep cadence + live/archive split. Reformatting a working backlog is pure cost. |
 | **Eval** | ADOPT M-Evaluation template / KEEP existing | **KEEP if mature**; add an adaptor to the framework's CaseSpec shape (`schemas/case-spec.schema.json`) for portability. Adopt the bad-case lifecycle (`process/badcase-lifecycle.md`) regardless — it's high value. |
 | **Δ-18 orchestrator** | ADOPT / OPT OUT | **OPT OUT** unless you have multi-sub-sprint cycles worth automating. Profile B/C stays human-paste. |
-| **Backing agents / role skills** | per role | Configure `charter.tooling.<role>.agent_kind` to whatever you already use; mount existing subagent/skill libraries as role skills (`process/role-skill-model.md`; `docs/industry-mapping.md` for the translation). |
+| **Backing agents / role skills** | per role | Configure each role's execution facet under `charter.tooling.<role>` (`harness`/`provider`/`model`, or legacy `agent_kind`) to whatever you already use; bind existing subagent/skill libraries as role skills (Facet B). See the three-facet Role Configuration Contract (`process/role-configuration-contract.md`; `docs/industry-mapping.md` for the translation). |
+| **Connectors (tools / MCP)** | default-deny | Nothing is auto-granted. The propose-only discovery scan (`engine-kit/connectors/discovery.py`) is **read-only** — no network, no secret reads — and only *suggests* candidates you approve by hand into `charter.tooling.<role>.connectors[]` (Facet C). |
 
 ## §4 RECONCILE (write it down)
 
@@ -105,6 +106,9 @@ Once the team feels the value of the outcome gate, graduating to Profile B (full
 Confirm the adoption actually holds before declaring it done:
 
 ```
+□ If you generated a charter.yaml (Profile A/B), run
+  `python engine-kit/validators/charter_validator.py charter.yaml` — it must exit 0
+  (errors block; warnings allowed) before the adoption is done.
 □ Run one sprint under the new role chain (or your chosen subset).
 □ Confirm the 5-role boundary invariants hold (§3.4) — no role collapsed into another;
   in particular, Acceptance was spawned cleanly (not from Deliver/Dev).

@@ -29,6 +29,8 @@ Use this guide when you're starting clean: an empty repo, or an existing codebas
 
 **Prerequisites to start**: (a) your track designation (Type A / B / C / A+B — use the decision tree in `process/profile-aware-maturity.md` if unsure); (b) a one-paragraph problem statement (BRD-level: problem + KPI + rough scope); (c) a repo path (may be empty).
 
+> **Tip — automate the bootstrap.** `ONBOARDING.md` (the Onboarding Wizard) is an agent-driven, idempotent, non-destructive wrapper that sequences STEP 1-7 below with recommend-then-confirm at each decision. Feed it to your coding agent to run this guide; this doc remains the rationale source-of-truth. The wizard is the one-time install — it is NOT a loop (Constitution §1.7-E).
+
 ---
 
 ## STEP 1 — Initialize the framework
@@ -42,7 +44,7 @@ cp aidazi/AGENTS.md ./AGENTS.md              # consumer template — edit placeh
 
 Edit your root `AGENTS.md` (§1 project identification + §3 ledger paths). It @-includes the always-loaded governance chain (`aidazi/governance/constitution.md` + `doc_governance.md` + `context_briefing.md`). Set `adopter_track` and `framework_version`.
 
-A working filled-in example of everything STEP 1-6 produces lives at `aidazi/examples/minimal-greenfield/` — copy from it rather than authoring blank.
+A working filled-in example of everything STEP 1-6 produces lives at `aidazi/examples/minimal-greenfield/` — copy from it rather than authoring blank. It also ships a recorded, byte-reproducible offline run proving the standalone driver drives a full sub-sprint end-to-end: `examples/minimal-greenfield/docs/recorded-run.md`.
 
 ## STEP 2 — Run the elicitation (Δ-15)
 
@@ -106,11 +108,13 @@ Adopt the **Deliver** role and stand up the first cycle:
 
 If you want automation beyond human-paste handoffs, stand up the Delivery Loop orchestrator:
 
-1. Author `charter.yaml` from `templates/mission-charter.yaml` — set `autonomy.level`, `approved_scope`, `tooling.*.agent_kind`, budget.
+1. Author `charter.yaml` from `templates/mission-charter.yaml` — set `autonomy.level`, `approved_scope`, each role's execution facet under `tooling.*` (`harness`/`provider`/`model`, or legacy `agent_kind`), budget.
 2. If Acceptance will run autonomously, author the calibration set (`calibration/labeled_acceptance_cases/manifest.json`) and run the §3.6 calibration gate. Until calibrated, `fully_autonomous_within_budget` auto-degrades to `human_on_the_loop`.
-3. Run `orchestrator dispatch <milestone-id>`.
+3. **Validate before running**: `python engine-kit/validators/charter_validator.py charter.yaml` must exit 0 — structurally valid + no semantic errors (the no-bypass checkpoint rules, `human_confirm_required`, and the Facet-A/B/C capability / skill-integrity / connector-default-deny gates). Warnings are allowed; errors block — fix and re-run.
+4. Run the standalone driver — `engine-kit/orchestrator/driver.py` (run recipe: `engine-kit/orchestrator/README.md`; end-to-end demo on the worked example: `engine-kit/orchestrator/demo.py`). For unattended runs, schedule it via plain cron/CI with `engine-kit/scheduling/run_loop.py` (`engine-kit/scheduling/README.md`) — not a harness scheduler.
+5. (Optional) Run in **`full_chain_guided`** mode (`autonomy.loop_mode: full_chain_guided`) to let the loop bootstrap a milestone end-to-end: Research draft → Customer Gate-1 sign-off (human-confirmed, never auto-confirmed) → milestone decomposition → the delivery loop. The default (`delivery_only`) runs the delivery loop only.
 
-Full spec: `process/delivery-loop.md`. Pure human-paste adopters skip STEP 7 entirely and keep the 5-role chain with the human as orchestrator — that's a complete, valid adoption.
+Full spec: `process/delivery-loop.md` (§4.2.4 for the `full_chain_guided` pre-states). Pure human-paste adopters skip STEP 7 entirely and keep the 5-role chain with the human as orchestrator — that's a complete, valid adoption.
 
 ---
 
