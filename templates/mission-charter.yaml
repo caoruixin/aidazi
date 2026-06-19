@@ -79,13 +79,17 @@ tooling:
     # skills: [<architecture-decision-skill>]  # optional; e.g., architect/ADR skill slot
     # subagent_fanout: true                    # e.g., architect/frontend/backend plan-draft fan-out
   dev:
-    agent_kind: claude_code
-    harness: claude_code     # Dev MUST run on a coding-agent harness (edits files)
-    provider: anthropic
-    model: claude-sonnet-4-6
-    capability_ref: anthropic-sonnet-dev
+    agent_kind: kimi
+    harness: kimi            # Dev MUST run on a coding-agent harness (edits files); Kimi Code (Moonshot) qualifies
+    provider: moonshot       # the kimi native CLI is provider-locked to moonshot
+    model: kimi-code/kimi-for-coding   # "K2.7 Code" alias per the kimi adapter's `kimi --help` check (Kimi Code 0.16.0); passed to `kimi -m`
+    capability_ref: moonshot-kimi-code
     sandbox: workspace_write
     timeout_seconds: 1800    # per-spawn adapter timeout (s); default 600 is low for a real Dev coding session
+    # network_access: false  # DEFAULT (Dev = NO network, delivery-loop §4.2.7). NOTE: this flag only has effect
+    #                        # on the CODEX harness (it emits -c sandbox_workspace_write.network_access=true).
+    #                        # On THIS kimi-backed Dev it has NO effect — the Kimi CLI has no confirmed per-call
+    #                        # network flag, so install deps OUT OF BAND (pre-provision the env before the loop).
     # skills: [<frontend-skill>, <backend-skill>]  # primary mount point for stack-specialist skills
     # subagent_fanout: true                        # sub-agents inherit the dev sandbox transitively
   review:
@@ -108,11 +112,14 @@ tooling:
     timeout_seconds: 600
   acceptance:
     enabled: false  # set to true when ready; calibration required before fully_autonomous_within_budget
-    agent_kind: claude_code  # distinct from dev/review/research for independence
-    harness: claude_code
-    provider: anthropic      # calibration is per-(role,provider,model); a change re-opens §3.6
-    model: claude-opus-4-8
-    capability_ref: anthropic-opus-judge   # MUST be a calibratable model (§3.6)
+    agent_kind: codex        # Acceptance = the CUSTOMER/user-perspective judge, run ONCE at MILESTONE close
+                             # (not per sub-sprint) — judges the gap to the customer's stated need, NOT code
+                             # quality (that's Review). Independence is by ROLE/perspective/timing, so sharing
+                             # Review's (codex·openai·gpt-5.5) binding is fine; distinct from dev (kimi).
+    harness: codex
+    provider: openai         # codex is provider-locked to openai; calibration is per-(role,provider,model) — §3.6
+    model: gpt-5.5
+    capability_ref: openai-gpt5-codex   # MUST be a calibratable model (§3.6); gpt-5.5 is (registry: calibratable)
     tools: [Read, Grep, Glob]
     # skills: [<evidence-reading-skill>]  # evidence-reading ONLY; changing this list invalidates calibration
     judge_calibration:

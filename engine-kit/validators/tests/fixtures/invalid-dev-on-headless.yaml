@@ -44,14 +44,14 @@ tooling:
     agent_kind: claude_code
     harness: headless
     provider: deepseek
-    model: deepseek-chat
+    model: deepseek-v4-pro
     capability_ref: deepseek-chat-api
     sandbox: workspace_write
   review:
     agent_kind: codex
     harness: codex
     provider: openai
-    model: gpt-5-codex
+    model: gpt-5.5
     capability_ref: openai-gpt5-codex
     tools:
     - Read

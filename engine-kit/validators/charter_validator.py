@@ -696,6 +696,61 @@ def _role_is_read_only(role: str, cfg: dict) -> bool:
     return role in ("review", "acceptance")
 
 
+def _check_network_access(charter: dict, report: Report) -> None:
+    """The EXPLICIT, opt-in network grant (tooling.<role>.network_access).
+
+    The framework invariant is Dev = NO network (process/delivery-loop.md §4.2.7;
+    role-skill-model.md). Granting it is a DELIBERATE privilege escalation, so ANY
+    ``network_access: true`` raises a WARNING — it is never silently green:
+      - on a write role: a caution that this opens the workspace-write sandbox to
+        the network (intended only for installing deps; the driver audits it);
+      - on a read-only role: additionally that the grant is a NO-OP and very likely
+        a mistake (codex un-blocks network only for a workspace_write sandbox).
+    ``network_access`` false/absent is the default-deny no-op (no finding). The
+    grant is a WARNING, never an ERROR: it is a legitimate, human-authored opt-in —
+    the gate's job is to make it loud + intentional, not to forbid it."""
+    for role, cfg in _iter_roles(charter):
+        if cfg.get("network_access") is not True:
+            continue  # default-deny: false/absent ⇒ no finding
+        path = f"tooling.{role}.network_access"
+        if _role_is_read_only(role, cfg):
+            report.warn(
+                "network_on_read_only_role",
+                f"role '{role}' sets network_access: true but is read-only — the "
+                f"grant is a NO-OP (the OS sandbox un-blocks network only for a "
+                f"workspace_write role) and is very likely a mistake. Remove it, or "
+                f"set sandbox: workspace_write if the role truly must write AND reach "
+                f"the network (delivery-loop §4.2.7).",
+                path)
+        else:
+            report.warn(
+                "network_access_granted",
+                f"role '{role}' sets network_access: true — this DELIBERATELY opens "
+                f"the workspace-write sandbox to the network, overriding the Dev=no-"
+                f"network invariant (delivery-loop §4.2.7). Intended ONLY for "
+                f"installing dependencies (pip/npm); the driver records a "
+                f"sandbox_network_granted escalation on the audit spine. Confirm it "
+                f"is necessary — prefer pre-provisioning deps outside the sandbox.",
+                path)
+
+
+def _effective_harness(cfg: dict) -> Optional[str]:
+    """The harness the RUNTIME will route on. MUST mirror driver.route_for_role
+    EXACTLY: ``rc.get("harness") or rc.get("agent_kind") or ""`` — TRUTHY fallback,
+    so an empty-string ``harness`` falls through to ``agent_kind`` just like the
+    runtime (not treated as the literal ``""``). Returns None when neither yields a
+    non-empty string (nothing to check). Use this wherever the routed harness must
+    be validated (the capability gate)."""
+    eff = cfg.get("harness") or cfg.get("agent_kind") or ""
+    return eff if isinstance(eff, str) and eff else None
+
+
+# NOTE: Review and Acceptance MAY share a model. Their independence is by ROLE /
+# PERSPECTIVE / TIMING — Review judges engineering correctness per sub-sprint;
+# Acceptance judges the gap to the CUSTOMER's stated need at milestone close
+# (delivery-loop §4.2.4/§4.2.6). It is NOT model-diversity, so there is deliberately
+# no "same execution binding" check here (a stricter judge-diversity policy, if ever
+# wanted, belongs in a charter the adopter opts into — not the default gate).
 def _check_capability_gate(charter: dict, report: Report, *, model_registry_path: Optional[str] = None) -> None:
     """Facet A capability gate (role-configuration-contract.md §4/§5).
 
@@ -717,61 +772,177 @@ def _check_capability_gate(charter: dict, report: Report, *, model_registry_path
         harness = cfg.get("harness")
         provider = cfg.get("provider")
         model = cfg.get("model")
-        # The check is GATED on the new Facet-A fields being present.
+        # The check is GATED on the new Facet-A fields being present (a v2 opt-in).
+        # A LEGACY role (agent_kind only, no harness/provider/capability_ref) stays
+        # untouched — exactly as before.
         if harness is None and provider is None and "capability_ref" not in cfg:
             continue
 
         base = f"tooling.{role}"
 
+        # EFFECTIVE harness = the one the RUNTIME routes on (shared helper; truthy
+        # `harness or agent_kind`, exactly like driver.route_for_role). Validate that
+        # SAME harness — else an omitted/empty `harness` silently bypasses every
+        # harness check (harness↔provider lock, dev coding-agent, harness_compat).
+        eff_harness = _effective_harness(cfg)
+
         # --- harness ↔ provider compatibility ---------------------------------
-        if isinstance(harness, str) and isinstance(provider, str):
-            locked = _NATIVE_HARNESS_PROVIDER.get(harness)
+        if isinstance(eff_harness, str) and isinstance(provider, str):
+            locked = _NATIVE_HARNESS_PROVIDER.get(eff_harness)
             if locked is not None and provider != locked:
                 report.error(
                     "harness_provider_mismatch",
-                    f"role '{role}' harness '{harness}' is provider-locked to "
-                    f"'{locked}' but provider is '{provider}' "
+                    f"role '{role}' (effective harness '{eff_harness}') is provider-"
+                    f"locked to '{locked}' but provider is '{provider}' "
                     f"(role-configuration-contract.md §1)",
                     f"{base}.provider",
                 )
 
         # --- Dev needs a coding-agent (file-editing) harness ------------------
-        if role == "dev" and isinstance(harness, str) and harness not in _CODING_AGENT_HARNESSES:
+        if role == "dev" and isinstance(eff_harness, str) and eff_harness not in _CODING_AGENT_HARNESSES:
             report.error(
                 "dev_needs_coding_agent",
-                f"Dev needs a coding-agent harness (claude_code/codex/aider) that "
-                f"can edit files; harness '{harness}' cannot "
+                f"Dev needs a coding-agent harness (claude_code/codex/kimi/aider) "
+                f"that can edit files; effective harness '{eff_harness}' cannot "
                 f"(role-configuration-contract.md §4)",
                 f"{base}.harness",
             )
 
-        # --- structured-output floor (verdict roles) --------------------------
-        # Resolve the model record: prefer capability_ref → profile id; else match
-        # provider+model against any registry record.
+        # --- FAIL CLOSED: a Facet-A role must be FULLY specified --------------
+        # The runtime routes the triple (eff_harness, provider, model) and an
+        # omitted field routes "" (driver.route_for_role / run_loop.build_adapters).
+        # A role that has opted into v2 (past the legacy guard) therefore MUST
+        # declare all three explicitly. (The shipped registry is intentionally
+        # NON-exhaustive, so a fully-declared-but-unregistered model is a WARN below,
+        # not an error — but an UNDER-specified binding can never route correctly.)
+        missing = []
+        if eff_harness is None:
+            missing.append("harness/agent_kind")
+        if not (isinstance(provider, str) and provider):
+            missing.append("provider")
+        if not (isinstance(model, str) and model):
+            missing.append("model")
+        if missing:
+            report.error(
+                "facet_a_underspecified",
+                f"role '{role}' opts into a v2 execution binding but omits "
+                f"{missing}; the runtime routes each field and an omitted one becomes "
+                f"an empty string. Declare harness/agent_kind, provider, AND model "
+                f"explicitly (or use a capability_ref plus matching provider/model) "
+                f"(role-configuration-contract.md §5)",
+                base)
+            continue
+
+        # --- resolve the capability record ------------------------------------
+        # Prefer capability_ref → profile id; else match provider+model against any
+        # registry record. Track whether we resolved BY REF (the ref↔triple
+        # consistency check below is only meaningful then — a provider+model
+        # fallback matches by construction).
         record = None
+        resolved_by_ref = False
         cap_ref = cfg.get("capability_ref")
-        if isinstance(cap_ref, str) and cap_ref in models:
-            record = models[cap_ref]
-        elif isinstance(model, str):
+        if isinstance(cap_ref, str):
+            # A capability_ref names ONE profile. If it does NOT resolve, that is an
+            # ERROR — do NOT silently fall back to a provider/model match (a typo'd
+            # ref like 'openai-gpt5-typo' would otherwise validate against an
+            # unrelated profile and keep the ref decorative).
+            if cap_ref in models:
+                record = models[cap_ref]
+                resolved_by_ref = True
+            else:
+                report.error(
+                    "capability_ref_unknown",
+                    f"role '{role}' capability_ref '{cap_ref}' is not in the model-"
+                    f"capability registry; a named profile MUST exist (no silent "
+                    f"provider/model fallback) (role-configuration-contract.md §5)",
+                    f"{base}.capability_ref")
+                continue
+        else:
+            # No capability_ref: match the declared (provider, model) against the
+            # registry. Both are guaranteed present (facet_a_underspecified above).
             for rec in models.values():
-                if isinstance(rec, dict) and rec.get("model") == model and (
-                    provider is None or rec.get("provider") == provider
-                ):
+                if (isinstance(rec, dict) and rec.get("model") == model
+                        and rec.get("provider") == provider):
                     record = rec
                     break
 
         if record is None:
-            # Only WARN about an unverifiable model when a model/profile WAS named.
-            if isinstance(model, str) or isinstance(cap_ref, str):
-                named = cap_ref if isinstance(cap_ref, str) else model
-                report.warn(
-                    "model_unknown",
-                    f"role '{role}' references model/profile '{named}' not found in "
-                    f"the model-capability registry; cannot verify capability "
-                    f"(role-configuration-contract.md §5)",
-                    f"{base}.capability_ref" if isinstance(cap_ref, str) else f"{base}.model",
-                )
+            # cap_ref ABSENT and the (provider, model) pair is not in the registry.
+            # The shipped registry is intentionally NON-exhaustive (adopter-tunable),
+            # so a fully-declared but unverifiable model is a WARN, NOT an error (a
+            # typo'd ref / an under-specified binding already errored above).
+            report.warn(
+                "model_unknown",
+                f"role '{role}' (provider '{provider}', model '{model}') is not in "
+                f"the model-capability registry; cannot verify capability "
+                f"(role-configuration-contract.md §5)",
+                f"{base}.model",
+            )
             continue
+
+        # --- capability_ref ↔ declared (provider, model) consistency ----------
+        # provider/model are guaranteed present (facet_a_underspecified above). When
+        # resolved BY ref they MUST EQUAL the profile — else the ref is decorative or
+        # the role runs a DIFFERENT model than the gate verified. FAIL CLOSED.
+        ref_loc = f"{base}.capability_ref" if resolved_by_ref else f"{base}.model"
+        if resolved_by_ref:
+            rprov, rmodel = record.get("provider"), record.get("model")
+            if isinstance(rprov, str) and provider != rprov:
+                report.error(
+                    "capability_ref_provider_mismatch",
+                    f"role '{role}' declares provider '{provider}' but capability_ref "
+                    f"'{cap_ref}' is provider '{rprov}'; the ref must match the role's "
+                    f"declared (provider, model) (role-configuration-contract.md §5)",
+                    f"{base}.provider")
+            if isinstance(rmodel, str) and model != rmodel:
+                report.error(
+                    "capability_ref_model_mismatch",
+                    f"role '{role}' declares model '{model}' but capability_ref "
+                    f"'{cap_ref}' is model '{rmodel}'; the ref must match the role's "
+                    f"declared (provider, model) (role-configuration-contract.md §5)",
+                    f"{base}.model")
+
+        # --- harness must be one the profile can drive (harness_compat) -------
+        # FAIL CLOSED: a resolved profile with no usable harness_compat list cannot
+        # be verified for this harness, so REJECT rather than silently skip (a custom
+        # registry profile must not be able to disable the compatibility gate).
+        compat = record.get("harness_compat")
+        if isinstance(eff_harness, str):
+            if not isinstance(compat, list):
+                report.error(
+                    "harness_compat_missing",
+                    f"role '{role}' resolves to capability profile for model "
+                    f"'{record.get('model')}' with no harness_compat list; cannot "
+                    f"verify the harness can drive it (fail closed) "
+                    f"(role-configuration-contract.md §5)",
+                    f"{base}.harness")
+            elif eff_harness not in compat:
+                report.error(
+                    "harness_not_compatible",
+                    f"role '{role}' effective harness '{eff_harness}' is not in the "
+                    f"capability profile's harness_compat {sorted(map(str, compat))} "
+                    f"for model '{record.get('model')}'; that profile cannot drive "
+                    f"this harness (role-configuration-contract.md §4/§5)",
+                    f"{base}.harness")
+
+        # --- Dev needs a TOOL-USING (file-editing) coding model ---------------
+        if role == "dev" and record.get("tool_use") is not True:
+            report.error(
+                "dev_needs_tool_use",
+                f"Dev model '{record.get('model')}' has tool_use != true; a Dev must "
+                f"run a tool-using coding model that can edit files "
+                f"(role-configuration-contract.md §4)",
+                ref_loc)
+
+        # --- Acceptance MUST be a CALIBRATABLE judge model (§3.6) --------------
+        if role == "acceptance" and record.get("calibratable") is not True:
+            report.error(
+                "acceptance_needs_calibratable",
+                f"Acceptance model '{record.get('model')}' is not calibratable; the "
+                f"Acceptance judge MUST be a calibratable model — calibration is the "
+                f"gate to autonomy (Constitution §3.6; the charter's capability_ref "
+                f"comment requires it)",
+                ref_loc)
 
         if role in _VERDICT_ROLES:
             tier = record.get("structured_output_tier")
@@ -966,6 +1137,7 @@ def validate_semantics(charter: Any, report: Report, overrides: Optional[Overrid
     )
     _check_capability_gate(charter, report, model_registry_path=ov.model_registry_path)
     _check_skill_integrity(charter, report, skill_catalog_path=ov.skill_catalog_path)
+    _check_network_access(charter, report)
 
 
 # --------------------------------------------------------------------------- #

@@ -52,7 +52,7 @@ tooling:
     agent_kind: codex
     harness: codex
     provider: openai
-    model: gpt-5-codex
+    model: gpt-5.5
     capability_ref: openai-gpt5-codex
     tools:
     - Read

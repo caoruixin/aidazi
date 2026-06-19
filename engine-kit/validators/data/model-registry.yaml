@@ -83,6 +83,19 @@ models:
     calibratable: true
     notes: "Kimi via headless; large context suits evidence-reading roles."
 
+  moonshot-kimi-code:
+    provider: moonshot
+    model: kimi-code/kimi-for-coding
+    context_window: 256000
+    tool_use: true
+    structured_output_tier: medium
+    reasoning_tier: high
+    endpoint_kind: native
+    harness_compat: [kimi]
+    cost: { currency: USD, input_per_mtok: null, output_per_mtok: null }
+    calibratable: true
+    notes: "Kimi Code agentic CLI (Moonshot AI 'K2.7 Code'), a NATIVE file-editing coding-agent harness — suits Dev. Distinct from moonshot-kimi-128k (that profile is the headless OpenAI-compatible API for evidence-reading roles; THIS one drives the `kimi` CLI). Model alias `kimi-code/kimi-for-coding` per the kimi adapter's `kimi --help` verification (Kimi Code 0.16.0; engine-kit/adapters/kimi.py); confirm with your installed CLI. Cost may be subscription-billed (null). Tiers/context illustrative — adopter-tunable."
+
   # A sub-medium structured-output model — illustrative ONLY, so a verdict role
   # bound to it deterministically trips the structured-output floor in tests/demos.
   deepseek-weak-api:

@@ -156,8 +156,36 @@ class SemanticUnitTests(unittest.TestCase):
         cv._check_connector_grants(charter, report)
         cv._check_capability_gate(charter, report)
         cv._check_skill_integrity(charter, report)
+        cv._check_network_access(charter, report)  # no grant ⇒ stays silent
         self.assertEqual(report.errors, [])
         self.assertEqual(report.warnings, [])
+
+    def test_network_access_grant_warns_but_passes(self):
+        # An explicit Dev network grant WARNS (deliberate escalation) but never
+        # ERRORS — it is a legitimate, human-authored opt-in.
+        charter = self._base()
+        charter["tooling"]["dev"]["sandbox"] = "workspace_write"
+        charter["tooling"]["dev"]["network_access"] = True
+        report = cv.validate_charter(charter)
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertEqual(report.errors, [])
+        self.assertIn("network_access_granted", report.rules_fired)
+
+    def test_network_access_on_read_only_role_warns_as_noop(self):
+        # review defaults read_only; granting network there is a no-op + a mistake.
+        charter = self._base()
+        charter["tooling"]["review"]["network_access"] = True
+        report = cv.validate_charter(charter)
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertIn("network_on_read_only_role", report.rules_fired)
+
+    def test_no_network_access_is_silent(self):
+        charter = self._base()
+        charter["tooling"]["dev"]["network_access"] = False
+        report = cv.validate_charter(charter)
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertNotIn("network_access_granted", report.rules_fired)
+        self.assertNotIn("network_on_read_only_role", report.rules_fired)
 
 
 # --------------------------------------------------------------------------- #
@@ -229,7 +257,7 @@ class CapabilityGateTests(unittest.TestCase):
                     "enabled": False,
                     "harness": "headless",
                     "provider": "deepseek",
-                    "model": "deepseek-chat",
+                    "model": "deepseek-v4-pro",
                     "capability_ref": "deepseek-chat-api",  # structured_output_tier: medium
                     "on_fix_required": {
                         "human_confirm_required": True,
@@ -280,6 +308,193 @@ class CapabilityGateTests(unittest.TestCase):
         report = cv.validate_charter(charter)
         self.assertTrue(report.ok, msg=report.render())  # WARN, not ERROR
         self.assertIn("model_unknown", report.rules_fired)
+
+
+def _facet_a_charter() -> dict:
+    """A full charter with VALID v2 Facet-A bindings (mirrors the template), for
+    capability-gate tests that mutate ONE role to trigger a specific rule. The
+    unmutated charter validates clean."""
+    return {
+        "mission": {"id": "m", "goal": "g"},
+        "autonomy": {"level": "human_in_the_loop",
+                     "approved_scope": {"subsprint_sequence": ["s1"],
+                                        "layers_allowed": ["l1"],
+                                        "modules_in_scope": ["m1"]},
+                     "auto_pass_rules": {}},
+        "budget": {"max_fix_rounds_total": 1, "max_wall_clock_minutes": 1},
+        "tooling": {
+            "research": {"agent_kind": "claude_code", "harness": "claude_code",
+                         "provider": "anthropic", "model": "claude-opus-4-8",
+                         "capability_ref": "anthropic-opus-judge"},
+            "deliver": {"agent_kind": "claude_code", "harness": "claude_code",
+                        "provider": "anthropic", "model": "claude-opus-4-8",
+                        "capability_ref": "anthropic-opus-judge"},
+            "dev": {"agent_kind": "claude_code", "harness": "claude_code",
+                    "provider": "anthropic", "model": "claude-sonnet-4-6",
+                    "capability_ref": "anthropic-sonnet-dev",
+                    "sandbox": "workspace_write"},
+            "review": {"agent_kind": "codex", "harness": "codex",
+                       "provider": "openai", "model": "gpt-5.5",
+                       "capability_ref": "openai-gpt5-codex",
+                       "tools": ["Read", "Grep", "Glob"]},
+            "eval": {"cmd": "true", "timeout_seconds": 1},
+            "acceptance": {"enabled": False, "agent_kind": "claude_code",
+                           "harness": "claude_code", "provider": "anthropic",
+                           "model": "claude-opus-4-8",
+                           "capability_ref": "anthropic-opus-judge",
+                           "tools": ["Read", "Grep", "Glob"],
+                           "on_fix_required": {"human_confirm_required": True,
+                                               "route_options": ["deliver_fix_iteration"]}},
+        },
+    }
+
+
+class CapabilityGateTripleTests(unittest.TestCase):
+    """The STRENGTHENED capability gate validates the role's (harness, provider,
+    model) AGAINST the referenced capability profile — a capability_ref is no longer
+    decorative. (Hardening from the Codex gpt-5.5 review of the dev→Kimi rebind.)"""
+
+    def test_base_facet_a_charter_is_clean(self):
+        report = cv.validate_charter(_facet_a_charter())
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertEqual(report.warnings, [], msg=report.render())
+
+    def test_model_mismatch_vs_capability_ref_errors(self):
+        c = _facet_a_charter()
+        c["tooling"]["dev"]["model"] = "totally-wrong-model"  # ref says claude-sonnet-4-6
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("capability_ref_model_mismatch", report.rules_fired)
+
+    def test_provider_mismatch_vs_capability_ref_errors(self):
+        c = _facet_a_charter()
+        # headless harness ⇒ no provider-lock, so ONLY the ref provider mismatch fires.
+        c["tooling"]["review"].update(harness="headless", provider="anthropic")
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("capability_ref_provider_mismatch", report.rules_fired)
+
+    def test_harness_not_in_compat_errors(self):
+        c = _facet_a_charter()
+        # moonshot-kimi-code is harness_compat:[kimi]; driving it via headless is invalid.
+        c["tooling"]["deliver"].update(
+            harness="headless", provider="moonshot",
+            model="kimi-code/kimi-for-coding", capability_ref="moonshot-kimi-code")
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("harness_not_compatible", report.rules_fired)
+
+    def test_acceptance_non_calibratable_model_errors(self):
+        c = _facet_a_charter()
+        # deepseek-weak-api is calibratable:false — forbidden for the Acceptance judge.
+        c["tooling"]["acceptance"].update(
+            harness="headless", provider="deepseek", model="deepseek-weak",
+            capability_ref="deepseek-weak-api")
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("acceptance_needs_calibratable", report.rules_fired)
+
+    def test_dev_non_tool_use_model_errors(self):
+        # No SHIPPED profile is tool_use:false, so use the edge fixture registry.
+        c = _facet_a_charter()
+        c["tooling"]["dev"].update(
+            provider="anthropic", model="edge-no-tooluse-model",
+            capability_ref="edge-no-tooluse")
+        report = cv.Report()
+        cv._check_capability_gate(
+            c, report, model_registry_path=_fixture("model-registry-edge.yaml"))
+        rules = {i.rule for i in report.errors}
+        self.assertIn("dev_needs_tool_use", rules)
+
+    def test_unknown_capability_ref_errors_no_silent_fallback(self):
+        # A present-but-unresolved capability_ref ERRORS — it must NOT silently fall
+        # back to a provider/model match (else a typo'd ref validates decoratively).
+        c = _facet_a_charter()
+        c["tooling"]["review"]["capability_ref"] = "openai-gpt5-typo"  # provider/model still match openai-gpt5-codex
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("capability_ref_unknown", report.rules_fired)
+
+    def test_capability_ref_without_explicit_model_errors(self):
+        # A v2 binding with an omitted model is underspecified — the runtime routes
+        # "" (no hydration from the ref), so it must fail closed.
+        c = _facet_a_charter()
+        del c["tooling"]["dev"]["model"]  # keep capability_ref: anthropic-sonnet-dev
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("facet_a_underspecified", report.rules_fired)
+
+    def test_no_provider_bare_model_facet_a_errors(self):
+        # A v2 binding (harness present) with NO provider and no capability_ref
+        # validates as underspecified — the runtime would route provider="".
+        c = _facet_a_charter()
+        del c["tooling"]["review"]["provider"]
+        del c["tooling"]["review"]["capability_ref"]   # bare model, no ref
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("facet_a_underspecified", report.rules_fired)
+
+    def test_empty_string_harness_falls_back_to_agent_kind(self):
+        # The runtime routes `harness or agent_kind` (TRUTHY) — an empty-string
+        # harness falls through to agent_kind. The validator must use the SAME
+        # resolution, so harness:"" + agent_kind:codex is validated as codex (here
+        # provider-locked to openai, so an anthropic provider trips the lock).
+        c = _facet_a_charter()
+        c["tooling"]["review"].update(harness="", agent_kind="codex",
+                                      provider="anthropic")
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("harness_provider_mismatch", report.rules_fired)
+
+    def test_harness_compat_missing_in_profile_errors(self):
+        # A resolved profile with NO harness_compat list cannot be verified — fail
+        # closed (a custom profile must not be able to disable the compat gate).
+        c = _facet_a_charter()
+        c["tooling"]["deliver"].update(
+            harness="claude_code", provider="anthropic",
+            model="edge-no-compat-model", capability_ref="edge-no-harness-compat")
+        report = cv.Report()
+        cv._check_capability_gate(
+            c, report, model_registry_path=_fixture("model-registry-edge.yaml"))
+        self.assertIn("harness_compat_missing", {i.rule for i in report.errors})
+
+    def test_omitted_harness_uses_agent_kind_for_compat(self):
+        # The runtime routes on `harness or agent_kind`; the gate must check the SAME
+        # effective harness. A role that OMITS harness but sets a compat-incompatible
+        # agent_kind must still trip harness_not_compatible (not silently bypass it).
+        c = _facet_a_charter()
+        c["tooling"]["deliver"].pop("harness", None)
+        c["tooling"]["deliver"].update(
+            agent_kind="headless", provider="moonshot",
+            model="kimi-code/kimi-for-coding", capability_ref="moonshot-kimi-code")
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("harness_not_compatible", report.rules_fired)
+
+    def test_dev_omitted_harness_noncoding_agent_kind_errors(self):
+        # Dev that omits harness but uses a non-coding agent_kind (headless) must
+        # still trip dev_needs_coding_agent (effective harness = agent_kind).
+        c = _facet_a_charter()
+        c["tooling"]["dev"].pop("harness", None)
+        c["tooling"]["dev"]["agent_kind"] = "headless"
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("dev_needs_coding_agent", report.rules_fired)
+
+
+class ReviewAcceptanceSharedModelTests(unittest.TestCase):
+    """Review and Acceptance MAY share a model: independence is by role/perspective/
+    timing (engineering-per-sub-sprint vs customer-at-milestone), NOT model diversity.
+    An ENABLED Acceptance with the SAME binding as Review validates clean — no warning."""
+
+    def test_identical_enabled_review_acceptance_is_clean(self):
+        c = _facet_a_charter()
+        c["tooling"]["acceptance"].update(
+            enabled=True, harness="codex", provider="openai", model="gpt-5.5",
+            capability_ref="openai-gpt5-codex")  # == review, on purpose
+        report = cv.validate_charter(c)
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertEqual(report.warnings, [], msg=report.render())
 
 
 class SkillIntegrityTests(unittest.TestCase):

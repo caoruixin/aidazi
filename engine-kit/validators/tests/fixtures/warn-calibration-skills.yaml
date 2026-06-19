@@ -43,7 +43,7 @@ tooling:
     sandbox: workspace_write
   review:
     agent_kind: codex
-    model: gpt-5-codex
+    model: gpt-5.5
     tools: [Read, Grep, Glob]
   eval:
     cmd: pytest -q engine-kit/validators/tests
