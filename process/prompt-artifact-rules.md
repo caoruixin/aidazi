@@ -114,7 +114,21 @@ Two distinct things, often conflated by adopters (it was the conflation behind t
 - **Authored prompt artifact** (`compact/sprint-NNN-dev-prompt.md`, `compact/M<N>-review-prompt.md`, `compact/M<N>-acceptance-prompt.md`) — the **durable, human-reviewed source view** subject to the §1 self-containment invariant. Authored by Deliver, surfaced for human review, committed.
 - **As-dispatched transcript** (`.orchestrator/audit/transcripts/<loop_id>/NNNN__<role>__{prompt,output}.{md,json}`) — the **execution record** the orchestrator writes for EVERY spawn (Dev / Code Reviewer / Deliver / Research / Acceptance, and each fix-round): the exact prompt bytes sent (always) and the captured model output (whenever the adapter returns one — a transport error records `output_ref: null`), referenced from the Audit Spine spawn event as `prompt_ref` / `output_ref` (`process/delivery-loop.md` §4.2.10). Per-adopter, gitignored with the rest of `.orchestrator/`.
 
-The authored artifact answers "what did we *intend* to ask, and did a human approve it?"; the transcript answers "what was *actually* dispatched and what came back?" — the latter is what makes an upgrade run auditable and trackable spawn-by-spawn. A thin orchestrator-built prompt (e.g. a one-line review request) is therefore never silently invisible: it lands in the transcript, where its thinness is itself auditable and a signal to author the richer `compact/` view.
+The authored artifact answers "what did we *intend* to ask, and did a human approve it?"; the transcript answers "what was *actually* dispatched and what came back?" — the latter is what makes an upgrade run auditable and trackable spawn-by-spawn.
+
+### §6.2 Engine resolution of the Dev / Review / Acceptance prompts (strict mode)
+
+In **strict mode**, the orchestrator does NOT dispatch a one-line role request for Dev, Code Reviewer, or Acceptance. Each resolves a **self-contained** prompt by content, in order, and **HALTs** (resumable refinement checkpoint — `STATE_HALTED` plus a persisted `halt_resume_state` so a re-run re-enters the paused state and re-resolves) rather than spawning a thin prompt when the source is missing/incomplete.
+
+**Strict mode** is the union of two independent enablers, so a real model can never receive a thin prompt: an explicit `context.allow_real` flag, **OR** the presence of any non-mock adapter (a real `claude_code`/`codex`/`headless`/`kimi` backend is wired). An all-mock wiring without `allow_real` is the offline/test path and keeps the legacy inline prompt (byte-identical).
+
+| Role | Resolution order | Derived from |
+|---|---|---|
+| Dev | decompose-plan entry (canonical) → adopter `compact/<id>-dev-prompt.md` → HALT | the signed sub-sprint spec (objective + scope_in + exit_criteria) |
+| Code Reviewer | adopter `compact/<id>-review-prompt.md` → project from the resolved sub-sprint spec → HALT | sub-sprint objective/scope/exit-criteria + Dev handoff/diff (referenced) + anti-hardcode kernel + severity rules + `review-verdict` schema |
+| Acceptance | adopter `compact/<scope>-acceptance-prompt.md` → project from the **signed** `intent_contract` → HALT | Customer need (`goal`) + acceptance criteria (`standard` + `proof_of_done`) + closure_contract/brief ref + F5 evidence ref + Reviewer-outcome refs + calibration/authority + `acceptance-verdict` schema |
+
+The projections are **deterministic** and reference stable evidence (the concrete Dev change-summary transcript, handoff doc, and `eval/runs/` paths) rather than copying raw transcripts. They are **distinct contracts** — there is no generic role projector: the Review prompt is sub-sprint-scoped, the Acceptance prompt is milestone-scoped and gated **first** on a **human-signed** `intent_contract` (Constitution §3.4 invariant #4) — a hard gate an adopter `compact/` prompt can NOT bypass. Acceptance projection only **reports** calibration/authority (it runs after the §3.6 gate); it never alters them — and a change to the Acceptance prompt/binding/schema still reopens calibration where §3.6 applies. When no research brief is bound, the Acceptance prompt embeds the signed `proof_of_done` as the closure criterion (it never fabricates a brief path). The resolved prompt is materialized through the per-spawn transcript path (§6.1) like any other.
 
 ## §7 Auto Loop interaction
 

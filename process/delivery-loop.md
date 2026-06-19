@@ -453,6 +453,14 @@ Each spawn function has a published JSON-schema verdict shape so orchestrator pa
 - Invalid verdict = `gate_hard_fail` MANDATORY_CHECKPOINT.
 - Schema violation does NOT silently default to permissive verdict. Agent re-runs OR human resolves.
 
+**Prompt resolution (strict mode)** — in strict mode (`context.allow_real` OR any non-mock adapter wired; `process/prompt-artifact-rules.md` §6.2), `spawn_dev`, `run_review`, and `run_acceptance` do NOT dispatch a one-line role request. Each resolves a **self-contained** prompt by content and, when the source is missing/incomplete, persists a **genuinely resumable refinement HALT** (`STATE_HALTED` + a persisted `halt_resume_state` so a re-run re-enters the paused state and re-resolves, + a `*_spec_refinement` checkpoint) instead of spawning a thin prompt:
+
+- `spawn_dev` — decompose-plan entry (canonical) → adopter `compact/<id>-dev-prompt.md` → HALT.
+- `run_review` — adopter `compact/<id>-review-prompt.md` → deterministic projection from the resolved sub-sprint spec (objective/scope/exit-criteria + Dev handoff/diff refs + anti-hardcode kernel + severity rules + the `review-verdict` schema) → HALT. Sub-sprint-scoped.
+- `run_acceptance` — adopter `compact/<scope>-acceptance-prompt.md` → projection from the **human-signed** `intent_contract` (Customer need + acceptance criteria) + closure_contract/brief + F5 evidence + Reviewer-outcome refs + calibration/authority + the `acceptance-verdict` schema → HALT. Milestone-scoped; runs AFTER the §3.6 calibration gate + F5 eval and only **reports** calibration/authority (never alters them). An unsigned/incomplete contract HALTs (§3.4 invariant #4).
+
+These are **two distinct contracts** (no generic role projector). Offline/mock runs keep the legacy inline prompt (byte-identical). Whatever is dispatched is materialized through the per-spawn transcript (§4.2.10).
+
 #### §4.2.8 Δ-18 anti-patterns (FORBIDDEN — extensions to Constitution §1.7)
 
 Each violation is a framework breach; orchestrator implementations MUST refuse / halt / surface.

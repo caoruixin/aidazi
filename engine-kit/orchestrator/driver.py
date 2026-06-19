@@ -49,6 +49,13 @@ from typing import Any, Callable, Optional, Sequence
 # STATE_HALTED, and the dev step must NOT proceed to the model spawn.
 _DEV_SPEC_HALT = object()
 
+# Same contract for the Review and Acceptance prompt projections: a LIVE run that
+# cannot resolve a complete, self-contained prompt from authoritative structured
+# state (or an adopter-authored compact prompt) writes a refinement checkpoint +
+# sets STATE_HALTED and returns the sentinel — it NEVER spawns a one-line prompt.
+_REVIEW_SPEC_HALT = object()
+_ACCEPTANCE_SPEC_HALT = object()
+
 # A safe sub-sprint id: letters/digits then letters/digits/dot/underscore/hyphen.
 # Used to gate ANY interpolation of an id into a filesystem path (no `..`, no `/`).
 # Anchored with \A…\Z (NOT ^…$): Python's `$` also matches just BEFORE a trailing
@@ -94,7 +101,7 @@ for _p in (_THIS_DIR, _ENGINE_KIT_DIR, _AUDIT_DIR):
         sys.path.insert(0, _p)
 
 import audit_log as audit  # noqa: E402  (engine-kit/audit/audit_log.py)
-from adapters import ADAPTER_REGISTRY, Adapter, AdapterError  # noqa: E402
+from adapters import ADAPTER_REGISTRY, Adapter, AdapterError, MockAdapter  # noqa: E402
 
 # P3 INTEGRATION 1 — the standalone Loop Controller (engine-kit/orchestrator/
 # loop_controller.py) is the fix-loop termination AUTHORITY. The driver builds a
@@ -402,6 +409,17 @@ class RunState:
     milestone_planned: bool = False
     planned_sequence: list[str] = field(default_factory=list)
     planned_subsprints: list = field(default_factory=list)
+    # ---- Prompt-contract additions (persisted for resume, §4.5).
+    #   halt_resume_state  : when a refinement HALT fires (a dev/review/acceptance
+    #                        prompt is not resolvable on a live run) the PENDING state
+    #                        the halt paused at is recorded here so a resume RE-ENTERS
+    #                        it (``state`` itself is STATE_HALTED). None ⇒ not a
+    #                        resumable spec-halt (a terminal/HITL halt stays put).
+    #   last_dev_output_ref: run-dir-relative path to the most recent Dev spawn's
+    #                        output transcript — the concrete change summary the
+    #                        projected Review prompt references.
+    halt_resume_state: Optional[str] = None
+    last_dev_output_ref: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -421,6 +439,8 @@ class RunState:
             "milestone_planned": self.milestone_planned,
             "planned_sequence": list(self.planned_sequence),
             "planned_subsprints": list(self.planned_subsprints),
+            "halt_resume_state": self.halt_resume_state,
+            "last_dev_output_ref": self.last_dev_output_ref,
         }
 
     @classmethod
@@ -442,6 +462,8 @@ class RunState:
             milestone_planned=bool(d.get("milestone_planned", False)),
             planned_sequence=list(d.get("planned_sequence", [])),
             planned_subsprints=list(d.get("planned_subsprints", [])),
+            halt_resume_state=d.get("halt_resume_state"),
+            last_dev_output_ref=d.get("last_dev_output_ref"),
         )
 
 
@@ -589,6 +611,10 @@ class Driver:
         self.gate_resolver = gate_resolver
 
         self.state: Optional[RunState] = None
+        # The most recent _spawn's output-transcript ref (run-dir-relative). _step_dev
+        # copies it into RunState.last_dev_output_ref so the projected Review prompt can
+        # cite the Dev change-summary by a CONCRETE path.
+        self._last_spawn_output_ref: Optional[str] = None
 
     # ----- audit ----------------------------------------------------------- #
     def _audit(self, type_: str, payload: dict) -> None:
@@ -794,6 +820,7 @@ class Driver:
         # still captured for audit, not lost to the gate_hard_fail below.
         output_ref = self._write_transcript(
             self.state.spawn_count, role, "output", verdict)
+        self._last_spawn_output_ref = output_ref  # for _step_dev → review change ref
 
         # Validate if this spawn carries a verdict schema (spawn_dev does not).
         if schema_key is not None:
@@ -1179,20 +1206,21 @@ class Driver:
 
     @staticmethod
     def _validate_compact_text(front_matter: Optional[dict], body: str) -> list:
-        """Validate an adopter-authored compact dev-prompt by CONTENT, not mere file
-        existence (a non-empty file is NOT automatically a bounded spec). The
-        template's hard requirement is ``context_budget.self_contained: true``
-        (Constitution §1.4-i); without it the file is not a self-contained job."""
+        """Validate an adopter-authored compact prompt (Dev / Review / Acceptance) by
+        CONTENT, not mere file existence (a non-empty file is NOT automatically a
+        self-contained spec). The shared hard requirement is
+        ``context_budget.self_contained: true`` (Constitution §1.4-i); without it the
+        file is not a self-contained job. Reused by all three prompt contracts."""
         problems = []
         if not (body or "").strip():
-            problems.append("the spec body is empty")
+            problems.append("the prompt body is empty")
         cb = front_matter.get("context_budget") if isinstance(front_matter, dict) else None
         self_contained = cb.get("self_contained") if isinstance(cb, dict) else None
         if self_contained is not True:
             problems.append(
                 "front-matter `context_budget.self_contained` must be `true` "
-                "(Constitution §1.4-i; see templates/compact-dev-prompt.md) — the "
-                "Dev spec must be a self-contained, bounded job, not a bare prompt")
+                "(Constitution §1.4-i; see the role's compact-prompt template) — the "
+                "compact prompt must be a self-contained, bounded job, not a bare prompt")
         return problems
 
     @staticmethod
@@ -1231,6 +1259,36 @@ class Driver:
         or None when there is no repo / file / safe path. The front-matter is parsed
         (for content validation) and stripped from the body (it is doc metadata)."""
         path = self._dev_spec_path()
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+        return self._split_front_matter(raw)
+
+    # ----- generic compact-prompt helpers (shared by Review + Acceptance) ---- #
+    def _compact_prompt_path(self, scope_id: str, suffix: str) -> Optional[str]:
+        """Absolute path to an OPTIONAL adopter-authored compact prompt
+        ``<repo>/compact/<scope_id>-<suffix>.md`` (suffix e.g. ``review-prompt`` |
+        ``acceptance-prompt``), or None when no repo is bound OR ``scope_id`` is
+        unsafe / would escape ``<repo>/compact``. Same containment discipline as
+        ``_dev_spec_path`` — the scope_id is interpolated into a path."""
+        if not self.repo_dir:
+            return None
+        if not self._safe_subsprint_id(scope_id):
+            return None
+        base = os.path.realpath(os.path.join(self.repo_dir, "compact"))
+        path = os.path.realpath(os.path.join(base, f"{scope_id}-{suffix}.md"))
+        if os.path.commonpath([base, path]) != base:
+            return None  # containment guard (defense-in-depth vs the id check)
+        return path
+
+    def _load_compact_prompt(self, path: Optional[str]):
+        """Read an adopter-authored compact prompt → ``(front_matter, body)`` or None
+        when the path is missing/unreadable. Mirrors ``_load_compact_file`` but takes
+        an explicit path so Review + Acceptance reuse the same read+split."""
         if not path or not os.path.isfile(path):
             return None
         try:
@@ -1288,16 +1346,34 @@ class Driver:
             options_md=("- refine_plan_and_resume\n"
                         "- author_compact_prompt_and_resume\n- abort"))
         self.state.state = STATE_HALTED
-        self._save_state()  # PERSIST the halt — a resume must NOT re-run dev_pending
+        # Record the pending state the halt paused at, so a resume (after the human
+        # refines the spec) RE-ENTERS dev_pending and re-resolves — genuinely resumable.
+        self.state.halt_resume_state = STATE_DEV_PENDING
+        self._save_state()  # PERSIST the halt + its resume target
         self._audit("dev_spec_refinement_halt",
                     {"subsprint_id": sid, "source": source, "problems": problems})
         return _DEV_SPEC_HALT
 
+    def _strict_prompts(self) -> bool:
+        """True ⇒ resolve self-contained prompts (project-or-HALT, never a one-line
+        request); False ⇒ the legacy inline prompt (offline/mock, byte-identical).
+
+        Strict mode is the union of TWO independent enablers so a real model can NEVER
+        receive a thin prompt: (a) an explicit ``context.allow_real`` flag, OR (b) the
+        presence of ANY non-mock adapter (claude_code / codex / headless / kimi …) —
+        i.e. a real subprocess/HTTP backend is wired. The MockAdapter is the only
+        offline/test backend, so an all-mock wiring without allow_real stays
+        byte-identical to before; the moment a real adapter is wired, prompt
+        resolution fails closed even if the caller forgot to set allow_real."""
+        if bool(self.context.get("allow_real")):
+            return True
+        return any(not isinstance(a, MockAdapter) for a in self.adapters.values())
+
     def _resolve_dev_spec(self):
         """Resolve the normative executable Dev spec for the current sub-sprint.
 
-        OFFLINE/mock (not allow_real) ⇒ None (the legacy inline prompt; the test
-        suite + dry-run stay byte-identical). On a LIVE run, validate BY CONTENT, in
+        OFFLINE/mock (not strict) ⇒ None (the legacy inline prompt; the test suite +
+        dry-run stay byte-identical). On a STRICT/LIVE run, validate BY CONTENT, in
         priority order, sanitizing the id before ANY path use:
           1. the schema-valid decompose-plan entry (CANONICAL) → project it to an
              executable prompt (+ an auditable compact-file projection);
@@ -1305,7 +1381,7 @@ class Driver:
           3. neither ⇒ a refinement HALT.
         An incomplete/ambiguous spec at (1) or (2) HALTS for refinement rather than
         silently running, or falling through to a less-specific source."""
-        if not bool(self.context.get("allow_real")):
+        if not self._strict_prompts():
             return None  # offline/mock → legacy inline prompt (byte-identical)
         sid = self.state.subsprint_id
         if not self._safe_subsprint_id(sid):
@@ -1333,6 +1409,161 @@ class Driver:
             [f"no decompose-plan entry for `{sid}` and no "
              f"compact/{sid}-dev-prompt.md under the repo"])
 
+    # ----- Review-prompt resolution (sub-sprint contract + Dev work to judge) -- #
+    # A DISTINCT contract from the Dev one: the Review prompt is scoped to ONE
+    # sub-sprint and derived from the SAME resolved sub-sprint spec the Dev executed
+    # PLUS the Dev handoff/diff to judge. compact/<id>-review-prompt.md is the
+    # adopter-authored alternative. Validated by CONTENT; a missing/incomplete source
+    # on a LIVE run HALTS — it never dispatches a one-line review request.
+    def _project_review_prompt(self, spec: dict) -> str:
+        """Deterministically PROJECT the resolved sub-sprint spec into a
+        self-contained Code Reviewer prompt (templates/compact-review-prompt.md
+        shape). EMBEDS the sub-sprint contract + review responsibilities + severity
+        rules + the review-verdict schema instruction; REFERENCES the Dev handoff +
+        diff and the anti-hardcode kernel (stable refs — no raw transcript copied in,
+        per the 'reference evidence, don't embed transcripts' rule)."""
+        def _section(label: str, value: Any) -> str:
+            if not value:
+                return ""
+            if isinstance(value, (list, tuple)):
+                inner = "\n".join(f"  - {x}" for x in value)
+            else:
+                inner = f"  {value}"
+            return f"{label}:\n{inner}\n"
+        sid = spec.get("id") or self.state.subsprint_id
+        parts = [
+            f"You are activating as the Code Reviewer Agent for sub-sprint {sid}.\n",
+            "Read-only judge: Read/Grep/Glob only — NO edits, NO network, NO git "
+            "push, NO agent spawn. Cold-start the always-load governance chain plus "
+            "role-cards/code-reviewer-agent.md, templates/anti-hardcode-review-"
+            "kernel.md (the 9-question kernel) and schemas/review-verdict.schema.json"
+            ".\n\n",
+            "## Sub-sprint under review\n",
+            f"Objective: {spec.get('objective', '')}\n",
+            _section("Scope IN (judge ONLY against these deliverables)",
+                     spec.get("scope_in")),
+            _section("Scope OUT (explicit non-goals)", spec.get("scope_out")),
+            _section("Modules in scope (Dev declares; verify by walking the diff)",
+                     spec.get("modules")),
+            _section("Exit criteria (close conditions the work must meet)",
+                     spec.get("exit_criteria")),
+            _section("Fix-layers in play", spec.get("layers")),
+            "\n## Dev handoff / change summary to review\n"
+            + (f"- Dev change summary (engine-captured, this sub-sprint): "
+               f"`{self.state.last_dev_output_ref}`\n"
+               if getattr(self.state, "last_dev_output_ref", None) else "")
+            + "- Dev handoff doc: `docs/handoff.md`\n"
+            "- Working-tree diff for this sub-sprint (read the changed files with "
+            "Read/Grep/Glob).\n"
+            "Reference only — read on demand; raw transcripts are NOT embedded here "
+            "(stable evidence references, not copied content).\n\n",
+            "## Review responsibilities\n"
+            "1. Anti-hardcode kernel — apply the 9-question kernel to EVERY diff "
+            "that touches a semantic surface (prompt / runtime semantic decision / "
+            "eval spec / judge calibration / a new keyword|regex|enum affecting "
+            "routing or escalation). If you skip it, declare an exemption explicitly "
+            "(infra_only | docs_only | config_governance | characterization_test).\n"
+            "2. Correctness lens — ownership (§1.3/§1.4), Tier-0 invariants "
+            "(docs/current/runtime_invariants.md), test coverage on changed semantic "
+            "surfaces, trace/eval-contract integrity, prompt self-containment "
+            "(§1.4-i).\n"
+            "3. §1.7 forbidden-list audit (role card §7) — ANY finding tied to §1.7 "
+            "is P0 and forces decision=fix_required.\n"
+            "4. Scope discipline — judge ONLY against Scope IN above; if the diff "
+            "touches a surface outside it, decision=out_of_scope_review (do NOT "
+            "silently pass).\n\n",
+            "## Severity rules\n"
+            "- P0: a §1.7 violation, a Tier-0 invariant break, or a correctness "
+            "defect that ships wrong behavior.\n"
+            "- P1: a blocking defect within scope (e.g. a missing test on a semantic "
+            "surface, a contract violation) that is not P0.\n"
+            "- P2: a non-blocking improvement.\n"
+            "- blocking_count = count of P0 + P1 findings.\n\n",
+            "## Output — emit a review-verdict (schemas/review-verdict.schema.json)\n"
+            "Return ONE JSON object and nothing else:\n"
+            "  decision: \"pass\" | \"fix_required\" | \"out_of_scope_review\" "
+            "(never invent another value)\n"
+            "  blocking_count: <integer >= 0>   (P0 + P1)\n"
+            "  summary: \"<one paragraph>\"\n"
+            "  scope_claim: \"<the sub-sprint id + module set you judged against>\"\n"
+            "  findings: [ { id, severity: \"P0\"|\"P1\"|\"P2\", layer: <fix-layer "
+            "enum>, evidence: [\"file:line\", ...], rationale, constitution_clause?, "
+            "kernel_question? } ]\n"
+            "A §1.7-tied finding defaults to P0 with decision=fix_required.\n",
+        ]
+        return "".join(p for p in parts if p)
+
+    def _review_spec_refine_halt(self, source: str, problems: list):
+        """Write a Review-prompt REFINEMENT checkpoint + set STATE_HALTED (resumable),
+        then return the sentinel. Mirrors ``_dev_spec_refine_halt``: a missing /
+        incomplete review source is a correctable gap, not a one-line review
+        request."""
+        sid = self.state.subsprint_id
+        bullets = "\n".join(f"- {p}" for p in problems)
+        self._write_checkpoint(
+            "review_spec_refinement", sid,
+            context_md=(
+                f"The self-contained Code Reviewer prompt for sub-sprint `{sid}` is "
+                f"not resolvable yet (source: {source}). The loop HALTS for "
+                f"refinement — it will NOT dispatch a one-line review request.\n\n"
+                f"Problems:\n{bullets}\n\n"
+                f"Resolve by EITHER completing the Deliver decompose plan for this "
+                f"sub-sprint (objective + scope_in + exit_criteria) so the engine "
+                f"can project the review prompt, OR authoring "
+                f"`compact/{sid}-review-prompt.md` from "
+                f"`templates/compact-review-prompt.md` (front-matter "
+                f"`context_budget.self_contained: true`). Then resume."),
+            options_md=("- refine_plan_and_resume\n"
+                        "- author_compact_review_prompt_and_resume\n- abort"))
+        self.state.state = STATE_HALTED
+        # Resume target: re-enter review_pending after the human supplies/refines the
+        # review source, and re-resolve (genuinely resumable, not a dead end).
+        self.state.halt_resume_state = STATE_REVIEW_PENDING
+        self._save_state()  # PERSIST the halt + its resume target
+        self._audit("review_spec_refinement_halt",
+                    {"subsprint_id": sid, "source": source, "problems": problems})
+        return _REVIEW_SPEC_HALT
+
+    def _resolve_review_spec(self):
+        """Resolve the self-contained Code Reviewer prompt for the current sub-sprint.
+
+        OFFLINE/mock (not strict) ⇒ None (the legacy inline prompt; the test suite
+        stays byte-identical). On a STRICT/LIVE run, in order (sanitizing the id
+        before ANY path use):
+          1. an adopter-authored compact/<id>-review-prompt.md (when content-valid);
+          2. else PROJECT from the resolved sub-sprint spec (the same decompose-plan
+             entry the Dev executed);
+          3. neither ⇒ a refinement HALT.
+        An incomplete source at (1) or (2) HALTS rather than silently dispatching a
+        one-line review request (or falling through to a less-specific source)."""
+        if not self._strict_prompts():
+            return None  # offline/mock → legacy inline prompt (byte-identical)
+        sid = self.state.subsprint_id
+        if not self._safe_subsprint_id(sid):
+            return self._review_spec_refine_halt(
+                "invalid_id",
+                [f"sub-sprint id {sid!r} is not a safe identifier "
+                 f"(letters/digits then ._- only; no path separators)"])
+        loaded = self._load_compact_prompt(
+            self._compact_prompt_path(sid, "review-prompt"))
+        if loaded is not None:
+            front_matter, body = loaded
+            problems = self._validate_compact_text(front_matter, body)
+            if problems:
+                return self._review_spec_refine_halt("compact_file", problems)
+            return body.strip()
+        plan_spec = self._current_subsprint_plan()
+        if plan_spec is not None:
+            problems = self._validate_subsprint_spec(plan_spec)
+            if problems:
+                return self._review_spec_refine_halt("subsprint_spec", problems)
+            return self._project_review_prompt(plan_spec)
+        return self._review_spec_refine_halt(
+            "missing",
+            [f"no decompose-plan entry for `{sid}` and no "
+             f"compact/{sid}-review-prompt.md under the repo to derive the review "
+             f"prompt from"])
+
     def _step_dev(self) -> None:
         # The Dev spec is resolved from the decompose plan (canonical) or an
         # adopter-authored compact prompt, validated by CONTENT. A live run with no
@@ -1351,16 +1582,30 @@ class Driver:
             "dev", prompt,
             schema_key=None,  # spawn_dev's artifact IS the code+handoff, no verdict schema
         )
+        # Capture the Dev change-summary transcript ref so the projected Review prompt
+        # can cite it by a CONCRETE path (not just "the working-tree diff").
+        self.state.last_dev_output_ref = self._last_spawn_output_ref
         self.state.history.append(STATE_DEV_PENDING)
 
     def _step_gate(self) -> None:
         self._run_gates()
         self.state.history.append(STATE_GATE_PENDING)
 
-    def _step_review(self) -> dict:
-        prompt = (self._lessons_block("review")
-                  + f"Review sub-sprint {self.state.subsprint_id}. "
-                    f"Emit a review-verdict.")
+    def _step_review(self):
+        # The Review prompt is resolved from an adopter compact/<id>-review-prompt.md
+        # or PROJECTED from the resolved sub-sprint spec, validated by CONTENT. A live
+        # run with no usable source HALTS for refinement (resumable) — it never
+        # dispatches a one-line review request. Offline/mock keeps the legacy inline
+        # prompt (byte-identical). On HALT, returns None; _drive sees STATE_HALTED.
+        resolved = self._resolve_review_spec()
+        if resolved is _REVIEW_SPEC_HALT:
+            return None  # checkpoint written + STATE_HALTED set; the drive loop stops
+        if resolved is not None:
+            prompt = self._lessons_block("review") + resolved
+        else:
+            prompt = (self._lessons_block("review")
+                      + f"Review sub-sprint {self.state.subsprint_id}. "
+                        f"Emit a review-verdict.")
         verdict = self._spawn("review", prompt, schema_key="review")
         self.state.history.append(STATE_REVIEW_PENDING)
         return verdict
@@ -1804,6 +2049,16 @@ class Driver:
     def _drive(self) -> None:
         """Execute remaining states in linear order from self.state.state."""
         assert self.state is not None
+        # Resume FROM a refinement HALT (dev / review / acceptance prompt was not
+        # resolvable): the human has refined the source and re-run. Restore the pending
+        # state the halt paused at so the loop RE-ENTERS it (and re-resolves — passing
+        # now, or re-halting if still unfixed). This is what makes the spec-HALT
+        # genuinely resumable; a terminal/HITL halt has no halt_resume_state and stays
+        # put (the short-circuit below returns).
+        if self.state.state == STATE_HALTED and self.state.halt_resume_state:
+            self.state.state = self.state.halt_resume_state
+            self.state.halt_resume_state = None
+            self._save_state()
         # Find resume index in the linear order; advance/done short-circuit.
         order = LOOP_ORDER
         # P6.1: Resume INTO a full_chain_guided pre-state (research/gate1/decompose).
@@ -1845,6 +2100,8 @@ class Driver:
                 self._step_gate()
             elif st == STATE_REVIEW_PENDING:
                 review_verdict = self._step_review()
+                if self.state.state == STATE_HALTED:
+                    return  # review-spec refinement halt — do not decide/advance
                 decision = review_verdict.get("decision")
                 if decision == "fix_required":
                     self._handle_fix_required(review_verdict)
@@ -2101,12 +2358,16 @@ class Driver:
             self.state.state = STATE_DEV_PENDING
             self._save_state()
             self._step_dev()
+            if self.state.state == STATE_HALTED:
+                return  # dev-spec refinement halt mid-auto-fix — do not advance
             self.state.state = STATE_GATE_PENDING
             self._save_state()
             self._step_gate()
             self.state.state = STATE_REVIEW_PENDING
             self._save_state()
             verdict = self._step_review()
+            if self.state.state == STATE_HALTED:
+                return  # review-spec refinement halt mid-auto-fix (verdict is None)
             d2 = verdict.get("decision")
             if d2 == "out_of_scope_review":
                 self._handle_out_of_scope_review(verdict)
@@ -2362,6 +2623,209 @@ class Driver:
                      "evidence_path": rel_stdout, "ok": True})
         return rel_stdout
 
+    # ----- Acceptance-prompt resolution (signed contract + milestone evidence) - #
+    # A DISTINCT contract from the Review one: the Acceptance prompt is scoped to
+    # MILESTONE CLOSE and derived from the SIGNED charter.intent_contract (the
+    # customer need + the bar + the definition of done) plus the closure_contract,
+    # the F5 evidence, and the per-sub-sprint Reviewer outcomes. compact/<scope>-
+    # acceptance-prompt.md is the adopter-authored alternative. A missing / unsigned
+    # / incomplete contract on a LIVE run HALTS — it never dispatches a one-line
+    # acceptance request. This resolution runs AFTER the §3.6 calibration gate and
+    # the F5 eval, and NEVER alters calibration or authority — it only REPORTS them.
+    def _acceptance_scope_id(self) -> str:
+        """The milestone scope id for the Acceptance compact-prompt path + header:
+        the charter mission id when present + path-safe (acceptance is
+        milestone-scoped), else the current sub-sprint id."""
+        mission = (self.charter.get("mission") or {}).get("id")
+        if mission is not None and self._safe_subsprint_id(mission):
+            return str(mission)
+        return self.state.subsprint_id
+
+    @staticmethod
+    def _validate_acceptance_context(ic: dict) -> list:
+        """Validate the SIGNED intent contract anchoring the Acceptance prompt, by
+        CONTENT. The acceptance criteria = the customer need (goal) + the bar
+        (standard) + the definition of done (proof_of_done), and the contract MUST be
+        human-signed (confirmed_by_human) — Acceptance judges ONLY a signed contract
+        (Constitution §3.4 invariant #4; the engine never auto-confirms). Empty list
+        ⇒ a complete, signed contract."""
+        problems = []
+        if not isinstance(ic, dict) or not ic:
+            return ["no charter.intent_contract to derive the Acceptance criteria from"]
+        if not str(ic.get("goal") or "").strip():
+            problems.append("missing/empty intent_contract.goal (the customer need)")
+        if not str(ic.get("standard") or "").strip():
+            problems.append("missing/empty intent_contract.standard (the acceptance bar)")
+        if not str(ic.get("proof_of_done") or "").strip():
+            problems.append(
+                "missing/empty intent_contract.proof_of_done (definition of done)")
+        if ic.get("confirmed_by_human") is not True:
+            problems.append(
+                "intent_contract.confirmed_by_human must be `true` — Acceptance judges "
+                "ONLY a human-signed contract (Constitution §3.4 invariant #4)")
+        return problems
+
+    def _project_acceptance_prompt(self, ic: dict, evidence_path: str,
+                                   calibration_status: str) -> str:
+        """Deterministically PROJECT the signed intent contract + milestone context
+        into a self-contained Acceptance prompt (templates/compact-acceptance-prompt
+        .md shape). EMBEDS the customer need + acceptance criteria + calibration /
+        authority + the acceptance-verdict schema instruction; REFERENCES the
+        closure_contract (brief), the F5 evidence path, and the per-sub-sprint
+        Reviewer outcomes (stable refs — raw evidence is NOT copied in). This is
+        PURELY a rendering of existing state: it does NOT change calibration_status
+        or the autonomy level (the §3.6 gate already ran)."""
+        scope = self._acceptance_scope_id()
+        # CONCRETE closure-contract reference only when a brief is actually bound;
+        # otherwise the embedded signed proof_of_done IS the closure criterion (the
+        # intent-contract schema: proof_of_done maps to the closure_contract proof) —
+        # never fabricate a research-brief path that does not exist.
+        brief_ref = self.state.brief_draft_ref
+        if brief_ref:
+            closure_section = (
+                "## Acceptance criteria — closure contract\n"
+                f"Judge ONLY against the signed closure_contract (positive_shape + "
+                f"anti_pattern + anchor_phrases) in: `{brief_ref}`. The "
+                f"closure_contract is IMMUTABLE between Gate-1 sign-off and "
+                f"acceptance (§3.4 invariant #4); if its sign_off_date does not match "
+                f"milestone start, your verdict is needs_human.\n\n")
+            closure_ref_line = f"  closure_contract_ref: \"{brief_ref}\"\n"
+        else:
+            closure_section = (
+                "## Acceptance criteria — closure contract\n"
+                "No separate research brief is bound to this loop; the acceptance "
+                "criteria ARE the signed `proof_of_done` above (the intent contract's "
+                "definition of done, which maps to the closure_contract proof). Judge "
+                "ONLY against it. The signed contract is IMMUTABLE post Gate-1 (§3.4 "
+                "invariant #4).\n\n")
+            closure_ref_line = ("  closure_contract_ref: (optional — omit, or cite "
+                                "the signed intent_contract; no research brief is "
+                                "bound)\n")
+        seq = (self._supplied_sequence() or list(self.state.planned_sequence)
+               or [self.state.subsprint_id])
+        level = self.autonomy.get("level", "human_in_the_loop")
+        parts = [
+            f"You are activating as the Acceptance Agent for the milestone close of "
+            f"`{scope}`.\n",
+            "Read-only customer-perspective judge: Read/Grep/Glob only — NO edits, "
+            "NO network, NO eval-harness run. Spawn surface: orchestrator (§1.7-C, "
+            "calibration-gated). Cold-start the always-load governance chain plus "
+            "role-cards/acceptance-agent.md and "
+            "schemas/acceptance-verdict.schema.json.\n\n",
+            "## Customer need (signed intent contract)\n"
+            f"Goal (customer terms): {ic.get('goal','')}\n"
+            f"Standard (the bar for 'good'): {ic.get('standard','')}\n"
+            f"Proof of done (definition of done / eval method): "
+            f"{ic.get('proof_of_done','')}\n\n",
+            closure_section,
+            "## Delivered behavior under acceptance\n"
+            f"Milestone sub-sprints delivered: {', '.join(str(s) for s in seq)}\n"
+            "Judge the DELIVERED BEHAVIOR (customer perspective), not code "
+            "structure.\n\n",
+            "## Accumulated evidence (read-only; do NOT re-run the harness)\n"
+            f"- F5 execution evidence (authoritative): {evidence_path}\n"
+            "- Per-sub-sprint Reviewer outcomes: docs/codex-findings.md and the "
+            "review transcripts under `.orchestrator/audit/transcripts/`.\n"
+            "- Do NOT judge from code inspection alone (§4.2.8 anti-pattern #5); "
+            "every case MUST cite an execution evidence_path under eval/runs/.\n\n",
+            "## Authority & calibration (do NOT override)\n"
+            f"Autonomy level: {level}\n"
+            f"Calibration status: {calibration_status}\n"
+            "If calibration is uncalibrated on an autonomous run, the orchestrator "
+            "has ALREADY degraded authority (§3.6) and your verdict is ADVISORY "
+            "ONLY until calibrated — do not self-escalate.\n\n",
+            "## Output — emit an acceptance-verdict "
+            "(schemas/acceptance-verdict.schema.json)\n"
+            "Return ONE JSON object and nothing else:\n"
+            "  milestone_verdict: \"pass\" | \"fix_required\" | \"needs_human\"\n"
+            + closure_ref_line +
+            "  calibration_status: \"calibrated\"|\"uncalibrated\"|\"not_required\"\n"
+            "  cases: [ { case_id, criterion, evidence_path: \"eval/runs/...\", "
+            "verdict: \"pass\"|\"fail\"|\"partial\", rationale }, ... ]   (>= 1 case)\n"
+            "  failure_briefs: [...]   (REQUIRED + non-empty iff fix_required)\n"
+            "  residual_risks: [ \"<risk the Customer assumes on a pass>\", ... ]\n"
+            "  suggested_route: \"deliver_fix_iteration\" | "
+            "\"re_acceptance_after_evidence\" | \"research_contract_revision\" | "
+            "\"n/a\"\n"
+            "Each case cites an execution evidence_path under eval/runs/ (NEVER a "
+            "code path). Rationale cites a SEMANTIC observation (positive shape held "
+            "/ anti-pattern avoided / anchor-phrase match), never a keyword match "
+            "(§1.7-B). On fix_required, ALSO write the §3.5 human-confirm checkpoint "
+            "— never route to Deliver without it.\n",
+        ]
+        return "".join(parts)
+
+    def _acceptance_spec_refine_halt(self, source: str, problems: list):
+        """Write an Acceptance-prompt REFINEMENT checkpoint + set STATE_HALTED
+        (resumable), then return the sentinel. The F5 evidence already captured this
+        run is preserved for the resume. A missing/unsigned/incomplete acceptance
+        contract is a correctable gap, not a one-line acceptance request."""
+        scope = self._acceptance_scope_id()
+        bullets = "\n".join(f"- {p}" for p in problems)
+        self._write_checkpoint(
+            "acceptance_spec_refinement", scope,
+            context_md=(
+                f"The self-contained Acceptance prompt for milestone `{scope}` is "
+                f"not resolvable yet (source: {source}). The loop HALTS for "
+                f"refinement — it will NOT dispatch a one-line acceptance request.\n\n"
+                f"Problems:\n{bullets}\n\n"
+                f"Resolve by EITHER signing a complete charter.intent_contract "
+                f"(goal + standard + proof_of_done + confirmed_by_human) so the "
+                f"engine can project the acceptance prompt against the "
+                f"closure_contract, OR authoring "
+                f"`compact/{scope}-acceptance-prompt.md` from "
+                f"`templates/compact-acceptance-prompt.md` (front-matter "
+                f"`context_budget.self_contained: true`). Then resume."),
+            options_md=("- sign_intent_contract_and_resume\n"
+                        "- author_compact_acceptance_prompt_and_resume\n- abort"))
+        self.state.state = STATE_HALTED
+        # Resume target: re-enter acceptance_pending after the human signs the contract
+        # / authors the compact prompt — _run_acceptance re-runs the eval + re-resolves.
+        self.state.halt_resume_state = STATE_ACCEPTANCE_PENDING
+        self._save_state()  # PERSIST the halt + its resume target
+        self._audit("acceptance_spec_refinement_halt",
+                    {"scope": scope, "source": source, "problems": problems})
+        return _ACCEPTANCE_SPEC_HALT
+
+    def _resolve_acceptance_spec(self, evidence_path: str,
+                                 calibration_status: str):
+        """Resolve the self-contained Acceptance prompt for milestone close.
+
+        OFFLINE/mock (not strict) ⇒ None (the legacy inline prompt; the test suite
+        stays byte-identical). On a STRICT/LIVE run:
+          0. HARD GATE FIRST — the SIGNED charter.intent_contract (Constitution §3.4
+             invariant #4: Acceptance judges ONLY a human-signed contract). This gates
+             BOTH sources below; an unsigned/incomplete/missing contract ⇒ HALT, so an
+             adopter compact prompt can NEVER bypass the sign-off.
+          1. then an adopter-authored compact/<scope>-acceptance-prompt.md (content-
+             valid) — a richer rendering layered on the signed contract;
+          2. else PROJECT from the signed contract + closure_contract / F5 evidence /
+             reviewer-outcome refs.
+        Never dispatches a one-line acceptance request on a live run."""
+        if not self._strict_prompts():
+            return None  # offline/mock → legacy inline prompt (byte-identical)
+        scope = self._acceptance_scope_id()
+        if not self._safe_subsprint_id(scope):
+            return self._acceptance_spec_refine_halt(
+                "invalid_scope",
+                [f"acceptance scope id {scope!r} is not a safe identifier "
+                 f"(letters/digits then ._- only; no path separators)"])
+        # §3.4 invariant #4 HARD GATE — applies to EVERY source (compact or
+        # projection): Acceptance never runs without a human-signed contract.
+        ic = self.charter.get("intent_contract") or {}
+        problems = self._validate_acceptance_context(ic)
+        if problems:
+            return self._acceptance_spec_refine_halt("intent_contract", problems)
+        loaded = self._load_compact_prompt(
+            self._compact_prompt_path(scope, "acceptance-prompt"))
+        if loaded is not None:
+            front_matter, body = loaded
+            problems = self._validate_compact_text(front_matter, body)
+            if problems:
+                return self._acceptance_spec_refine_halt("compact_file", problems)
+            return body.strip()
+        return self._project_acceptance_prompt(ic, evidence_path, calibration_status)
+
     def _spawn_acceptance(self, evidence_path: str,
                           calibration_status: str) -> dict:
         """Spawn run_acceptance via the role adapter (§1.7-C permitted surface:
@@ -2376,13 +2840,25 @@ class Driver:
                 "acceptance enabled but no adapter wired for role 'acceptance'",
                 STATE_ACCEPTANCE_PENDING)
         routing = route_for_role(self.charter, "acceptance")
-        prompt = (
-            f"Acceptance for milestone close of sub-sprint "
-            f"{self.state.subsprint_id}. Read the F5 execution evidence at "
-            f"(read-only) {evidence_path}; read the closure_contract from the "
-            f"research brief; emit an acceptance-verdict. Calibration status: "
-            f"{calibration_status}. You MUST NOT run the eval harness yourself."
-        )
+        # The Acceptance prompt is resolved from an adopter compact/<scope>-
+        # acceptance-prompt.md or PROJECTED from the SIGNED intent contract + closure
+        # contract + F5 evidence, validated by CONTENT. A live run with no usable
+        # source HALTS (resumable) — it never dispatches a one-line acceptance
+        # request. Offline/mock keeps the legacy inline prompt (byte-identical). This
+        # runs AFTER the calibration gate + eval and only REPORTS calibration_status.
+        resolved = self._resolve_acceptance_spec(evidence_path, calibration_status)
+        if resolved is _ACCEPTANCE_SPEC_HALT:
+            return _ACCEPTANCE_SPEC_HALT  # checkpoint + STATE_HALTED; caller stops
+        if resolved is not None:
+            prompt = resolved
+        else:
+            prompt = (
+                f"Acceptance for milestone close of sub-sprint "
+                f"{self.state.subsprint_id}. Read the F5 execution evidence at "
+                f"(read-only) {evidence_path}; read the closure_contract from the "
+                f"research brief; emit an acceptance-verdict. Calibration status: "
+                f"{calibration_status}. You MUST NOT run the eval harness yourself."
+            )
         input_hash = "sha256:" + hashlib.sha256(
             ("acceptance\x00" + prompt).encode("utf-8")).hexdigest()[:16]
         self.state.spawn_count += 1
@@ -2482,6 +2958,8 @@ class Driver:
 
         # 3. spawn run_acceptance with the evidence PATH (read-only).
         verdict = self._spawn_acceptance(evidence_path, calibration_status)
+        if verdict is _ACCEPTANCE_SPEC_HALT:
+            return  # acceptance-spec refinement halt: checkpoint written, STATE_HALTED
         self._handle_acceptance_verdict(verdict, evidence_path)
 
     def _handle_acceptance_verdict(self, verdict: dict,

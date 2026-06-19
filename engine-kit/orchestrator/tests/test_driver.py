@@ -2361,5 +2361,410 @@ class TestAcceptanceTranscripts(unittest.TestCase):
             self.assertIsNone(spawn["output_ref"])
 
 
+# --------------------------------------------------------------------------- #
+# Two EXPLICIT self-contained prompt contracts (Review + Acceptance) — replacing
+# the one-line role prompts. Each resolves: adopter compact file → deterministic
+# projection from authoritative structured state → resumable HALT. Gated on
+# allow_real, so mock/offline runs keep the legacy inline prompt (byte-identical).
+# --------------------------------------------------------------------------- #
+_REVIEW_PLAN = [{
+    "id": "sprint-001", "objective": "Add refund-eligibility check (UC-1)",
+    "scope_in": ["UC-1 eligibility decision"], "scope_out": ["denial wording"],
+    "modules": ["src/tools/eligibility.py"], "layers": ["semantic_planner"],
+    "exit_criteria": ["UC-1 tests pass"]}]
+
+
+class ReviewSpecResolutionTests(unittest.TestCase):
+    def _live(self, d, *, planned=None, repo_dir=None, sid="sprint-001"):
+        drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                      loop_id="loop-rev", clock=_clock(),
+                      context={"allow_real": True}, repo_dir=repo_dir)
+        drv_.state = RunState(loop_id="loop-rev", subsprint_id=sid)
+        drv_.state.state = STATE_REVIEW_PENDING
+        drv_.state.planned_subsprints = planned or []
+        return drv_
+
+    def test_offline_resolves_to_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = self._live(d, planned=_REVIEW_PLAN)
+            drv_.context["allow_real"] = False  # offline → legacy inline (byte-identical)
+            self.assertIsNone(drv_._resolve_review_spec())
+
+    def test_project_review_prompt_renders_contract_sections(self):
+        out = self._live(tempfile.mkdtemp(), planned=_REVIEW_PLAN)\
+            ._project_review_prompt(_REVIEW_PLAN[0])
+        self.assertIn("Code Reviewer Agent for sub-sprint sprint-001", out)
+        self.assertIn("Add refund-eligibility check (UC-1)", out)   # objective
+        self.assertIn("UC-1 eligibility decision", out)             # scope IN
+        self.assertIn("UC-1 tests pass", out)                       # exit criteria
+        self.assertIn("anti-hardcode", out.lower())                 # kernel
+        self.assertIn("blocking_count", out)                        # severity rules
+        self.assertIn("review-verdict.schema.json", out)            # verdict schema
+
+    def test_live_projects_from_subsprint_spec(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = self._live(d, planned=_REVIEW_PLAN)._resolve_review_spec()
+            self.assertIsInstance(out, str)
+            self.assertIn("Code Reviewer Agent for sub-sprint sprint-001", out)
+
+    def test_live_adopter_compact_file_wins_over_projection(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(os.path.join(repo, "compact"))
+            with open(os.path.join(repo, "compact", "sprint-001-review-prompt.md"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("---\ncontext_budget:\n  self_contained: true\n---\n"
+                         "Adopter-authored self-contained review prompt for UC-1.")
+            out = self._live(d, planned=_REVIEW_PLAN, repo_dir=repo)\
+                ._resolve_review_spec()
+            self.assertEqual(out,
+                             "Adopter-authored self-contained review prompt for UC-1.")
+
+    def test_live_invalid_compact_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(os.path.join(repo, "compact"))
+            with open(os.path.join(repo, "compact", "sprint-001-review-prompt.md"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("bare review prompt, no self_contained front-matter")
+            drv_ = self._live(d, planned=_REVIEW_PLAN, repo_dir=repo)
+            self.assertIs(drv_._resolve_review_spec(), drv._REVIEW_SPEC_HALT)
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+
+    def test_live_missing_source_halts_resumable(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = self._live(d, planned=[])  # no plan, no compact
+            self.assertIs(drv_._resolve_review_spec(), drv._REVIEW_SPEC_HALT)
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+            self.assertEqual(drv_._load_state().state, STATE_HALTED)  # persisted
+
+    def test_live_incomplete_plan_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = [{"id": "sprint-001", "objective": "", "scope_in": [],
+                    "exit_criteria": []}]
+            self.assertIs(self._live(d, planned=bad)._resolve_review_spec(),
+                          drv._REVIEW_SPEC_HALT)
+
+    def test_projection_materialized_through_spawn(self):
+        # projection → _spawn → transcript materialization (the auditability path).
+        with tempfile.TemporaryDirectory() as d:
+            cap = _PromptCapturingMock({("review",): CLEAN_REVIEW}, harness="codex",
+                                       provider="openai", model="gpt-5.5")
+            adapters = _adapters()
+            adapters["review"] = cap
+            drv_ = Driver(load_charter(CHARTER_PATH), d, adapters,
+                          loop_id="loop-rev-mat", clock=_clock(),
+                          context={"allow_real": True})
+            drv_.state = RunState(loop_id="loop-rev-mat", subsprint_id="sprint-001")
+            drv_.state.state = STATE_REVIEW_PENDING
+            drv_.state.planned_subsprints = _REVIEW_PLAN
+            verdict = drv_._step_review()
+            self.assertEqual(verdict, CLEAN_REVIEW)
+            self.assertIn("Code Reviewer Agent for sub-sprint sprint-001",
+                          cap.prompts[-1])
+            spawn = next(e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                         if e["type"] == "spawn" and e["payload"]["role"] == "review")
+            with open(os.path.join(d, spawn["prompt_ref"]), encoding="utf-8") as fh:
+                self.assertIn("blocking_count", fh.read())
+
+
+class AcceptanceSpecResolutionTests(unittest.TestCase):
+    _SIGNED_IC = {
+        "goal": "Refunds honored for eligible customers",
+        "standard": "No eligible refund denied; no ineligible approved",
+        "proof_of_done": "All bad-cases pass under F5 eval",
+        "confirmed_by_human": True}
+
+    def _live(self, d, *, intent_contract=None, repo_dir=None, mission="M1",
+              adapters=None):
+        charter = _acceptance_charter()
+        if mission is not None:
+            charter["mission"] = {"id": mission}
+        if intent_contract is not None:
+            charter["intent_contract"] = intent_contract
+        drv_ = Driver(charter, d, adapters or _acceptance_adapters(ACC_PASS),
+                      loop_id="loop-acc", clock=_clock(),
+                      context={"allow_real": True}, repo_dir=repo_dir)
+        drv_.state = RunState(loop_id="loop-acc", subsprint_id="sprint-001")
+        drv_.state.state = STATE_ACCEPTANCE_PENDING
+        return drv_
+
+    def test_validate_acceptance_context(self):
+        self.assertEqual(Driver._validate_acceptance_context(self._SIGNED_IC), [])
+        self.assertTrue(Driver._validate_acceptance_context({}))  # no contract
+        unsigned = dict(self._SIGNED_IC, confirmed_by_human=False)
+        probs = Driver._validate_acceptance_context(unsigned)
+        self.assertTrue(any("confirmed_by_human" in p for p in probs))
+
+    def test_offline_resolves_to_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = self._live(d, intent_contract=self._SIGNED_IC)
+            drv_.context["allow_real"] = False
+            self.assertIsNone(
+                drv_._resolve_acceptance_spec(_EVID, "calibrated"))
+
+    def test_live_projects_from_signed_contract(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = self._live(d, intent_contract=self._SIGNED_IC)\
+                ._resolve_acceptance_spec(_EVID, "calibrated")
+            self.assertIsInstance(out, str)
+            self.assertIn("Acceptance Agent for the milestone close of `M1`", out)
+            self.assertIn("Refunds honored for eligible customers", out)   # goal
+            self.assertIn("No eligible refund denied", out)                # standard
+            self.assertIn("All bad-cases pass under F5 eval", out)         # proof_of_done
+            self.assertIn(_EVID, out)                                       # evidence ref
+            self.assertIn("Calibration status: calibrated", out)           # reported
+            self.assertIn("acceptance-verdict.schema.json", out)           # schema
+
+    def test_live_unsigned_contract_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            unsigned = dict(self._SIGNED_IC, confirmed_by_human=False)
+            drv_ = self._live(d, intent_contract=unsigned)
+            self.assertIs(drv_._resolve_acceptance_spec(_EVID, "calibrated"),
+                          drv._ACCEPTANCE_SPEC_HALT)
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+
+    def test_live_missing_contract_halts_resumable(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = self._live(d, intent_contract=None)  # no ic, no compact
+            self.assertIs(drv_._resolve_acceptance_spec(_EVID, "calibrated"),
+                          drv._ACCEPTANCE_SPEC_HALT)
+            self.assertEqual(drv_._load_state().state, STATE_HALTED)  # persisted
+
+    def test_live_adopter_compact_file_used_on_signed_contract(self):
+        # A compact acceptance prompt is the richer rendering — but ONLY once the
+        # signed-contract HARD GATE passes (it does NOT bypass §3.4 invariant #4).
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(os.path.join(repo, "compact"))
+            with open(os.path.join(repo, "compact", "M1-acceptance-prompt.md"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("---\ncontext_budget:\n  self_contained: true\n---\n"
+                         "Adopter-authored self-contained acceptance prompt for M1.")
+            drv_ = self._live(d, intent_contract=self._SIGNED_IC, repo_dir=repo,
+                              mission="M1")
+            self.assertEqual(
+                drv_._resolve_acceptance_spec(_EVID, "calibrated"),
+                "Adopter-authored self-contained acceptance prompt for M1.")
+
+    def test_compact_file_cannot_bypass_signed_contract_gate(self):
+        # The same compact file, but NO signed intent_contract → HARD GATE HALTs;
+        # the adopter prompt must NOT be accepted without a signed contract.
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(os.path.join(repo, "compact"))
+            with open(os.path.join(repo, "compact", "M1-acceptance-prompt.md"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("---\ncontext_budget:\n  self_contained: true\n---\n"
+                         "Adopter prompt that tries to skip the sign-off.")
+            drv_ = self._live(d, intent_contract=None, repo_dir=repo, mission="M1")
+            self.assertIs(drv_._resolve_acceptance_spec(_EVID, "calibrated"),
+                          drv._ACCEPTANCE_SPEC_HALT)
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+
+    def test_projection_does_not_mutate_calibration_or_authority(self):
+        # The projection only REPORTS calibration/authority — it must not change them.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = self._live(d, intent_contract=self._SIGNED_IC)
+            level_before = drv_.autonomy.get("level")
+            drv_._resolve_acceptance_spec(_EVID, "uncalibrated")
+            self.assertEqual(drv_.autonomy.get("level"), level_before)
+
+    def test_projection_materialized_through_spawn(self):
+        with tempfile.TemporaryDirectory() as d:
+            cap = _PromptCapturingMock({("acceptance",): ACC_PASS}, harness="codex",
+                                       provider="openai", model="gpt-5.5")
+            drv_ = self._live(d, intent_contract=self._SIGNED_IC,
+                              adapters=_acceptance_adapters(ACC_PASS))
+            drv_.adapters["acceptance"] = cap
+            verdict = drv_._spawn_acceptance(_EVID, "calibrated")
+            self.assertEqual(verdict, ACC_PASS)
+            self.assertIn("Acceptance Agent for the milestone close", cap.prompts[-1])
+            spawn = next(e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                         if e["type"] == "acceptance_spawn")
+            with open(os.path.join(d, spawn["prompt_ref"]), encoding="utf-8") as fh:
+                self.assertIn("Refunds honored for eligible customers", fh.read())
+
+    def test_mock_run_uses_legacy_inline_prompt_byte_identical(self):
+        # A mock (not allow_real) acceptance run keeps the LEGACY one-line prompt —
+        # the projection contract is live-only, so existing behavior is unchanged.
+        with tempfile.TemporaryDirectory() as d:
+            cap = _PromptCapturingMock({("acceptance",): ACC_PASS},
+                                       harness="claude_code", provider="anthropic",
+                                       model="claude-opus-4-8")
+            adapters = _acceptance_adapters(ACC_PASS)
+            adapters["acceptance"] = cap
+            drv_ = _driver(d, charter=_acceptance_charter(), adapters=adapters)
+            drv_.run(subsprint_id="sprint-001")
+            self.assertIn("Acceptance for milestone close of sub-sprint sprint-001",
+                          cap.prompts[-1])
+            self.assertNotIn("signed intent contract", cap.prompts[-1])
+
+
+# --------------------------------------------------------------------------- #
+# Codex-review hardening of the two prompt contracts: genuinely-resumable HALTs,
+# strict mode driven by real-adapter presence (not just allow_real), the signed-
+# contract HARD GATE, and concrete (non-fabricated) evidence refs.
+# --------------------------------------------------------------------------- #
+_SIGNED_IC = {
+    "goal": "Refunds honored for eligible customers",
+    "standard": "No eligible refund denied; no ineligible approved",
+    "proof_of_done": "All bad-cases pass under F5 eval",
+    "confirmed_by_human": True}
+
+
+class PromptContractCodexFixTests(unittest.TestCase):
+    def test_strict_mode_forced_by_real_adapter_without_allow_real(self):
+        # A non-mock adapter wired (even gated-off) makes prompt resolution STRICT
+        # even when context.allow_real is unset — a real model never gets a one-liner.
+        with tempfile.TemporaryDirectory() as d:
+            adapters = _adapters()
+            adapters["review"] = ClaudeCodeAdapter(model="claude-x")  # real, not mock
+            drv_ = Driver(load_charter(CHARTER_PATH), d, adapters,
+                          loop_id="loop-strict", clock=_clock())  # NO allow_real
+            drv_.state = RunState(loop_id="loop-strict", subsprint_id="sprint-001")
+            drv_.state.state = STATE_REVIEW_PENDING
+            self.assertTrue(drv_._strict_prompts())
+            self.assertIs(drv_._resolve_review_spec(), drv._REVIEW_SPEC_HALT)
+
+    def test_all_mock_without_allow_real_stays_legacy(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)  # all MockAdapters, no allow_real
+            drv_.state = RunState(loop_id="loop-test-001", subsprint_id="sprint-001")
+            drv_.state.state = STATE_REVIEW_PENDING
+            self.assertFalse(drv_._strict_prompts())
+            self.assertIsNone(drv_._resolve_review_spec())  # legacy inline
+
+    def test_review_halt_is_genuinely_resumable(self):
+        # A review-spec HALT persists halt_resume_state=review_pending; on resume the
+        # human has supplied the source (here: a plan that projects), so _drive
+        # RE-ENTERS review_pending, resolves, and advances (no dead end).
+        with tempfile.TemporaryDirectory() as d:
+            drv1 = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-rr", clock=_clock(),
+                          context={"allow_real": True})
+            st = RunState(loop_id="loop-rr", subsprint_id="sprint-001")
+            st.state = STATE_HALTED
+            st.halt_resume_state = STATE_REVIEW_PENDING  # paused at review
+            st.planned_subsprints = _REVIEW_PLAN          # source now available
+            st.last_verdict = DEV_ARTIFACT                # dev already ran (run 1)
+            drv1.state = st
+            drv1._save_state()
+            drv2 = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-rr", clock=_clock(),
+                          context={"allow_real": True})
+            final = drv2.run(resume=True)
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertIn("close_pending", final.history)  # re-entered + finished
+            self.assertIsNone(final.halt_resume_state)      # cleared on re-entry
+
+    def test_acceptance_halt_is_genuinely_resumable(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter()
+            charter["mission"] = {"id": "M1"}
+            charter["intent_contract"] = _SIGNED_IC  # signed: resume will resolve
+            # Seed a HALTED state whose resume target is acceptance_pending (as the
+            # acceptance-spec refine-halt would persist), then resume.
+            drv1 = Driver(charter, d, _acceptance_adapters(ACC_PASS),
+                          loop_id="loop-ar", clock=_clock(),
+                          context={"allow_real": True})
+            st = RunState(loop_id="loop-ar", subsprint_id="sprint-001")
+            st.state = STATE_HALTED
+            st.halt_resume_state = STATE_ACCEPTANCE_PENDING
+            drv1.state = st
+            drv1._save_state()
+            drv2 = Driver(charter, d, _acceptance_adapters(ACC_PASS),
+                          loop_id="loop-ar", clock=_clock(),
+                          context={"allow_real": True})
+            final = drv2.run(resume=True)
+            # Re-entered acceptance_pending → eval + projected (signed) → ACC_PASS → DONE.
+            self.assertEqual(final.state, STATE_DONE)
+            self.assertIsNone(final.halt_resume_state)
+
+    def test_terminal_halt_has_no_resume_target(self):
+        # A non-spec HALT (e.g. review fix_required HITL) must NOT carry a resume
+        # target — only spec-refinement halts are auto-resumable.
+        with tempfile.TemporaryDirectory() as d:
+            fix_review = {"decision": "fix_required", "blocking_count": 1,
+                          "summary": "one P1", "findings": []}
+            drv_ = _driver(d, adapters=_adapters(review=fix_review))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            self.assertIsNone(final.halt_resume_state)
+
+    def test_review_projection_cites_concrete_dev_change_ref(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-rev", clock=_clock(),
+                          context={"allow_real": True})
+            drv_.state = RunState(loop_id="loop-rev", subsprint_id="sprint-001")
+            drv_.state.last_dev_output_ref = \
+                ".orchestrator/audit/transcripts/loop-rev/0001__dev__output.md"
+            out = drv_._project_review_prompt(_REVIEW_PLAN[0])
+            self.assertIn("0001__dev__output.md", out)  # concrete change ref
+            self.assertIn("docs/handoff.md", out)
+
+    def test_acceptance_projection_no_brief_embeds_proof_no_fabricated_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = Driver(_acceptance_charter(), d, _acceptance_adapters(ACC_PASS),
+                          loop_id="loop-acc", clock=_clock(),
+                          context={"allow_real": True})
+            drv_.charter["intent_contract"] = _SIGNED_IC
+            drv_.state = RunState(loop_id="loop-acc", subsprint_id="sprint-001")
+            out = drv_._project_acceptance_prompt(_SIGNED_IC, _EVID, "calibrated")
+            self.assertIn("No separate research brief is bound", out)
+            self.assertNotIn("docs/research-briefs/<id>.md", out)  # no fabrication
+            self.assertIn("All bad-cases pass under F5 eval", out)  # proof embedded
+            # The OUTPUT instruction must not demand a brief path either.
+            self.assertNotIn('closure_contract_ref: "<brief path>"', out)
+
+    def test_acceptance_projection_with_brief_cites_concrete_ref(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = Driver(_acceptance_charter(), d, _acceptance_adapters(ACC_PASS),
+                          loop_id="loop-acc", clock=_clock(),
+                          context={"allow_real": True})
+            drv_.state = RunState(loop_id="loop-acc", subsprint_id="sprint-001")
+            drv_.state.brief_draft_ref = "docs/briefs/sprint-001__brief.md"
+            out = drv_._project_acceptance_prompt(_SIGNED_IC, _EVID, "calibrated")
+            self.assertIn("docs/briefs/sprint-001__brief.md", out)
+            self.assertIn('closure_contract_ref: "docs/briefs/sprint-001__brief.md"',
+                          out)  # concrete output ref too
+
+    def test_autofix_returns_on_dev_spec_halt_not_clobber(self):
+        # A spec-refinement HALT during the auto-fix re-run must STOP the iteration
+        # (mirror _drive), not clobber the halt by advancing to gate_pending.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=_autofix_charter(enabled=True, max_rounds=3),
+                           adapters=_adapters(review=_fix_review([_finding("F1")])))
+            drv_.state = RunState(loop_id=drv_.loop_id, subsprint_id="sprint-001")
+            drv_.state.state = STATE_REVIEW_PENDING
+
+            def _halting_step_dev():  # simulate a dev-spec HALT mid-auto-fix
+                drv_.state.state = STATE_HALTED
+                drv_.state.halt_resume_state = STATE_DEV_PENDING
+            drv_._step_dev = _halting_step_dev
+            drv_._handle_fix_required(_fix_review([_finding("F1")]))
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+            self.assertEqual(drv_.state.halt_resume_state, STATE_DEV_PENDING)
+
+    def test_autofix_returns_on_review_spec_halt_no_crash(self):
+        # A review-spec HALT returns None; the auto-fix path must not crash at
+        # verdict.get(...) — it checks STATE_HALTED first and returns.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=_autofix_charter(enabled=True, max_rounds=3),
+                           adapters=_adapters(review=_fix_review([_finding("F1")])))
+            drv_.state = RunState(loop_id=drv_.loop_id, subsprint_id="sprint-001")
+            drv_.state.state = STATE_REVIEW_PENDING
+            drv_._step_dev = lambda: None  # dev "succeeds" (no-op)
+            drv_._step_gate = lambda: None
+
+            def _halting_step_review():  # mirrors a review-spec HALT
+                drv_.state.state = STATE_HALTED
+                return None
+            drv_._step_review = _halting_step_review
+            drv_._handle_fix_required(_fix_review([_finding("F1")]))  # must NOT raise
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+
+
 if __name__ == "__main__":
     unittest.main()
