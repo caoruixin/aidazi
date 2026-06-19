@@ -151,13 +151,17 @@
             "harness": {"type": "string", "description": "v2 ADDITIVE (Facet A). Execution harness. OPTIONAL; judgment roles suit headless/API-backed models."},
             "provider": {"type": "string", "description": "v2 ADDITIVE (Facet A). Provider id. OPTIONAL. Calibration is per-(role,provider,model) — a change invalidates judge_calibration.status (Constitution §3.6)."},
             "endpoint": {"type": "string", "description": "v2 ADDITIVE (Facet A). Base URL for OpenAI-compatible providers. OPTIONAL."},
+            "api_key_env": {"type": "string", "description": "v2 ADDITIVE (Facet A). NAME of the env var holding the provider API key (value read at call time, never stored; keep it in a gitignored .env.local). OPTIONAL (headless judge)."},
+            "endpoint_env": {"type": "string", "description": "v2 ADDITIVE (Facet A). NAME of the env var holding the base URL when not given literally in `endpoint` (literal wins if both set). OPTIONAL."},
             "capability_ref": {"type": "string", "description": "v2 ADDITIVE (Facet A). Capability-profile id validated against schemas/model-registry.schema.json; judgment roles require a calibratable model. OPTIONAL."},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "description": "v2 ADDITIVE (Facet A). Per-spawn wall-clock timeout (seconds) for the Acceptance adapter, read by run_loop.build_adapters on real runs. OPTIONAL; absent ⇒ the adapter default (600s)."},
             "connectors": {
               "type": "array",
               "items": {"$ref": "#/$defs/connector_binding"},
               "description": "v2 ADDITIVE (Facet C). Connector grants for Acceptance — default-deny; read-only evidence connectors only (judgment is not delegated)."
             },
             "discovery": {"$ref": "#/$defs/discovery", "description": "v2 ADDITIVE (Facet C). OPTIONAL; default off."},
+            "sandbox": {"type": "string", "enum": ["workspace_write", "read_only"], "default": "read_only", "description": "v2 ADDITIVE. Acceptance is a READ-ONLY judge; a CLI-backed harness (codex/claude_code) honors this. OPTIONAL."},
             "tools": {
               "type": "array",
               "items": {"type": "string", "enum": ["Read", "Grep", "Glob"]},
@@ -293,9 +297,22 @@
           "type": "string",
           "description": "v2 ADDITIVE (Facet A). Base URL for OpenAI-compatible providers driven via the headless harness. OPTIONAL."
         },
+        "api_key_env": {
+          "type": "string",
+          "description": "v2 ADDITIVE (Facet A). NAME of the env var holding the provider API key (e.g. DEEPSEEK_API_KEY) for the headless harness. The VALUE is read from the environment at call time and NEVER stored in the charter — keep it in a gitignored .env.local (loaded by run_loop on real runs). OPTIONAL."
+        },
+        "endpoint_env": {
+          "type": "string",
+          "description": "v2 ADDITIVE (Facet A). NAME of the env var holding the base URL when not given literally in `endpoint`. The literal `endpoint` wins if both are set. OPTIONAL."
+        },
         "capability_ref": {
           "type": "string",
           "description": "v2 ADDITIVE (Facet A). Capability-profile id validated against schemas/model-registry.schema.json (process/model-capability-registry.md). The capability gate checks the (harness, provider, model) triple against the role's requirements. OPTIONAL."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "v2 ADDITIVE (Facet A). Per-spawn wall-clock timeout (seconds) for this role's adapter subprocess/HTTP call, read by run_loop.build_adapters on real runs. OPTIONAL; absent ⇒ the adapter default (600s). A real Dev coding session typically needs more (e.g. 1800–3600)."
         },
         "skills": {
           "type": "array",

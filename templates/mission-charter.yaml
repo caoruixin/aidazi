@@ -59,24 +59,47 @@ budget:
 
 tooling:
   research:
+    # Facet A — execution binding (process/role-configuration-contract.md §1).
+    # agent_kind is the legacy field (schema-required); harness is its v2 successor.
+    # Native CLIs are provider-locked: claude_code↔anthropic, codex↔openai.
+    # capability_ref names a profile in engine-kit/validators/data/model-registry.yaml.
     agent_kind: claude_code
-    model: claude-opus-4-7
+    harness: claude_code
+    provider: anthropic
+    model: claude-opus-4-8
+    capability_ref: anthropic-opus-judge
     # skills: [<industry-research-skill>]   # optional role skills (process/role-skill-model.md)
     # subagent_fanout: true                 # e.g., parallel domain scouts
   deliver:
     agent_kind: claude_code
-    model: claude-opus-4-7
+    harness: claude_code
+    provider: anthropic
+    model: claude-opus-4-8
+    capability_ref: anthropic-opus-judge
     # skills: [<architecture-decision-skill>]  # optional; e.g., architect/ADR skill slot
     # subagent_fanout: true                    # e.g., architect/frontend/backend plan-draft fan-out
   dev:
     agent_kind: claude_code
+    harness: claude_code     # Dev MUST run on a coding-agent harness (edits files)
+    provider: anthropic
     model: claude-sonnet-4-6
+    capability_ref: anthropic-sonnet-dev
     sandbox: workspace_write
+    timeout_seconds: 1800    # per-spawn adapter timeout (s); default 600 is low for a real Dev coding session
     # skills: [<frontend-skill>, <backend-skill>]  # primary mount point for stack-specialist skills
     # subagent_fanout: true                        # sub-agents inherit the dev sandbox transitively
   review:
     agent_kind: codex   # different model class from dev for independence
-    model: <model-id>
+    harness: codex
+    provider: openai
+    # Codex model availability is ACCOUNT-TYPE dependent: a ChatGPT-subscription
+    # Codex account serves general models (gpt-5.5) and rejects gpt-5-codex (HTTP
+    # 400); an API-key Codex account can use gpt-5-codex. The Step 5 Facet A
+    # preflight probes this on the adopter's machine.
+    model: gpt-5.5
+    capability_ref: openai-gpt5-codex
+    # headless alternative (multi-model review): harness: headless / provider: deepseek
+    # / model: deepseek-v4-pro / endpoint: https://api.deepseek.com/v1
     tools: [Read, Grep, Glob]
     # skills: [anti-hardcode-review-kernel]  # exemplar packaged skill (skills/anti-hardcode-review-kernel/)
     # subagent_fanout: false                 # read-only lenses only if enabled
@@ -86,7 +109,10 @@ tooling:
   acceptance:
     enabled: false  # set to true when ready; calibration required before fully_autonomous_within_budget
     agent_kind: claude_code  # distinct from dev/review/research for independence
-    model: claude-opus-4-7
+    harness: claude_code
+    provider: anthropic      # calibration is per-(role,provider,model); a change re-opens §3.6
+    model: claude-opus-4-8
+    capability_ref: anthropic-opus-judge   # MUST be a calibratable model (§3.6)
     tools: [Read, Grep, Glob]
     # skills: [<evidence-reading-skill>]  # evidence-reading ONLY; changing this list invalidates calibration
     judge_calibration:

@@ -16,7 +16,7 @@
 # last_updated is QUOTED so PyYAML keeps it a string (schema format: date expects
 # a string, not a parsed datetime.date).
 registry_version: 1
-last_updated: "2026-06-15"
+last_updated: "2026-06-17"
 models:
   anthropic-opus-judge:
     provider: anthropic
@@ -46,7 +46,7 @@ models:
 
   openai-gpt5-codex:
     provider: openai
-    model: gpt-5-codex
+    model: gpt-5.5
     context_window: 256000
     tool_use: true
     structured_output_tier: high
@@ -55,11 +55,11 @@ models:
     harness_compat: [codex, headless]
     cost: { currency: USD, input_per_mtok: null, output_per_mtok: null }
     calibratable: true
-    notes: "Codex harness is provider-locked to OpenAI; cost may be subscription-billed (null)."
+    notes: "Codex harness is provider-locked to OpenAI; cost may be subscription-billed (null). Model availability is ACCOUNT-TYPE dependent: a ChatGPT-subscription Codex account serves general models (e.g. gpt-5.5, verified 2026-06-17) and REJECTS gpt-5-codex (HTTP 400); an API-key Codex account can use gpt-5-codex. Confirm via the onboarding Facet A preflight."
 
   deepseek-chat-api:
     provider: deepseek
-    model: deepseek-chat
+    model: deepseek-v4-pro
     context_window: 128000
     tool_use: true
     structured_output_tier: medium
@@ -68,7 +68,7 @@ models:
     harness_compat: [headless]
     cost: { currency: USD, input_per_mtok: 0.27, output_per_mtok: 1.10 }
     calibratable: true
-    notes: "Reached via the headless OpenAI-compatible endpoint; endpoint base URL set in charter."
+    notes: "DeepSeek chat-family flagship via the headless OpenAI-compatible endpoint (model id refreshed to deepseek-v4-pro 2026-06-17; the prior deepseek-chat id is retired). Cost/tiers illustrative — refresh against provider docs."
 
   moonshot-kimi-128k:
     provider: moonshot

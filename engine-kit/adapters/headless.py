@@ -8,10 +8,12 @@ local servers) per ADR-0001 #3 / plan §4.1 facet A. It posts the role prompt to
 message. The DRIVER validates that verdict against the role's schema.
 
 CONFIG (all by NAME, never embedding a secret value):
-  base_url      : e.g. "https://api.deepseek.com/v1"
-  model         : e.g. "deepseek-chat", "moonshot-v1-32k", "gpt-4o"
+  base_url      : e.g. "https://api.deepseek.com/v1" (charter `endpoint`, or
+                  resolved from `endpoint_env` by run_loop.build_adapters).
+  model         : e.g. "deepseek-v4-pro", "moonshot-v1-128k", "gpt-4o"
   api_key_env   : NAME of the env var holding the key (e.g. "DEEPSEEK_API_KEY").
                   The value is read from os.environ at call time, never stored.
+                  run_loop loads a gitignored .env.local into the environment.
 
 REAL HTTP IS GATED. ``spawn`` only makes a network call when ``allow_http=True``
 (or env ``AIDAZI_ALLOW_REAL_ADAPTER=1``); otherwise it raises ``AdapterError``

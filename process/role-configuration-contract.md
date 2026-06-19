@@ -74,9 +74,22 @@ tooling:
     harness:  claude_code | codex | headless | <other>
     provider: anthropic | openai | deepseek | moonshot | <other>
     model:    <model-id>
-    endpoint: <base-url>          # OpenAI-compatible providers (headless)
+    endpoint: <base-url>          # OpenAI-compatible providers (headless); literal
+    endpoint_env: <ENV_VAR_NAME>  # OR name the env var holding the base URL (literal `endpoint` wins)
+    api_key_env:  <ENV_VAR_NAME>  # NAME of the env var holding the API key (headless)
     capability_ref: <profile-id>  # validated vs schemas/model-registry.schema.json
 ```
+
+**Credentials are by-name, never by-value.** A **native CLI harness**
+(`claude_code` / `codex`) authenticates itself — its credentials live in the
+CLI's own config outside the charter (e.g. `~/.claude*`, `~/.codex/`), so the
+adopter only needs the CLI installed + logged in. A **`headless` provider** needs
+a base URL + API key: the charter names them (`endpoint` / `endpoint_env` and
+`api_key_env`) and the **values live in the adopter's environment** — exported,
+or in a **gitignored `.env.local`** (loaded by `engine-kit/scheduling/run_loop.py`
+on `--allow-real` runs; an already-exported var always wins). A secret value
+MUST NOT appear in the charter or any committed file (`.env.example` ships the
+NAMES only).
 
 **Capability registry.** `process/model-capability-registry.md` +
 `schemas/model-registry.schema.json` record per-model facts: provider, context

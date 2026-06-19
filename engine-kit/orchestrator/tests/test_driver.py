@@ -1111,11 +1111,13 @@ class TestConnectorPassThrough(unittest.TestCase):
         dev_hist = adapters["dev"].history[0]
         self.assertEqual(dev_hist["connectors"], _CONNECTOR_GRANT)
         self.assertEqual(dev_hist["sandbox"], "read_only")
-        # Review declared no connectors → default-deny ([]) + schema-default
-        # sandbox (the example charter gives review no sandbox field).
+        # Review declared no connectors → default-deny ([]) + LEAST-PRIVILEGE
+        # sandbox: a judge that omits `sandbox` defaults to read_only (only Dev
+        # defaults to workspace_write), so a read-only reviewer is never silently
+        # launched with write access.
         rev_hist = adapters["review"].history[0]
         self.assertEqual(rev_hist["connectors"], [])
-        self.assertEqual(rev_hist["sandbox"], "workspace_write")
+        self.assertEqual(rev_hist["sandbox"], "read_only")
 
     def test_no_connectors_passes_empty_grant(self):
         # The unmodified example charter grants no connectors to any role.
@@ -1321,7 +1323,12 @@ class TestLoopIngressWiring(unittest.TestCase):
         with self.assertRaises(GateHardFail):
             drv1.run(subsprint_id="sprint-001")
         self.assertEqual(li.current_branch(self.repo), "loop/loop-ing-007")
-        self.assertEqual(self._registry().get("loop-ing-007").status, "active")
+        # A hard-fail marks the loop FAILED (not active) so it never leaks as
+        # active and collides with a fresh re-run; the branch + record are KEPT so
+        # a RESUME can still reattach (registry.get ignores status).
+        rec1 = self._registry().get("loop-ing-007")
+        self.assertEqual(rec1.status, "failed")
+        self.assertIn("crash before close", rec1.failure or "")
 
         # Phase 2: resume with a healthy deliver. Reattach must NOT re-run
         # setup_context (a second `git switch -c` on the existing branch errors).
@@ -1935,6 +1942,196 @@ class TestFullChainGuided(unittest.TestCase):
             final = drv_.run(subsprint_id="sprint-001")
             self.assertEqual(final.state, STATE_ADVANCE)
             self.assertNotIn(STATE_GATE1_PENDING, final.history)
+
+
+class StripFrontMatterTests(unittest.TestCase):
+    """A dev-spec's YAML front-matter must be stripped from the prompt (it is doc
+    metadata, and a prompt starting with '---' is mis-parsed as a CLI option)."""
+
+    def test_strips_yaml_front_matter(self):
+        text = "---\ntitle: x\nk: v\n---\n# Body\nhello"
+        self.assertEqual(Driver._strip_front_matter(text), "# Body\nhello")
+
+    def test_no_front_matter_unchanged(self):
+        self.assertEqual(Driver._strip_front_matter("# Body\nx"), "# Body\nx")
+
+    def test_unterminated_front_matter_unchanged(self):
+        t = "---\ntitle: x\nno closing delimiter"
+        self.assertEqual(Driver._strip_front_matter(t), t)
+
+    def test_stripped_body_does_not_start_with_dash(self):
+        text = "---\na: 1\n---\n# Job\nrun it"
+        self.assertFalse(Driver._strip_front_matter(text).startswith("-"))
+
+    def test_thematic_break_body_not_mistaken_for_front_matter(self):
+        # A Markdown body that opens with a `---` rule and later has another `---`
+        # must NOT be stripped (the block is not a YAML mapping). Regression guard.
+        text = "---\n\nReal heading\n\n---\n\nmore body"
+        self.assertEqual(Driver._strip_front_matter(text), text)
+        fm, body = Driver._split_front_matter(text)
+        self.assertIsNone(fm)
+        self.assertEqual(body, text)
+
+
+class RouteSandboxTests(unittest.TestCase):
+    """route_for_role: least-privilege per-role sandbox + tools normalization."""
+
+    def test_omitted_sandbox_defaults_least_privilege(self):
+        charter = {"tooling": {"dev": {"harness": "claude_code"},
+                               "review": {"harness": "codex"},
+                               "acceptance": {"enabled": True},
+                               "research": {"harness": "claude_code"}}}
+        self.assertEqual(drv.route_for_role(charter, "dev").sandbox, "workspace_write")
+        self.assertEqual(drv.route_for_role(charter, "review").sandbox, "read_only")
+        self.assertEqual(drv.route_for_role(charter, "acceptance").sandbox, "read_only")
+        self.assertEqual(drv.route_for_role(charter, "research").sandbox, "read_only")
+
+    def test_explicit_sandbox_wins(self):
+        charter = {"tooling": {"review": {"harness": "codex",
+                                          "sandbox": "workspace_write"}}}
+        self.assertEqual(drv.route_for_role(charter, "review").sandbox,
+                         "workspace_write")
+
+    def test_tools_object_form_normalized(self):
+        # The v2 object form {allow:[...]} must unpack to the allowlist, NOT to the
+        # dict keys (["allow"]) — the bug that silently broke tool gating.
+        charter = {"tooling": {"review": {"harness": "codex",
+                                          "tools": {"allow": ["Read", "Grep"]}}}}
+        self.assertEqual(drv.route_for_role(charter, "review").tools,
+                         ["Read", "Grep"])
+        self.assertEqual(drv._normalize_tools(["Read", "Glob"]), ["Read", "Glob"])
+        self.assertEqual(drv._normalize_tools({"allow": ["Read"]}), ["Read"])
+        self.assertEqual(drv._normalize_tools(None), [])
+
+
+class DevSpecResolutionTests(unittest.TestCase):
+    """FIX: the Dev spec is the schema-valid decompose plan (canonical), validated
+    by CONTENT; an incomplete/missing/unsafe spec on a live run HALTS (resumable)."""
+
+    _GOOD_PLAN = [{
+        "id": "sprint-001", "objective": "Add refund-eligibility check (UC-1)",
+        "scope_in": ["UC-1 eligibility decision"], "scope_out": ["denial wording"],
+        "modules": ["src/tools/eligibility.py"], "layers": ["semantic_planner"],
+        "exit_criteria": ["UC-1 tests pass"]}]
+
+    def _live_driver(self, d, *, planned=None, repo_dir=None, sid="sprint-001"):
+        drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                      loop_id="loop-spec", clock=_clock(),
+                      context={"allow_real": True}, repo_dir=repo_dir)
+        drv_.state = RunState(loop_id="loop-spec", subsprint_id=sid)
+        drv_.state.state = STATE_DEV_PENDING
+        drv_.state.planned_subsprints = planned or []
+        return drv_
+
+    def test_safe_subsprint_id(self):
+        for ok in ("sprint-001", "M5-sprint-3", "s_1.2"):
+            self.assertTrue(Driver._safe_subsprint_id(ok))
+        for bad in ("../etc/passwd", "a/b", "..", "", "sprint 1", "sp;rm"):
+            self.assertFalse(Driver._safe_subsprint_id(bad))
+
+    def test_validate_subsprint_spec(self):
+        self.assertEqual(Driver._validate_subsprint_spec(self._GOOD_PLAN[0]), [])
+        bad = Driver._validate_subsprint_spec(
+            {"id": "x", "objective": "", "scope_in": [], "exit_criteria": []})
+        self.assertEqual(len(bad), 3)
+
+    def test_validate_compact_text_requires_self_contained(self):
+        self.assertEqual(
+            Driver._validate_compact_text({"context_budget": {"self_contained": True}},
+                                          "real bounded body"), [])
+        self.assertTrue(
+            Driver._validate_compact_text({"context_budget": {"self_contained": False}},
+                                          "body"))
+        self.assertTrue(Driver._validate_compact_text(None, "body"))  # no front-matter
+
+    def test_project_dev_prompt_renders_fields(self):
+        out = Driver._project_dev_prompt(self._GOOD_PLAN[0])
+        self.assertIn("Add refund-eligibility check (UC-1)", out)
+        self.assertIn("UC-1 eligibility decision", out)
+        self.assertIn("UC-1 tests pass", out)
+        self.assertIn("src/tools/eligibility.py", out)
+
+    def test_offline_resolves_to_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = self._live_driver(d, planned=self._GOOD_PLAN)
+            drv_.context["allow_real"] = False  # offline → legacy inline prompt
+            self.assertIsNone(drv_._resolve_dev_spec())
+
+    def test_live_plan_projects_and_writes_projection(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            drv_ = self._live_driver(d, planned=self._GOOD_PLAN, repo_dir=repo)
+            out = drv_._resolve_dev_spec()
+            self.assertIsInstance(out, str)
+            self.assertIn("Add refund-eligibility check (UC-1)", out)
+            # auditable projection written (plan stays normative).
+            self.assertTrue(os.path.isfile(
+                os.path.join(repo, "compact", "sprint-001-dev-prompt.md")))
+
+    def test_live_incomplete_plan_halts_for_refinement(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = [{"id": "sprint-001", "objective": "", "scope_in": [],
+                    "exit_criteria": []}]
+            drv_ = self._live_driver(d, planned=bad)
+            self.assertIs(drv_._resolve_dev_spec(), drv._DEV_SPEC_HALT)
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+            # The halt is PERSISTED — a resume must see HALTED, not stale dev_pending.
+            self.assertEqual(drv_._load_state().state, STATE_HALTED)
+
+    def test_projection_is_reusable_as_compact_source(self):
+        # The compact-file PROJECTION carries self_contained:true front-matter, so a
+        # later delivery_only run (no plan) can resolve it as a valid compact source.
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            self._live_driver(d, planned=self._GOOD_PLAN, repo_dir=repo)\
+                ._resolve_dev_spec()  # writes the projection
+            reuse = self._live_driver(d, planned=[], repo_dir=repo)
+            out = reuse._resolve_dev_spec()
+            self.assertIsInstance(out, str)
+            self.assertIsNot(out, drv._DEV_SPEC_HALT)
+            self.assertIn("Add refund-eligibility check (UC-1)", out)
+
+    def test_live_unsafe_id_halts_before_any_path_use(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            drv_ = self._live_driver(d, planned=[], repo_dir=repo,
+                                     sid="../../evil")
+            self.assertIs(drv_._resolve_dev_spec(), drv._DEV_SPEC_HALT)
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+            # nothing escaped the repo/compact dir.
+            self.assertFalse(os.path.exists(os.path.join(d, "evil-dev-prompt.md")))
+
+    def test_live_compact_file_fallback_when_no_plan(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(os.path.join(repo, "compact"))
+            with open(os.path.join(repo, "compact", "sprint-001-dev-prompt.md"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("---\ncontext_budget:\n  self_contained: true\n---\n"
+                         "Bounded job: implement UC-1.")
+            drv_ = self._live_driver(d, planned=[], repo_dir=repo)
+            out = drv_._resolve_dev_spec()
+            self.assertEqual(out, "Bounded job: implement UC-1.")
+
+    def test_live_compact_file_without_self_contained_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(os.path.join(repo, "compact"))
+            with open(os.path.join(repo, "compact", "sprint-001-dev-prompt.md"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("just a bare prompt, no front-matter")
+            drv_ = self._live_driver(d, planned=[], repo_dir=repo)
+            self.assertIs(drv_._resolve_dev_spec(), drv._DEV_SPEC_HALT)
+            self.assertEqual(drv_.state.state, STATE_HALTED)
+
+    def test_live_no_spec_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = self._live_driver(d, planned=[])  # no plan, no repo/file
+            self.assertIs(drv_._resolve_dev_spec(), drv._DEV_SPEC_HALT)
+            self.assertEqual(drv_.state.state, STATE_HALTED)
 
 
 if __name__ == "__main__":

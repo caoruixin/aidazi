@@ -42,7 +42,7 @@
         "model": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider model id, e.g. claude-opus-4-8, gpt-5, deepseek-chat, moonshot-v1-128k."
+          "description": "Provider model id, e.g. claude-opus-4-8, gpt-5, deepseek-v4-pro, moonshot-v1-128k."
         },
         "context_window": {
           "type": "integer",

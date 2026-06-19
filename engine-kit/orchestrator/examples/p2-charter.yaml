@@ -54,8 +54,9 @@ tooling:
   review:
     harness: headless          # OpenAI-compatible endpoint (multi-model)
     provider: deepseek
-    model: deepseek-chat
+    model: deepseek-v4-pro
     endpoint: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY   # value lives in a gitignored .env.local, never here
     tools: [Read, Grep, Glob]
   eval:
     cmd: "true"                # placeholder; F5 eval not wired in P2

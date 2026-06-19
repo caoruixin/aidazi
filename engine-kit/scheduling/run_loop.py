@@ -46,6 +46,7 @@ for _p in (
     _ENGINE_KIT_DIR,
     os.path.join(_ENGINE_KIT_DIR, "audit"),
     os.path.join(_ENGINE_KIT_DIR, "orchestrator"),
+    os.path.join(_ENGINE_KIT_DIR, "validators"),
 ):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -90,6 +91,119 @@ def _roles_in_charter(charter: dict) -> list:
             if r in tooling]
 
 
+def load_local_env(*, root: str = ".",
+                   filenames=(".env.local", ".env")) -> list:
+    """Load ``KEY=VALUE`` lines from ``.env.local`` (then ``.env``) under ``root``
+    into ``os.environ`` WITHOUT overriding already-exported vars.
+
+    This is the framework's one supported way to feed provider **base URLs and API
+    keys** to the headless harness from a file instead of exporting by hand: the
+    adopter keeps them in a gitignored ``.env.local`` and the charter references
+    them BY NAME (``api_key_env`` / ``endpoint_env``). An already-exported var
+    always wins (export > file), so CI secret stores keep precedence. Secret
+    VALUES are never written to the charter or any committed file; this loader
+    only moves them from a gitignored file into the process environment, where the
+    headless adapter reads them at call time. Zero deps (no python-dotenv): a
+    minimal parser — ``#`` comments, optional ``export`` prefix, optional matched
+    surrounding quotes. Returns the list of files actually loaded (for the run
+    summary). Mock dry-runs need no keys and never call this.
+    """
+    loaded = []
+    for name in filenames:
+        path = os.path.join(root, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    if key.startswith("export "):
+                        key = key[len("export "):].strip()
+                    val = val.strip()
+                    if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                        val = val[1:-1]
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+            loaded.append(path)
+        except OSError:
+            continue
+    return loaded
+
+
+class CharterValidationError(ValueError):
+    """A ``--allow-real`` charter has BLOCKING schema-validation errors. Raised
+    BEFORE any adapter is built/invoked, so an invalid charter cannot reach a live
+    (billed) model. Warnings do NOT raise this; only errors do."""
+
+
+def charter_validation_report(charter: dict):
+    """Return the ``charter_validator`` Report for ``charter``, or None when the
+    validator / jsonschema is unavailable. Shared by the enforcement gate and the
+    summary. Never raises (a missing validator ⇒ None, caller decides)."""
+    try:
+        import charter_validator as _cv  # noqa: E402,WPS433
+        return _cv.validate_charter(charter)
+    except Exception:  # noqa: BLE001 - validator/jsonschema absent ⇒ None
+        return None
+
+
+def _report_ok(report) -> bool:
+    ok = getattr(report, "ok", True)
+    return ok() if callable(ok) else bool(ok)
+
+
+def _charter_issue_lines(issues, limit: int = 10) -> list:
+    issues = list(issues)
+    lines = []
+    for issue in issues[:limit]:
+        rule = getattr(issue, "rule", "")
+        msg = getattr(issue, "message", None) or str(issue)
+        lines.append(f"    - {rule}: {str(msg)[:120]}")
+    if len(issues) > limit:
+        lines.append(f"    ... (+{len(issues) - limit} more)")
+    return lines
+
+
+def enforce_charter_for_real_run(charter: dict) -> None:
+    """ENFORCE the charter schema for a real (``--allow-real``) run: raise
+    ``CharterValidationError`` on ANY blocking error, BEFORE any adapter is built or
+    invoked, so an invalid charter never reaches a live model. Warnings do NOT block
+    (the caller surfaces them). A None report (validator / jsonschema unavailable)
+    does NOT block — the deterministic runtime checks (per-role sandbox defaults,
+    ``timeout_seconds`` typing, codex fail-closed) remain the defense-in-depth gate.
+
+    NOTE: the driver still reads the charter LENIENTLY at runtime (a v2 charter may
+    use ``harness`` without the legacy schema-required ``agent_kind``); this gate is
+    the explicit, real-run-only enforcement layer ON TOP of that lenient read."""
+    report = charter_validation_report(charter)
+    if report is None or _report_ok(report):
+        return
+    errors = list(getattr(report, "errors", []) or [])
+    raise CharterValidationError(
+        "charter has blocking schema-validation error(s); refusing the real run "
+        "BEFORE any adapter is invoked:\n" + "\n".join(_charter_issue_lines(errors)))
+
+
+def advisory_validate_charter(charter: dict) -> Optional[str]:
+    """Non-raising one-shot schema SUMMARY string (for visibility without
+    enforcement). Real-run ENFORCEMENT lives in ``enforce_charter_for_real_run``
+    (raises) and ``main`` (blocks + exit 2). Returns None when the validator is
+    unavailable; never raises."""
+    report = charter_validation_report(charter)
+    if report is None:
+        return None
+    errors = list(getattr(report, "errors", []) or [])
+    warnings = list(getattr(report, "warnings", []) or [])
+    if _report_ok(report) and not warnings:
+        return "schema clean"
+    return (f"{len(errors)} error(s), {len(warnings)} warning(s)\n"
+            + "\n".join(_charter_issue_lines(errors + warnings)))
+
+
 def build_adapters(charter: dict, *, allow_real: bool = False,
                    loop_mode: str = LOOP_MODE_DELIVERY_ONLY) -> Dict[str, object]:
     """Build one adapter per routed role from the charter's per-role routing.
@@ -126,12 +240,34 @@ def build_adapters(charter: dict, *, allow_real: bool = False,
             # (extras land in Adapter.config harmlessly). endpoint → base_url for
             # the OpenAI-compatible headless adapter.
             tooling = (charter.get("tooling") or {}).get(role) or {}
-            adapters[role] = cls(
+            # base_url: the literal `endpoint` wins; else resolve `endpoint_env`
+            # from the environment (.env.local is loaded in main() for real runs).
+            # The API key is NEVER read here — the headless adapter reads it from
+            # os.environ[api_key_env] at call time, by NAME, and never stores it.
+            base_url = tooling.get("endpoint", "")
+            if not base_url and tooling.get("endpoint_env"):
+                base_url = os.environ.get(tooling["endpoint_env"], "")
+            kwargs = dict(
                 provider=r.provider or "",
                 model=r.model or "",
-                base_url=tooling.get("endpoint", ""),
+                base_url=base_url,
                 api_key_env=tooling.get("api_key_env", ""),
             )
+            # Per-spawn timeout is configurable per role (charter
+            # tooling.<role>.timeout_seconds); absent ⇒ the adapter's own default
+            # (600s). A real Dev coding session typically needs more than that. A
+            # PRESENT value MUST be a positive int — reject bool / string / "1800"
+            # LOUDLY rather than silently falling back to the default. (The charter
+            # is loaded leniently; on a real run this is the last line of defense if
+            # the validator was not run — see main()'s --allow-real validation.)
+            if "timeout_seconds" in tooling:
+                ts = tooling["timeout_seconds"]
+                if isinstance(ts, bool) or not isinstance(ts, int) or ts < 1:
+                    raise ValueError(
+                        f"charter tooling.{role}.timeout_seconds must be a positive "
+                        f"integer (seconds); got {ts!r}")
+                kwargs["timeout_seconds"] = ts
+            adapters[role] = cls(**kwargs)
         else:
             adapters[role] = MockAdapter(
                 canned_by_role.get(role, {(role,): _DRY_DEV}),
@@ -209,6 +345,11 @@ def run_loop(
     if mode not in MODES:
         raise ValueError(f"mode {mode!r} not one of {MODES}")
     if adapters is None:
+        # ENFORCE the charter schema BEFORE building any real adapter: an invalid
+        # charter must never reach a live model. Mock dry-runs (allow_real=False)
+        # skip this — example charters are intentionally schema-lenient.
+        if allow_real:
+            enforce_charter_for_real_run(charter)
         adapters = build_adapters(charter, allow_real=allow_real,
                                   loop_mode=loop_mode)
 
@@ -275,6 +416,41 @@ def main(argv=None) -> int:
     run_dir = args.run_dir or tempfile.mkdtemp(prefix=f"aidazi-{args.mode}-")
     loop_id = args.loop_id or f"{args.mode}-{args.subsprint_id}"
 
+    # Real runs resolve provider base URLs / API keys from the environment. Load a
+    # gitignored .env.local (then .env) from the charter's directory and the CWD so
+    # the adopter can keep secrets in a file rather than exporting by hand; an
+    # already-exported var always wins. Mock dry-runs need no keys and skip this.
+    loaded_env = []
+    if args.allow_real:
+        roots = []
+        for r in (os.path.dirname(os.path.abspath(args.charter)), os.getcwd()):
+            if r and r not in roots:
+                roots.append(r)
+        for r in roots:
+            loaded_env += load_local_env(root=r)
+
+    # ENFORCE the charter schema on a real run: BLOCK (exit 2) on any error BEFORE
+    # any adapter is invoked; warnings stay visible + non-blocking. Mock dry-runs
+    # skip this (example charters are intentionally schema-lenient). A missing
+    # validator does not block — the deterministic runtime checks still guard.
+    charter_check = None
+    if args.allow_real:
+        report = charter_validation_report(charter)
+        if report is None:
+            charter_check = "skipped (validator/jsonschema unavailable; runtime checks enforce)"
+        elif not _report_ok(report):
+            errors = list(getattr(report, "errors", []) or [])
+            print(f"charter ERRORS : {len(errors)} blocking schema error(s) — REAL RUN "
+                  f"ABORTED before any adapter was invoked. Fix the charter, or drop "
+                  f"--allow-real for a mock dry-run:")
+            for ln in _charter_issue_lines(errors):
+                print(ln)
+            return 2
+        else:
+            warnings = list(getattr(report, "warnings", []) or [])
+            charter_check = ("schema clean" if not warnings
+                             else f"{len(warnings)} warning(s), 0 errors (non-blocking)")
+
     # P6.1: for an interactive full_chain_guided run, wire the DEFAULT CLI gate
     # resolver (prints the gate context + reads the human's selection from stdin).
     # The offline test path never reaches here (tests pass delivery_only OR inject
@@ -296,6 +472,9 @@ def main(argv=None) -> int:
     print(f"=== aidazi schedule run ({info['mode']}) ===")
     print(f"run dir        : {info['run_dir']}")
     print(f"adapters       : {'real' if args.allow_real else 'mock (dry-run)'}")
+    if args.allow_real:
+        print(f"env files      : {', '.join(loaded_env) if loaded_env else '(none; exported env only)'}")
+        print(f"charter check  : {charter_check}")
     print(f"state trace    : idle -> {' -> '.join(info['history'])} -> {info['final_state']}")
     print(f"final state    : {info['final_state']}  (clean={info['clean']})")
     print(f"spawn count    : {info['spawn_count']}  (fix rounds: {info['fix_round']})")

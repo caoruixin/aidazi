@@ -77,6 +77,7 @@ CLEANUP_REMOVE_IF_UNCHANGED = "remove_if_unchanged"
 # Registry loop statuses.
 STATUS_ACTIVE = "active"
 STATUS_DONE = "done"
+STATUS_FAILED = "failed"   # terminated on a hard-fail; NOT active, NOT a clean done
 
 
 # --------------------------------------------------------------------------- #
@@ -526,6 +527,7 @@ class LoopRecord:
     status: str
     registered_at: str
     done_at: Optional[str] = None
+    failure: Optional[str] = None   # set only when status == failed (the reason)
 
     def to_dict(self) -> dict:
         return {
@@ -536,6 +538,7 @@ class LoopRecord:
             "status": self.status,
             "registered_at": self.registered_at,
             "done_at": self.done_at,
+            "failure": self.failure,
         }
 
     @classmethod
@@ -548,6 +551,7 @@ class LoopRecord:
             status=d.get("status", STATUS_ACTIVE),
             registered_at=d.get("registered_at", ""),
             done_at=d.get("done_at"),
+            failure=d.get("failure"),
         )
 
 
@@ -667,6 +671,23 @@ class LoopRegistry:
             if rec.loop_id == loop_id:
                 rec.status = STATUS_DONE
                 rec.done_at = ts
+                records[i] = rec
+                self._write(records)
+                return rec
+        raise KeyError(f"loop {loop_id!r} not in registry ({self.path})")
+
+    def mark_failed(self, loop_id: str, *, ts: str,
+                    reason: str = "") -> LoopRecord:
+        """Flip a loop to status == failed (terminated on a hard-fail) with an
+        INJECTED ``done_at`` ts + a failure ``reason``. A failed loop is NOT
+        active (so it never spuriously collides with a fresh re-run) and NOT a
+        clean done. Raises KeyError if the loop_id is not registered."""
+        records = self._read()
+        for i, rec in enumerate(records):
+            if rec.loop_id == loop_id:
+                rec.status = STATUS_FAILED
+                rec.done_at = ts
+                rec.failure = reason or None
                 records[i] = rec
                 self._write(records)
                 return rec

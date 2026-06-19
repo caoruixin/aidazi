@@ -39,9 +39,19 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Sequence
+
+# Sentinel returned by _resolve_dev_spec when a LIVE run cannot resolve a complete,
+# scope-valid Dev spec: the engine has written a refinement checkpoint + set
+# STATE_HALTED, and the dev step must NOT proceed to the model spawn.
+_DEV_SPEC_HALT = object()
+
+# A safe sub-sprint id: letters/digits then letters/digits/dot/underscore/hyphen.
+# Used to gate ANY interpolation of an id into a filesystem path (no `..`, no `/`).
+_SAFE_SUBSPRINT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 try:
     import yaml
@@ -271,6 +281,30 @@ def load_charter(path: str) -> dict:
     return data
 
 
+# LEAST-PRIVILEGE per-role sandbox default. ONLY the Dev edits files, so only Dev
+# defaults to ``workspace_write``; every judgment/planning role (review, acceptance,
+# research, deliver) and any unknown role defaults to ``read_only``. A role that
+# truly needs to write sets ``sandbox: workspace_write`` EXPLICITLY in the charter.
+# (Before: every omitted sandbox defaulted to workspace_write, so a codex-backed
+# read-only reviewer could be launched with write access — the charter is loaded
+# leniently, so the schema's per-role default is never applied at runtime.)
+_DEFAULT_SANDBOX_BY_ROLE = {"dev": "workspace_write"}
+
+
+def _normalize_tools(raw: Any) -> list[str]:
+    """Normalize a role ``tools`` value to a flat allowlist of names.
+
+    The schema permits BOTH the legacy array form (``[Read, Grep, Glob]``) AND the
+    v2 object form (``{allow: [...]}``). ``list({"allow": [...]})`` yields the dict
+    KEYS (``["allow"]``), silently corrupting tool gating exactly where permissions
+    matter — so the object form is unpacked here. Anything else ⇒ empty list."""
+    if isinstance(raw, dict):
+        return [str(t) for t in (raw.get("allow") or [])]
+    if isinstance(raw, (list, tuple)):
+        return [str(t) for t in raw]
+    return []
+
+
 def route_for_role(charter: dict, role: str) -> RoleRouting:
     """Read tooling.<role>.{harness|agent_kind, provider, model, tools} leniently.
 
@@ -278,21 +312,25 @@ def route_for_role(charter: dict, role: str) -> RoleRouting:
     fallback (templates/fixtures still use agent_kind) so the demo charter and an
     existing charter both route. Missing fields default to empty strings; the
     adapter registry lookup (below) is what enforces a known harness.
+
+    SANDBOX is least-privilege per role (see ``_DEFAULT_SANDBOX_BY_ROLE``): an
+    omitted sandbox does NOT silently grant write access to a judge/planner.
     """
     tooling = charter.get("tooling") or {}
     rc = tooling.get(role) or {}
     harness = rc.get("harness") or rc.get("agent_kind") or ""
+    default_sandbox = _DEFAULT_SANDBOX_BY_ROLE.get(role, "read_only")
     return RoleRouting(
         role=role,
         harness=str(harness),
         provider=str(rc.get("provider") or ""),
         model=str(rc.get("model") or ""),
-        tools=list(rc.get("tools") or []),
+        # Normalize BOTH the legacy array and the v2 {allow:[...]} object form.
+        tools=_normalize_tools(rc.get("tools")),
         # Facet C: per-role connector grant (default-deny ⇒ [] when omitted) +
-        # the role's sandbox (schema default workspace_write). Read leniently,
-        # like the rest of route_for_role.
+        # the role's sandbox (LEAST PRIVILEGE: dev⇒workspace_write, else read_only).
         connectors=list(rc.get("connectors") or []),
-        sandbox=str(rc.get("sandbox") or "workspace_write"),
+        sandbox=str(rc.get("sandbox") or default_sandbox),
     )
 
 
@@ -331,11 +369,16 @@ class RunState:
     #   milestone_planned  : the milestone has been decomposed into a sub-sprint
     #                        plan (decompose_pending completed).
     #   planned_sequence   : the ordered sub-sprint ids from the decompose plan.
+    #   planned_subsprints : the FULL structured sub-sprint specs from the
+    #                        decompose plan (id/objective/scope/exit_criteria/...).
+    #                        This is the CANONICAL executable Dev-spec source — the
+    #                        Dev spec is the schema-valid plan, not a required file.
     loop_mode: str = LOOP_MODE_DELIVERY_ONLY
     brief_signed: bool = False
     brief_draft_ref: Optional[str] = None
     milestone_planned: bool = False
     planned_sequence: list[str] = field(default_factory=list)
+    planned_subsprints: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -354,6 +397,7 @@ class RunState:
             "brief_draft_ref": self.brief_draft_ref,
             "milestone_planned": self.milestone_planned,
             "planned_sequence": list(self.planned_sequence),
+            "planned_subsprints": list(self.planned_subsprints),
         }
 
     @classmethod
@@ -374,6 +418,7 @@ class RunState:
             brief_draft_ref=d.get("brief_draft_ref"),
             milestone_planned=bool(d.get("milestone_planned", False)),
             planned_sequence=list(d.get("planned_sequence", [])),
+            planned_subsprints=list(d.get("planned_subsprints", [])),
         )
 
 
@@ -522,6 +567,14 @@ class Driver:
             return RunState.from_dict(json.load(fh))
 
     # ----- checkpoint inbox (§4.2.3 shape) --------------------------------- #
+    @staticmethod
+    def _safe_path_component(s: Any) -> str:
+        """Sanitize a string into a SINGLE safe filename component: keep
+        ``[A-Za-z0-9._-]``, replace anything else (incl. path separators) with
+        ``_``, and drop leading dots. A ``scope``/id sourced from an LLM plan can
+        otherwise traverse out of the checkpoints dir (e.g. ``../../evil``)."""
+        return re.sub(r"[^A-Za-z0-9._-]", "_", str(s)).lstrip(".") or "x"
+
     def _write_checkpoint(self, checkpoint_id: str, scope: str,
                           context_md: str, options_md: str,
                           *, decision: str = "pending",
@@ -536,7 +589,8 @@ class Driver:
         safe_ts = ts.replace(":", "").replace("-", "").replace("T", "-")
         # squeeze "Z"/offset to keep the filename clean & deterministic
         safe_ts = safe_ts.split(".")[0].rstrip("Z")
-        fname = f"{safe_ts}__{checkpoint_id}__{scope}.md"
+        fname = (f"{safe_ts}__{self._safe_path_component(checkpoint_id)}"
+                 f"__{self._safe_path_component(scope)}.md")
         path = os.path.join(self.checkpoints_dir, fname)
         decision_section = (
             "<human writes; orchestrator picks up>\n"
@@ -838,6 +892,26 @@ class Driver:
             "final_state": self.state.state,
         })
 
+    def _loop_fail_ingress(self, reason: str) -> None:
+        """On a HARD-FAIL (GateHardFail / BudgetExceeded propagating out of the
+        loop): mark the loop ``failed`` in the registry so it does not leak as
+        ``active`` and spuriously collide with the next re-run. The isolated
+        branch/worktree is DELIBERATELY left in place (not cleaned) so the
+        partial work + audit survive as diagnostic evidence. No-op when ingress
+        is off or the loop was never registered."""
+        if not self._ingress_enabled() or self.registry is None:
+            return
+        try:
+            self.registry.mark_failed(self.loop_id, ts=self.clock(),
+                                      reason=reason)
+        except KeyError:
+            return  # never registered (e.g. failed before _loop_init_ingress)
+        self._audit("loop_failed", {
+            "loop_id": self.loop_id,
+            "reason": reason,
+            "final_state": (self.state.state if self.state else None),
+        })
+
     # ----- P5: Loop Memory feedback at milestone close (PROPOSE-ONLY) ------- #
     def _loop_feedback(self) -> None:
         """At a successful MILESTONE close (memory enabled): read matured (L2)
@@ -899,10 +973,262 @@ class Driver:
                             "- defer\n- dismiss"))
 
     # ----- state-machine steps --------------------------------------------- #
+    def _dev_spec_path(self) -> Optional[str]:
+        """Absolute path to the OPTIONAL compact dev-prompt projection
+        (``<repo>/compact/<subsprint>-dev-prompt.md``), or None when no repo is
+        bound (offline / mock) OR the id is unsafe / would escape ``<repo>/compact``.
+
+        The sub-sprint id is interpolated into a path, so it is sanitized first
+        (no ``..`` / separators) and the resolved path is asserted to stay under
+        ``<repo>/compact`` — an LLM-authored plan id can otherwise traverse out."""
+        if not self.repo_dir:
+            return None
+        sid = self.state.subsprint_id
+        if not self._safe_subsprint_id(sid):
+            return None
+        base = os.path.realpath(os.path.join(self.repo_dir, "compact"))
+        path = os.path.realpath(os.path.join(base, f"{sid}-dev-prompt.md"))
+        if os.path.commonpath([base, path]) != base:
+            return None  # containment guard (defense-in-depth vs the id check)
+        return path
+
+    @staticmethod
+    def _safe_subsprint_id(sid: Any) -> bool:
+        """True iff ``sid`` is a safe identifier to interpolate into a path
+        (letters/digits then ._- only; no ``..``, no path separators)."""
+        return bool(_SAFE_SUBSPRINT_ID_RE.match(str(sid)))
+
+    @staticmethod
+    def _split_front_matter(text: str):
+        """Split a leading YAML front-matter block → ``(front_matter_dict_or_None,
+        body)``. A block counts as front-matter ONLY when the FIRST line is exactly
+        ``---`` AND the fenced block parses as a YAML MAPPING — so a Markdown
+        thematic break (``---``) that recurs in the body is not mistaken for it.
+        Robust to a leading BOM. No well-formed front-matter ⇒ ``(None, text)``."""
+        stripped = text.lstrip("﻿")
+        lines = stripped.splitlines(keepends=True)
+        if not lines or lines[0].strip() != "---":
+            return None, text
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                try:
+                    fm = yaml.safe_load("".join(lines[1:i]))
+                except yaml.YAMLError:
+                    fm = None
+                if not isinstance(fm, dict):
+                    return None, text  # not a real YAML mapping → not front-matter
+                return fm, "".join(lines[i + 1:])
+        return None, text  # no closing delimiter → leave as-is
+
+    @classmethod
+    def _strip_front_matter(cls, text: str) -> str:
+        """Drop a leading YAML front-matter block, returning the body (doc metadata
+        is not model instructions). Defense-in-depth only now: the CLI adapters
+        pass the prompt on STDIN, so a leading ``---`` can no longer be mis-parsed
+        as an argv option (see adapters/claude_code.py)."""
+        return cls._split_front_matter(text)[1]
+
+    # ----- Dev-spec resolution (the spec is the schema-valid decompose PLAN) -- #
+    # The canonical executable Dev spec is the structured decompose-plan entry for
+    # the sub-sprint; compact/<id>-dev-prompt.md is an OPTIONAL adopter-authored
+    # alternative / an auditable projection. Resolution validates by CONTENT, not
+    # file existence; an incomplete/ambiguous/missing spec on a LIVE run HALTS for
+    # Deliver/human refinement (resumable) — it never spends a live Dev call on an
+    # unbounded task, and a complete + scope-valid plan continues straight to Dev.
+    def _current_subsprint_plan(self) -> Optional[dict]:
+        """The structured plan entry for the current sub-sprint id (from the
+        persisted decompose plan), or None (e.g. delivery_only — no decompose)."""
+        sid = self.state.subsprint_id
+        for s in self.state.planned_subsprints:
+            if isinstance(s, dict) and str(s.get("id")) == sid:
+                return s
+        return None
+
+    @staticmethod
+    def _validate_subsprint_spec(spec: dict) -> list:
+        """Validate a structured plan entry by CONTENT → list of problems (empty ⇒
+        a complete, BOUNDED job). The bounding minimum is an objective + in-scope
+        deliverables + observable exit criteria — exactly what was missing when the
+        Dev got the bare 'implement sub-sprint X' prompt."""
+        problems = []
+        if not str(spec.get("objective") or "").strip():
+            problems.append("missing/empty `objective`")
+        if not [x for x in (spec.get("scope_in") or []) if str(x).strip()]:
+            problems.append("missing/empty `scope_in` (in-scope deliverables)")
+        if not [x for x in (spec.get("exit_criteria") or []) if str(x).strip()]:
+            problems.append("missing/empty `exit_criteria` (observable close conditions)")
+        return problems
+
+    @staticmethod
+    def _validate_compact_text(front_matter: Optional[dict], body: str) -> list:
+        """Validate an adopter-authored compact dev-prompt by CONTENT, not mere file
+        existence (a non-empty file is NOT automatically a bounded spec). The
+        template's hard requirement is ``context_budget.self_contained: true``
+        (Constitution §1.4-i); without it the file is not a self-contained job."""
+        problems = []
+        if not (body or "").strip():
+            problems.append("the spec body is empty")
+        cb = front_matter.get("context_budget") if isinstance(front_matter, dict) else None
+        self_contained = cb.get("self_contained") if isinstance(cb, dict) else None
+        if self_contained is not True:
+            problems.append(
+                "front-matter `context_budget.self_contained` must be `true` "
+                "(Constitution §1.4-i; see templates/compact-dev-prompt.md) — the "
+                "Dev spec must be a self-contained, bounded job, not a bare prompt")
+        return problems
+
+    @staticmethod
+    def _project_dev_prompt(spec: dict) -> str:
+        """Deterministically PROJECT a schema-valid plan entry into an executable
+        Dev prompt. The plan is the normative source; this is its rendering."""
+        def _section(label: str, value: Any) -> str:
+            if not value:
+                return ""
+            if isinstance(value, (list, tuple)):
+                inner = "\n".join(f"  - {x}" for x in value)
+            else:
+                inner = f"  {value}"
+            return f"{label}:\n{inner}\n"
+        sid = spec.get("id")
+        parts = [
+            f"You are activating as the Dev Agent for sub-sprint {sid}.\n",
+            f"Objective: {spec.get('objective', '')}\n\n",
+            _section("Scope IN (deliverables)", spec.get("scope_in")),
+            _section("Scope OUT (explicit non-goals)", spec.get("scope_out")),
+            _section("Modules you may touch", spec.get("modules")),
+            _section("Fix-layers", spec.get("layers")),
+            _section("Exit criteria (close conditions)", spec.get("exit_criteria")),
+            _section("Depends on (must precede)", spec.get("dependencies")),
+            _section("Context / load references",
+                     spec.get("context") or spec.get("load_list")),
+            "\nStay strictly within Scope IN and the modules listed; do NOT widen "
+            "scope. If the contract cannot be satisfied without a scope change, HALT "
+            "and surface a diagnostic instead of expanding scope. When done, write "
+            "the handoff.\n",
+        ]
+        return "".join(p for p in parts if p)
+
+    def _load_compact_file(self):
+        """Read the adopter-authored compact dev-prompt → ``(front_matter, body)``
+        or None when there is no repo / file / safe path. The front-matter is parsed
+        (for content validation) and stripped from the body (it is doc metadata)."""
+        path = self._dev_spec_path()
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+        return self._split_front_matter(raw)
+
+    def _maybe_project_compact_file(self, prompt: str) -> None:
+        """Best-effort: write the resolved Dev spec to compact/<id>-dev-prompt.md as
+        an auditable PROJECTION of the plan (the plan stays normative). Never
+        clobbers an existing adopter-authored file; swallows any I/O error."""
+        path = self._dev_spec_path()
+        if not path or os.path.exists(path):
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            sid = self.state.subsprint_id
+            # Front-matter mirrors templates/compact-dev-prompt.md so the projection
+            # is itself a VALID compact source on re-read (self_contained: true), not
+            # just human-readable. The normative source stays the decompose plan.
+            front_matter = (
+                "---\n"
+                f"title: Dev prompt (engine projection) — {sid}\n"
+                f"sprint_id: {sid}\n"
+                "context_budget:\n"
+                "  self_contained: true\n"
+                "projection: true   # generated from the decompose plan; edit the plan, not this file\n"
+                "---\n\n")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(front_matter + prompt)
+        except OSError:
+            return
+
+    def _dev_spec_refine_halt(self, source: str, problems: list):
+        """Write a Deliver/human REFINEMENT checkpoint + set STATE_HALTED (resumable
+        — the loop keeps its context), then return the halt sentinel. Replaces the
+        old terminal hard-fail: a missing/incomplete spec is a correctable plan gap,
+        not a dead loop."""
+        sid = self.state.subsprint_id
+        bullets = "\n".join(f"- {p}" for p in problems)
+        self._write_checkpoint(
+            "dev_spec_refinement", sid,
+            context_md=(
+                f"The executable Dev specification for sub-sprint `{sid}` is not "
+                f"usable yet (source: {source}). The loop HALTS for refinement — it "
+                f"will NOT spend a live Dev call on an unbounded/ambiguous task.\n\n"
+                f"Problems:\n{bullets}\n\n"
+                f"Resolve by EITHER refining the Deliver decompose plan for this "
+                f"sub-sprint (objective + scope_in + exit_criteria, within the signed "
+                f"Gate-1 scope) OR authoring `compact/{sid}-dev-prompt.md` from "
+                f"`templates/compact-dev-prompt.md` (front-matter "
+                f"`context_budget.self_contained: true`). Then resume."),
+            options_md=("- refine_plan_and_resume\n"
+                        "- author_compact_prompt_and_resume\n- abort"))
+        self.state.state = STATE_HALTED
+        self._save_state()  # PERSIST the halt — a resume must NOT re-run dev_pending
+        self._audit("dev_spec_refinement_halt",
+                    {"subsprint_id": sid, "source": source, "problems": problems})
+        return _DEV_SPEC_HALT
+
+    def _resolve_dev_spec(self):
+        """Resolve the normative executable Dev spec for the current sub-sprint.
+
+        OFFLINE/mock (not allow_real) ⇒ None (the legacy inline prompt; the test
+        suite + dry-run stay byte-identical). On a LIVE run, validate BY CONTENT, in
+        priority order, sanitizing the id before ANY path use:
+          1. the schema-valid decompose-plan entry (CANONICAL) → project it to an
+             executable prompt (+ an auditable compact-file projection);
+          2. an adopter-authored compact/<id>-dev-prompt.md (alternative source);
+          3. neither ⇒ a refinement HALT.
+        An incomplete/ambiguous spec at (1) or (2) HALTS for refinement rather than
+        silently running, or falling through to a less-specific source."""
+        if not bool(self.context.get("allow_real")):
+            return None  # offline/mock → legacy inline prompt (byte-identical)
+        sid = self.state.subsprint_id
+        if not self._safe_subsprint_id(sid):
+            return self._dev_spec_refine_halt(
+                "invalid_id",
+                [f"sub-sprint id {sid!r} is not a safe identifier "
+                 f"(letters/digits then ._- only; no path separators)"])
+        plan_spec = self._current_subsprint_plan()
+        if plan_spec is not None:
+            problems = self._validate_subsprint_spec(plan_spec)
+            if problems:
+                return self._dev_spec_refine_halt("decompose_plan", problems)
+            prompt = self._project_dev_prompt(plan_spec)
+            self._maybe_project_compact_file(prompt)
+            return prompt
+        loaded = self._load_compact_file()
+        if loaded is not None:
+            front_matter, body = loaded
+            problems = self._validate_compact_text(front_matter, body)
+            if problems:
+                return self._dev_spec_refine_halt("compact_file", problems)
+            return body.strip()
+        return self._dev_spec_refine_halt(
+            "missing",
+            [f"no decompose-plan entry for `{sid}` and no "
+             f"compact/{sid}-dev-prompt.md under the repo"])
+
     def _step_dev(self) -> None:
-        prompt = (self._lessons_block("dev")
-                  + f"Implement sub-sprint {self.state.subsprint_id}; "
-                    f"write the handoff.")
+        # The Dev spec is resolved from the decompose plan (canonical) or an
+        # adopter-authored compact prompt, validated by CONTENT. A live run with no
+        # usable spec HALTS for refinement (resumable) — it never spends a live Dev
+        # call on an unbounded task. Offline/mock keeps the legacy inline prompt.
+        resolved = self._resolve_dev_spec()
+        if resolved is _DEV_SPEC_HALT:
+            return  # checkpoint written + STATE_HALTED set; the drive loop stops
+        if resolved is not None:
+            prompt = self._lessons_block("dev") + resolved
+        else:
+            prompt = (self._lessons_block("dev")
+                      + f"Implement sub-sprint {self.state.subsprint_id}; "
+                        f"write the handoff.")
         verdict = self._spawn(
             "dev", prompt,
             schema_key=None,  # spawn_dev's artifact IS the code+handoff, no verdict schema
@@ -1152,6 +1478,10 @@ class Driver:
         sub_sprints = list(verdict.get("sub_sprints") or [])
         seq = [str(s.get("id")) for s in sub_sprints if isinstance(s, dict)]
         self.state.planned_sequence = seq
+        # Persist the FULL structured specs: they are the canonical executable
+        # Dev-spec source (resolved per sub-sprint in _resolve_dev_spec), not just
+        # the ordered ids. compact/<id>-dev-prompt.md becomes an OPTIONAL projection.
+        self.state.planned_subsprints = [s for s in sub_sprints if isinstance(s, dict)]
 
         # Make _milestone_complete (terminality) see the plan: set the charter's
         # approved subsprint_sequence from the plan when none was supplied.
@@ -1338,7 +1668,14 @@ class Driver:
             self.state.state = STATE_DEV_PENDING
 
         self._save_state()
-        self._drive()
+        # A GateHardFail (incl. BudgetExceeded) must NOT leave the loop registered
+        # as ``active`` — mark it failed (keeping the branch/audit for diagnosis),
+        # then re-raise so the caller still sees the hard-fail.
+        try:
+            self._drive()
+        except GateHardFail as exc:
+            self._loop_fail_ingress(str(exc))
+            raise
         # P4: close the loop (mark_done + cleanup) ONLY on a successful terminal
         # state — a halted loop keeps its context for human resolution.
         self._loop_close_ingress()
@@ -1384,6 +1721,8 @@ class Driver:
             self._save_state()
             if st == STATE_DEV_PENDING:
                 self._step_dev()
+                if self.state.state == STATE_HALTED:
+                    return  # dev-spec refinement halt — do not proceed to the gate
             elif st == STATE_GATE_PENDING:
                 self._step_gate()
             elif st == STATE_REVIEW_PENDING:

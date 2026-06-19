@@ -266,11 +266,12 @@ class AdapterBackwardCompatTests(unittest.TestCase):
         # translate_connectors with none → empty (no native config).
         self.assertEqual(a.translate_connectors(None), {})
         self.assertEqual(a.translate_connectors([]), {})
-        # argv with no extras is exactly the pre-connector argv.
-        base_argv = a._build_argv("PROMPT", ["Read", "Grep"])
+        # argv with no extras is exactly the pre-connector argv (the prompt rides
+        # on STDIN now, so it is NOT an argv token).
+        base_argv = a._build_argv(["Read", "Grep"])
         self.assertEqual(
             base_argv,
-            ["claude", "-p", "PROMPT", "--output-format", "json",
+            ["claude", "-p", "--output-format", "json",
              "--model", "claude-x", "--allowed-tools", "Read,Grep"],
         )
         self.assertNotIn("--mcp-config", base_argv)
@@ -286,7 +287,7 @@ class AdapterBackwardCompatTests(unittest.TestCase):
         a = ClaudeCodeAdapter(model="claude-x")
         cfg = a.translate_connectors(TWO_CONNECTORS)
         argv = a._build_argv(
-            "P", ["Read"],
+            ["Read"],
             extra_allowed_tools=cfg["allowed_tools"],
             mcp_config_path="/tmp/x.json")
         joined = ",".join(argv)

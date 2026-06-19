@@ -11,6 +11,7 @@ from .mock import MockAdapter
 from .claude_code import ClaudeCodeAdapter
 from .headless import HeadlessAdapter
 from .codex import CodexAdapter
+from .kimi import KimiAdapter
 
 #: harness id → adapter class, for charter-driven routing in the driver.
 ADAPTER_REGISTRY = {
@@ -18,6 +19,7 @@ ADAPTER_REGISTRY = {
     "claude_code": ClaudeCodeAdapter,
     "headless": HeadlessAdapter,
     "codex": CodexAdapter,
+    "kimi": KimiAdapter,
 }
 
 
@@ -48,6 +50,7 @@ __all__ = [
     "ClaudeCodeAdapter",
     "HeadlessAdapter",
     "CodexAdapter",
+    "KimiAdapter",
     "ADAPTER_REGISTRY",
     "resolve_adapter_class",
 ]

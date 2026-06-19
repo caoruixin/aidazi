@@ -197,9 +197,11 @@ _TIER_ORDER: dict[str, int] = {"unsupported": 0, "low": 1, "medium": 2, "high": 
 _NATIVE_HARNESS_PROVIDER: dict[str, str] = {
     "claude_code": "anthropic",
     "codex": "openai",
+    "kimi": "moonshot",        # Kimi Code agentic CLI (Moonshot AI)
 }
 # Harnesses that drive a file-editing coding agent (Dev requires one of these).
-_CODING_AGENT_HARNESSES: frozenset[str] = frozenset({"claude_code", "codex", "aider"})
+_CODING_AGENT_HARNESSES: frozenset[str] = frozenset(
+    {"claude_code", "codex", "kimi", "aider"})
 
 # Roles whose output is a schema-valid verdict (structured-output floor applies).
 _VERDICT_ROLES: frozenset[str] = frozenset({"research", "deliver", "review", "acceptance"})

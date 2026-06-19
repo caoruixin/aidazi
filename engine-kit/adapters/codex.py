@@ -85,36 +85,55 @@ class CodexAdapter(Adapter):
     def _enabled(self) -> bool:
         return self.allow_subprocess or os.environ.get(_ALLOW_ENV) == "1"
 
-    def _codex_sandbox(self, sandbox: Optional[str]) -> str:
-        """Map the aidazi role sandbox (``read_only`` / ``workspace_write``) to
-        codex's native ``--sandbox`` value (``read-only`` / ``workspace-write``).
+    #: Accepted sandbox values → codex-native ``--sandbox``. Both the aidazi role
+    #: values and their codex-native equivalents map (so a caller may set the
+    #: codex value directly via the ctor). Anything else FAILS CLOSED — the
+    #: dangerous ``danger-full-access`` is intentionally NOT in this table, so it
+    #: is unreachable from a routed/charter sandbox value.
+    _SANDBOX_MAP = {
+        "read_only": "read-only",
+        "workspace_write": "workspace-write",
+        "read-only": "read-only",
+        "workspace-write": "workspace-write",
+    }
 
-        ``None`` ⇒ the ctor default (``self.sandbox``). A value already in
-        codex-native form passes through unchanged (so a caller may set the
-        codex value directly via the ctor)."""
-        if sandbox is None:
-            return self.sandbox
-        return {
-            "read_only": "read-only",
-            "workspace_write": "workspace-write",
-        }.get(sandbox, sandbox)
+    def _codex_sandbox(self, sandbox: Optional[str], role: str = "") -> str:
+        """Map the aidazi role sandbox (``read_only`` / ``workspace_write``) to
+        codex's native ``--sandbox`` value, FAILING CLOSED on any unrecognized
+        value rather than passing it straight to ``codex --sandbox``.
+
+        ``None`` ⇒ the ctor default (``self.sandbox``), which is ALSO validated —
+        so ``danger-full-access`` is unreachable even when set at construction (no
+        silent passthrough). A routed/charter value MUST be one of the two aidazi
+        sandboxes (or their codex-native form); anything else is an ``AdapterError``."""
+        value = self.sandbox if sandbox is None else sandbox
+        try:
+            return self._SANDBOX_MAP[value]
+        except KeyError:
+            raise AdapterError(
+                f"codex adapter: unsupported sandbox {value!r} for role "
+                f"{role!r}; supported: read_only | workspace_write. Failing closed "
+                f"rather than forwarding an unvalidated value to codex --sandbox.",
+                role=role,
+            ) from None
 
     def _build_argv(
         self,
-        prompt: str,
         tools: Sequence[str],
         *,
         sandbox: Optional[str] = None,
         last_message_path: Optional[str] = None,
     ) -> list[str]:
-        # `codex exec --json <prompt>` runs non-interactively and streams the
-        # session as JSONL events. The verdict is read from the final agent
-        # message, which codex writes verbatim to ``-o <last_message_path>`` when
-        # supplied (the version-stable primary path); ``--json`` stdout is kept
-        # for audit + as a fallback. The role prompt (built by the driver) already
-        # embeds the verdict schema and any tool whitelist; codex exec exposes no
-        # per-call allowed-tools flag, so tool-gating for this harness lives in
-        # the prompt/sandbox, not argv.
+        # `codex exec --json` runs non-interactively and streams the session as
+        # JSONL events. The PROMPT IS PASSED ON STDIN (subprocess ``input=``), NOT
+        # as a positional argv token: ``codex exec`` reads the prompt from stdin
+        # when no positional is given, so a prompt whose first line starts with
+        # ``--`` can never be mis-parsed as a CLI option (root-cause fix; parity
+        # with claude_code). The verdict is read from the final agent message,
+        # which codex writes verbatim to ``-o <last_message_path>`` (the version-
+        # stable primary path); ``--json`` stdout is kept for audit + as a fallback.
+        # codex exec exposes no per-call allowed-tools flag, so tool-gating for this
+        # harness lives in the prompt/sandbox, not argv.
         sb = sandbox if sandbox is not None else self.sandbox
         argv = [self.binary, "exec", "--json"]
         if last_message_path:
@@ -127,8 +146,6 @@ class CodexAdapter(Adapter):
             argv += ["-C", self.cwd]
         if self.skip_git_repo_check:
             argv.append("--skip-git-repo-check")
-        # The prompt is the final positional arg.
-        argv.append(prompt)
         return argv
 
     def spawn(
@@ -164,6 +181,18 @@ class CodexAdapter(Adapter):
                 f"silently dropping the grant.",
                 role=role,
             )
+        # VERDICT spawn (schema present): codex's --output-schema needs an
+        # OpenAI-STRICT schema (every property required, recursively), which our
+        # optional-field verdict schemas are not — so instead we firmly instruct
+        # codex to make its FINAL message ONLY a JSON object. That final message is
+        # exactly what `-o` captures, removing the verdict-shape variance that
+        # intermittently produced an empty/non-JSON final message.
+        if schema:
+            prompt = (prompt + "\n\nOUTPUT CONTRACT (STRICT): your FINAL message "
+                      "MUST be EXACTLY one JSON object and NOTHING else — no prose "
+                      "before or after it, and no markdown code fence. Put any "
+                      "analysis in earlier messages; the final message is only the "
+                      "JSON verdict.")
         # --- below here is NEVER exercised in offline tests ------------------- #
         # Ask codex to write its FINAL message to a private temp file via `-o`;
         # that file's contents are the verdict (version-stable, no event-`type`
@@ -171,14 +200,14 @@ class CodexAdapter(Adapter):
         with tempfile.TemporaryDirectory(prefix="aidazi-codex-") as tmpdir:
             last_message_path = os.path.join(tmpdir, "last_message.txt")
             argv = self._build_argv(
-                prompt,
                 tools,
-                sandbox=self._codex_sandbox(sandbox),
+                sandbox=self._codex_sandbox(sandbox, role),
                 last_message_path=last_message_path,
             )
             try:
                 proc = subprocess.run(  # noqa: S603 - argv is a fixed CLI, no shell
                     argv,
+                    input=prompt,  # prompt via STDIN, never argv (no dash-injection)
                     capture_output=True,
                     text=True,
                     timeout=self.timeout_seconds,
@@ -202,50 +231,104 @@ class CodexAdapter(Adapter):
                     verdict_text = fh.read().strip()
             except OSError:
                 verdict_text = None
-            if verdict_text:
-                return self._parse_verdict_text(verdict_text, role)
-            # FALLBACK: scan the JSONL event stream for the final agent message.
-            return self._extract_verdict(proc.stdout, role)
+            # ARTIFACT spawn (no schema — e.g. Dev / Research on the codex harness):
+            # the final message IS the artifact (code + handoff prose), NOT a JSON
+            # verdict, so return it RAW (parity with claude_code / kimi). The driver
+            # consumes the side-effect (files written), not this return value.
+            if not schema:
+                text = verdict_text or self._last_agent_message(proc.stdout) or ""
+                return {"artifact": text}
+            # VERDICT spawn — FAIL CLOSED. PRIMARY: the `-o` final-message file, used
+            # ONLY when it parses to a SCHEMA-CONFORMING verdict. Otherwise FALLBACK
+            # to the JSONL stream. Never accept prose, partial JSON, or an arbitrary
+            # final event — a non-conforming result raises AdapterError downstream.
+            primary = self._coerce_json_object(verdict_text) if verdict_text else None
+            if primary is not None and self._verdict_conforms(primary, schema):
+                return primary
+            return self._extract_verdict(proc.stdout, role, schema)
+
+    @staticmethod
+    def _coerce_json_object(text: str):
+        """Best-effort parse of a JSON object from a model message, tolerating a
+        ```json code fence or surrounding prose (try whole, then outermost
+        ``{ ... }``). Returns the dict, or None if none is found."""
+        s = (text or "").strip()
+        if s.startswith("```"):
+            s = s.split("\n", 1)[1] if "\n" in s else ""
+            fence = s.rfind("```")
+            if fence != -1:
+                s = s[:fence]
+            s = s.strip()
+            if s[:4].lower() == "json":
+                s = s[4:].strip()
+        candidates = [s]
+        if "{" in s and "}" in s:
+            candidates.append(s[s.find("{"): s.rfind("}") + 1])
+        for cand in candidates:
+            if not cand:
+                continue
+            try:
+                parsed = json.loads(cand)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
 
     @staticmethod
     def _parse_verdict_text(text: str, role: str) -> dict:
         """Parse one text blob (the model's FINAL message) into a verdict dict.
 
         Used by BOTH the primary ``-o`` output-file path and the JSONL fallback.
-        Any non-JSON / non-object shape is an ``AdapterError`` (the driver →
-        gate_hard_fail), never a permissive default.
+        Tolerates a ```json fence / surrounding prose. Any shape that yields no
+        JSON object is an ``AdapterError`` (driver → gate_hard_fail), never a
+        permissive default.
         """
-        try:
-            verdict = json.loads(text)
-        except json.JSONDecodeError as exc:
+        verdict = CodexAdapter._coerce_json_object(text)
+        if verdict is None:
             raise AdapterError(
-                f"codex final agent message was not a JSON verdict: {exc}",
-                role=role,
-            ) from exc
-        if not isinstance(verdict, dict):
-            raise AdapterError(
-                f"codex verdict was not a JSON object "
-                f"(got {type(verdict).__name__})",
+                f"codex final agent message was not a JSON verdict: "
+                f"{(text or '')[:200]!r}",
                 role=role,
             )
         return verdict
 
     @staticmethod
-    def _extract_verdict(stdout: str, role: str) -> dict:
-        """FALLBACK: pull the verdict from the `codex exec --json` JSONL stream.
+    def _verdict_conforms(candidate: Any, schema: Optional[dict]) -> bool:
+        """True iff ``candidate`` is a dict that CONFORMS to ``schema``.
 
-        Used only when the ``-o`` output file is missing/empty. Unlike claude's
-        single ``--output-format json`` envelope, codex emits one JSON object PER
-        LINE (a JSONL event stream). The model's FINAL message is the verdict; we
-        walk the events, keep the last agent/assistant message text we see, then
-        parse that text as the verdict.
+        No schema ⇒ a JSON object is sufficient (the driver-less unit tests; the
+        driver always passes the role schema in production). With a schema, validate
+        via jsonschema when importable — FAIL CLOSED on non-conformance. If
+        jsonschema is unavailable the adapter cannot deep-validate, so a dict passes
+        and the DRIVER's own schema validation stays the gate (defense-in-depth,
+        never weaker)."""
+        if not isinstance(candidate, dict):
+            return False
+        if not schema:
+            return True
+        try:
+            import jsonschema  # noqa: E402,WPS433 - optional, validated lazily
+        except ImportError:
+            return True
+        try:
+            return jsonschema.Draft202012Validator(schema).is_valid(candidate)
+        except jsonschema.exceptions.SchemaError:
+            return True  # a malformed role schema is the driver's problem, not ours
 
-        This parser stays tolerant of the common event shapes (``agent_message``
-        / ``item.completed`` text / a final-message field) so a CLI-version skew
-        never silently drops a verdict — the primary ``-o`` path makes the exact
-        event ``type`` non-load-bearing.
-        """
-        last_text: Optional[str] = None
+    @staticmethod
+    def _extract_verdict(stdout: str, role: str,
+                         schema: Optional[dict] = None) -> dict:
+        """FALLBACK: pull the verdict from the `codex exec --json` JSONL stream when
+        the ``-o`` final-message file is empty/missing or non-conforming.
+
+        FAILS CLOSED: codex emits one JSON object per line; we collect every agent
+        message and return the MOST RECENT one that BOTH parses to a JSON object AND
+        CONFORMS to the role ``schema`` (jsonschema, when present). If NO agent
+        message yields a schema-conforming verdict, raises ``AdapterError`` — never
+        prose, partial JSON, or an arbitrary final event. ``schema`` None/empty ⇒ a
+        JSON object suffices (the driver always passes the role schema in prod)."""
+        texts: list[str] = []
         for line in stdout.splitlines():
             line = line.strip()
             if not line:
@@ -257,14 +340,41 @@ class CodexAdapter(Adapter):
                 continue
             text = _event_message_text(event)
             if text is not None:
-                last_text = text
+                texts.append(text)
 
-        if last_text is None:
+        if not texts:
             raise AdapterError(
                 "codex output had no parseable agent message in the JSONL stream",
                 role=role,
             )
-        return CodexAdapter._parse_verdict_text(last_text, role)
+        for text in reversed(texts):
+            verdict = CodexAdapter._coerce_json_object(text)
+            if verdict is not None and CodexAdapter._verdict_conforms(verdict, schema):
+                return verdict
+        raise AdapterError(
+            f"codex produced no schema-conforming verdict in the JSONL stream "
+            f"(last agent message: {texts[-1][:200]!r})",
+            role=role,
+        )
+
+    @staticmethod
+    def _last_agent_message(stdout: str) -> Optional[str]:
+        """Return the RAW text of the LAST agent message in the ``codex exec --json``
+        JSONL stream (no JSON-verdict parsing). Used by the ARTIFACT path when the
+        ``-o`` output file is empty — the artifact is prose, not a verdict."""
+        last: Optional[str] = None
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            text = _event_message_text(event)
+            if text is not None:
+                last = text
+        return last
 
 
 def _event_message_text(event: Any) -> Optional[str]:

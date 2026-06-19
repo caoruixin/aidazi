@@ -109,7 +109,7 @@ models:
 
   openai-gpt5-codex:
     provider: openai
-    model: gpt-5-codex
+    model: gpt-5.5
     context_window: 256000
     tool_use: true
     structured_output_tier: high
@@ -118,11 +118,11 @@ models:
     harness_compat: [codex, headless]
     cost: { currency: USD, input_per_mtok: null, output_per_mtok: null }
     calibratable: true
-    notes: "Codex harness is provider-locked to OpenAI; cost may be subscription-billed (null)."
+    notes: "Codex harness is provider-locked to OpenAI; cost may be subscription-billed (null). Model availability is account-type dependent: a ChatGPT-subscription Codex account serves general models (e.g. gpt-5.5) and rejects gpt-5-codex; an API-key Codex account can use gpt-5-codex."
 
   deepseek-chat-api:
     provider: deepseek
-    model: deepseek-chat
+    model: deepseek-v4-pro
     context_window: 128000
     tool_use: true
     structured_output_tier: medium

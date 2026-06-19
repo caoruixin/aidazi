@@ -243,6 +243,49 @@ Recommended defaults follow the §4 capability table in the contract: Dev needs 
 Research/Deliver) suit `headless`/API models; native harnesses are provider-locked
 (claude_code↔anthropic, codex↔openai). Capability is validated in Step 8.
 
+**Facet A preflight — confirm each bound harness/provider is reachable on THIS
+machine (recommend-then-confirm; gate before Step 8).** Step 8's capability gate
+validates the *triple* on paper; it does **not** prove the harness CLI is
+installed or the provider key is live. Do that now, while the human is present to
+fix it — once per distinct `(harness, provider)` pair across the 5 roles:
+
+- **`claude_code` / `codex` (native CLI harnesses).** Run `claude --version` /
+  `codex --version` and confirm the CLI is authenticated. These two are the only
+  harnesses the framework assumes; if the bound CLI is missing or unauthenticated,
+  **stop** and have the human install / log in before continuing.
+- **`headless` providers — DeepSeek / Kimi (Moonshot) / GPT / any
+  OpenAI-compatible.** These are **adopter-supplied — never assume they are
+  configured.** The charter names the credentials **BY NAME** — `endpoint` (or
+  `endpoint_env`) for the base URL and `api_key_env` for the key — and the VALUES
+  live in the adopter's environment: exported, or in a **gitignored `.env.local`**
+  (copy `aidazi/.env.example` → `.env.local` at the repo root and fill it; the
+  engine's `run_loop.py` loads it on `--allow-real` runs). Confirm the key is set,
+  then run a zero-cost auth + model-discovery probe (key passed via header, never
+  printed):
+  ```bash
+  set -a; [ -f .env.local ] && . ./.env.local; set +a   # load .env.local as the engine does
+  KEY=$(printenv <api_key_env>)            # the env-var NAME from tooling.<role>.api_key_env
+  curl -s -o /dev/null -w "%{http_code}\n" --max-time 15 \
+    -H "Authorization: Bearer $KEY" "<endpoint>/models"
+  ```
+  A missing key or non-`200` ⇒ **prompt the human to put the key in `.env.local`
+  NOW** (the timely configuration-confirmation moment), then re-probe. Also confirm
+  the charter's `model` id appears in the `/models` response — provider catalogs
+  drift, and a stale id fails only at runtime.
+
+**Key-handling rule (mirrors Facet C):** secrets are referenced **by env-var NAME
+only** — never write a key value into the charter, and never print one. Record
+each probe as a row in the onboarding record (`harness · provider · model ·
+reachable yes/no · timestamp`). A role whose harness is unreachable **blocks the
+Step 8 green** unless the human explicitly records a deferral (e.g. "key arrives
+before first real loop") in `adoption-state.md`.
+
+> Properties: harness-agnostic (read + shell only — `--version` and a `curl`
+> probe, no harness orchestration), idempotent (probe results recorded; re-runs
+> skip confirmed pairs), non-destructive (read-only probes; keys by name only),
+> audited (each probe is a record row), recommendation-driven (one
+> reachability decision per `(harness, provider)` pair).
+
 **Facet B — Capability binding (skills).** Vendor the **default role skills** and
 bind them. Defaults (`skills/registry.yaml` `role_defaults`): Research →
 `brainstorming`; Deliver → `writing-plans` + `architecture-decision-records`; Dev
@@ -348,7 +391,9 @@ until this is green.**
 2. **Structural checks** — confirm the generated tree exists and resolves:
    `AGENTS.md`, `docs/current/*`, the copied `engine-kit/`, vendored skills +
    `skills/skills.lock`, `.orchestrator/audit/`, and that the intent contract
-   triple is present.
+   triple is present. Also confirm the **Step 5 Facet A preflight** ran: every
+   bound `(harness, provider)` pair has a `reachable yes` row in the onboarding
+   record, or an explicit human-recorded deferral in `adoption-state.md`.
 3. Record the green result (validator exit code + timestamp) in the onboarding
    record. Mark the relevant `adoption-state.md` rows `at-spec`.
 
@@ -362,6 +407,14 @@ until this is green.**
 
 The bootstrap is done. Hand off to the **standalone driver** — this is where
 **Loop Ingress** and the **Loop Controller** take over (NOT the wizard; §1.7-E).
+
+> **Turnkey hand-off.** Tell the human to open a **fresh coding-agent session whose
+> working directory is the adopter repo root** and feed it **`aidazi/FIRST-LOOP.md`**
+> (the First-Loop Launcher). It carries the exact cold-start reads + the
+> `engine-kit/scheduling/run_loop.py` commands (offline mock first, then the real
+> run) and the human-on-the-loop gate discipline — so the human switches workspace
+> and starts the first loop **without typing shell by hand**. `FIRST-LOOP.md` is the
+> documented sequel to this wizard.
 
 - **Run the Delivery Loop driver** (framework-owned, harness-agnostic; spec:
   `process/delivery-loop.md` §4.2). The reference implementation lives at

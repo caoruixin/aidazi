@@ -114,8 +114,9 @@ class CodexArgvTests(unittest.TestCase):
 
     def test_argv_is_codex_exec_json(self):
         adapter = CodexAdapter(model="o4-mini", cwd="/work")
-        argv = adapter._build_argv("hello prompt", ["Read", "Write"])
-        # Documented non-interactive form: `codex exec --json ... <prompt>`.
+        argv = adapter._build_argv(["Read", "Write"])
+        # Documented non-interactive form: `codex exec --json ...`. The PROMPT is
+        # passed on STDIN (subprocess input=), NEVER as a positional argv token.
         self.assertEqual(argv[0], "codex")
         self.assertEqual(argv[1], "exec")
         self.assertIn("--json", argv)
@@ -125,24 +126,22 @@ class CodexArgvTests(unittest.TestCase):
         self.assertIn("read-only", argv)
         self.assertIn("-C", argv)
         self.assertIn("/work", argv)
-        # Prompt is the final positional arg.
-        self.assertEqual(argv[-1], "hello prompt")
+        # No prompt anywhere in argv (it rides on stdin).
+        self.assertNotIn("hello prompt", argv)
 
     def test_argv_includes_output_last_message_when_path_given(self):
-        # `-o <file>` is appended when a last-message path is supplied; the
-        # prompt still ends up as the final positional arg.
+        # `-o <file>` is appended when a last-message path is supplied.
         adapter = CodexAdapter(model="m")
-        argv = adapter._build_argv("p", [], last_message_path="/tmp/x/last.txt")
+        argv = adapter._build_argv([], last_message_path="/tmp/x/last.txt")
         self.assertIn("-o", argv)
         self.assertIn("/tmp/x/last.txt", argv)
-        self.assertEqual(argv[-1], "p")
         # No path supplied ⇒ no `-o` (e.g. the pure argv-shape test above).
-        self.assertNotIn("-o", CodexAdapter(model="m")._build_argv("p", []))
+        self.assertNotIn("-o", CodexAdapter(model="m")._build_argv([]))
 
     def test_argv_skip_git_repo_check_is_opt_in(self):
-        on = CodexAdapter(model="m", skip_git_repo_check=True)._build_argv("p", [])
+        on = CodexAdapter(model="m", skip_git_repo_check=True)._build_argv([])
         self.assertIn("--skip-git-repo-check", on)
-        off = CodexAdapter(model="m")._build_argv("p", [])
+        off = CodexAdapter(model="m")._build_argv([])
         self.assertNotIn("--skip-git-repo-check", off)
 
 
@@ -168,13 +167,22 @@ class CodexConnectorsSandboxTests(unittest.TestCase):
         self.assertEqual(a._codex_sandbox("read_only"), "read-only")
         self.assertEqual(a._codex_sandbox("workspace_write"), "workspace-write")
         self.assertEqual(a._codex_sandbox(None), "read-only")  # ctor default
-        # An already-codex-native value passes through unchanged.
-        self.assertEqual(a._codex_sandbox("danger-full-access"),
-                         "danger-full-access")
+        # A codex-native value still maps (a caller may set it directly).
+        self.assertEqual(a._codex_sandbox("workspace-write"), "workspace-write")
+
+    def test_codex_sandbox_fails_closed_on_unknown(self):
+        # A routed/charter value that is NOT a known sandbox FAILS CLOSED rather
+        # than being forwarded to `codex --sandbox` (danger-full-access guard).
+        a = CodexAdapter(sandbox="read-only")
+        for bad in ("danger-full-access", "yolo", ""):
+            with self.assertRaises(AdapterError) as ctx:
+                a._codex_sandbox(bad, "review")
+            self.assertIn("unsupported sandbox", str(ctx.exception))
+            self.assertEqual(ctx.exception.role, "review")
 
     def test_build_argv_sandbox_override(self):
         a = CodexAdapter(model="m")  # ctor sandbox default "read-only"
-        argv = a._build_argv("p", [], sandbox="workspace-write")
+        argv = a._build_argv([], sandbox="workspace-write")
         self.assertIn("--sandbox", argv)
         self.assertIn("workspace-write", argv)
         self.assertNotIn("read-only", argv)
@@ -316,15 +324,138 @@ class RegistryTests(unittest.TestCase):
         self.assertIs(resolve_adapter_class("claude_code"), ClaudeCodeAdapter)
         self.assertIs(resolve_adapter_class("headless"), HeadlessAdapter)
 
-    def test_all_four_harnesses_present(self):
+    def test_all_harnesses_present(self):
         self.assertEqual(
             set(ADAPTER_REGISTRY),
-            {"mock", "claude_code", "headless", "codex"},
+            {"mock", "claude_code", "headless", "codex", "kimi"},
         )
 
     def test_unknown_harness_still_raises_typed_error(self):
         with self.assertRaises(AdapterError):
             resolve_adapter_class("nope", role="dev")
+
+
+class CodexVerdictRobustnessTests(unittest.TestCase):
+    """Tolerant verdict parsing + scan-all-messages + the JSON-only output
+    contract — hardening the verdict path against codex's final-message variance
+    (an intermittent empty/non-JSON final message broke review)."""
+
+    def test_tolerates_json_code_fence(self):
+        stdout = ('{"type":"agent_message","message":'
+                  '"```json\\n{\\"decision\\":\\"pass\\"}\\n```"}')
+        self.assertEqual(CodexAdapter._extract_verdict(stdout, "review"),
+                         {"decision": "pass"})
+
+    def test_scans_back_when_final_message_is_prose(self):
+        stdout = "\n".join([
+            '{"type":"agent_message","message":"{\\"decision\\":\\"fix_required\\"}"}',
+            '{"type":"agent_message","message":"Done — ping me if you need more."}',
+        ])
+        self.assertEqual(CodexAdapter._extract_verdict(stdout, "review"),
+                         {"decision": "fix_required"})
+
+    def test_parse_verdict_text_tolerates_prose(self):
+        self.assertEqual(
+            CodexAdapter._parse_verdict_text("Here:\n{\"verdict\":\"A\"}\nthx",
+                                             "deliver"),
+            {"verdict": "A"})
+
+    def test_spawn_appends_output_contract_when_schema_given(self):
+        a = CodexAdapter(model="m", allow_subprocess=True)
+        captured = {}
+
+        def _fake_run(argv, **kw):
+            captured["prompt"] = kw.get("input")  # prompt rides on STDIN now
+            raise OSError("stop after capture")
+
+        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+            with self.assertRaises(AdapterError):
+                a.spawn("review", "Review it.", [], {"type": "object"})
+        self.assertIn("OUTPUT CONTRACT", captured["prompt"])
+
+    def test_spawn_no_contract_when_no_schema(self):
+        a = CodexAdapter(model="m", allow_subprocess=True)
+        captured = {}
+
+        def _fake_run(argv, **kw):
+            captured["prompt"] = kw.get("input")  # prompt rides on STDIN now
+            raise OSError("stop")
+
+        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+            with self.assertRaises(AdapterError):
+                a.spawn("dev", "Do it.", [], {})  # empty schema → no contract
+        self.assertNotIn("OUTPUT CONTRACT", captured["prompt"])
+
+    def test_artifact_spawn_returns_prose_not_json_verdict(self):
+        # A no-schema (Dev/Research) spawn returns the final message as an artifact,
+        # NOT a parsed JSON verdict — a prose handoff must not hard-fail (parity with
+        # claude_code / kimi). The -o file is unwritten under mock, so it falls back
+        # to the last agent message in the JSONL stream.
+        a = CodexAdapter(model="m", allow_subprocess=True)
+        stdout = ('{"type":"agent_message","message":"Implemented the module; '
+                  'handoff written to docs/handoff.md."}')
+
+        def _fake_run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+            out = a.spawn("dev", "Do it.", [], {})  # empty schema → artifact
+        self.assertEqual(
+            out, {"artifact": "Implemented the module; handoff written to docs/handoff.md."})
+
+
+class CodexFailClosedTests(unittest.TestCase):
+    """The VERDICT path FAILS CLOSED: a candidate is accepted only if it parses to a
+    JSON object AND conforms to the role schema; otherwise AdapterError. Never prose,
+    partial JSON, or an arbitrary final event."""
+
+    _STRICT = {"type": "object", "required": ["decision"],
+               "properties": {"decision": {"type": "string"}}}
+
+    def test_verdict_conforms(self):
+        c = CodexAdapter._verdict_conforms
+        self.assertTrue(c({"decision": "pass"}, self._STRICT))
+        self.assertFalse(c({"note": "x"}, self._STRICT))     # missing required
+        self.assertFalse(c({"decision": 5}, self._STRICT))   # wrong type
+        self.assertFalse(c("not a dict", self._STRICT))
+        self.assertTrue(c({"anything": 1}, None))            # no schema → a dict suffices
+        self.assertFalse(c("prose", None))
+
+    def test_extract_verdict_returns_conforming(self):
+        stdout = "\n".join([
+            '{"type":"agent_message","message":"{\\"decision\\":\\"pass\\"}"}',
+            '{"type":"agent_message","message":"Done — anything else?"}',
+        ])
+        self.assertEqual(
+            CodexAdapter._extract_verdict(stdout, "review", self._STRICT),
+            {"decision": "pass"})
+
+    def test_extract_verdict_rejects_nonconforming_json(self):
+        # a non-conforming JSON object (missing required) + closing prose ⇒ no
+        # conforming verdict ⇒ AdapterError (not the arbitrary JSON object).
+        stdout = "\n".join([
+            '{"type":"agent_message","message":"{\\"note\\":\\"not a verdict\\"}"}',
+            '{"type":"agent_message","message":"All done."}',
+        ])
+        with self.assertRaises(AdapterError):
+            CodexAdapter._extract_verdict(stdout, "review", self._STRICT)
+
+    def test_extract_verdict_prose_only_raises(self):
+        stdout = '{"type":"agent_message","message":"just prose, no json at all"}'
+        with self.assertRaises(AdapterError):
+            CodexAdapter._extract_verdict(stdout, "review", self._STRICT)
+
+    def test_spawn_fails_closed_when_no_conforming_verdict(self):
+        # schema present, -o file empty under mock, stdout is prose → AdapterError.
+        a = CodexAdapter(model="m", allow_subprocess=True)
+        stdout = '{"type":"agent_message","message":"I could not produce a verdict."}'
+
+        def _fake_run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+            with self.assertRaises(AdapterError):
+                a.spawn("review", "Review it.", [], self._STRICT)
 
 
 if __name__ == "__main__":
