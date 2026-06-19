@@ -77,17 +77,19 @@ class MockAdapter(Adapter):
         *,
         connectors: Optional[Sequence[Any]] = None,
         sandbox: str = "workspace_write",
+        network_access: bool = False,
     ) -> dict:
         idx = self._calls.get(role, 0)
         self._calls[role] = idx + 1
-        # Record connectors/sandbox so tests can assert the driver threaded the
-        # role's Facet-C grant through unchanged. The mock is a pure replay and
-        # never USES them (no translation) — it only stores what it was handed.
+        # Record connectors/sandbox/network_access so tests can assert the driver
+        # threaded the role's Facet-C grant + the opt-in network grant through
+        # unchanged. The mock is a pure replay and never USES them (no translation,
+        # no sandbox) — it only stores what it was handed.
         self.history.append(
             {"role": role, "call_index": idx, "harness": self.harness,
              "tools": list(tools),
              "connectors": list(connectors) if connectors else [],
-             "sandbox": sandbox}
+             "sandbox": sandbox, "network_access": network_access is True}
         )
 
         if (role, idx) in self._responses:

@@ -271,6 +271,13 @@ class RoleRouting:
     # config. DEFAULT-DENY: an absent `connectors` is an empty list (no grant).
     connectors: list = field(default_factory=list)
     sandbox: str = "workspace_write"
+    # EXPLICIT opt-in network grant for a write sandbox (default-deny). The
+    # framework invariant is Dev = NO network (delivery-loop §4.2.7); an adopter
+    # that genuinely needs a Dev to `pip`/`npm` install sets
+    # tooling.<role>.network_access: true. The codex adapter then un-blocks the
+    # OS-sandbox network; the driver AUDITS it as a deliberate escalation and the
+    # charter validator WARNS. Off ⇒ byte-identical to the no-network default.
+    network_access: bool = False
 
 
 def load_charter(path: str) -> dict:
@@ -331,6 +338,10 @@ def route_for_role(charter: dict, role: str) -> RoleRouting:
         # the role's sandbox (LEAST PRIVILEGE: dev⇒workspace_write, else read_only).
         connectors=list(rc.get("connectors") or []),
         sandbox=str(rc.get("sandbox") or default_sandbox),
+        # Opt-in network grant — FAIL CLOSED: only a literal boolean ``true`` grants
+        # network (``is True``), so a typo / non-bool (e.g. the string "yes", or 1)
+        # never silently over-grants. Default-deny matches the Dev=no-network invariant.
+        network_access=(rc.get("network_access") is True),
     )
 
 
@@ -659,16 +670,28 @@ class Driver:
         # (recorded on the spawn event, Audit Spine §4.5 G3). [] when memory off.
         injected = self._injected_ids(role)
 
+        # An opt-in network grant is a DELIBERATE privilege escalation (the
+        # Dev=no-network invariant is the default, delivery-loop §4.2.7). Record it
+        # explicitly on the Audit Spine BEFORE the spawn so it is NEVER silent —
+        # even if the spawn then fails. Default-deny ⇒ no event (byte-identical).
+        if routing.network_access:
+            self._audit("sandbox_network_granted", {
+                "role": role, "harness": adapter.harness,
+                "sandbox": routing.sandbox})
+
         self.state.spawn_count += 1
         try:
             # Facet C: thread the role's connector grant + sandbox through the
             # uniform spawn boundary (keyword-only). DEFAULT-DENY: an empty grant
             # is a no-op (the adapter emits no native connector config), so the
             # spawn is byte-identical to before for a charter without connectors.
+            # network_access is the opt-in network grant (default False ⇒ the codex
+            # OS-sandbox stays no-network); only the codex adapter acts on it.
             verdict = adapter.spawn(
                 role, prompt, routing.tools,
                 self.schemas.get(schema_key, {}) if schema_key else {},
-                connectors=routing.connectors, sandbox=routing.sandbox)
+                connectors=routing.connectors, sandbox=routing.sandbox,
+                network_access=routing.network_access)
         except AdapterError as exc:
             self._audit("spawn", audit.make_spawn_payload(
                 role=role, harness=adapter.harness, provider=adapter.provider,
@@ -2282,9 +2305,15 @@ class Driver:
         try:
             # Facet C: acceptance connectors are read-only evidence connectors
             # only (judgment is never delegated); threaded through uniformly.
+            # network_access is HARD-PINNED False: Acceptance is a read-only judge
+            # that NEVER receives a network grant. The charter schema already bars
+            # it structurally (the acceptance block is additionalProperties:false
+            # with no network_access field); pinning False here is defense-in-depth
+            # so the judge stays network-free even if that schema guard regresses.
             verdict = adapter.spawn(
                 "acceptance", prompt, routing.tools, self.schemas["acceptance"],
-                connectors=routing.connectors, sandbox=routing.sandbox)
+                connectors=routing.connectors, sandbox=routing.sandbox,
+                network_access=False)
         except AdapterError as exc:
             raise self._gate_hard_fail(
                 f"acceptance adapter failed: {exc}", STATE_ACCEPTANCE_PENDING)

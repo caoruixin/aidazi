@@ -220,6 +220,78 @@ class CodexConnectorsSandboxTests(unittest.TestCase):
         self.assertIn("failed to run", str(ctx.exception))
 
 
+class CodexNetworkAccessTests(unittest.TestCase):
+    """The opt-in network grant (tooling.<role>.network_access) maps to codex's
+    `-c sandbox_workspace_write.network_access=true` config override — ONLY for a
+    workspace-write sandbox, and ONLY when explicitly granted (default OFF, so the
+    Dev=no-network invariant holds unless an adopter opts in)."""
+
+    _NET_OVERRIDE = "sandbox_workspace_write.network_access=true"
+
+    def test_off_by_default_no_override(self):
+        argv = CodexAdapter(model="m")._build_argv([], sandbox="workspace-write")
+        self.assertNotIn(self._NET_OVERRIDE, argv)
+        self.assertNotIn("-c", argv)
+
+    def test_grant_emits_config_override_for_workspace_write(self):
+        argv = CodexAdapter(model="m")._build_argv(
+            [], sandbox="workspace-write", network_access=True)
+        # codex form: ... -c sandbox_workspace_write.network_access=true
+        self.assertIn("-c", argv)
+        self.assertEqual(argv[argv.index("-c") + 1], self._NET_OVERRIDE)
+
+    def test_grant_is_fail_closed_on_non_bool(self):
+        # The ENFORCEMENT LAYER fails closed: only a literal bool True grants. A
+        # truthy non-bool (the string "false"/"yes"/"true", or 1) must NOT emit the
+        # override — the adapter never trusts an upstream caller to have sanitized
+        # the value. (Adversarial finding from the Codex gpt-5.5 review.)
+        a = CodexAdapter(model="m")
+        for val in ("false", "yes", "true", 1, 0, None):
+            argv = a._build_argv([], sandbox="workspace-write", network_access=val)
+            self.assertNotIn(self._NET_OVERRIDE, argv,
+                             msg=f"network_access={val!r} must NOT grant network")
+        # Only a literal True grants.
+        self.assertIn(self._NET_OVERRIDE, a._build_argv(
+            [], sandbox="workspace-write", network_access=True))
+
+    def test_grant_is_no_op_on_read_only(self):
+        # The config key is namespaced to workspace_write; a grant on a read-only
+        # sandbox is a NO-OP (read-only never gets network anyway).
+        argv = CodexAdapter(model="m")._build_argv(
+            [], sandbox="read-only", network_access=True)
+        self.assertNotIn(self._NET_OVERRIDE, argv)
+        self.assertNotIn("-c", argv)
+
+    def test_spawn_threads_network_access_into_argv(self):
+        a = CodexAdapter(model="m", allow_subprocess=True)
+        captured = {}
+
+        def _fake_run(argv, **kw):
+            captured["argv"] = argv
+            raise OSError("stop after capture")  # bail; we only want the argv
+
+        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+            with self.assertRaises(AdapterError):
+                a.spawn("dev", "p", [], _SCHEMA, sandbox="workspace_write",
+                        network_access=True)
+        self.assertEqual(
+            captured["argv"][captured["argv"].index("-c") + 1], self._NET_OVERRIDE)
+
+    def test_spawn_default_no_network_override(self):
+        # Default spawn (no network_access kwarg) never emits the override.
+        a = CodexAdapter(model="m", allow_subprocess=True)
+        captured = {}
+
+        def _fake_run(argv, **kw):
+            captured["argv"] = argv
+            raise OSError("stop after capture")
+
+        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+            with self.assertRaises(AdapterError):
+                a.spawn("dev", "p", [], _SCHEMA, sandbox="workspace_write")
+        self.assertNotIn(self._NET_OVERRIDE, captured["argv"])
+
+
 class CodexVerdictParseTests(unittest.TestCase):
     """The JSONL final-message parser is pure (no I/O) — exercise it directly."""
 

@@ -336,6 +336,11 @@
         "discovery": {
           "$ref": "#/$defs/discovery",
           "description": "v2 ADDITIVE (Facet C). Connector/tool discovery posture. OPTIONAL; default off (propose_only never auto-authorizes — scan is an authoring aid)."
+        },
+        "network_access": {
+          "type": "boolean",
+          "default": false,
+          "description": "v2 ADDITIVE. EXPLICIT, opt-in network grant for a WRITE sandbox. DEFAULT FALSE — the framework invariant is that the Dev sandbox has NO network (process/delivery-loop.md §4.2.7; role-skill-model.md). Set true ONLY when a Dev genuinely must reach the network to install dependencies (pip/npm); the codex adapter then emits `-c sandbox_workspace_write.network_access=true` to un-block the OS-sandbox network. Granting it is a DELIBERATE privilege escalation: the driver records a `sandbox_network_granted` audit event and the charter validator WARNS. Has effect only on a workspace_write role (a grant on a read_only role is a no-op + a validator WARNING). Acceptance is a read-only judge and structurally cannot declare it."
         }
       }
     },

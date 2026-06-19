@@ -29,6 +29,12 @@ EXACT CLI FORM — CONFIRMED against codex-cli 0.134.0 (`codex exec --help`):
   - ``--sandbox`` takes exactly ``read-only | workspace-write |
     danger-full-access``; ``read-only`` is the gate-side default (a verdict-
     producing role should not need to write). Override via the ``sandbox`` arg.
+  - ``-c sandbox_workspace_write.network_access=true`` (config override) RE-ENABLES
+    network inside the workspace-write sandbox, which codex DISABLES by default.
+    Emitted ONLY for an EXPLICIT, audited charter grant
+    (``tooling.<role>.network_access: true``) on a workspace-write role — the
+    opt-in escape hatch for a Dev that must ``pip``/``npm`` install. OFF by default
+    (the framework invariant is Dev = no network; process/delivery-loop.md §4.2.7).
   - ``--skip-git-repo-check`` (optional, OFF by default) lets codex run outside a
     git repo; enable via the ``skip_git_repo_check`` ctor flag.
   Codex has NO single-envelope ``--output-format json`` like claude; ``--json``
@@ -123,6 +129,7 @@ class CodexAdapter(Adapter):
         *,
         sandbox: Optional[str] = None,
         last_message_path: Optional[str] = None,
+        network_access: bool = False,
     ) -> list[str]:
         # `codex exec --json` runs non-interactively and streams the session as
         # JSONL events. The PROMPT IS PASSED ON STDIN (subprocess ``input=``), NOT
@@ -142,6 +149,19 @@ class CodexAdapter(Adapter):
             argv += ["--model", self.model]
         if sb:
             argv += ["--sandbox", sb]
+        # OPT-IN network grant (default OFF). codex's workspace-write OS-sandbox
+        # DISABLES network by default — so a Dev cannot `pip`/`npm` install. An
+        # EXPLICIT, audited charter grant (tooling.<role>.network_access: true) is
+        # the only way to re-enable it, via codex's documented config override
+        # `-c sandbox_workspace_write.network_access=true`. ONLY for workspace-write
+        # (the config key is namespaced to it; read-only never gets network anyway),
+        # so a grant on a read-only role is a no-op here (the validator WARNS on it).
+        # FAIL CLOSED at the enforcement layer: require a LITERAL ``True`` (not just
+        # a truthy value), so a direct adapter call with a non-bool (the string
+        # "false", or 1) can never grant network — the adapter never relies on an
+        # upstream caller to have sanitized the value (the driver also uses is-True).
+        if network_access is True and sb == "workspace-write":
+            argv += ["-c", "sandbox_workspace_write.network_access=true"]
         if self.cwd:
             argv += ["-C", self.cwd]
         if self.skip_git_repo_check:
@@ -157,6 +177,7 @@ class CodexAdapter(Adapter):
         *,
         connectors: Optional[Sequence[Any]] = None,
         sandbox: Optional[str] = None,
+        network_access: bool = False,
     ) -> dict:
         if not self._enabled():
             raise AdapterError(
@@ -203,6 +224,7 @@ class CodexAdapter(Adapter):
                 tools,
                 sandbox=self._codex_sandbox(sandbox, role),
                 last_message_path=last_message_path,
+                network_access=network_access,
             )
             try:
                 proc = subprocess.run(  # noqa: S603 - argv is a fixed CLI, no shell

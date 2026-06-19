@@ -103,6 +103,7 @@ class HeadlessAdapter(Adapter):
         *,
         connectors: Optional[Sequence[Any]] = None,
         sandbox: str = "workspace_write",
+        network_access: bool = False,  # accepted for uniformity; no OS sandbox here
     ) -> dict:
         if not self._enabled():
             raise AdapterError(
@@ -110,6 +111,10 @@ class HeadlessAdapter(Adapter):
                 f"{_ALLOW_ENV}=1 to make the real HTTP call); role={role!r}",
                 role=role,
             )
+        # network_access is a no-op for the headless adapter: this is a remote
+        # OpenAI-compatible HTTP call, not a local OS-sandboxed coding session, so
+        # there is no sandbox network gate to toggle. Accepted only so the driver
+        # can call every adapter through one uniform spawn signature.
         if not self.base_url:
             raise AdapterError("headless adapter missing base_url", role=role)
         api_key = os.environ.get(self.api_key_env, "") if self.api_key_env else ""

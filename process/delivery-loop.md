@@ -433,7 +433,7 @@ Each spawn function has a published JSON-schema verdict shape so orchestrator pa
 
 | Function | Backing agent (per charter) | Tools | Verdict schema |
 |---|---|---|---|
-| `spawn_dev` | `charter.tooling.dev.agent_kind` | workspace-write; no network; no git push | (none — code edits + handoff file IS the artifact) |
+| `spawn_dev` | `charter.tooling.dev.agent_kind` | workspace-write; no network (default; opt-in via `tooling.dev.network_access: true` — deliberate, audited escalation for dep installs); no git push | (none — code edits + handoff file IS the artifact) |
 | `spawn_deliver_close` | `charter.tooling.deliver.agent_kind` | default | `schemas/deliver-close-verdict.schema.json` |
 | `spawn_deliver_plan_fix` | `charter.tooling.deliver.agent_kind` | default | `schemas/deliver-plan-fix.schema.json` |
 | `spawn_research` | `charter.tooling.research.agent_kind` | default | `schemas/research-brief.schema.json` |

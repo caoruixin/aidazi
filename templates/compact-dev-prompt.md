@@ -74,7 +74,7 @@ Cold-start read (in order):
   5. <adopter>/AGENTS.md
   6. <adopter>/docs/current/adoption-state.md
 
-Sandbox: workspace-write. No network. No git push. No read of shadow holdout.
+Sandbox: workspace-write. No network (default — deps must be pre-provisioned; an explicit, audited `tooling.dev.network_access: true` is the only opt-in for in-sandbox installs). No git push. No read of shadow holdout.
 ```
 
 ### §2 Sub-sprint contract

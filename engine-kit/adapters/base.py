@@ -83,6 +83,7 @@ class Adapter(abc.ABC):
         *,
         connectors: Optional[Sequence[Any]] = None,
         sandbox: str = "workspace_write",
+        network_access: bool = False,
     ) -> dict:
         """Run one role session and return a CANDIDATE verdict dict.
 
@@ -99,6 +100,15 @@ class Adapter(abc.ABC):
         byte-identical to the pre-connector behaviour. Concrete adapters use
         :meth:`translate_connectors` to turn a grant into harness-native config;
         translation produces CONFIG, it does not connect (no secret values).
+
+        ``network_access`` is the role's EXPLICIT, opt-in network grant for a
+        write sandbox (default ``False`` — the framework invariant is that the Dev
+        sandbox has NO network; process/delivery-loop.md §4.2.7). It is keyword-only
+        and DEFAULTS OFF so every existing call is byte-identical. Only a
+        sandbox-enforcing CLI adapter (codex) acts on it — it un-blocks the
+        OS-sandbox network for ``workspace_write`` so a Dev can ``pip``/``npm``
+        install; HTTP/mock adapters ignore it. The DRIVER audits the grant as a
+        deliberate privilege escalation; the charter validator WARNS on it.
         """
         raise NotImplementedError
 

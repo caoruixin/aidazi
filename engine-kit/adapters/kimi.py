@@ -95,6 +95,7 @@ class KimiAdapter(Adapter):
         *,
         connectors: Optional[Sequence[Any]] = None,
         sandbox: str = "workspace_write",
+        network_access: bool = False,  # accepted for uniformity; see note below
     ) -> dict:
         if not self._enabled():
             raise AdapterError(
@@ -102,6 +103,11 @@ class KimiAdapter(Adapter):
                 f"{_ALLOW_ENV}=1 to run the real harness); role={role!r}",
                 role=role,
             )
+        # network_access is accepted for a uniform spawn boundary but NOT acted on:
+        # the Kimi Code CLI has no confirmed per-call sandbox/network flag (parity
+        # with the connector fail-closed below). A kimi-backed role that truly needs
+        # network must arrange it out-of-band; the codex adapter is the one that
+        # toggles the OS-sandbox network for an explicit grant.
         # Facet C: the Kimi Code CLI has no confirmed per-call connector-injection
         # form (and the connector-translation layer does not model "kimi"), so ANY
         # granted connector FAILS CLOSED — never silently dropped. None/[] ⇒ no-op.

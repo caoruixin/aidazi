@@ -136,6 +136,7 @@ class ClaudeCodeAdapter(Adapter):
         *,
         connectors: Optional[Sequence[Any]] = None,
         sandbox: str = "workspace_write",
+        network_access: bool = False,  # accepted for uniformity; see note below
     ) -> dict:
         if not self._enabled():
             raise AdapterError(
@@ -143,6 +144,13 @@ class ClaudeCodeAdapter(Adapter):
                 f"{_ALLOW_ENV}=1 to run the real harness); role={role!r}",
                 role=role,
             )
+        # network_access is accepted for a uniform spawn boundary but the claude
+        # adapter passes NO ``--sandbox`` flag: claude Code governs network via its
+        # own tool-permission model + the host OS, not a CLI sandbox toggle like
+        # codex's. The codex adapter is the one that un-blocks the OS-sandbox
+        # network for an explicit grant; here the param is recorded/audited by the
+        # driver but does not change the argv. (A claude-backed Dev that needs to
+        # install deps does so through its Bash tool, subject to the host's policy.)
         # FAIL CLOSED on an unsupported sandbox BEFORE any I/O — a verdict-/code-
         # producing session must run under a known permission mode.
         permission_mode = self._permission_mode_for(sandbox, role)

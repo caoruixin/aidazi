@@ -183,6 +183,20 @@ class TestRouting(unittest.TestCase):
         charter = {"tooling": {"dev": {"agent_kind": "claude_code", "model": "x"}}}
         self.assertEqual(route_for_role(charter, "dev").harness, "claude_code")
 
+    def test_network_access_routing_is_fail_closed(self):
+        # The opt-in network grant parses ONLY a literal boolean `true`; anything
+        # else (false / absent / a non-bool typo) is default-deny — it never
+        # silently over-grants network to a write sandbox.
+        def _na(val):
+            ch = {"tooling": {"dev": {"harness": "codex", "network_access": val}}}
+            return route_for_role(ch, "dev").network_access
+        self.assertIs(_na(True), True)
+        self.assertIs(_na(False), False)
+        self.assertIs(route_for_role(
+            {"tooling": {"dev": {"harness": "codex"}}}, "dev").network_access, False)
+        for typo in ("true", "yes", 1):   # truthy but NOT a bool ⇒ fail closed
+            self.assertIs(_na(typo), False)
+
     def test_unknown_harness_raises_typed_adapter_error_not_keyerror(self):
         # Routing a role to a harness id not in ADAPTER_REGISTRY must raise a
         # typed AdapterError with an actionable message — never a bare KeyError.
@@ -1126,6 +1140,36 @@ class TestConnectorPassThrough(unittest.TestCase):
             _driver(d, adapters=adapters).run(subsprint_id="sprint-001")
         for role in ("dev", "review", "deliver"):
             self.assertEqual(adapters[role].history[0]["connectors"], [])
+
+    def test_network_access_grant_threads_and_audits(self):
+        # An EXPLICIT dev network grant is threaded to the adapter AND recorded on
+        # the audit spine as a deliberate `sandbox_network_granted` escalation.
+        charter = load_charter(CHARTER_PATH)
+        charter["tooling"]["dev"]["network_access"] = True
+        with tempfile.TemporaryDirectory() as d:
+            adapters = _adapters()
+            drv_ = _driver(d, charter=charter, adapters=adapters)
+            drv_.run(subsprint_id="sprint-001")
+            events = audit.read_events(drv_.audit_ledger)
+        self.assertTrue(adapters["dev"].history[0]["network_access"])
+        grants = [e for e in events if e["type"] == "sandbox_network_granted"]
+        self.assertEqual(len(grants), 1)
+        self.assertEqual(grants[0]["payload"]["role"], "dev")
+        # The reviewer never gets the grant (default-deny) — no flag, no event.
+        self.assertFalse(adapters["review"].history[0]["network_access"])
+
+    def test_no_network_grant_is_default_and_silent(self):
+        # The unmodified example charter grants no network → every adapter sees
+        # False and NO sandbox_network_granted event is emitted (byte-identical).
+        with tempfile.TemporaryDirectory() as d:
+            adapters = _adapters()
+            drv_ = _driver(d, adapters=adapters)
+            drv_.run(subsprint_id="sprint-001")
+            events = audit.read_events(drv_.audit_ledger)
+        for role in ("dev", "review", "deliver"):
+            self.assertFalse(adapters[role].history[0]["network_access"])
+        self.assertEqual(
+            [e for e in events if e["type"] == "sandbox_network_granted"], [])
 
 
 def _make_git_repo(root):
