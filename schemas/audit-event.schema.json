@@ -57,6 +57,8 @@
         "memory_injected": {"type": "array", "items": {"type": "string"}},
         "input_hash": {"type": ["string", "null"]},
         "verdict_ref": {"type": ["string", "null"]},
+        "prompt_ref": {"type": ["string", "null"], "description": "Run-dir-relative path to the as-dispatched prompt transcript (.orchestrator/audit/transcripts/<loop_id>/NNNN__<role>__prompt.md); always written. delivery-loop §4.2.10."},
+        "output_ref": {"type": ["string", "null"], "description": "Run-dir-relative path to the captured model-output transcript (…__output.{md,json}); null when the adapter produced no output (transport error). delivery-loop §4.2.10."},
         "run_mode": {"type": ["string", "null"]},
         "tokens": {"type": ["integer", "null"]},
         "cost": {"type": ["number", "null"]}

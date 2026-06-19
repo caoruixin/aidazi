@@ -162,6 +162,8 @@ payload:                         # spawn_payload
   memory_injected: [<string>]    # memory entry ids injected at ingress (modules/m-memory.md)
   input_hash:      <string|null> # hash of the spawn input (ties to calls/ input-hash)
   verdict_ref:     <string|null> # pointer to the verdict artifact this spawn produced
+  prompt_ref:      <string|null> # run-dir-rel path to the as-dispatched prompt transcript (always; delivery-loop §4.2.10)
+  output_ref:      <string|null> # run-dir-rel path to the captured output transcript; null on adapter transport error
   run_mode:        <string|null> # live | mock | replay | shadow (modules/m-trace.md §3)
   tokens:          <integer|null>
   cost:            <number|null>
@@ -196,7 +198,7 @@ A paste-mode loop's audit ledger may be sparser (fewer captured spawns) but it i
 The report (`render_report`) contains:
 - A **header**: `loop_id`, event count, **chain-integrity verdict** (it re-runs `audit_log.verify_events`, so a tampered ledger is reported as `BROKEN at seq <n>`, not silently rendered as intact), first/last `ts`.
 - A **timeline table**: `seq · ts · type · summary` (a compact one-line payload summary; table delimiters are escaped so a payload value can't break a row).
-- A **per-spawn execution-context section**: for each event whose payload carries the spawn markers (`role` / `model` / `harness`), it lists the `SPAWN_PAYLOAD_FIELDS` (role / harness / provider / model / skill_pins / memory_injected / input_hash / verdict_ref / run_mode / tokens / cost), so the reconstruction shows what ran each step.
+- A **per-spawn execution-context section**: for each event whose payload carries the spawn markers (`role` / `model` / `harness`), it lists the `SPAWN_PAYLOAD_FIELDS` (role / harness / provider / model / skill_pins / memory_injected / input_hash / verdict_ref / prompt_ref / output_ref / run_mode / tokens / cost), so the reconstruction shows what ran each step — including the per-spawn prompt + output transcript paths (delivery-loop §4.2.10).
 
 A corrupt/truncated ledger renders an **integrity-failure report** (and the CLI exits non-zero) rather than crashing — the reconstruction must not pretend a ledger is intact when it cannot even be read.
 

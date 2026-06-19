@@ -51,7 +51,19 @@ _DEV_SPEC_HALT = object()
 
 # A safe sub-sprint id: letters/digits then letters/digits/dot/underscore/hyphen.
 # Used to gate ANY interpolation of an id into a filesystem path (no `..`, no `/`).
-_SAFE_SUBSPRINT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# Anchored with \A…\Z (NOT ^…$): Python's `$` also matches just BEFORE a trailing
+# newline, so `^…$` would accept e.g. "sprint-001\n" — \Z matches ONLY the absolute
+# end of string, closing that hole.
+_SAFE_SUBSPRINT_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+
+# A safe loop_id: same character discipline as a sub-sprint id (letters/digits then
+# ._- only — no path separators, no leading dot, so no `..`), with a more generous
+# length cap (loop_ids may carry a mode + subsprint + timestamp). The loop_id flows
+# into BOTH the audit ledger FILENAME (audit_path, interpolated RAW) and the per-loop
+# transcripts dir, so it is validated FAIL-CLOSED at the Driver boundary — this is the
+# single guard that prevents ledger-path traversal AND the lossy-sanitization
+# collision where distinct ids (e.g. `loop/a` and `loop_a`) would map to one dir.
+_SAFE_LOOP_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 try:
     import yaml
@@ -496,6 +508,18 @@ class Driver:
         self.charter = charter
         self.run_dir = os.path.abspath(run_dir)
         self.adapters = adapters
+        # FAIL CLOSED on an unsafe loop_id: it keys the audit ledger filename (raw)
+        # and the per-loop transcripts dir, so an unsafe value could traverse or let
+        # two distinct ids collide into one dir. Reject at the boundary, never
+        # silently sanitize (a lossy sanitize is exactly what would alias them).
+        # Require a `str` (NOT just str(loop_id)): otherwise `1` and `"1"` would
+        # share a ledger/transcript path while emitting different `loop_id` JSON
+        # types into the (hash-chained) ledger.
+        if not (isinstance(loop_id, str) and _SAFE_LOOP_ID_RE.match(loop_id)):
+            raise ValueError(
+                f"unsafe loop_id {loop_id!r}: must be a str matching "
+                f"{_SAFE_LOOP_ID_RE.pattern} (letters/digits then ._- only; no path "
+                "separators or '..') — it keys the audit ledger filename + transcripts dir")
         self.loop_id = loop_id
         self.clock = clock
         self.schemas = verdict_schemas or load_verdict_schemas()
@@ -539,10 +563,18 @@ class Driver:
         self.checkpoints_dir = os.path.join(self.run_dir, "docs", "checkpoints")
         self.audit_dir = os.path.join(self.orch_dir, "audit")
         self.audit_ledger = audit.audit_path(self.loop_id, self.audit_dir)
+        # Per-spawn execution-record transcripts (the prompt+output materialization
+        # the bp-review-team adoption flagged): a sibling of the ledger under the
+        # Audit Spine, namespaced per loop_id so a shared run_dir/audit_dir across
+        # loops never collides (the ledger is likewise <loop_id>.jsonl). The loop_id
+        # is sanitized into a single safe path component (defense-in-depth).
+        self.transcripts_dir = os.path.join(
+            self.audit_dir, "transcripts", self._safe_path_component(self.loop_id))
 
         os.makedirs(self.orch_dir, exist_ok=True)
         os.makedirs(self.checkpoints_dir, exist_ok=True)
         os.makedirs(self.audit_dir, exist_ok=True)
+        os.makedirs(self.transcripts_dir, exist_ok=True)
 
         self.budget = charter.get("budget") or {}
         self.autonomy = charter.get("autonomy") or {}
@@ -585,6 +617,50 @@ class Driver:
         ``_``, and drop leading dots. A ``scope``/id sourced from an LLM plan can
         otherwise traverse out of the checkpoints dir (e.g. ``../../evil``)."""
         return re.sub(r"[^A-Za-z0-9._-]", "_", str(s)).lstrip(".") or "x"
+
+    # ----- per-spawn execution-record transcripts -------------------------- #
+    def _write_transcript(self, seq: int, role: str, kind: str,
+                          content: Any) -> str:
+        """Materialize one spawn-side artifact and return its run-dir-relative path
+        (the spawn event's ``prompt_ref`` / ``output_ref``).
+
+        This is the auditability layer the bp-review-team adoption asked for: EVERY
+        dispatched prompt and EVERY model output becomes a human-readable file under
+        ``.orchestrator/audit/transcripts/<loop_id>/``, anchored to the hash-chained
+        Audit Spine that references it. It is the AS-DISPATCHED execution record (one
+        per spawn / fix-round) — distinct from the DURABLE, human-reviewed prompt
+        artifacts in ``compact/`` (process/prompt-artifact-rules.md §1). The prompt
+        bytes are written verbatim, so ``sha256(role\\x00 + file)`` cross-checks the
+        spawn ``input_hash`` recorded in the ledger.
+
+        ``kind`` is ``"prompt"`` or ``"output"``. An artifact-wrapped output
+        (``{"artifact": "<prose>"}`` — a Dev/Research handoff) is written as readable
+        Markdown; any other verdict is pretty-printed JSON. Serialization is
+        defensive (``repr`` fallback), but the file write itself is allowed to fail
+        loudly — exactly like the ledger append — because a transcripts dir that
+        cannot be written is a real audit failure, not something to swallow."""
+        safe_role = self._safe_path_component(role)
+        if kind == "prompt":
+            text = content if isinstance(content, str) else str(content)
+            ext = "md"
+        else:  # "output"
+            if (isinstance(content, dict) and set(content) == {"artifact"}
+                    and isinstance(content.get("artifact"), str)):
+                text, ext = content["artifact"], "md"
+            else:
+                try:
+                    text = json.dumps(content, indent=2, sort_keys=True,
+                                      ensure_ascii=False)
+                except (TypeError, ValueError):
+                    text = repr(content)
+                ext = "json"
+        # seq (the loop's monotonic spawn_count) keys the filename, so fix-round
+        # re-runs of the same role never clobber an earlier transcript.
+        fname = f"{seq:04d}__{safe_role}__{kind}.{ext}"
+        path = os.path.join(self.transcripts_dir, fname)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return os.path.relpath(path, self.run_dir)
 
     def _write_checkpoint(self, checkpoint_id: str, scope: str,
                           context_md: str, options_md: str,
@@ -680,6 +756,16 @@ class Driver:
                 "sandbox": routing.sandbox})
 
         self.state.spawn_count += 1
+        # PERSIST the bumped spawn_count NOW (before any transcript is keyed on it):
+        # a hard-fail / crash mid-spawn must NOT let a resume REWIND spawn_count and
+        # reuse this seq, which would clobber the transcript the ledger already
+        # references (e.g. a schema-invalid output, audited then re-run on resume).
+        self._save_state()
+        # AUDITABILITY: materialize the EXACT dispatched prompt (lessons block
+        # included — these are the literal bytes the adapter receives) BEFORE the
+        # spawn, so even a transport failure leaves the prompt on disk to audit.
+        prompt_ref = self._write_transcript(
+            self.state.spawn_count, role, "prompt", prompt)
         try:
             # Facet C: thread the role's connector grant + sandbox through the
             # uniform spawn boundary (keyword-only). DEFAULT-DENY: an empty grant
@@ -698,9 +784,16 @@ class Driver:
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
-                verdict_ref="adapter_error"))
+                verdict_ref="adapter_error", prompt_ref=prompt_ref,
+                output_ref=None))  # no output produced — the adapter raised
             raise self._gate_hard_fail(
                 f"adapter for role {role!r} failed: {exc}", self.state.state)
+
+        # Materialize the EXACT model output (verdict JSON / artifact prose) to a
+        # paired transcript NOW — BEFORE validation — so a schema-invalid verdict is
+        # still captured for audit, not lost to the gate_hard_fail below.
+        output_ref = self._write_transcript(
+            self.state.spawn_count, role, "output", verdict)
 
         # Validate if this spawn carries a verdict schema (spawn_dev does not).
         if schema_key is not None:
@@ -710,7 +803,8 @@ class Driver:
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
-                verdict_ref="invalid" if err else "valid"))
+                verdict_ref="invalid" if err else "valid",
+                prompt_ref=prompt_ref, output_ref=output_ref))
             if err is not None:
                 raise self._gate_hard_fail(
                     f"{role} verdict failed schema validation "
@@ -722,7 +816,8 @@ class Driver:
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
-                verdict_ref="artifact"))
+                verdict_ref="artifact",
+                prompt_ref=prompt_ref, output_ref=output_ref))
         self.state.last_verdict = verdict
         return verdict
 
@@ -2291,17 +2386,37 @@ class Driver:
         input_hash = "sha256:" + hashlib.sha256(
             ("acceptance\x00" + prompt).encode("utf-8")).hexdigest()[:16]
         self.state.spawn_count += 1
-        self._audit("acceptance_spawn", {
-            "role": "acceptance", "harness": adapter.harness,
-            "provider": adapter.provider, "model": adapter.model,
-            "evidence_path": evidence_path,
-            "calibration_status": calibration_status,
-            "run_mode": self.autonomy.get("level", "human_in_the_loop"),
-            "input_hash": input_hash,
-            # §1.7-C: this spawn surface is the orchestrator (NOT a Dev/Deliver
-            # session) and is gated by the calibration check above.
-            "spawn_surface": "orchestrator",
-        })
+        # PERSIST the bumped spawn_count NOW (see _spawn): a resume after a mid-spawn
+        # halt must not rewind it and clobber a referenced transcript.
+        self._save_state()
+        # AUDITABILITY: materialize the dispatched Acceptance prompt BEFORE the
+        # spawn (referenced as prompt_ref), like every other role's spawn.
+        prompt_ref = self._write_transcript(
+            self.state.spawn_count, "acceptance", "prompt", prompt)
+
+        # The acceptance_spawn execution record is emitted ONCE, POST-outcome, on
+        # EVERY path (success / schema-invalid / adapter-error) — the same contract
+        # as the uniform _spawn boundary: a single spawn event references BOTH
+        # prompt_ref and output_ref (or None on an adapter error) plus a verdict_ref.
+        # The acceptance-specific provenance (evidence_path, §1.7-C spawn_surface,
+        # calibration) rides on the same event.
+        def _acceptance_spawn_audit(verdict_ref: str,
+                                    output_ref: Optional[str]) -> None:
+            self._audit("acceptance_spawn", {
+                "role": "acceptance", "harness": adapter.harness,
+                "provider": adapter.provider, "model": adapter.model,
+                "evidence_path": evidence_path,
+                "calibration_status": calibration_status,
+                "run_mode": self.autonomy.get("level", "human_in_the_loop"),
+                "input_hash": input_hash,
+                "prompt_ref": prompt_ref,
+                "output_ref": output_ref,
+                "verdict_ref": verdict_ref,
+                # §1.7-C: this spawn surface is the orchestrator (NOT a Dev/Deliver
+                # session) and is gated by the calibration check above.
+                "spawn_surface": "orchestrator",
+            })
+
         try:
             # Facet C: acceptance connectors are read-only evidence connectors
             # only (judgment is never delegated); threaded through uniformly.
@@ -2315,9 +2430,15 @@ class Driver:
                 connectors=routing.connectors, sandbox=routing.sandbox,
                 network_access=False)
         except AdapterError as exc:
+            _acceptance_spawn_audit("adapter_error", None)  # prompt-only; no output
             raise self._gate_hard_fail(
                 f"acceptance adapter failed: {exc}", STATE_ACCEPTANCE_PENDING)
+        # Capture the Acceptance verdict to a transcript + reference it on the Audit
+        # Spine BEFORE validation, so an invalid verdict is still auditable.
+        output_ref = self._write_transcript(
+            self.state.spawn_count, "acceptance", "output", verdict)
         err = validate_verdict(verdict, self.schemas["acceptance"])
+        _acceptance_spawn_audit("invalid" if err else "valid", output_ref)
         if err is not None:
             raise self._gate_hard_fail(
                 f"acceptance verdict failed schema validation "

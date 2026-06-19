@@ -492,10 +492,23 @@ Each violation is a framework breach; orchestrator implementations MUST refuse /
     state.json
     charter-snapshot.yaml      # immutable copy at boot
     fix_round.txt
-    log/events.jsonl
+    audit/
+      <loop_id>.jsonl          # hash-chained Audit Spine (one ledger per loop)
+      transcripts/<loop_id>/   # per-spawn execution record (auditability §4.2.10)
+        0001__dev__prompt.md       # the EXACT dispatched prompt (verbatim)
+        0001__dev__output.md       # the captured Dev artifact (handoff prose)
+        0002__review__prompt.md    # the EXACT dispatched reviewer prompt
+        0002__review__output.json  # the captured reviewer verdict
+        …                          # one prompt+output pair per spawn / fix-round
 ```
 
 Adopters MAY relocate `.orchestrator/`. Other paths follow Constitution §5 state-ledger conventions.
+
+#### §4.2.10 Spawn transcripts (prompt + output auditability)
+
+EVERY orchestrator spawn — Dev, Code Reviewer, Deliver/close, Research, Acceptance, and each fix-round re-run — materializes its **exact dispatched prompt** (`NNNN__<role>__prompt.md`, written verbatim) under `.orchestrator/audit/transcripts/<loop_id>/`, and — **whenever the adapter returns a candidate output** — the **captured model output** (`NNNN__<role>__output.{md,json}` — readable Markdown for a Dev/Research artifact, pretty-printed JSON for a verdict). The single spawn event on the Audit Spine references both as `prompt_ref` / `output_ref`. An adapter **transport error** (no output produced) records `prompt_ref` with `output_ref: null` and `verdict_ref: adapter_error` — the prompt is always captured, the output only when one exists. So the loop is auditable **file-by-file**, not merely by the `input_hash` digest. Because the prompt is byte-exact, `sha256(role\x00 + prompt_file)` recomputes the ledger's `input_hash` — the transcript is tamper-cross-checkable against the hash chain.
+
+This is the **as-dispatched execution record** and is distinct from the **durable, human-reviewed prompt artifacts** in `compact/` (`process/prompt-artifact-rules.md` §1): the `compact/` files are the source views a human approves before dispatch; the transcripts are what each spawn actually sent and received. The output transcript is written **before** verdict-schema validation, so even a schema-invalid verdict (a `gate_hard_fail`) leaves its output on disk to audit.
 
 ### §4.3 Code Reviewer trigger conditions
 

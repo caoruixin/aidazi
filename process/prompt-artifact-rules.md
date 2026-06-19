@@ -5,7 +5,7 @@ doc_category: live
 status: current
 implementation_status: implemented
 source_of_truth: this file
-last_reviewed: 2026-06-11
+last_reviewed: 2026-06-19
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
@@ -106,6 +106,15 @@ This invariant is a prerequisite for orchestrator-driven dispatch (`process/deli
 The §3 synchronization rule ensures the orchestrator can rely on `prompt.md` being authoritative without needing to cross-check `objective.md` at session-spawn time.
 
 A future framework version MAY evolve this into a richer "session pack" concept (bundling prompt + context snapshots + bad case fixtures into a single archivable directory). The invariant as authored here is the minimum; the session-pack evolution is additive on top.
+
+### §6.1 Authored prompt artifact vs. as-dispatched transcript
+
+Two distinct things, often conflated by adopters (it was the conflation behind the bp-review-team audit gap):
+
+- **Authored prompt artifact** (`compact/sprint-NNN-dev-prompt.md`, `compact/M<N>-review-prompt.md`, `compact/M<N>-acceptance-prompt.md`) — the **durable, human-reviewed source view** subject to the §1 self-containment invariant. Authored by Deliver, surfaced for human review, committed.
+- **As-dispatched transcript** (`.orchestrator/audit/transcripts/<loop_id>/NNNN__<role>__{prompt,output}.{md,json}`) — the **execution record** the orchestrator writes for EVERY spawn (Dev / Code Reviewer / Deliver / Research / Acceptance, and each fix-round): the exact prompt bytes sent (always) and the captured model output (whenever the adapter returns one — a transport error records `output_ref: null`), referenced from the Audit Spine spawn event as `prompt_ref` / `output_ref` (`process/delivery-loop.md` §4.2.10). Per-adopter, gitignored with the rest of `.orchestrator/`.
+
+The authored artifact answers "what did we *intend* to ask, and did a human approve it?"; the transcript answers "what was *actually* dispatched and what came back?" — the latter is what makes an upgrade run auditable and trackable spawn-by-spawn. A thin orchestrator-built prompt (e.g. a one-line review request) is therefore never silently invisible: it lands in the transcript, where its thinness is itself auditable and a signal to author the richer `compact/` view.
 
 ## §7 Auto Loop interaction
 

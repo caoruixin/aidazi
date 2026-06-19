@@ -74,6 +74,8 @@ SPAWN_PAYLOAD_FIELDS: tuple[str, ...] = (
     "memory_injected",   # list[str]
     "input_hash",
     "verdict_ref",
+    "prompt_ref",        # run-dir-relative path to the as-dispatched prompt transcript
+    "output_ref",        # run-dir-relative path to the captured model-output transcript
     "run_mode",
     "tokens",
     "cost",
@@ -128,12 +130,22 @@ def make_spawn_payload(
     memory_injected: Optional[list[str]] = None,
     input_hash: Optional[str] = None,
     verdict_ref: Optional[str] = None,
+    prompt_ref: Optional[str] = None,
+    output_ref: Optional[str] = None,
     run_mode: Optional[str] = None,
     tokens: Optional[int] = None,
     cost: Optional[float] = None,
 ) -> dict:
     """Convenience constructor for the per-spawn execution-context payload
-    (plan §4.5 G3). Returns a plain dict; the ledger stores it verbatim."""
+    (plan §4.5 G3). Returns a plain dict; the ledger stores it verbatim.
+
+    ``prompt_ref`` / ``output_ref`` anchor the EXECUTION RECORD: run-dir-relative
+    paths to the as-dispatched prompt and the captured model output transcripts
+    the orchestrator materializes per spawn (driver._write_transcript). They make
+    every prompt and every output auditable from the ledger — not just a hash —
+    while ``input_hash`` stays the tamper-evidence anchor over the prompt bytes.
+    Both default to None so a caller that does not materialize transcripts (or an
+    older ledger) is byte-identical to before."""
     return {
         "role": role,
         "harness": harness,
@@ -143,6 +155,8 @@ def make_spawn_payload(
         "memory_injected": list(memory_injected or []),
         "input_hash": input_hash,
         "verdict_ref": verdict_ref,
+        "prompt_ref": prompt_ref,
+        "output_ref": output_ref,
         "run_mode": run_mode,
         "tokens": tokens,
         "cost": cost,

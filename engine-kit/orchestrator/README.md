@@ -27,7 +27,13 @@ The driver owns the deterministic kernel and **contains no LLM**:
 - a budget guard;
 - resume from `.orchestrator/state.json` (§4.5);
 - Audit Spine event emission threading one `loop_id` (reuses
-  `engine-kit/audit/audit_log.py`).
+  `engine-kit/audit/audit_log.py`);
+- **per-spawn prompt + output transcripts** (§4.2.10): every spawn (Dev, Code
+  Reviewer, Deliver/close, Research, Acceptance, each fix-round) writes the exact
+  dispatched prompt (always) and the captured model output (whenever the adapter
+  returns one — an adapter transport error records `output_ref: null`) to
+  `.orchestrator/audit/transcripts/<loop_id>/`, referenced from the spawn event as
+  `prompt_ref` / `output_ref` so the run is auditable file-by-file, not just by hash.
 
 ## Files
 

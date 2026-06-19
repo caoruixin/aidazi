@@ -275,5 +275,74 @@ class LedgerIOTests(unittest.TestCase):
             self.assertEqual(json.loads(raw), ev)
 
 
+class SpawnTranscriptRefTests(unittest.TestCase):
+    """The execution-record refs: make_spawn_payload carries prompt_ref/output_ref
+    (the materialized transcript paths) and audit_report surfaces them."""
+
+    def test_payload_carries_refs_and_fields_are_declared(self):
+        p = al.make_spawn_payload(
+            role="review", harness="codex", provider="openai", model="gpt-5.5",
+            prompt_ref="t/0002__review__prompt.md",
+            output_ref="t/0002__review__output.json")
+        self.assertEqual(p["prompt_ref"], "t/0002__review__prompt.md")
+        self.assertEqual(p["output_ref"], "t/0002__review__output.json")
+        self.assertIn("prompt_ref", al.SPAWN_PAYLOAD_FIELDS)
+        self.assertIn("output_ref", al.SPAWN_PAYLOAD_FIELDS)
+
+    def test_refs_default_none_backward_compatible(self):
+        p = al.make_spawn_payload(role="dev", harness="x", provider="y", model="z")
+        self.assertIsNone(p["prompt_ref"])
+        self.assertIsNone(p["output_ref"])
+
+    def test_report_renders_refs_when_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, f"{LOOP_ID}.jsonl")
+            al.append_event(
+                LOOP_ID, "spawn",
+                al.make_spawn_payload(
+                    role="dev", harness="claude_code", provider="anthropic",
+                    model="m", prompt_ref="t/p.md", output_ref="t/o.json"),
+                ts="2026-06-19T10:00:00Z", path=path)
+            report = ar.render_report_file(path)
+            self.assertIn("prompt_ref: t/p.md", report)
+            self.assertIn("output_ref: t/o.json", report)
+
+
+class SpawnPayloadSchemaContractTests(unittest.TestCase):
+    """The normative audit-event schema ($defs/spawn_payload) must stay in lock-step
+    with make_spawn_payload / SPAWN_PAYLOAD_FIELDS (m-audit §5 governance note) — so a
+    field added to the code but not the schema (additionalProperties:false) is caught."""
+
+    def _spawn_schema(self):
+        repo = os.path.dirname(os.path.dirname(_PKG_DIR))  # engine-kit/audit -> repo
+        with open(os.path.join(repo, "schemas", "audit-event.schema.json"),
+                  encoding="utf-8") as fh:
+            return json.load(fh)["$defs"]["spawn_payload"]
+
+    def test_all_code_fields_declared_in_schema(self):
+        # Pure stdlib: every field the code emits must be a declared property of the
+        # additionalProperties:false schema — incl. the new prompt_ref / output_ref.
+        s = self._spawn_schema()
+        self.assertIs(s.get("additionalProperties"), False)
+        declared = set(s["properties"])
+        for field in al.SPAWN_PAYLOAD_FIELDS:
+            self.assertIn(field, declared,
+                          f"{field!r} emitted by code but missing from schema")
+        self.assertIn("prompt_ref", declared)
+        self.assertIn("output_ref", declared)
+
+    def test_make_spawn_payload_validates_against_schema(self):
+        try:
+            import jsonschema
+        except ImportError:  # audit tests are otherwise stdlib-only
+            self.skipTest("jsonschema not installed")
+        payload = al.make_spawn_payload(
+            role="review", harness="codex", provider="openai", model="gpt-5.5",
+            input_hash="sha256:abc", verdict_ref="valid",
+            prompt_ref="t/0002__review__prompt.md",
+            output_ref="t/0002__review__output.json", run_mode="live")
+        jsonschema.validate(payload, self._spawn_schema())  # raises on mismatch
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

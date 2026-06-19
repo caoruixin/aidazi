@@ -2178,5 +2178,188 @@ class DevSpecResolutionTests(unittest.TestCase):
             self.assertEqual(drv_.state.state, STATE_HALTED)
 
 
+# --------------------------------------------------------------------------- #
+# AUDITABILITY — per-spawn prompt + output transcripts (the materialization the
+# bp-review-team adoption flagged). EVERY spawn writes the as-dispatched prompt
+# and the captured output to .orchestrator/audit/transcripts/<loop>/, referenced
+# from the spawn event so the process is auditable file-by-file, not just by hash.
+# --------------------------------------------------------------------------- #
+class TestSpawnTranscripts(unittest.TestCase):
+    def _spawns(self, drv_):
+        return [e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                if e["type"] == "spawn"]
+
+    def test_every_spawn_writes_prompt_and_output_referenced_from_audit(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            spawns = self._spawns(drv_)
+            self.assertEqual(len(spawns), 3)  # dev, review, deliver
+            for p in spawns:
+                for ref_key in ("prompt_ref", "output_ref"):
+                    ref = p[ref_key]
+                    self.assertTrue(ref, f"{p['role']} missing {ref_key}")
+                    self.assertTrue(os.path.isfile(os.path.join(d, ref)), ref)
+                    self.assertIn(".orchestrator/audit/transcripts", ref)
+
+    def test_prompt_transcript_is_exact_dispatched_bytes(self):
+        # The review prompt is captured verbatim; its bytes cross-check the spawn
+        # input_hash = sha256(role\x00 + prompt) — the transcript IS what was sent.
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            review = next(p for p in self._spawns(drv_) if p["role"] == "review")
+            with open(os.path.join(d, review["prompt_ref"]), encoding="utf-8") as fh:
+                prompt_bytes = fh.read()
+            self.assertIn("Review sub-sprint sprint-001", prompt_bytes)
+            recomputed = "sha256:" + hashlib.sha256(
+                ("review\x00" + prompt_bytes).encode("utf-8")).hexdigest()[:16]
+            self.assertEqual(recomputed, review["input_hash"])
+
+    def test_output_transcripts_capture_artifact_md_and_verdict_json(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            by_role = {p["role"]: p for p in self._spawns(drv_)}
+            # Dev artifact → readable Markdown (handoff prose), not JSON.
+            dev_out = os.path.join(d, by_role["dev"]["output_ref"])
+            self.assertTrue(dev_out.endswith(".md"))
+            with open(dev_out, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), DEV_ARTIFACT["artifact"])
+            # Review verdict → JSON that round-trips to the verdict dict.
+            review_out = os.path.join(d, by_role["review"]["output_ref"])
+            self.assertTrue(review_out.endswith(".json"))
+            with open(review_out, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), CLEAN_REVIEW)
+
+    def test_invalid_verdict_still_captures_output_transcript(self):
+        # A schema-invalid verdict hard-fails, but its output is materialized +
+        # referenced (captured BEFORE validation) so the failure is auditable.
+        import json
+        bad_review = {"decision": "looks_good", "blocking_count": 0,
+                      "summary": "x", "findings": []}
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, adapters=_adapters(review=bad_review))
+            with self.assertRaises(GateHardFail):
+                drv_.run(subsprint_id="sprint-001")
+            review = next(p for p in self._spawns(drv_) if p["role"] == "review")
+            self.assertEqual(review["verdict_ref"], "invalid")
+            out_path = os.path.join(d, review["output_ref"])
+            self.assertTrue(os.path.isfile(out_path))
+            with open(out_path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), bad_review)
+
+    def test_adapter_error_records_prompt_ref_but_null_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, adapters=_adapters(review=AdapterError("boom")))
+            with self.assertRaises(GateHardFail):
+                drv_.run(subsprint_id="sprint-001")
+            review = next(p for p in self._spawns(drv_) if p["role"] == "review")
+            self.assertEqual(review["verdict_ref"], "adapter_error")
+            self.assertTrue(os.path.isfile(os.path.join(d, review["prompt_ref"])))
+            self.assertIsNone(review["output_ref"])  # adapter raised; no output
+
+    def test_invalid_output_transcript_survives_resume_no_clobber(self):
+        # spawn_count is persisted EAGERLY, so a resume after a schema-invalid
+        # hard-fail does NOT rewind the count and overwrite the (already-audited)
+        # invalid output transcript with the retry's output.
+        import json
+        bad = {"decision": "looks_good", "blocking_count": 0, "summary": "x",
+               "findings": []}
+        with tempfile.TemporaryDirectory() as d:
+            drv1 = _driver(d, adapters=_adapters(review=bad),
+                           loop_id="loop-clobber-001")
+            with self.assertRaises(GateHardFail):
+                drv1.run(subsprint_id="sprint-001")
+            review1 = next(p for p in self._spawns(drv1) if p["role"] == "review")
+            orig = os.path.join(d, review1["output_ref"])
+            with open(orig, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), bad)
+            # Resume over the SAME run_dir with a healthy review adapter.
+            drv2 = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-clobber-001", clock=_clock())
+            self.assertEqual(drv2.run(resume=True).state, STATE_ADVANCE)
+            # The original invalid output is UNTOUCHED (retry used a fresh seq).
+            with open(orig, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), bad)
+            # Two review spawns, two DISTINCT output transcripts.
+            refs = [p["output_ref"] for p in self._spawns(drv2)
+                    if p["role"] == "review"]
+            self.assertEqual(len(refs), 2)
+            self.assertEqual(len(set(refs)), 2)
+            self.assertIn(review1["output_ref"], refs)
+
+    def test_audit_report_surfaces_transcript_refs(self):
+        import audit_report  # engine-kit/audit is on sys.path
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            report = audit_report.render_report_file(drv_.audit_ledger)
+            self.assertIn("prompt_ref", report)
+            self.assertIn("output_ref", report)
+
+
+class TestLoopIdSafety(unittest.TestCase):
+    """loop_id keys the audit ledger filename (raw) + the transcripts dir, so an
+    unsafe value is rejected FAIL-CLOSED at the Driver boundary — no traversal, and
+    no two distinct ids ever aliasing into one dir via lossy sanitization."""
+
+    def test_unsafe_loop_id_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            # Incl. a TRAILING NEWLINE ("loop-ok\n"): Python `$` would accept it, so
+            # the regex is \A…\Z-anchored — the newline must be rejected. Non-str
+            # ids (1, None) are rejected too (else `1` and `"1"` alias one path).
+            for bad in ("loop/a", "../evil", "loop a", "", "..",
+                        "loop\x00a", "loop-ok\n", "a" * 200, 1, None):
+                with self.assertRaises(ValueError, msg=repr(bad)):
+                    _driver(d, loop_id=bad)
+
+    def test_safe_loop_id_accepted_and_keys_transcript_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, loop_id="delivery_only-sprint-001")
+            self.assertTrue(
+                drv_.transcripts_dir.endswith(
+                    os.path.join("transcripts", "delivery_only-sprint-001")))
+            # And it actually runs end-to-end with that id.
+            self.assertEqual(drv_.run(subsprint_id="sprint-001").state,
+                             STATE_ADVANCE)
+
+
+class TestAcceptanceTranscripts(unittest.TestCase):
+    def test_acceptance_spawn_event_references_both_refs(self):
+        # Acceptance follows the SAME contract as _spawn: one acceptance_spawn event
+        # carries prompt_ref + output_ref + verdict_ref, both files exist on disk.
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=_acceptance_charter(),
+                           adapters=_acceptance_adapters(ACC_PASS))
+            drv_.run(subsprint_id="sprint-001")
+            events = audit.read_events(drv_.audit_ledger)
+            spawns = [e["payload"] for e in events
+                      if e["type"] == "acceptance_spawn"]
+            self.assertEqual(len(spawns), 1)  # emitted ONCE, post-outcome
+            p = spawns[0]
+            self.assertEqual(p["verdict_ref"], "valid")
+            self.assertTrue(os.path.isfile(os.path.join(d, p["prompt_ref"])))
+            out_path = os.path.join(d, p["output_ref"])
+            self.assertTrue(os.path.isfile(out_path))
+            with open(out_path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), ACC_PASS)
+
+    def test_acceptance_adapter_error_records_prompt_ref_null_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            adapters = _acceptance_adapters(AdapterError("acc boom"))
+            drv_ = _driver(d, charter=_acceptance_charter(), adapters=adapters)
+            with self.assertRaises(GateHardFail):
+                drv_.run(subsprint_id="sprint-001")
+            spawn = next(e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                         if e["type"] == "acceptance_spawn")
+            self.assertEqual(spawn["verdict_ref"], "adapter_error")
+            self.assertTrue(os.path.isfile(os.path.join(d, spawn["prompt_ref"])))
+            self.assertIsNone(spawn["output_ref"])
+
+
 if __name__ == "__main__":
     unittest.main()
