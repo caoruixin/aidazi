@@ -25,6 +25,7 @@ KEY runtime facts this module is built on (verified against driver.py):
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -284,11 +285,14 @@ def _iso_minutes(start_iso: str, now_iso: str) -> float:
 # The Campaign runner.
 # --------------------------------------------------------------------------- #
 # A `run_unit` callable drives ONE sub-sprint through the Driver and returns a
-# summary dict: {final_state, spawn_count, pause_reason?, loop_id?}. Production
-# wires a thin wrapper around scheduling.run_loop (which already returns
-# final_state + spawn_count) that also derives pause_reason from the latest
-# checkpoint file; tests inject a deterministic fake. This dependency injection
-# mirrors the Driver's injected clock / adapters / gate_resolver.
+# summary dict: {final_state, spawn_count, pause_reason?, loop_id?}. The campaign
+# calls it as `run_unit(subsprint_id, milestone_id=, subsprint_sequence=, resume=)`
+# — passing the milestone's LIVE sequence so the production wrapper can derive a
+# per-milestone execution context (per-milestone Acceptance). Production wires a thin
+# wrapper around scheduling.run_loop (which already returns final_state + spawn_count)
+# that also derives pause_reason from the latest checkpoint file; tests inject a
+# deterministic fake. This dependency injection mirrors the Driver's injected clock /
+# adapters / gate_resolver.
 RunUnit = Callable[..., dict]
 
 _ADVANCE_STATES = frozenset({"advance"})
@@ -536,8 +540,14 @@ class Campaign:
                 subsprint_id = seq[self.state.subsprint_index]
                 resume_this = self._pending_driver_resume
                 self._pending_driver_resume = False
+                # Pass THIS milestone's LIVE sequence so the production run_unit can
+                # derive a per-milestone execution context whose terminal sub-sprint is
+                # this milestone's last — making the Driver fire Acceptance per
+                # milestone (design §5). `seq` is re-read each milestone (top of loop),
+                # so a governed deliver_followup insertion is reflected (Codex review #3).
                 summary = self.run_unit(subsprint_id,
                                         milestone_id=milestone["id"],
+                                        subsprint_sequence=seq,
                                         resume=resume_this)
                 final_state = summary.get("final_state")
                 self.state.subsprints_run += 1
@@ -627,8 +637,69 @@ def latest_checkpoint(checkpoints_dir: str):
     return cid, os.path.join(checkpoints_dir, latest)
 
 
+# --------------------------------------------------------------------------- #
+# Per-milestone execution context (the multi-milestone Acceptance fix).
+#
+# The Driver fires the milestone-close Acceptance gate ONLY at the TERMINAL
+# sub-sprint of charter.autonomy.approved_scope.subsprint_sequence
+# (driver._milestone_complete). With ONE shared charter across a whole campaign,
+# only the campaign's LAST sub-sprint is terminal — so non-final milestones close
+# with NO Acceptance gate, violating design §5 (Acceptance at EVERY milestone close).
+#
+# Fix: before dispatching a milestone's sub-sprint, PROJECT the canonical charter
+# onto that milestone — a deterministic copy whose approved_scope.subsprint_sequence
+# is THAT milestone's sequence (taken from the Customer-signed campaign plan). The
+# milestone's final sub-sprint is then terminal, so Acceptance fires per milestone.
+# The projection is an orchestrator-DERIVED execution context, NOT a re-signed
+# charter: its provenance records customer_signed:false + the source hashes, and it
+# adds no charter fields (the root charter schema is additionalProperties:false, so
+# a real-run schema enforcement would reject a provenance key ON the charter — it is
+# recorded as a per-unit `derived-context.json` sidecar instead).
+# --------------------------------------------------------------------------- #
+def _canonical_sha256(obj: Any) -> str:
+    """SHA-256 over a canonical (sorted-key) JSON encoding — a stable content
+    fingerprint independent of dict ordering, for the derivation provenance."""
+    return hashlib.sha256(
+        json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def derive_milestone_context(charter: dict, milestone_id: str,
+                             subsprint_sequence: List[str], *,
+                             campaign_id: Optional[str],
+                             plan_fingerprint: Optional[str]):
+    """Project `charter` onto ONE milestone. Returns (derived_charter, provenance).
+
+    `derived_charter` is a DEEP COPY whose autonomy.approved_scope.subsprint_sequence
+    is THIS milestone's sequence, so the Driver anchors terminality — and therefore
+    its milestone-close Acceptance gate — to this milestone's FINAL sub-sprint
+    (driver._milestone_complete), not the campaign's last sub-sprint. It adds NO
+    charter fields. `provenance` is returned SEPARATELY (recorded as a sidecar by the
+    caller): it preserves the source hashes (charter + signed plan) so the derivation
+    is reproducible/auditable, and is explicitly NOT a new Customer signature."""
+    derived = copy.deepcopy(charter)
+    scope = derived.setdefault("autonomy", {}).setdefault("approved_scope", {})
+    scope["subsprint_sequence"] = list(subsprint_sequence)
+    provenance = {
+        "kind": "per_milestone_execution_context",
+        "campaign_id": campaign_id,
+        "milestone_id": milestone_id,
+        "subsprint_sequence": list(subsprint_sequence),
+        "derived_from": {
+            "charter_sha256": _canonical_sha256(charter),
+            "campaign_plan_sha256": plan_fingerprint,
+        },
+        # A deterministic orchestrator projection — NOT a re-signed charter. The
+        # Customer signature lives on the campaign plan (plan.signed_by_human), one
+        # tier up; deriving an execution context grants no new signing authority.
+        "customer_signed": False,
+    }
+    return derived, provenance
+
+
 def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
-                  clock: Callable[[], str], run_loop_fn: Optional[Callable] = None,
+                  clock: Callable[[], str], plan: Optional[dict] = None,
+                  run_loop_fn: Optional[Callable] = None,
                   **run_loop_kwargs) -> RunUnit:
     """Build a PRODUCTION run_unit that drives ONE sub-sprint via
     `scheduling.run_loop` and returns the campaign summary
@@ -639,14 +710,64 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
     don't collide). A `GateHardFail` — which `run_loop` RAISES — is converted into a
     paused unit so the campaign HALTS rather than crashing (Codex P-B seam note);
     `BudgetExceeded` is a `GateHardFail` subclass so it is caught too. For any
-    non-advance/done state, `pause_reason` is the latest checkpoint's id."""
+    non-advance/done state, `pause_reason` is the latest checkpoint's id.
+
+    PER-MILESTONE Acceptance (the multi-milestone fix): the campaign passes THIS
+    milestone's LIVE sub-sprint sequence (`subsprint_sequence=`) on every dispatch;
+    when present, the unit runs through a per-milestone execution context DERIVED from
+    the canonical charter + that sequence (see `derive_milestone_context`) — its
+    approved_scope.subsprint_sequence is the milestone's sequence, so the Driver fires
+    its milestone-close Acceptance gate at every milestone's FINAL sub-sprint, not only
+    the campaign's last (design §5). The sequence is taken LIVE from the campaign (NOT
+    snapshotted here), so a governed mid-campaign edit — a `deliver_followup` insertion
+    into the milestone's sequence — is reflected at dispatch (Codex P-B review #3). The
+    derived context is recorded with its source hashes (a per-unit
+    `derived-context.json` sidecar) and is NEVER a re-signed charter. The campaign's own
+    pause-on-non-advance loop then withholds the next milestone until this milestone's
+    Acceptance/human gate is resolved — the derivation only ensures the gate EXISTS.
+
+    `plan` (optional) supplies the signed-campaign-plan hash for that provenance record;
+    its `campaign_id` must match. A MULTI-MILESTONE campaign MUST be driven with the
+    campaign passing `subsprint_sequence` (which `run_campaign` does) — otherwise every
+    milestone shares one charter and only the campaign's LAST sub-sprint is gated (the
+    very bug this fixes; Codex P-B review #4). Absent `subsprint_sequence` ⇒ the shared
+    charter is used as-is (single-charter usage, byte-identical to pre-fix)."""
     if run_loop_fn is None:
         import run_loop as _rl  # engine-kit/scheduling/run_loop.py (lazy — heavy deps)
         run_loop_fn = _rl.run_loop
     import driver as _drv       # GateHardFail (+ BudgetExceeded subclass)
     gate_hard_fail = _drv.GateHardFail
 
-    def run_unit(subsprint_id, *, milestone_id=None, resume=False):
+    # FAIL-CLOSED (Codex P-B review #1): the per-milestone projection anchors the
+    # Acceptance gate via a SUPPLIED approved_scope.subsprint_sequence. That is sound in
+    # the campaign's delivery_only mode (the Driver runs exactly the dispatched
+    # sub-sprint), but full_chain_guided's bootstrap RESETS the run to seq[0]
+    # (driver._drive_guided_prestates), which would mis-anchor terminality and could
+    # skip a milestone's gate. So (a) reject ANY explicit non-delivery_only loop_mode
+    # here, and (b) PIN loop_mode=delivery_only on the derived dispatch below. Together
+    # these close the hole the literal-only check left open (Codex round-2): a falsy
+    # explicit loop_mode would otherwise let the Driver fall back to a guided
+    # `charter.autonomy.loop_mode`. (full_chain_guided per-milestone decompose is
+    # deferred — design §6.)
+    requested_mode = run_loop_kwargs.get("loop_mode")
+    if requested_mode and str(requested_mode) != _drv.LOOP_MODE_DELIVERY_ONLY:
+        raise ValueError(
+            "per-milestone Acceptance derivation supports delivery_only only; refusing "
+            f"loop_mode={requested_mode!r} (full_chain_guided per-milestone decompose "
+            "is deferred — design §6)")
+
+    # The signed-plan provenance reference (optional). The correctness-critical
+    # per-milestone SEQUENCE arrives LIVE from the campaign per dispatch (below), so
+    # this hash is only a reference to the signed plan, never the source of the
+    # sequence — a governed mid-campaign sequence edit can't desync it.
+    plan_fingerprint = _canonical_sha256(plan) if plan is not None else None
+    if plan is not None and plan.get("campaign_id") not in (None, campaign_id):
+        raise ValueError(
+            f"plan campaign_id {plan.get('campaign_id')!r} != campaign_id "
+            f"{campaign_id!r} — refusing to derive contexts from a mismatched plan")
+
+    def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
+                 resume=False):
         # Validate id components BEFORE building any path (fail-closed; never makedirs
         # an unsafe path), then build a COLLISION-FREE, bounded loop_id by hashing the
         # (campaign, milestone, subsprint) tuple — a raw '-' join is ambiguous when ids
@@ -661,11 +782,39 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
         loop_id = "u" + digest[:24]
         unit_run_dir = os.path.join(units_dir, loop_id)
         os.makedirs(unit_run_dir, exist_ok=True)
+
+        # Project the canonical charter onto THIS milestone using the campaign's LIVE
+        # sequence so the Driver fires its Acceptance gate at this milestone's terminal
+        # sub-sprint (design §5). Fail-closed: the dispatched sub-sprint MUST belong to
+        # the sequence the gate is anchored to — else terminality would be computed
+        # against a sequence this unit isn't part of.
+        unit_charter = charter
+        call_kwargs = run_loop_kwargs
+        if subsprint_sequence:
+            seq = list(subsprint_sequence)
+            if subsprint_id not in seq:
+                raise ValueError(
+                    f"sub-sprint {subsprint_id!r} not in milestone {milestone_id!r}'s "
+                    f"sequence {seq} — cannot anchor its Acceptance gate (fail-closed)")
+            unit_charter, provenance = derive_milestone_context(
+                charter, milestone_id, seq,
+                campaign_id=campaign_id, plan_fingerprint=plan_fingerprint)
+            with open(os.path.join(unit_run_dir, "derived-context.json"),
+                      "w", encoding="utf-8") as fh:
+                json.dump(provenance, fh, indent=2, sort_keys=True)
+            # PIN delivery_only on the derived dispatch: the Driver ctor's loop_mode
+            # arg WINS over charter.autonomy.loop_mode (driver.py ~621), so this
+            # neutralizes any full_chain_guided the SOURCE charter carries even when
+            # the caller passed a falsy loop_mode — the round-2 hole. The construction
+            # guard already rejected an explicit truthy non-delivery_only mode.
+            call_kwargs = {**run_loop_kwargs,
+                           "loop_mode": _drv.LOOP_MODE_DELIVERY_ONLY}
+
         cps_dir = os.path.join(unit_run_dir, "docs", "checkpoints")
         try:
-            summary = run_loop_fn(charter, run_dir=unit_run_dir, loop_id=loop_id,
+            summary = run_loop_fn(unit_charter, run_dir=unit_run_dir, loop_id=loop_id,
                                   subsprint_id=subsprint_id, clock=clock,
-                                  resume=resume, **run_loop_kwargs)
+                                  resume=resume, **call_kwargs)
         except gate_hard_fail as exc:
             cid, cpath = latest_checkpoint(cps_dir)
             return {"final_state": "halted", "spawn_count": 0, "loop_id": loop_id,

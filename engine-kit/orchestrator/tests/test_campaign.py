@@ -1,6 +1,7 @@
 """Tests for the Campaign loop (P-B; design §5). stdlib unittest; offline (a fake
 `run_unit` — no Driver, no adapters)."""
 import ast
+import json
 import os
 import sys
 import tempfile
@@ -38,8 +39,11 @@ def _plan(milestones, **kw):
 
 
 def _fake_run_unit(script):
-    """`script` maps subsprint_id → summary dict (final_state, spawn_count, …)."""
-    def run_unit(subsprint_id, *, milestone_id=None, resume=False):
+    """`script` maps subsprint_id → summary dict (final_state, spawn_count, …).
+    Accepts (ignores) the `subsprint_sequence` the campaign passes for per-milestone
+    derivation — the fake bypasses the real Driver, so it needs no charter projection."""
+    def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
+                 resume=False):
         return dict(script[subsprint_id])
     return run_unit
 
@@ -47,13 +51,16 @@ def _fake_run_unit(script):
 def _seq_run_unit(seqs, record=None):
     """`seqs` maps subsprint_id → LIST of summaries consumed one per call (so a
     re-dispatch/resume returns the next one). `record` (if given) logs each call's
-    (subsprint_id, resume) so a test can assert Mechanism-A resume=True."""
+    (subsprint_id, resume, subsprint_sequence) so a test can assert Mechanism-A
+    resume=True and that the campaign passes the milestone's live sequence."""
     counters: dict = {}
-    def run_unit(subsprint_id, *, milestone_id=None, resume=False):
+    def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
+                 resume=False):
         i = counters.get(subsprint_id, 0)
         counters[subsprint_id] = i + 1
         if record is not None:
-            record.append({"subsprint_id": subsprint_id, "resume": resume})
+            record.append({"subsprint_id": subsprint_id, "resume": resume,
+                           "subsprint_sequence": subsprint_sequence})
         lst = seqs[subsprint_id]
         return dict(lst[min(i, len(lst) - 1)])
     return run_unit
@@ -564,6 +571,112 @@ class TestProductionRunUnit(unittest.TestCase):
             out = ru("s1", milestone_id="m1")     # MUST NOT raise
             self.assertEqual(out["final_state"], "halted")
             self.assertEqual(out["pause_reason"], "gate_hard_fail")
+
+    def test_passed_sequence_drives_derivation_and_sidecar(self):
+        """The Driver sees the campaign-PASSED milestone sequence (live), NOT the
+        charter's original — and a provenance sidecar is written (Codex review #3)."""
+        with tempfile.TemporaryDirectory() as d:
+            captured = {}
+            def fake(charter, *, run_dir, loop_id, subsprint_id, clock, **kw):
+                captured["seq"] = (((charter.get("autonomy") or {})
+                                    .get("approved_scope") or {}).get("subsprint_sequence"))
+                captured["run_dir"] = run_dir
+                return {"final_state": "advance", "spawn_count": 0}
+            plan = _plan([{"id": "m1", "objective": "x",
+                           "subsprint_sequence": ["s1", "s2"]}])
+            charter = {"autonomy": {"approved_scope": {"subsprint_sequence": ["ORIG"]}}}
+            ru = cp.make_run_unit(charter, d, "camp-1", clock=_clock(),
+                                  plan=plan, run_loop_fn=fake)
+            ru("s1", milestone_id="m1", subsprint_sequence=["s1", "s2"])
+            self.assertEqual(captured["seq"], ["s1", "s2"])    # live, not "ORIG"
+            prov = json.load(open(os.path.join(captured["run_dir"],
+                                               "derived-context.json")))
+            self.assertEqual(prov["subsprint_sequence"], ["s1", "s2"])
+            self.assertFalse(prov["customer_signed"])
+            self.assertEqual(len(prov["derived_from"]["charter_sha256"]), 64)
+            self.assertEqual(len(prov["derived_from"]["campaign_plan_sha256"]), 64)
+
+    def test_dispatched_subsprint_must_be_in_sequence_fail_closed(self):
+        """A sub-sprint not in the milestone's sequence can't anchor terminality →
+        fail closed (never derive against a sequence this unit isn't part of)."""
+        with tempfile.TemporaryDirectory() as d:
+            ru = cp.make_run_unit(
+                {}, d, "camp-1", clock=_clock(),
+                run_loop_fn=lambda *a, **k: {"final_state": "advance", "spawn_count": 0})
+            with self.assertRaises(ValueError):
+                ru("s9", milestone_id="m1", subsprint_sequence=["s1", "s2"])
+
+    def test_full_chain_guided_loop_mode_is_rejected(self):
+        """make_run_unit refuses an explicit non-delivery_only loop_mode: the
+        supplied-sequence terminality anchoring is unsound under guided's seq[0]
+        bootstrap reset; that per-milestone-decompose mode is deferred (Codex review
+        #1; design §6)."""
+        with tempfile.TemporaryDirectory() as d:
+            for bad in ("full_chain_guided", "some_other_mode"):
+                with self.assertRaises(ValueError):
+                    cp.make_run_unit({}, d, "camp-1", clock=_clock(),
+                                     run_loop_fn=lambda *a, **k: {}, loop_mode=bad)
+
+    def test_derivation_pins_delivery_only_over_a_guided_charter(self):
+        """Closes the round-2 falsy-loop_mode hole: a charter carrying
+        autonomy.loop_mode=full_chain_guided + an explicit FALSY loop_mode (which the
+        construction guard lets pass) must STILL run delivery_only when deriving — the
+        derived dispatch pins it, and the Driver ctor loop_mode arg wins over the
+        charter (Codex P-B review round-2)."""
+        with tempfile.TemporaryDirectory() as d:
+            seen = {}
+            def fake(charter, *, run_dir, loop_id, subsprint_id, clock,
+                     loop_mode=None, **kw):
+                seen["loop_mode"] = loop_mode
+                return {"final_state": "advance", "spawn_count": 0}
+            charter = {"autonomy": {"loop_mode": "full_chain_guided",
+                                    "approved_scope": {"subsprint_sequence": ["x"]}}}
+            ru = cp.make_run_unit(charter, d, "camp-1", clock=_clock(),
+                                  run_loop_fn=fake, loop_mode=None)  # explicit falsy
+            ru("s1", milestone_id="m1", subsprint_sequence=["s1"])
+            self.assertEqual(seen["loop_mode"], "delivery_only")
+
+
+class TestDeriveMilestoneContext(unittest.TestCase):
+    """derive_milestone_context — the pure per-milestone projection (Codex review)."""
+
+    def _charter(self):
+        return {"autonomy": {"level": "human_on_the_loop",
+                             "approved_scope": {"subsprint_sequence": ["WHOLE"],
+                                                "modules_in_scope": ["a.py"]}},
+                "tooling": {"acceptance": {"mode": "auto"}}}
+
+    def test_projects_sequence_without_mutating_source_or_resigning(self):
+        charter = self._charter()
+        derived, prov = cp.derive_milestone_context(
+            charter, "m1", ["s1", "s2"], campaign_id="c1", plan_fingerprint="f" * 64)
+        # overrides ONLY the sequence; the source charter is untouched (deep copy).
+        self.assertEqual(
+            derived["autonomy"]["approved_scope"]["subsprint_sequence"], ["s1", "s2"])
+        self.assertEqual(
+            charter["autonomy"]["approved_scope"]["subsprint_sequence"], ["WHOLE"])
+        # other charter content carried through unchanged.
+        self.assertEqual(derived["tooling"], charter["tooling"])
+        self.assertEqual(
+            derived["autonomy"]["approved_scope"]["modules_in_scope"], ["a.py"])
+        # adds NO top-level charter fields (root schema is additionalProperties:false).
+        self.assertEqual(set(derived) - set(charter), set())
+        # provenance: hashes the SOURCE charter (not the mutated copy); not re-signed.
+        self.assertEqual(prov["derived_from"]["charter_sha256"],
+                         cp._canonical_sha256(charter))
+        self.assertEqual(prov["derived_from"]["campaign_plan_sha256"], "f" * 64)
+        self.assertEqual(prov["milestone_id"], "m1")
+        self.assertEqual(prov["kind"], "per_milestone_execution_context")
+        self.assertFalse(prov["customer_signed"])
+
+    def test_deterministic(self):
+        charter = self._charter()
+        d1, p1 = cp.derive_milestone_context(charter, "m1", ["s1"],
+                                             campaign_id="c1", plan_fingerprint="x")
+        d2, p2 = cp.derive_milestone_context(charter, "m1", ["s1"],
+                                             campaign_id="c1", plan_fingerprint="x")
+        self.assertEqual(d1, d2)
+        self.assertEqual(p1, p2)
 
 
 if __name__ == "__main__":

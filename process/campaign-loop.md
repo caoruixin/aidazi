@@ -101,6 +101,30 @@ The campaign emits its own hash-chained audit ledger (its `campaign_id`, validat
 path-safe) referencing each sub-sprint's `loop_id` (advance / done / pause events).
 State persists to `campaign-state.json`; `run(resume=True)` continues from the cursor.
 
+### §3.6 Per-milestone Acceptance via a derived execution context
+The Driver fires its milestone-close Acceptance gate only at the TERMINAL sub-sprint
+of `autonomy.approved_scope.subsprint_sequence` (`driver._milestone_complete`). A
+single shared charter across a whole campaign makes only the campaign's LAST
+sub-sprint terminal — so non-final milestones would close with NO Acceptance gate,
+violating "Acceptance at every milestone close" (design §5). On every dispatch the
+runner passes THIS milestone's LIVE sub-sprint sequence to the production
+`make_run_unit`, which PROJECTS the canonical charter onto the milestone: a deep copy
+whose `approved_scope.subsprint_sequence` is that sequence, so the milestone's final
+sub-sprint is terminal and Acceptance fires per milestone. The sequence is read LIVE
+(re-read at the top of each milestone loop, §3.1), so a governed mid-campaign edit (a
+`deliver_followup` insertion) is reflected — not a snapshot taken at runner setup. The
+derivation is **deterministic** (from the live milestone sequence + canonical charter),
+records its source hashes (charter + signed-plan reference) in a per-unit
+`derived-context.json` sidecar, and is **NOT** a re-signed charter (`customer_signed:
+false`; the Customer signature stays on the plan, one tier up). It is sound only in
+the runner's **`delivery_only`** mode (the Driver runs exactly the dispatched
+sub-sprint); `make_run_unit` FAIL-CLOSED rejects `loop_mode=full_chain_guided`, whose
+bootstrap would reset the run to `seq[0]` and mis-anchor terminality (per-milestone
+guided decompose is deferred — §6). The campaign's pause-on-non-advance loop (§3.1)
+then withholds the next milestone until this milestone's Acceptance/human gate is
+resolved — the derivation only ensures the gate EXISTS. Real-Driver coverage (incl.
+single-, two-, and multi-sub-sprint milestones): `test_campaign_e2e.py`.
+
 ## §4 Gates (where the campaign pauses for a human)
 The campaign-tier gate `campaign_plan_signoff` (the runner pauses until the
 campaign plan's `signed_by_human` is true) PLUS every Delivery-Loop human gate the
@@ -120,9 +144,12 @@ stays 9 (P-A).
 
 ## §6 Status + open work
 Implemented (Codex-reviewed): the runner (iterate / pause-detect / spend / audit /
-resume two-mechanisms / plan-signoff), the fail-closed inventory, and the production
+resume two-mechanisms / plan-signoff), the fail-closed inventory, the production
 `run_unit` wrapper (`make_run_unit` around `run_loop`, converting `GateHardFail` to a
-paused unit). **Parallel execution of dependency-independent milestones is DEFERRED**:
+paused unit), and **per-milestone Acceptance via the derived execution context**
+(§3.6) — so every milestone closes through its own Acceptance gate, with real-Driver
+production-path coverage in `test_campaign_e2e.py`. **Parallel execution of
+dependency-independent milestones is DEFERRED**:
 the sequential runner enforces deterministic topological order and rejects
 duplicate/cyclic/unknown deps, but **lock contention (`module_locks`) and parallel
 execution are NOT implemented** — those schema fields are forward-compat seams for a
