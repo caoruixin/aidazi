@@ -7,7 +7,7 @@ implementation_status: design-only
 source_of_truth: this file (until folded into constitution/delivery-loop at implementation)
 last_reviewed: 2026-06-20
 review_cadence: this fold-back sub-sprint
-revision: rev3 (post Codex round-2; remaining precision blockers folded in)
+revision: rev5 (P-B resume map corrected vs driver code: +loop_controller halts, real option labels, two resume mechanisms)
 load_discipline: on-demand
 notes: >
   DESIGN SPEC ONLY — no code yet. Consolidated design for three confirmed gaps in
@@ -66,6 +66,34 @@ design, not the prose.
 - §5.4 / §5.4a — campaign **budget** schema (per-unit allocation + campaign cap +
   cumulative actual-spend source + precedence vs per-run `BudgetExceeded`) and
   resolved-checkpoint **resume** transitions specified.
+
+**rev4 changelog (P-B prerequisites resolved against the actual runtime, before P-B impl):**
+- §5.4/§5.4a — the campaign budget is reframed to **countable proxies** the engine
+  already tracks + surfaces (`run_loop` returns `spawn_count`/`fix_round`,
+  `run_loop.py:367`): `max_subsprints` / `max_total_spawns` / `max_wall_clock_minutes`.
+  Real `$` cost is OUT OF SCOPE — no adapter reports it and subscription harnesses
+  don't expose per-call cost (the charter's `max_api_usd` caveat). This resolves
+  Codex round-3 P-B blocker (a) WITHOUT new adapter wiring.
+- §5.4a — the `pause_reason→resume` map is made **exhaustive against the 12 checkpoint
+  ids the driver actually emits** (verified in `driver.py`): `customer_gate1_signoff`,
+  `post_gate1_scope_expansion`, `dev/review/acceptance_spec_refinement`,
+  `gate_hard_fail`, `scope_deviation`, `close_taxonomy_C_or_D`, `review_out_of_scope`,
+  `acceptance_fix_required`, `acceptance_surface_approve`,
+  `advisory_acceptance_pass_signoff` — plus the 2 campaign-level
+  (`campaign_plan_signoff`, `campaign_budget_exhausted`) and a fail-closed catch-all.
+  Resolves Codex round-3 P-B blocker (b).
+
+**rev5 changelog (Codex P-B-design round corrected the resume map against driver.py):**
+- §5.4a — added the two omitted halts `loop_controller_halt` + `loop_controller_escalate`
+  (emitted via `_halt_checkpoint`, `driver.py:2321/2337`); corrected option labels to the
+  ACTUAL checkpoint options (`post_gate1_scope_expansion`: widen_approved_scope/narrow_plan/
+  abort `driver.py:1936`; `review_out_of_scope`: open_followup_subsprint/accept_and_advance/
+  abort; `gate_hard_fail`: context-dependent); and split resume into **two mechanisms**
+  because `Driver.run(resume=True)` only re-enters `halt_resume_state`/guided-pending states
+  (the 3 spec-refinements + gate1) — an ordinary human-gate `STATE_HALTED` short-circuits
+  (`driver.py:2100`), so the campaign interprets those decisions to dispatch the next unit /
+  advance / end. Campaign **pause = run final_state ∉ {advance, done}** (covers
+  `gate1_pending`, not only `STATE_HALTED`).
 
 The spine: today the engine is a **single-sub-sprint deterministic dispatcher**
 that returns control at every boundary. The redesign makes the team (a) verify the
@@ -452,12 +480,12 @@ No duplication.
   §5.4a).
 - **New schemas:** `campaign-plan.schema.json` (ordered milestones; each
   `{id, objective, acceptance_bar, subsprint_sequence?, depends_on?: [id],
-  module_locks?: [path], budget?: {max_api_usd?, max_wall_clock_minutes?,
-  max_fix_rounds_total?}}` + a campaign-level `budget: {max_api_usd?,
-  max_wall_clock_minutes?, max_subsprints?}` cap + `merge_policy` +
-  `isolation_strategy`); `campaign-state.schema.json` (cursor + per-unit status +
-  pause reason + per-unit `loop_id` audit refs + cumulative
-  `spent: {api_usd, wall_clock_minutes, subsprints_run}`).
+  module_locks?: [path]}` + a campaign-level **countable** `budget:
+  {max_subsprints?, max_total_spawns?, max_wall_clock_minutes?}` cap (all OPTIONAL;
+  absent ⇒ unbounded; `$` cost is NOT a campaign dimension — §5.4a) + `merge_policy`
+  + `isolation_strategy`); `campaign-state.schema.json` (cursor + per-unit status +
+  `pause_reason` + per-unit `loop_id` audit refs + cumulative
+  `spent: {subsprints_run, total_spawns, wall_clock_minutes}`).
 - **Charter:** a `campaign` block (or campaign-plan path) holding the ordered
   backlog; `mission.goal` stays the north star.
 - **Decompose step:** campaign-decompose (goal→backlog) Deliver spawn with a
@@ -480,46 +508,91 @@ No duplication.
   `current_milestone_id`, `current_subsprint_id`.
 - **Per-unit status:** `pending|in_progress|done|halted|failed` + last driver
   terminal state + the sub-sprint's `loop_id` (audit linkage).
-- **Auto-advance terminal states:** `STATE_ADVANCE` (sub-sprint clean) and
-  `STATE_DONE` (milestone accepted authoritative) → advance. `STATE_HALTED` →
-  pause. Any other → pause (never skip ahead).
+- **Pause detection (Codex P-B round blocking #2):** the campaign reads each unit's
+  `run_loop` summary `final_state` and ADVANCES only on `advance` (sub-sprint clean) or
+  `done` (milestone accepted authoritative). **Everything else → PAUSE** — not only
+  `STATE_HALTED` but also the guided pending states (`gate1_pending`, `research_pending`,
+  `decompose_pending`), which are NOT `STATE_HALTED`. Never skip ahead on a non-advance state.
 - **Retry/idempotency:** a unit is keyed `(milestone_id, subsprint_id)`; re-dispatch
   uses the driver's existing idempotency cache (§4.5); the campaign records each
   unit's `loop_id` so re-runs are traceable, not duplicated.
-- **Budget aggregation (Codex round-2 blocking #3):** each `Driver.run()` keeps its
-  **per-run** charter budget (today's `BudgetExceeded` = fix-round cap `driver.py:749`
-  + `max_api_usd` controller halt `driver.py:2139`). The campaign holds a SEPARATE
-  **campaign cap** (`campaign.budget`, §5.4) and tracks **cumulative actual spend**
-  (`campaign_state.spent`) sourced from each run's summary/audit. **P-B prerequisite
-  (Codex round-3):** spend is NOT concretely captured today — run summaries omit it
-  (`run_loop.py:367`) and the spawn audit cost fields exist but are unpopulated
-  (`driver.py:828`); P-B MUST first wire spend capture (populate the spawn cost
-  fields / surface spend in the run summary) or the campaign cap is unenforceable.
-  **Precedence:** a
-  per-run `BudgetExceeded` HALTs that unit → propagates as `GateHardFail` → campaign
-  marks the unit `failed` + HALTs (per below); the campaign cap is checked **between
-  units** (before dispatching the next) and, if exceeded, raises a
-  `campaign_budget_exhausted` pause (human raises the cap or aborts). The two never
-  silently override each other.
-- **Pause/resume + resolved-checkpoint transitions (Codex round-2 blocking #3):** on
-  `STATE_HALTED`, persist cursor + `pause_reason` + checkpoint path, return.
-  `campaign resume` re-reads state and routes by `pause_reason`:
-  - **`advisory_acceptance_pass_signoff`** resolved `confirm: ship` → mark the
-    milestone accepted → advance to the next milestone; `reject` → route per the
-    human's decision (deliver-fix / abort), do NOT advance.
-  - **`acceptance_fix_required` / `acceptance_surface_approve` / `scope_deviation` /
-    `close_taxonomy_C_or_D` / Gate-1** resolved → re-dispatch the SAME unit with
-    `Driver.run(resume=True)` (driver re-enters the persisted state + applies the
-    decision), then advance on a clean terminal state.
-  - **`campaign_budget_exhausted`** resolved (cap raised) → resume from the cursor;
-    (aborted) → campaign ends.
-  - **any other human-resolvable halt** (`gate_hard_fail`, `loop_controller_halt`,
-    `loop_controller_escalate`, `review_out_of_scope`, `new_tier0_candidate`,
-    `forbidden_list_redline`, `bad_case_manual_review`, `post_gate1_scope_expansion`)
-    resolved → re-dispatch the SAME unit with `Driver.run(resume=True)`, then advance
-    on a clean terminal state. The resume map MUST be **exhaustive** over every
-    `pause_reason` the driver can emit (Codex round-3 P-B blocker) — no unmapped halt.
-  - decision still `pending` → re-halt (no silent progress).
+- **Budget aggregation (Codex round-2 blocking #3 + round-3 prereq (a); resolved rev4):**
+  real per-call **`$` cost is unavailable** — no adapter reports it (verified) and
+  subscription-billed harnesses (Codex / Claude Code / Kimi) do not expose per-call
+  cost (the charter's `budget.max_api_usd` already carries this caveat). So the campaign
+  cap uses **countable proxies the engine already tracks + surfaces** in each
+  sub-sprint's `run_loop` summary — **NO new adapter cost wiring**:
+  - `subsprints_run` — campaign counts dispatched sub-sprints.
+  - `total_spawns` — campaign SUMS `summary["spawn_count"]` (already returned by
+    `run_loop`, `run_loop.py:367`; `RunState.spawn_count`, `driver.py:380`) across units.
+  - `wall_clock_minutes` — campaign measures elapsed via the injected `clock`.
+  `campaign.budget = {max_subsprints?, max_total_spawns?, max_wall_clock_minutes?}`
+  (all OPTIONAL; absent ⇒ unbounded for that dimension). **Precedence:** a per-run
+  `BudgetExceeded` (fix-round cap `driver.py:749`; best-effort `max_api_usd` controller
+  halt for a metered adapter `driver.py:2139`) HALTs that unit → `GateHardFail` →
+  campaign marks the unit `failed` + HALTs. The campaign cap is checked **between
+  units** (before dispatching the next); exceeding → a `campaign_budget_exhausted`
+  pause (human raises the cap or aborts). The two never silently override each other.
+  **`$` cost capture is explicitly OUT OF SCOPE** until a metered adapter exposes
+  per-call cost.
+- **Pause/resume — EXHAUSTIVE map over the driver's emitted halts, TWO resume mechanisms
+  (Codex P-B round blocking #1 + option/coverage fixes):** on a pause the campaign persists
+  cursor + `pause_reason` (the emitted `checkpoint_id`) + checkpoint path, and surfaces.
+  `campaign resume` requires the checkpoint `decision:` ≠ `pending` (else re-halt — no
+  silent progress). Resume uses ONE of two mechanisms, because `Driver.run(resume=True)`
+  only re-enters states that set `halt_resume_state` (the 3 spec-refinement halts) OR the
+  guided pending states; an ordinary human-gate `STATE_HALTED` short-circuits on resume
+  (`driver.py:2100`).
+
+  **Mechanism A — driver-resume** (`Driver.run(resume=True)` re-enters + re-resolves):
+  - **`dev_spec_refinement` / `review_spec_refinement` / `acceptance_spec_refinement`**
+    (set `halt_resume_state`) — human refined the source; re-enter the paused state.
+  - **`customer_gate1_signoff`** (stays `gate1_pending`, a guided pre-state) — resume
+    re-consults the injected `gate_resolver`: `sign` → continue this milestone's
+    decompose → sub-sprints; `reject` → milestone halts; `abort` → campaign ends.
+
+  **Mechanism B — campaign interprets the resolved `decision:` and dispatches** (the halted
+  unit is NOT re-run via resume=True — it no-ops; each new dispatch gets a fresh `loop_id`
+  under the campaign ledger). Options below are the ACTUAL checkpoint options the driver writes:
+  - **`post_gate1_scope_expansion`** (`driver.py:1936`) → `widen_approved_scope` →
+    re-decompose under the widened envelope; `narrow_plan` → re-decompose; `abort` → ends.
+  - **`scope_deviation`** → `accept_deviation` (human widened `approved_scope`) → re-dispatch
+    the unit as a fresh run; `reject_deviation` → dispatch a re-planned fix; `abandon` → ends.
+  - **`close_taxonomy_C_or_D`** → `resolve` → dispatch the resolving unit; `abort` → ends.
+  - **`review_out_of_scope`** → `open_followup_subsprint` → dispatch the follow-up;
+    `accept_and_advance` → advance; `abort` → campaign ends.
+  - **`gate_hard_fail`** (options CONTEXT-dependent): deterministic-gate path = `re_run`
+    (re-dispatch fresh) / `accept_failure_and_route` (dispatch routed) / `abort`
+    (`driver.py:751`); review-fix HITL reuse = `deliver_fix_iteration` (dispatch a fix
+    sub-sprint) / `abort` (`driver.py:2354`).
+  - **`loop_controller_halt`** (budget / max_rounds / converged_dry; `driver.py:2321`;
+    options `review_outcome/re_run/abort`) → `re_run` → re-dispatch fresh; `review_outcome`
+    → human accepts / raises the cap → resume from cursor; `abort` → end. (A max_rounds/
+    budget halt ALSO raises the deterministic `BudgetExceeded`.)
+  - **`loop_controller_escalate`** (severity over ceiling; `driver.py:2337`; options
+    `review_and_route/accept_failure_and_route/abort`) → `review_and_route` /
+    `accept_failure_and_route` → dispatch the routed fix unit; `abort` → end.
+  - **`acceptance_fix_required`** → `confirm: yes` + `route` ∈ `{deliver_fix_iteration,
+    re_acceptance_after_evidence, research_contract_revision}` (`driver.py:3060`) → dispatch
+    the routed unit; `confirm: no` → advisory ship → advance to next milestone.
+  - **`acceptance_surface_approve`** (needs_human) → `approve_ship` → advance milestone;
+    `route_to_deliver_fix` → dispatch fix unit; `abort` → campaign ends.
+  - **`advisory_acceptance_pass_signoff`** (P-A) → `confirm: ship` → mark milestone accepted
+    → advance to next milestone; `reject` → dispatch deliver-fix / end.
+
+  **Campaign-level (also Mechanism B):**
+  - **`campaign_plan_signoff`** (#10) → `approve` → start milestone 1; `reject` → ends.
+  - **`campaign_budget_exhausted`** → cap raised → resume from cursor; `abort` → ends.
+
+  **Fail-closed catch-all:** any emitted `checkpoint_id` NOT mapped above → unknown human
+  gate; require a resolved decision, surface, DO NOT advance. A test asserts every
+  `_write_checkpoint`/`_halt_checkpoint` id in `driver.py` is either mapped here or hits
+  this catch-all (a future new checkpoint cannot silently break the campaign).
+
+  **Non-pause checkpoints (excluded — never leave the loop paused):**
+  `acceptance_calibration_degraded` (auto-resolved, `resolver: orchestrator`,
+  `driver.py:2586`), `memory_feedback` (post-success), `loop_isolation_recommendation`
+  (ingress; proceeds on the default strategy).
 - **GateHardFail:** a driver `GateHardFail` (incl. `BudgetExceeded`) propagates →
   campaign marks the unit `failed`, HALTs the campaign (does NOT advance).
 - **Audit linkage:** the campaign emits its own hash-chained ledger
@@ -619,9 +692,12 @@ Each phase: docs + schema first, then engine code, then tests, then Codex review
 - **Cross-phase sweep (Codex round-3):** the "8 defaults" string also lives in
   `mission-charter.schema.json:230`, `process/customer-checkpoints.md:129`,
   `process/self-governance.md:57`, `templates/mission-charter.yaml:9` — include these
-  in the P-A (#9) / P-B (#10) checkpoint-count sweep. **P-B is gated** (not yet
-  green-lit) on (a) wiring campaign spend capture and (b) an exhaustive
-  `pause_reason`→resume map (both §5.4a) before it starts.
+  in the P-A (#9) / P-B (#10) checkpoint-count sweep. (P-A landed these; P-B adds #10.)
+  **P-B prereqs RESOLVED in design (rev4):** (a) campaign spend uses countable proxies
+  the engine already surfaces (`run_loop` `spawn_count` + clock) — `$` cost is out of
+  scope, NO adapter wiring; (b) the `pause_reason`→resume map is now exhaustive over the
+  12 checkpoint_ids the driver actually emits + a fail-closed catch-all (both §5.4a).
+  Pending Codex sign-off on rev4 before P-B implementation starts.
 
 ## §10 Residual risks (Codex round-1)
 
