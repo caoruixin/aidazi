@@ -489,10 +489,14 @@ No duplication.
 - **Charter:** a `campaign` block (or campaign-plan path) holding the ordered
   backlog; `mission.goal` stays the north star.
 - **Decompose step:** campaign-decompose (goal→backlog) Deliver spawn with a
-  `campaign-plan` verdict schema, gated by `campaign_plan_signoff` — default
-  checkpoint **#10**, added by P-B to the same three hard-kernel sites P-A touched
-  (constitution §1.7-D, delivery-loop §4.2.3, validator), with tests; fires only when
-  the campaign runner is used.
+  `campaign-plan` verdict schema, gated by `campaign_plan_signoff`. **Implementation
+  refinement (P-B):** this is a **campaign-TIER** gate, ENFORCED BY THE CAMPAIGN RUNNER
+  (the runner pauses at `campaign_plan_signoff` until `campaign-plan.signed_by_human`
+  is true) and classified in `campaign.py` + tested — it is NOT folded into the charter
+  validator's `MANDATORY_CHECKPOINTS` (that validates delivery-loop CHARTERS, not
+  campaign plans; a campaign-tier checkpoint there would be a category error). So the
+  charter-validator hard-kernel count stays **9** (P-A's set); the campaign tier adds
+  its own gate. The conceptual "#10" still holds — it's just enforced where it belongs.
 - **Process docs:** `process/milestone-framework.md` (campaign tier; "optional next
   milestone" → "auto-dispatched next backlog item"); new `process/campaign-loop.md`
   (outer loop spec; halt-only-at-human-gates; resume); `modules/m-autoloop.md`
