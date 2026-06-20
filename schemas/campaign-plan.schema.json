@@ -30,10 +30,10 @@
         "required": ["id", "objective"],
         "additionalProperties": false,
         "properties": {
-          "id": {"type": "string", "minLength": 1},
+          "id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "description": "Path-safe milestone id (it + the sub-sprint id form the per-unit Driver run dir/loop_id)."},
           "objective": {"type": "string", "minLength": 1},
           "acceptance_bar": {"type": "string", "description": "One-line statement of what Acceptance must confirm at this milestone's close."},
-          "subsprint_sequence": {"type": "array", "items": {"type": "string"}, "description": "Ordered sub-sprint ids. May be authored up front (Deliver) or filled by the per-milestone full_chain_guided decompose (delivery-loop §4.2.4-G)."},
+          "subsprint_sequence": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}, "description": "Ordered (path-safe) sub-sprint ids, UNIQUE within a milestone (the follow-up id-novelty check + per-unit loop_id require it). May be authored up front (Deliver) or filled by the per-milestone full_chain_guided decompose (delivery-loop §4.2.4-G)."},
           "depends_on": {"type": "array", "items": {"type": "string"}, "description": "Milestone ids that MUST complete before this one (deterministic topological order). Absent ⇒ linear backlog order. The sequential runner enforces order + lock non-overlap so a future parallel runner is sound."},
           "module_locks": {"type": "array", "items": {"type": "string"}, "description": "Forward-compat: resource paths this milestone owns, for a future parallel runner's isolation. The sequential runner records but does not contend on them."}
         }

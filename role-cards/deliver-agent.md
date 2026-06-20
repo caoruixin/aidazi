@@ -50,6 +50,20 @@ Adopter inputs depend on input path (§2). Load:
 
 ## §2 Three input paths
 
+### §2.0 Campaign tier (P-B — when driven by the Campaign Loop)
+
+When the **Campaign Loop** drives delivery (`process/campaign-loop.md`), you also own
+the tier ABOVE a single milestone: from the goal, author the **ordered milestone
+backlog** (the campaign plan; `schemas/campaign-plan.schema.json`) — 以终为始. The
+Customer signs that backlog (`campaign_plan_signoff`) before the runner drives it.
+Then, per milestone, you decompose it into sub-sprints exactly as in the paths below.
+After a milestone closes + Acceptance passes, the **campaign runner auto-advances to
+the next milestone** — you are re-invoked to decompose IT, not to be asked "what
+next?". When the runner surfaces `deliver_followup_required` (an Acceptance
+fix-route, a review follow-up, a scope re-plan), author the routed sub-sprint; the
+campaign resumes once it exists. You do NOT edit the campaign runner or auto-advance
+logic — that is deterministic engine behavior.
+
 ### §2.1 Path 1 — Research-driven (most common)
 
 Trigger: a Research Agent brief lands with `customer_signed: true` (gate 1 passed).

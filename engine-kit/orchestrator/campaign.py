@@ -25,6 +25,7 @@ KEY runtime facts this module is built on (verified against driver.py):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -46,6 +47,9 @@ import audit_log as audit  # noqa: E402  (engine-kit/audit/audit_log.py — REUS
 # ledger FILENAME, so it is validated FAIL-CLOSED at construction (Codex P-B impl
 # blocking #1; mirrors driver.py _SAFE_LOOP_ID_RE).
 _SAFE_CAMPAIGN_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+# The Driver checkpoint filename shape (<ts>__<checkpoint_id>__<scope>.md) — used to
+# filter the checkpoints dir so a stray .md can't mask the real pause reason.
+_CHECKPOINT_FILE_RE = re.compile(r"\A\d{8}-\d{6}__[A-Za-z0-9_]+__.+\.md\Z")
 
 # --------------------------------------------------------------------------- #
 # Resume classes (design §5.4a) — how the campaign resumes after a pause.
@@ -119,6 +123,7 @@ def classify_checkpoint(checkpoint_id: str) -> str:
 # auto-advance).
 # --------------------------------------------------------------------------- #
 ACT_ADVANCE_MILESTONE = "advance_milestone"   # milestone accepted → next milestone
+ACT_ADVANCE_SUBSPRINT = "advance_subsprint"   # this sub-sprint done → next sub-sprint in THIS milestone
 ACT_REDISPATCH_FRESH = "redispatch_fresh"     # blocker removed → re-run SAME unit fresh
 ACT_DELIVER_FOLLOWUP = "deliver_followup"     # a new unit must be authored by Deliver → surface
 ACT_END = "end"                               # abort → campaign ends
@@ -131,7 +136,9 @@ _DISPATCH_TABLE: Dict[str, Dict[Any, str]] = {
         "approve_ship": ACT_ADVANCE_MILESTONE,
         "route_to_deliver_fix": ACT_DELIVER_FOLLOWUP, "abort": ACT_END},
     "review_out_of_scope": {
-        "accept_and_advance": ACT_ADVANCE_MILESTONE,
+        # review runs per SUB-SPRINT (mid-milestone) — accepting it advances the
+        # sub-sprint, NOT the whole milestone (Codex inc-2 blocking #2).
+        "accept_and_advance": ACT_ADVANCE_SUBSPRINT,
         "open_followup_subsprint": ACT_DELIVER_FOLLOWUP, "abort": ACT_END},
     "scope_deviation": {
         "accept_deviation": ACT_REDISPATCH_FRESH,
@@ -193,6 +200,7 @@ class CampaignState:
     total_spawns: int = 0
     wall_clock_minutes: float = 0.0
     units: List[dict] = field(default_factory=list)
+    followup_baseline_seq: Optional[List[str]] = None  # subsprint_sequence snapshot at a deliver_followup pause
 
     def to_dict(self) -> dict:
         return {
@@ -206,6 +214,7 @@ class CampaignState:
                       "total_spawns": self.total_spawns,
                       "wall_clock_minutes": self.wall_clock_minutes},
             "units": self.units,
+            "followup_baseline_seq": self.followup_baseline_seq,
         }
 
     @classmethod
@@ -221,7 +230,8 @@ class CampaignState:
             subsprints_run=spent.get("subsprints_run", 0),
             total_spawns=spent.get("total_spawns", 0),
             wall_clock_minutes=spent.get("wall_clock_minutes", 0.0),
-            units=list(d.get("units") or []))
+            units=list(d.get("units") or []),
+            followup_baseline_seq=d.get("followup_baseline_seq"))
 
 
 # --------------------------------------------------------------------------- #
@@ -302,6 +312,15 @@ class Campaign:
                 f"{_SAFE_CAMPAIGN_ID_RE.pattern} — it is interpolated into the audit "
                 f"ledger path (fail-closed, like the Driver's loop_id guard)")
         self.milestones = topological_order(plan.get("milestones") or [])
+        for m in self.milestones:
+            seq = m.get("subsprint_sequence") or []
+            dupes = sorted({s for s in seq if seq.count(s) > 1})
+            if dupes:
+                # The id-novelty follow-up check (§ resume) AND the per-unit loop_id
+                # hashing key on (campaign, milestone, subsprint) — both REQUIRE
+                # sub-sprint ids unique within a milestone (Codex inc-2 round-4).
+                raise ValueError(
+                    f"milestone {m['id']!r} has duplicate sub-sprint id(s): {dupes}")
         self.budget = plan.get("budget") or {}
         os.makedirs(run_dir, exist_ok=True)
         self.state_path = os.path.join(run_dir, "campaign-state.json")
@@ -359,19 +378,122 @@ class Campaign:
         self._save()
         return self.state
 
+    def _repause(self, reason: str, why: str) -> str:
+        self._pause(reason, self.state.pause_checkpoint, "campaign_repause",
+                    {"why": why})
+        return "paused"
+
+    # ----- resume decision-execution (design §5.4a; increment 2) ---------- #
+    def _handle_resume(self, decision_resolver) -> str:
+        """Act on a resolved pause BEFORE re-entering the loop. Returns
+        'proceed' | 'paused' | 'ended'. Mechanism A (driver-resumable) arms the next
+        dispatch with resume=True; Mechanism B interprets the human decision into a
+        campaign action (advance-milestone / redispatch-fresh / deliver-followup /
+        end)."""
+        reason = self.state.pause_reason
+
+        # Campaign-tier re-checks that depend on UPDATED PLAN state (not a decision):
+        if reason == "campaign_plan_signoff":
+            return ("proceed" if self.plan.get("signed_by_human")
+                    else self._repause(reason, "still_unsigned"))
+        if reason == "milestone_decompose_required":
+            ms = self.milestones[self.state.milestone_index]
+            return ("proceed" if ms.get("subsprint_sequence")
+                    else self._repause(reason, "still_undecomposed"))
+        if reason == "deliver_followup_required":
+            # The manual follow-up contract (Codex inc-2 #3): Deliver INSERTS the
+            # follow-up sub-sprint at cursor+1. A genuine insertion is detected iff the
+            # sequence GREW past the length recorded when we paused — so a pre-existing
+            # next sub-sprint is NOT mistaken for an insertion (and not auto-dispatched).
+            ms = self.milestones[self.state.milestone_index]
+            seq = ms.get("subsprint_sequence") or []
+            baseline = self.state.followup_baseline_seq or []
+            nxt = self.state.subsprint_index + 1
+            # Advance ONLY if the item at cursor+1 is a NEWLY inserted follow-up — an
+            # id NOT in the snapshot taken at pause time. So neither a pre-existing next
+            # sub-sprint NOR an append-elsewhere is mistaken for the insertion (Codex
+            # inc-2 #3: prove "inserted at cursor+1", not just "the sequence grew").
+            if nxt < len(seq) and seq[nxt] not in baseline:
+                self.state.subsprint_index = nxt
+                self.state.followup_baseline_seq = None
+                self._audit("campaign_resume_dispatch",
+                            {"pause_reason": reason, "action": "advance_to_followup",
+                             "followup": seq[nxt]})
+                return "proceed"
+            return self._repause(reason, "awaiting_deliver_followup")
+
+        # Otherwise consult the human's resolved decision for the checkpoint.
+        decision = (decision_resolver(reason, self.state.pause_checkpoint)
+                    if decision_resolver is not None else None)
+        if not decision:
+            return self._repause(reason, "decision_pending")
+
+        if classify_checkpoint(reason) == RESUME_DRIVER:
+            # Mechanism A: the Driver re-enters the paused state on the next dispatch.
+            self._pending_driver_resume = True
+            self._audit("campaign_resume_driver", {"pause_reason": reason})
+            return "proceed"
+
+        # Mechanism B + campaign-level dispatch.
+        if reason == "campaign_budget_exhausted":
+            if decision.get("choice") == "raise_cap":
+                self.budget = self.plan.get("budget") or {}  # human raised the cap
+                self._audit("campaign_resume_dispatch",
+                            {"pause_reason": reason, "action": "raise_cap"})
+                return "proceed"
+            self._end("campaign_budget_aborted")
+            return "ended"
+
+        action = interpret_dispatch(reason, decision)
+        self._audit("campaign_resume_dispatch",
+                    {"pause_reason": reason, "action": action,
+                     "choice": decision.get("choice") or decision.get("confirm")})
+        if action == ACT_ADVANCE_SUBSPRINT:
+            self.state.subsprint_index += 1   # this sub-sprint accepted → next in milestone
+            return "proceed"
+        if action == ACT_ADVANCE_MILESTONE:
+            self.state.milestone_index += 1   # milestone accepted → next milestone
+            self.state.subsprint_index = 0
+            return "proceed"
+        if action == ACT_REDISPATCH_FRESH:
+            return "proceed"                  # re-dispatch the SAME unit fresh (cursor unchanged)
+        if action == ACT_END:
+            self._end("resolved_abort")
+            return "ended"
+        # ACT_DELIVER_FOLLOWUP — a new unit must be authored by Deliver; surface it.
+        # Record the sequence length NOW so resume can tell a genuine insertion (len
+        # grew) from a pre-existing next sub-sprint (Codex inc-2 #3).
+        self.state.followup_baseline_seq = list(
+            self.milestones[self.state.milestone_index].get("subsprint_sequence") or [])
+        self._pause("deliver_followup_required", self.state.pause_checkpoint,
+                    "campaign_deliver_followup_required", {"for_reason": reason})
+        return "paused"
+
     # ----- the loop ------------------------------------------------------ #
-    def run(self, *, resume: bool = False) -> CampaignState:
+    def run(self, *, resume: bool = False, decision_resolver=None) -> CampaignState:
         """Drive the backlog from the cursor. Returns the (terminal-or-paused)
-        CampaignState. Pauses persist + return so a human can resolve + resume."""
+        CampaignState. Pauses persist + return so a human can resolve + resume.
+
+        `decision_resolver(pause_reason, checkpoint_path) -> Optional[dict]` is the
+        human's voice on resume for Mechanism-B gates (injected, like the Driver's
+        gate_resolver); None / a None return ⇒ the pause stays (re-pause)."""
+        self._pending_driver_resume = False
         if resume and self._load():
             self._audit("campaign_resume",
                         {"from_status": self.state.status,
                          "pause_reason": self.state.pause_reason})
             if self.state.status in (STATUS_DONE, STATUS_ENDED):
                 return self.state
-            self.state.status = STATUS_RUNNING
-            # (Decision routing for a resolved pause is the next increment; the
-            # injected run_unit receives resume=True for Mechanism-A reasons.)
+            if self.state.status == STATUS_PAUSED:
+                outcome = self._handle_resume(decision_resolver)
+                if outcome in ("paused", "ended"):
+                    return self.state
+                # proceed → clear the pause; drive from the (possibly advanced) cursor.
+                self.state.status = STATUS_RUNNING
+                self.state.pause_reason = None
+                self.state.pause_checkpoint = None
+            # else STATUS_RUNNING → crash recovery: continue from the persisted cursor
+            # WITHOUT re-interpreting a (non-existent) pause (Codex inc-2 blocking #4).
         else:
             self._audit("campaign_start",
                         {"campaign_id": self.campaign_id,
@@ -412,7 +534,11 @@ class Campaign:
                                        "campaign_budget_exhausted", {"dimension": over})
 
                 subsprint_id = seq[self.state.subsprint_index]
-                summary = self.run_unit(subsprint_id, resume=False)
+                resume_this = self._pending_driver_resume
+                self._pending_driver_resume = False
+                summary = self.run_unit(subsprint_id,
+                                        milestone_id=milestone["id"],
+                                        resume=resume_this)
                 final_state = summary.get("final_state")
                 self.state.subsprints_run += 1
                 self.state.total_spawns += int(summary.get("spawn_count") or 0)
@@ -475,7 +601,83 @@ class Campaign:
 
 def run_campaign(plan: dict, run_dir: str, run_unit: RunUnit, *,
                  clock: Callable[[], str], audit_dir: Optional[str] = None,
-                 resume: bool = False) -> CampaignState:
+                 resume: bool = False, decision_resolver=None) -> CampaignState:
     """Convenience entry point — construct a Campaign and run it."""
     return Campaign(plan, run_dir, run_unit, clock=clock,
-                    audit_dir=audit_dir).run(resume=resume)
+                    audit_dir=audit_dir).run(resume=resume,
+                                             decision_resolver=decision_resolver)
+
+
+# --------------------------------------------------------------------------- #
+# Production run_unit — drive ONE sub-sprint via scheduling.run_loop (increment 2).
+# --------------------------------------------------------------------------- #
+def latest_checkpoint(checkpoints_dir: str):
+    """(checkpoint_id, path) of the most-recent checkpoint file, or (None, None).
+    The Driver names checkpoints `<ts>__<checkpoint_id>__<scope>.md` (ts is
+    lexically sortable), written under `<run_dir>/docs/checkpoints/`."""
+    if not os.path.isdir(checkpoints_dir):
+        return None, None
+    files = sorted(f for f in os.listdir(checkpoints_dir)
+                   if _CHECKPOINT_FILE_RE.match(f))   # ignore stray .md (Codex inc-2 #6)
+    if not files:
+        return None, None
+    latest = files[-1]
+    parts = latest[:-3].split("__")
+    cid = parts[1] if len(parts) >= 2 else None
+    return cid, os.path.join(checkpoints_dir, latest)
+
+
+def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
+                  clock: Callable[[], str], run_loop_fn: Optional[Callable] = None,
+                  **run_loop_kwargs) -> RunUnit:
+    """Build a PRODUCTION run_unit that drives ONE sub-sprint via
+    `scheduling.run_loop` and returns the campaign summary
+    `{final_state, spawn_count, loop_id, pause_reason, checkpoint_path}`.
+
+    Each unit gets its OWN run_dir (`units_dir/<loop_id>`, keyed by
+    `(campaign, milestone, subsprint)` so repeated sub-sprint ids across milestones
+    don't collide). A `GateHardFail` — which `run_loop` RAISES — is converted into a
+    paused unit so the campaign HALTS rather than crashing (Codex P-B seam note);
+    `BudgetExceeded` is a `GateHardFail` subclass so it is caught too. For any
+    non-advance/done state, `pause_reason` is the latest checkpoint's id."""
+    if run_loop_fn is None:
+        import run_loop as _rl  # engine-kit/scheduling/run_loop.py (lazy — heavy deps)
+        run_loop_fn = _rl.run_loop
+    import driver as _drv       # GateHardFail (+ BudgetExceeded subclass)
+    gate_hard_fail = _drv.GateHardFail
+
+    def run_unit(subsprint_id, *, milestone_id=None, resume=False):
+        # Validate id components BEFORE building any path (fail-closed; never makedirs
+        # an unsafe path), then build a COLLISION-FREE, bounded loop_id by hashing the
+        # (campaign, milestone, subsprint) tuple — a raw '-' join is ambiguous when ids
+        # contain '-' and may exceed the Driver's loop_id length cap (Codex inc-2 #5).
+        # The readable (milestone, subsprint) ↔ loop_id mapping lives in campaign-state.
+        for part in (milestone_id, subsprint_id):
+            if part is not None and not _SAFE_CAMPAIGN_ID_RE.match(str(part)):
+                raise ValueError(
+                    f"unsafe id component {part!r} for the unit run_dir/loop_id")
+        digest = hashlib.sha256(
+            f"{campaign_id}\x00{milestone_id}\x00{subsprint_id}".encode()).hexdigest()
+        loop_id = "u" + digest[:24]
+        unit_run_dir = os.path.join(units_dir, loop_id)
+        os.makedirs(unit_run_dir, exist_ok=True)
+        cps_dir = os.path.join(unit_run_dir, "docs", "checkpoints")
+        try:
+            summary = run_loop_fn(charter, run_dir=unit_run_dir, loop_id=loop_id,
+                                  subsprint_id=subsprint_id, clock=clock,
+                                  resume=resume, **run_loop_kwargs)
+        except gate_hard_fail as exc:
+            cid, cpath = latest_checkpoint(cps_dir)
+            return {"final_state": "halted", "spawn_count": 0, "loop_id": loop_id,
+                    "pause_reason": cid or "gate_hard_fail",
+                    "checkpoint_path": getattr(exc, "checkpoint_path", "") or cpath}
+        final_state = summary.get("final_state")
+        pause_reason, checkpoint_path = None, None
+        if final_state not in ("advance", "done"):
+            cid, checkpoint_path = latest_checkpoint(cps_dir)
+            pause_reason = cid or final_state
+        return {"final_state": final_state,
+                "spawn_count": int(summary.get("spawn_count") or 0),
+                "loop_id": loop_id, "pause_reason": pause_reason,
+                "checkpoint_path": checkpoint_path}
+    return run_unit

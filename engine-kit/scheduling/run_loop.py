@@ -329,6 +329,7 @@ def run_loop(
     memory_root: Optional[str] = None,
     loop_mode: str = LOOP_MODE_DELIVERY_ONLY,
     gate_resolver: Optional[Callable] = None,
+    resume: bool = False,
 ) -> dict:
     """Run ONE loop end-to-end and return a summary dict.
 
@@ -361,7 +362,7 @@ def run_loop(
         repo_dir=repo_dir, memory_root=memory_root,
         loop_mode=loop_mode, gate_resolver=gate_resolver,
     )
-    final = driver.run(subsprint_id=subsprint_id)
+    final = driver.run(subsprint_id=subsprint_id, resume=resume)
     result = audit.verify_chain(driver.audit_ledger)
     clean = final.state in ("advance", "done")
     return {

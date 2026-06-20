@@ -11,6 +11,7 @@
     "status": {"type": "string", "enum": ["running", "paused", "done", "ended"], "description": "running = mid-flight; paused = halted at a human gate (see pause_reason); done = backlog exhausted + accepted; ended = aborted."},
     "pause_reason": {"type": ["string", "null"], "description": "When paused: the driver/campaign checkpoint_id that caused the halt (the resume map key)."},
     "pause_checkpoint": {"type": ["string", "null"], "description": "When paused: path to the checkpoint file the human resolves."},
+    "followup_baseline_seq": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Internal: the milestone's subsprint_sequence SNAPSHOT recorded at a deliver_followup_required pause, so resume advances ONLY to a NEWLY inserted follow-up (an id not in this snapshot, at cursor+1) — never to a pre-existing or appended-elsewhere sub-sprint."},
     "cursor": {
       "type": "object",
       "additionalProperties": false,
