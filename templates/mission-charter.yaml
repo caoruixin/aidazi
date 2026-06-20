@@ -4,12 +4,13 @@
 # Replace <placeholders> with project-specific values. Schema: aidazi/schemas/mission-charter.schema.json.
 #
 # Hard requirements (charter validator rejects on violation; Constitution §7.0 + §1.7-C/D):
-# - acceptance.on_fix_required.human_confirm_required MUST be true (Constitution §1.7-C).
-# - acceptance.on_fix_required.route_options MUST be non-empty.
-# - The 8 default MANDATORY_CHECKPOINTS (process/delivery-loop.md §4.2.3) MUST NOT be bypassed in
+# - tooling.acceptance.on_fix_required.human_confirm_required MUST be true (Constitution §1.7-C).
+# - tooling.acceptance.on_fix_required.route_options MUST be non-empty.
+# - The 9 default MANDATORY_CHECKPOINTS (process/delivery-loop.md §4.2.3) MUST NOT be bypassed in
 #   any of four shapes (omitted/emptied/disabled/overridden) per Constitution §1.7-D.
+#   (The 9th, advisory_acceptance_pass_signoff, fires only when Acceptance runs advisory.)
 #   Adopters may ADD checkpoints via mandatory_checkpoints_added; they may NOT redefine the
-#   8 defaults.
+#   9 defaults.
 # - At least one of profile_type_a / profile_type_b / profile_type_c MUST be populated.
 #
 # Suggested defaults (per Constitution §7.0; override with rationale in adoption-state.md):
@@ -111,7 +112,10 @@ tooling:
     cmd: <shell-command-orchestrator-runs-for-F5-evidence>
     timeout_seconds: 600
   acceptance:
-    enabled: false  # set to true when ready; calibration required before fully_autonomous_within_budget
+    mode: advisory  # off | advisory | auto (canonical; new-charter default). advisory runs but HALTs a pass at
+                    # advisory_acceptance_pass_signoff for human sign-off; auto auto-ships ONLY when also calibrated
+                    # + autonomy fully_autonomous_within_budget. `enabled` is the DEPRECATED alias (true→auto,
+                    # false→off), normalized before validation; if both are set they MUST agree.
     agent_kind: codex        # Acceptance = the CUSTOMER/user-perspective judge, run ONCE at MILESTONE close
                              # (not per sub-sprint) — judges the gap to the customer's stated need, NOT code
                              # quality (that's Review). Independence is by ROLE/perspective/timing, so sharing
@@ -174,5 +178,5 @@ profile_type_a:
 #     source: <path-to-LOCAL_ACCEPTANCE_CHECKLIST.md>
 #   off_the_shelf_skill_inventory_required: true
 
-# Optional: adopter-added custom MANDATORY_CHECKPOINTS. The 8 defaults always fire alongside.
+# Optional: adopter-added custom MANDATORY_CHECKPOINTS. The 9 defaults always fire alongside.
 mandatory_checkpoints_added: []

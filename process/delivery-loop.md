@@ -179,7 +179,8 @@ tooling:
     cmd: <shell-command>
     timeout_seconds: <int>
   acceptance:
-    enabled: true | false
+    mode: off | advisory | auto      # canonical; absent → off. advisory runs but HALTs a pass for sign-off; auto+calibrated+fully_auto auto-ships
+    enabled: true | false            # DEPRECATED alias for mode (true→auto, false→off); normalized before validation; if both present they MUST agree
     agent_kind: claude_code | codex | <other>
     model: <model-id>
     tools: [Read, Grep, Glob]
@@ -228,20 +229,21 @@ JSON schema: `schemas/mission-charter.schema.json`. Template: `templates/mission
 - `mission.id` and `mission.goal` frozen at boot.
 - `autonomy.approved_scope.subsprint_sequence` may be revised mid-run only through a `scope_deviation` MANDATORY_CHECKPOINT resolution.
 - `autonomy.auto_pass_rules.adaptive_insert.max_inserted_subsprints` bounds adaptive insertion; orchestrator MUST refuse to insert past this limit.
+- `tooling.acceptance.mode ∈ {off, advisory, auto}` is canonical; `tooling.acceptance.enabled` is a DEPRECATED alias normalized to `mode` (true→auto, false→off) before validation. If BOTH are present they MUST agree (`enabled:true ↔ mode∈{advisory,auto}`, `enabled:false ↔ mode:off`); a disagreement is a hard validation error (the validator never silently picks one).
 - `tooling.acceptance.judge_calibration.status` may flip to `calibrated` only after a calibration run; flipping by hand is a framework breach.
-- The `route_options` list under `acceptance.on_fix_required` MAY be narrowed by adopter but MAY NOT be empty.
-- `acceptance.on_fix_required.human_confirm_required` MUST be `true` — Constitution §1.7-C; charter validator rejects `false`.
+- The `route_options` list under `tooling.acceptance.on_fix_required` MAY be narrowed by adopter but MAY NOT be empty.
+- `tooling.acceptance.on_fix_required.human_confirm_required` MUST be `true` — Constitution §1.7-C; charter validator rejects `false`.
 - `tooling.acceptance.skills` changes invalidate `judge_calibration.status` (Constitution §3.4 invariant #6 calibration corollary); the validator SHOULD warn when `skills` changed while `status: calibrated` persists.
-- **MANDATORY_CHECKPOINTS non-bypass invariant** (Constitution §1.7-D) — the 8 default checkpoints in §4.2.3 may NOT be bypassed in any of these four shapes; charter validator MUST reject each:
+- **MANDATORY_CHECKPOINTS non-bypass invariant** (Constitution §1.7-D) — the 9 default checkpoints in §4.2.3 may NOT be bypassed in any of these four shapes; charter validator MUST reject each:
   - **Omitted** — charter does not mention the checkpoint (absence ≠ opt-out).
   - **Emptied** — charter declares the checkpoint key with empty / null value (e.g., `mandatory_checkpoints: []`).
   - **Disabled** — charter sets the checkpoint to falsy / inert value (e.g., `bad_case_manual_review.enabled: false`).
   - **Overridden** — charter replaces the checkpoint's semantics with a weaker variant (e.g., redefines `scope_deviation` to auto-approve below a severity threshold; replaces `human_confirm_required: true` with `auto_confirm_if_clean: true`). Semantic override = bypass.
   - Legitimate adopter customization: ADD a custom checkpoint with an adopter-chosen id; the default still fires alongside.
 
-#### §4.2.3 MANDATORY_CHECKPOINTS (8 — charter MAY ADD, MUST NOT BYPASS)
+#### §4.2.3 MANDATORY_CHECKPOINTS (9 — charter MAY ADD, MUST NOT BYPASS)
 
-Points where human authority is non-negotiable. Constitution §1.7-D enforces the non-bypass invariant: charter MAY NOT omit, empty, disable, or override any of the 8 defaults below (see §4.2.2 charter editing rules for the four-shape rejection). Charter validator rejects bypass in any shape; orchestrator refuses to boot.
+Points where human authority is non-negotiable. Constitution §1.7-D enforces the non-bypass invariant: charter MAY NOT omit, empty, disable, or override any of the 9 defaults below (see §4.2.2 charter editing rules for the four-shape rejection). Charter validator rejects bypass in any shape; orchestrator refuses to boot.
 
 1. **`mission_start`** — orchestrator boots; human verifies `mission.goal` + `autonomy.level` + `tooling.*.agent_kind`. Once approved, only `mission_end` can revisit.
 2. **`research_proposal_selection`** — if Path 1 (research-driven), human selects from candidate proposals before Deliver consumes. Bypassed only if charter explicitly names a single research-brief id and Customer has signed it prior to dispatch.
@@ -251,6 +253,7 @@ Points where human authority is non-negotiable. Constitution §1.7-D enforces th
 6. **`scope_deviation`** — orchestrator's deterministic `scope_envelope_check` (§4.2.5) fires; human resolves before resume.
 7. **`close_taxonomy_C_or_D`** — when Deliver close verdict = C (scope-broadening) or D (non-convergent), human resolves. Maps to `templates/deliver-close-taxonomy.md` subclasses.
 8. **`gate_hard_fail`** — any deterministic gate (tests / handoff structure / trace existence / safety / grounding floor) fails AND `auto_fix_iteration` not eligible.
+9. **`advisory_acceptance_pass_signoff`** — Acceptance produced an ADVISORY pass (not authoritative); human signs off (`confirm: ship|reject`) before the milestone ships (design §3.2/§3.3). Fires only when Acceptance runs advisory; an authoritative pass writes no checkpoint (auto-ships).
 
 **Checkpoint file shape** (orchestrator writes; human resolves):
 
@@ -258,7 +261,7 @@ Points where human authority is non-negotiable. Constitution §1.7-D enforces th
 docs/checkpoints/<YYYYMMDD-HHMMSS>__<checkpoint_id>__<scope>.md
 
 ---
-checkpoint_id: <one of 8 above + adopter-added>
+checkpoint_id: <one of 9 above + adopter-added>
 scope: <sprint-id or milestone-id>
 emitted_at: <ISO timestamp>
 decision: pending | approved | rejected | <event-specific values>
@@ -320,7 +323,7 @@ For Acceptance `fix_required` specifically: follows Constitution §3.5 shape; `d
         │ milestone_    │
         │ close         │ ← MANDATORY_CHECKPOINT bad_case_manual_review here
         └───────┬───────┘
-                ↓ (if charter.acceptance.enabled)
+                ↓ (if tooling.acceptance.mode ≠ off)
         ┌───────────────────┐
         │ acceptance_pending│ run F5 eval evidence → spawn run_acceptance
         └───────┬───────────┘
@@ -342,15 +345,17 @@ For Acceptance `fix_required` specifically: follows Constitution §3.5 shape; `d
      advance to next milestone OR halt    human writes decision
 ```
 
+**Acceptance `pass` splits by authority** (design §3.2/§3.3): a `pass` is **AUTHORITATIVE** (mode==auto AND judge calibrated for the active class AND autonomy==fully_autonomous_within_budget) → ship → `STATE_DONE`; otherwise it is **ADVISORY** (advisory mode, or uncalibrated, or non-fully-autonomous) → write the `advisory_acceptance_pass_signoff` checkpoint + HALT for human `confirm: ship|reject`. `mode: off` skips Acceptance (`STATE_ADVANCE`, byte-identical to the legacy disabled path). `fix_required` / `needs_human` routing is unchanged.
+
 **Type B variant** (placeholder; OQ-V4-001): instead of `gate_pending`'s `run_tests`, run the SOP per-step verification gates from `charter.profile_type_b.sop_definition.verification_gates_per_step`. Full spec deferred.
 
-**Type C variant**: skip `acceptance_pending` if charter.profile_type_c is the only profile and `acceptance.run_at: release_cut` only; Type C usually runs Acceptance every sub-sprint via LOCAL_ACCEPTANCE_CHECKLIST.
+**Type C variant**: skip `acceptance_pending` if charter.profile_type_c is the only profile and `tooling.acceptance.run_at: release_cut` only; Type C usually runs Acceptance every sub-sprint via LOCAL_ACCEPTANCE_CHECKLIST.
 
 **State invariants**:
 - Skipped-but-required gate = NOT passed. No silent skip; orchestrator emits `gate_hard_fail`.
 - Charter can't widen scope mid-run; only `scope_deviation` checkpoint resolution can.
 - `close_pending`'s deterministic `scope_envelope_check` runs BEFORE LLM close verdict is trusted.
-- Acceptance only runs if `charter.acceptance.enabled` AND judge calibration passed (Constitution §3.6).
+- Acceptance runs whenever `tooling.acceptance.mode ≠ off` (advisory runs even uncalibrated, after the §3.6 auto-degrade); a `pass` only auto-ships when authoritative (mode==auto AND calibrated for the active class AND fully_autonomous_within_budget), else it HALTs at `advisory_acceptance_pass_signoff` (Constitution §3.6 / §1.7-C).
 - All decisions checkpointed to `docs/checkpoints/` filesystem so human can audit.
 - Fix-round counter bounded by `charter.budget.max_fix_rounds_total`; exceeded → halt.
 
@@ -466,14 +471,14 @@ These are **two distinct contracts** (no generic role projector). Offline/mock r
 Each violation is a framework breach; orchestrator implementations MUST refuse / halt / surface.
 
 1. **Charter bypassing a default MANDATORY_CHECKPOINT in any of the four shapes — omitted / emptied / disabled / overridden** (Constitution §1.7-D + §4.2.2 charter editing rules). Charter validator rejects each shape. Semantic override counts as bypass. Legitimate path: ADD a custom checkpoint alongside default.
-2. **Running `run_acceptance` in `fully_autonomous_within_budget` mode without §3.6 calibration passed**. Orchestrator MUST degrade `autonomy.level` to `human_on_the_loop` automatically. Degradation is not optional and not opaque.
+2. **Letting an uncalibrated `run_acceptance` ship or auto-iterate without human sign-off**. In `fully_autonomous_within_budget` mode without §3.6 calibration passed, the orchestrator MUST degrade `autonomy.level` to `human_on_the_loop` automatically (not optional, not opaque). The uncalibrated verdict then RUNS in ADVISORY mode — a `pass` HALTs at `advisory_acceptance_pass_signoff` for human sign-off (this advisory-with-sign-off path is PERMITTED); what is forbidden is auto-shipping or auto-iterating on that uncalibrated verdict without the sign-off.
 3. **Bypassing `scope_envelope_check` on close**. Even if LLM close verdict says `in_scope: true`, scope_envelope_check is the source of truth.
 4. **Giving Dev sandbox read access to `case_specs_shadow/`** (or equivalent holdout). Eval contamination.
 5. **Acceptance verdict claiming pass/fail from CODE INSPECTION instead of execution evidence** — F5 pattern violation. Verdicts referencing only code paths and not artifact paths in `evidence_path` are invalid.
-6. **Charter defaulting `acceptance.mode=auto_iterate` while `judge_calibration.status=uncalibrated`** — degradation must be automatic, never opaque.
+6. **UNATTENDED auto-iterate/auto-ship on an uncalibrated verdict** (e.g., `tooling.acceptance.mode=auto` shipping a `pass` while `judge_calibration.status=uncalibrated`) — degradation must be automatic and recorded, never opaque. The advisory-with-sign-off path (uncalibrated verdict runs, then HALTs at `advisory_acceptance_pass_signoff`) is PERMITTED; auto-shipping/auto-iterating without that human sign-off is the breach.
 7. **Spawning the Acceptance Agent from a Deliver or Dev session** (Constitution §1.7-C).
 8. **Acceptance routing `fix_required → Deliver` without a written human-confirm checkpoint decision** (Constitution §3.5).
-9. **Charter `acceptance.on_fix_required.human_confirm_required: false`** — direct violation of Constitution §1.7-C.
+9. **Charter `tooling.acceptance.on_fix_required.human_confirm_required: false`** — direct violation of Constitution §1.7-C.
 10. **Charter validator silently accepting an empty `route_options` list** — at least one option must be present.
 11. **Auto-promoting an OBS-item to an R-item without human review** (per Δ-9). Orchestrator may surface candidate; promotion is human.
 12. **Mid-milestone scope expansion via adaptive_insert beyond `max_inserted_subsprints`**. Bounded; over-limit = halt.
@@ -558,8 +563,8 @@ For step-by-step orchestrator adoption:
 Recommended adoption ladder:
 
 1. Adopt the 5-role chain (Constitution §3) in pure human-paste mode. No orchestrator. Make sure all 5 roles can execute and Acceptance fix_required → human-confirm → Deliver flow works manually.
-2. Author a minimal charter with `autonomy.level: human_in_the_loop` and `acceptance.enabled: false`. Run orchestrator on a small test milestone. Verify all checkpoints fire and you resolve via filesystem inbox.
-3. Add `acceptance.enabled: true` with `judge_calibration.status: uncalibrated`. Watch orchestrator auto-degrade `autonomy.level` to `human_on_the_loop`. Resolve first Acceptance fix_required checkpoint manually.
+2. Author a minimal charter with `autonomy.level: human_in_the_loop` and `tooling.acceptance.mode: off`. Run orchestrator on a small test milestone. Verify all checkpoints fire and you resolve via filesystem inbox.
+3. Set `tooling.acceptance.mode: advisory` with `judge_calibration.status: uncalibrated`. Watch orchestrator auto-degrade `autonomy.level` to `human_on_the_loop`; the advisory pass HALTs at `advisory_acceptance_pass_signoff`. Resolve the first Acceptance checkpoint manually.
 4. Build the labeled calibration set (per Constitution §3.6). Re-run; verify status flips to `calibrated`.
 5. Promote `autonomy.level` to `human_on_the_loop`. Run a full milestone with only MANDATORY_CHECKPOINTS firing.
 6. (Optional) Promote to `fully_autonomous_within_budget` once multiple successful `human_on_the_loop` runs are done AND adopter is comfortable with budget caps.

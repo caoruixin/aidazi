@@ -356,11 +356,11 @@ Set the autonomy level and confirm the checkpoint posture in `charter.yaml`:
   `fully_autonomous_within_budget` for autonomous Acceptance **requires a passing
   §3.6 calibration gate**; until calibrated it auto-degrades to
   `human_on_the_loop` (greenfield STEP 7).
-- **The 8 MANDATORY_CHECKPOINTS always fire.** The charter MAY add custom
+- **The 9 MANDATORY_CHECKPOINTS always fire.** The charter MAY add custom
   checkpoints (`mandatory_checkpoints_added`) but MAY NOT omit / empty / disable /
-  override any of the 8 defaults — the charter validator (Step 8) rejects all four
+  override any of the 9 defaults — the charter validator (Step 8) rejects all four
   bypass shapes (`process/delivery-loop.md` §4.2.2-§4.2.3; Constitution §1.7-D).
-- `acceptance.on_fix_required.human_confirm_required` MUST be `true` and
+- `tooling.acceptance.on_fix_required.human_confirm_required` MUST be `true` and
   `route_options` non-empty (Constitution §1.7-C).
 
 **Recommend, then confirm.** Any override of a suggested default becomes a

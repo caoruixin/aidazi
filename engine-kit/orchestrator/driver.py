@@ -117,6 +117,10 @@ import loop_controller as lc  # noqa: E402
 # and is byte-identical to pre-P4 when no repo_dir is supplied (ingress off).
 import loop_ingress as li  # noqa: E402
 
+# P-A — shared, dependency-free acceptance namespace/mode normalizer
+# (engine-kit/charter_compat.py; _ENGINE_KIT_DIR is on sys.path above).
+import charter_compat  # noqa: E402
+
 # P3 INTEGRATION 2 — Loop Memory (engine-kit/memory/memory_store.py) is OPTIONAL.
 # It is imported lazily/guarded so the driver has NO hard dependency on it: a
 # Driver built without a memory_root never touches the store (behaviour is then
@@ -181,8 +185,8 @@ GUIDED_PRESTATE_ORDER = [
 # Linear MVP order (no Acceptance state — that is P3). The Acceptance state is
 # NOT in this linear order: per delivery-loop §4.2.4 it fires AFTER the milestone
 # completes (the terminal clean-pass advance of the sub-sprint sequence), gated on
-# charter.acceptance.enabled, so the close→advance path remains byte-identical when
-# acceptance is disabled (backward-compat).
+# tooling.acceptance.mode (≠ off), so the close→advance path remains byte-identical
+# when acceptance is off (backward-compat).
 LOOP_ORDER = [
     STATE_DEV_PENDING,
     STATE_GATE_PENDING,
@@ -528,6 +532,15 @@ class Driver:
                                          Optional[dict]]] = None,
     ):
         self.charter = charter
+        # P-A: normalize the acceptance namespace + mode IN PLACE so every read
+        # below is canonical (tooling.acceptance.mode) with NO per-read fallback
+        # (design §1.4). A genuine config conflict (e.g. enabled vs mode disagree)
+        # is fatal at construction; warnings surface in the loop_start audit.
+        _acc_warn, _acc_err = charter_compat.normalize_acceptance(charter)
+        if _acc_err:
+            raise ValueError(
+                "charter acceptance config invalid: " + "; ".join(_acc_err))
+        self._acceptance_norm_warnings = _acc_warn
         self.run_dir = os.path.abspath(run_dir)
         self.adapters = adapters
         # FAIL CLOSED on an unsafe loop_id: it keys the audit ledger filename (raw)
@@ -2006,6 +2019,12 @@ class Driver:
                 "loop_mode": self.loop_mode,
                 "context": self.context,
             })
+            # P-A: surface any acceptance-namespace normalization (legacy top-level
+            # `acceptance` block / `enabled` alias) — emitted ONLY when it fired, so
+            # a canonical charter's audit chain stays byte-identical.
+            if self._acceptance_norm_warnings:
+                self._audit("charter_acceptance_normalized",
+                            {"warnings": self._acceptance_norm_warnings})
             # P4: Loop Ingress — decide the isolation strategy, set up the git
             # working context, register the loop. No-op when repo_dir is None.
             self._loop_init_ingress()
@@ -2467,11 +2486,32 @@ class Driver:
             self._run_acceptance()
 
     # ----- P3 piece 1: Acceptance state + §3.6 calibration + F5 evidence ---- #
+    def _acceptance_mode(self) -> str:
+        """Canonical tooling.acceptance.mode ∈ {off, advisory, auto}; absent → off
+        (byte-identical to the P2 disabled path — default-on is a TEMPLATE default,
+        not a silent driver flip; design §3.1/§3.5). Ctor normalization has already
+        mapped any legacy top-level `acceptance` block + `enabled` alias to mode."""
+        return charter_compat.acceptance_mode(self.charter)
+
     def _acceptance_enabled(self) -> bool:
-        """True iff charter.acceptance.enabled is truthy. Absent/false → False,
-        so the P2 close→advance behaviour is byte-identical (backward-compat)."""
-        acc = self.charter.get("acceptance") or {}
-        return bool(acc.get("enabled"))
+        """Back-compat shim used by the close path: acceptance runs iff mode≠off."""
+        return self._acceptance_mode() != "off"
+
+    def _acceptance_authoritative(self) -> bool:
+        """A pass auto-ships (STATE_DONE) ONLY when AUTHORITATIVE: mode==auto AND
+        the judge is calibrated (active class) AND autonomy is
+        fully_autonomous_within_budget (design §3.2 authority matrix). Anything
+        else → an advisory pass-signoff HALT. P-A's active class is the M1 static
+        judge (`_calibration_status`); the M3 functional class arrives in P-C.
+
+        The §3.6 calibration gate (`_calibration_gate`) has already run by the time
+        a verdict is handled: an uncalibrated autonomous run was degraded to
+        human_on_the_loop, so it is correctly non-authoritative (advisory) here."""
+        if self._acceptance_mode() != "auto":
+            return False
+        if self._calibration_status() != "calibrated":
+            return False
+        return self.autonomy.get("level") == "fully_autonomous_within_budget"
 
     def _milestone_complete(self, close_verdict: dict) -> bool:
         """The milestone is complete when the just-closed sub-sprint is the
@@ -2938,7 +2978,7 @@ class Driver:
                 "(pass verdict_schemas including 'acceptance' or use the default "
                 "loader)",
                 STATE_ACCEPTANCE_PENDING)
-        acc = self.charter.get("acceptance") or {}
+        acc = ((self.charter.get("tooling") or {}).get("acceptance") or {})
         # Acceptance only runs at MILESTONE close, so mark it (covers a resume that
         # re-enters at acceptance_pending, where _handle_close didn't run) — this
         # gates the P5 propose-only feedback stage.
@@ -2978,17 +3018,45 @@ class Driver:
                      "evidence_path": evidence_path})
 
         if mv == "pass":
-            # Ship: the milestone closes. STATE_DONE marks a fully-accepted close.
-            self.state.state = STATE_DONE
-            self._audit("acceptance_pass",
-                        {"subsprint_id": self.state.subsprint_id})
+            if self._acceptance_authoritative():
+                # Authoritative pass (auto mode + calibrated + fully-autonomous):
+                # the milestone ships. STATE_DONE marks a fully-accepted close.
+                self.state.state = STATE_DONE
+                self._audit("acceptance_pass",
+                            {"subsprint_id": self.state.subsprint_id,
+                             "authoritative": True})
+                self._save_state()
+                return
+            # Advisory pass — NEVER auto-ship (design §3.2/§3.3): the read-only
+            # peer-of-Research judge ADVISES; a human signs off to ship. Write the
+            # advisory_acceptance_pass_signoff MANDATORY_CHECKPOINT (#9) + HALT.
+            path = self._write_checkpoint(
+                "advisory_acceptance_pass_signoff", self.state.subsprint_id,
+                context_md=(
+                    f"Acceptance milestone_verdict = pass on sub-sprint "
+                    f"{self.state.subsprint_id}, but the verdict is ADVISORY "
+                    f"(tooling.acceptance.mode={self._acceptance_mode()}, "
+                    f"calibration_status={self._calibration_status()}, "
+                    f"autonomy={self.autonomy.get('level')!r}). Per design §3.2 an "
+                    f"advisory pass does NOT auto-ship; a human signs off here "
+                    f"before the milestone ships. F5 evidence: {evidence_path}."),
+                options_md=("- confirm: ship\n- reject\n\n(human writes "
+                            "`confirm: ship|reject` + optional notes)"),
+            )
+            self._audit("acceptance_advisory_pass_signoff",
+                        {"subsprint_id": self.state.subsprint_id,
+                         "authoritative": False,
+                         "acceptance_mode": self._acceptance_mode(),
+                         "calibration_status": self._calibration_status(),
+                         "checkpoint": os.path.relpath(path, self.run_dir)})
+            self.state.state = STATE_HALTED
             self._save_state()
             return
 
         if mv == "fix_required":
             # §3.5: write the human-confirm checkpoint with the 3 route options;
             # HALT. The route to Deliver is NEVER taken without this checkpoint.
-            acc = self.charter.get("acceptance") or {}
+            acc = ((self.charter.get("tooling") or {}).get("acceptance") or {})
             route_opts = ((acc.get("on_fix_required") or {}).get("route_options")
                           or ["deliver_fix_iteration",
                               "re_acceptance_after_evidence",

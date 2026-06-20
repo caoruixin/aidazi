@@ -175,7 +175,7 @@ The Acceptance Agent MUST NOT be spawned by the role that authored the Research 
 
 **How to apply**: Acceptance Agent spawn surfaces are restricted to:
 - **Human paste** (Customer triggers at gate 2: release cut / milestone close).
-- **Charter-permitted orchestrator** when `charter.acceptance.enabled=true` AND `charter.acceptance.judge_calibration.status=calibrated` (Δ-18 / `process/delivery-loop.md`).
+- **Charter-permitted orchestrator** when `tooling.acceptance.mode ≠ off` (Δ-18 / `process/delivery-loop.md`). The verdict is **advisory** — it cannot ship the milestone or route work without human authority; an advisory `pass` HALTs at the `advisory_acceptance_pass_signoff` checkpoint for human sign-off — UNLESS it is **authoritative** (`tooling.acceptance.mode == auto` AND the judge is calibrated for the active class AND `autonomy.level == fully_autonomous_within_budget`), in which case a `pass` auto-ships (`STATE_DONE`). Spawn from a Research, Deliver, or Dev session remains forbidden.
 
 Acceptance spawning from a Deliver or Dev session is a §1.7-C breach; the verdict is invalid. Recover by re-spawning from the proper surface.
 
@@ -183,7 +183,7 @@ Additionally — the Acceptance fix_required → Deliver routing path MUST NOT s
 
 #### §1.7-D Charter MANDATORY_CHECKPOINTS list MUST NOT be bypassed
 
-The 8 MANDATORY_CHECKPOINTS in `process/delivery-loop.md` §4.2.3 are the points where human authority is non-negotiable. The charter (`templates/mission-charter.yaml`) MAY add checkpoints; it MAY NOT bypass any default checkpoint.
+The 9 MANDATORY_CHECKPOINTS in `process/delivery-loop.md` §4.2.3 are the points where human authority is non-negotiable. The charter (`templates/mission-charter.yaml`) MAY add checkpoints; it MAY NOT bypass any default checkpoint. (The 9th, `advisory_acceptance_pass_signoff`, fires only when Acceptance produces an advisory `pass` — see §3.6 and `process/delivery-loop.md` §4.2.3 #9.)
 
 **Non-bypass invariant — all four evasion shapes are invalid**:
 
@@ -198,7 +198,7 @@ The orchestrator's charter validator MUST reject any of the above and refuse to 
 
 **Why**: bypassing a checkpoint silently shifts authority from human to orchestrator. The whole point of charter pre-authorization is that the human knows IN ADVANCE which decisions the orchestrator can make autonomously and which require human approval. A charter that bypasses `bad_case_manual_review` (in any of the four shapes above) silently grants the orchestrator authority to close milestones without human bad-case review — that's the opposite of pre-authorization.
 
-**How to apply**: when authoring a charter, choose `autonomy.level` based on what's appropriate; for any level, all 8 MANDATORY_CHECKPOINTS still fire. Add custom checkpoints if your project needs them; never omit, empty, disable, or override a default one.
+**How to apply**: when authoring a charter, choose `autonomy.level` based on what's appropriate; for any level, all 9 MANDATORY_CHECKPOINTS still fire (the 9th, `advisory_acceptance_pass_signoff`, only when Acceptance runs advisory). Add custom checkpoints if your project needs them; never omit, empty, disable, or override a default one.
 
 Anchors Δ-18 Delivery Loop.
 
@@ -335,7 +335,7 @@ Per-track applicability + per-track frequency (Acceptance every-sprint for Type 
 | **Deliver Agent** (Tech Lead) | (a) approved brief lands (b) Acceptance gap brief arrives post-human-confirm (c) bad case triages to "fits current/future milestone" | research brief + action_bank + handoff §0/§1 + codex-findings (at collection time) + Acceptance report (if Path 3) | `milestone_objective.md`, `sprint_objective.md`, `compact/sprint-NNN-dev-prompt.md`, `compact/M<N>-review-prompt.md`, close decisions per `templates/deliver-close-taxonomy.md` | Human paste or charter-permitted orchestrator | Adopter choice via `charter.tooling.deliver.agent_kind` | middle, plan + close |
 | **Dev Agent** | sprint-NNN-dev-prompt.md ready | self-contained dev prompt (per Δ-5 + Δ-9 prompt-artifact rules) | code edits + tests + `sprint-NNN-handoff.md` (§1-§11 dev fills; §12 reserved for deliver+human close verdict) | Human paste or charter-permitted orchestrator (workspace-write sandbox, no network, no git push) | Adopter choice via `charter.tooling.dev.agent_kind` — Codex (subscription-billed; cost-asymmetry caveat), Claude Code, or any tool-using coding agent | implementation |
 | **Code Reviewer Agent** | sub-sprint close OR §4.3 trigger (semantic-touching + Tier-0 risk + scope-revision-from-codex + bad-case-failure-shape) OR milestone close | dev diff + handoff + sprint_objective + `templates/anti-hardcode-review-kernel.md` | `codex-findings.md` with 4-line header (decision: pass / fix_required / out_of_scope_review; blocking_count; summary; signed sub-sprint scope claim) | Human paste or orchestrator (read-only by mechanical tool whitelist: Read, Grep, Glob) | Adopter choice via `charter.tooling.review.agent_kind` — typically a different model class than Dev for independence | code-side gate |
-| **Acceptance Agent** | (default) milestone close (`charter.acceptance.run_at`) AND release cut; sub-sprint frequency per track (see Δ-14) | Research brief's **closure_contract** + dev evidence (bad-case results + execution trace) + Code Reviewer verdict ledger + (optional) prior Acceptance reports for residual risk | `docs/acceptance-reports/<scope>-acceptance-report.md` with: verdict {pass / fix_required / needs_human}; per-criterion evidence pointer; residual risks; if fail, **gap brief** referencing closure_contract clauses violated and proposed scope; **suggested route** (deliver-fix / re-acceptance-after-evidence / research-contract-revision) | Human paste (Customer at release cut) or charter-permitted orchestrator (read-only by tool whitelist; calibration-gated per §3.6) | Adopter choice via `charter.tooling.acceptance.agent_kind` — distinct from Dev/Reviewer/Research for independence | outcome gate (peer of Research) |
+| **Acceptance Agent** | (default) milestone close (`tooling.acceptance.run_at`) AND release cut; sub-sprint frequency per track (see Δ-14) | Research brief's **closure_contract** + dev evidence (bad-case results + execution trace) + Code Reviewer verdict ledger + (optional) prior Acceptance reports for residual risk | `docs/acceptance-reports/<scope>-acceptance-report.md` with: verdict {pass / fix_required / needs_human}; per-criterion evidence pointer; residual risks; if fail, **gap brief** referencing closure_contract clauses violated and proposed scope; **suggested route** (deliver-fix / re-acceptance-after-evidence / research-contract-revision) | Human paste (Customer at release cut) or charter-permitted orchestrator (read-only by tool whitelist; calibration-gated per §3.6) | Adopter choice via `charter.tooling.acceptance.agent_kind` — distinct from Dev/Reviewer/Research for independence | outcome gate (peer of Research) |
 
 ### §3.4 Role boundary invariants (hard requirements)
 
@@ -343,7 +343,7 @@ The 5 roles are real walls, not naming conventions. v4 makes them enforceable.
 
 1. **No self-grading** — a single human operator may walk multiple roles (typical in single-person adopters) but each role MUST execute in a **fresh agent session** with self-contained prompt artifacts. Cross-role context never passes via chat history; only via repo docs (Δ-5 + Δ-9).
 
-2. **Acceptance spawn isolation** (§1.7-C) — Acceptance MUST NOT be spawned by Research, Deliver, or Dev. Spawn surfaces: human paste OR orchestrator gated by `charter.acceptance.enabled` AND `charter.acceptance.judge_calibration.status=calibrated`.
+2. **Acceptance spawn isolation** (§1.7-C) — Acceptance MUST NOT be spawned by Research, Deliver, or Dev. Spawn surfaces: human paste OR orchestrator when `tooling.acceptance.mode ≠ off` (advisory spawn permitted); the verdict is advisory and HALTs for human sign-off unless authoritative auto-ship applies, which additionally requires the judge `calibrated` (active class) AND `autonomy.level=fully_autonomous_within_budget`.
 
 3. **Code Reviewer ≠ Acceptance** lens distinction:
    - **Code Reviewer's question**: "Is the code well-built? Does it preserve §1.3/§1.4 ownership + anti-hardcode kernel?"
@@ -394,7 +394,9 @@ The Acceptance Agent's verdict cannot be trusted in `fully_autonomous_within_bud
    - `agreement_rate = (judge_verdict matches expected) / total`
    - `flip_rate = (judge_verdict differs across reruns) / total`
 4. Calibrated iff `agreement_rate ≥ 0.9 AND flip_rate ≤ 0.1`. Thresholds are suggested defaults (§7.0); adopters may tighten or loosen with rationale.
-5. Charter `acceptance.judge_calibration.status: calibrated | uncalibrated`. Until calibrated, `charter.autonomy.level=fully_autonomous_within_budget` degrades **automatically** to `human_on_the_loop`. Degradation is not optional; the orchestrator implements it.
+5. Charter `tooling.acceptance.judge_calibration.status: calibrated | uncalibrated`. Until calibrated, `charter.autonomy.level=fully_autonomous_within_budget` degrades **automatically** to `human_on_the_loop`. Degradation is not optional; the orchestrator implements it.
+
+An uncalibrated judge still **RUNS in ADVISORY mode** (it is not skipped): after the automatic degradation to `human_on_the_loop` (above), its `pass` writes the `advisory_acceptance_pass_signoff` checkpoint and HALTs for human sign-off — it does NOT auto-ship. Authoritative unattended auto-ship still requires `calibrated` (for the active class) under `fully_autonomous_within_budget` (§1.7-C / §3.2 of `archive/2026-06-20-autonomous-delivery-design.md`).
 
 Switching `charter.tooling.acceptance.agent_kind` or `model` invalidates calibration; re-run required.
 
@@ -454,7 +456,7 @@ Index (full list in `process/doc-responsibility-matrix.md`):
 | Δ-15 | `process/agent-design-elicitation.md` | Research | 6 questions + 4 inventories + closure_contract draft as output |
 | Δ-16 | `process/agent-creation-prerequisites.md` | Research / Deliver | 7-category READY/DEFERRED/N/A gate |
 | Δ-17 | `process/common-detours-and-warnings-typeA.md` (+ typeB/typeC placeholders) | Deliver | 4 named pitfalls per track |
-| **Δ-18** | `process/delivery-loop.md` | Deliver / Customer | THE Delivery Loop spec (Concept 2). Charter T0+T1, 8 MANDATORY_CHECKPOINTS, state machine, scope_envelope_check, F5 evidence, 6 spawn functions, calibration gate, anti-patterns |
+| **Δ-18** | `process/delivery-loop.md` | Deliver / Customer | THE Delivery Loop spec (Concept 2). Charter T0+T1, 9 MANDATORY_CHECKPOINTS, state machine, scope_envelope_check, F5 evidence, 6 spawn functions, calibration gate, anti-patterns |
 | promoted | `process/milestone-framework.md` | Deliver | 3-5 sub-sprints per milestone; close cadence |
 | promoted | `process/prompt-artifact-rules.md` | All | Δ-9 self-containment invariant |
 | promoted | `process/badcase-lifecycle.md` | Deliver | §5.6 bad-case suite + tier lifecycle |
@@ -516,7 +518,7 @@ The full mechanism set + cadence + bloat-metric definitions live in `process/sel
 
 - **Constitution §1.7 forbidden list** — including v4 additions §1.7-A through §1.7-E.
 - **§3.4 5-role boundary invariants** — no self-grading; Acceptance spawn isolation; Code-Reviewer ≠ Acceptance lens; Research-Acceptance contract symmetry; Deliver-no-code.
-- **§4.2.3 of `process/delivery-loop.md` — 8 MANDATORY_CHECKPOINTS** — if Δ-18 orchestrator adopted, all 8 fire; charter may ADD; charter MAY NOT REMOVE (§1.7-D).
+- **§4.2.3 of `process/delivery-loop.md` — 9 MANDATORY_CHECKPOINTS** — if Δ-18 orchestrator adopted, all 9 fire (the 9th, `advisory_acceptance_pass_signoff`, only when Acceptance runs advisory); charter may ADD; charter MAY NOT REMOVE (§1.7-D).
 - **§3.6 Acceptance judge calibration** — if Acceptance enabled in `fully_autonomous_within_budget` mode, calibration is required; uncalibrated → automatic degradation to `human_on_the_loop`. Degradation is not optional.
 
 Violations of hard requirements are framework breaches, not adopter customizations. They are not eligible for `status: divergent` in `adoption-state.md`.
@@ -585,7 +587,7 @@ These are the cross-cutting anti-patterns surfaced by the 2-donor scan that don'
 
 - **Spawning the Acceptance Agent from a Deliver or Dev session** (§1.7-C; covered above; restated here for visibility).
 - **Acceptance routing `fix_required → Deliver` without a written human-confirm checkpoint decision** (§3.5; restated).
-- **Charter defaulting `acceptance.mode=auto_iterate` while `judge_calibration.status=uncalibrated`** — degradation must be automatic, never opaque.
+- **UNATTENDED auto-iterate/auto-ship on an uncalibrated Acceptance verdict** (e.g., `tooling.acceptance.mode=auto` shipping a `pass` while `judge_calibration.status=uncalibrated`) — degradation must be automatic, never opaque. Advisory-with-sign-off under `human_on_the_loop` (the uncalibrated verdict RUNS, then HALTs at `advisory_acceptance_pass_signoff` for human sign-off) is EXPLICITLY PERMITTED; what remains forbidden is letting an uncalibrated verdict ship or auto-iterate without that human sign-off.
 - **Bypassing `scope_envelope_check` on close** (`process/delivery-loop.md` §4.2.5).
 - **Giving Dev sandbox read access to `case_specs_shadow/`** (or equivalent holdout eval set) — eval contamination.
 - **Acceptance verdict claiming pass/fail from CODE INSPECTION instead of execution evidence** — F5 pattern violation (`process/delivery-loop.md` §4.2.6).
@@ -608,7 +610,7 @@ When a new adopter onboards, the read order is:
    - Brownfield: `docs/brownfield-guide.md`.
 8. `docs/directory-taxonomy.md` (where does this content go?).
 9. Role cards (`role-cards/`) — 5 agent role cards; adopt one per-session as needed.
-10. `process/customer-checkpoints.md` — human-side gate catalog (Customer is not an agent; gates 1-3 + 8 MANDATORY_CHECKPOINTS).
+10. `process/customer-checkpoints.md` — human-side gate catalog (Customer is not an agent; gates 1-3 + 9 MANDATORY_CHECKPOINTS).
 11. Process docs (`process/`) — load on demand by role.
 
 The full per-task reading list is in `governance/context_briefing.md`.
@@ -621,7 +623,7 @@ The full per-task reading list is in `governance/context_briefing.md`.
 - **Charter** — the YAML pre-authorization for a Delivery Loop run; `templates/mission-charter.yaml`; schema `schemas/mission-charter.schema.json`.
 - **closure_contract** — the Research brief's mandatory paragraph (positive shape + anti-pattern + anchor phrases) that defines the milestone scope; the Acceptance Agent judges against this.
 - **closure_criterion** — the per-bad-case version of closure_contract, written for individual eval cases (per Δ-12).
-- **MANDATORY_CHECKPOINT** — one of 8 points in `process/delivery-loop.md` §4.2.3 where human authority is required; charter MAY add, MAY NOT remove (§1.7-D).
+- **MANDATORY_CHECKPOINT** — one of 9 points in `process/delivery-loop.md` §4.2.3 where human authority is required; charter MAY add, MAY NOT remove (§1.7-D).
 - **Auto Loop** (Concept 1) — single-agent self-improvement via auto-research; `modules/m-autoloop.md`.
 - **Delivery Loop** (Concept 2) — multi-agent team delivery + self-correction; `process/delivery-loop.md`.
 - **scope_envelope_check** — deterministic check (no LLM) before close that the work touched only charter-approved scope; `process/delivery-loop.md` §4.2.5.

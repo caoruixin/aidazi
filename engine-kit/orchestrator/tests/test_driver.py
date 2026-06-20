@@ -468,16 +468,22 @@ ACC_INVALID_CODE_ONLY = {
 
 def _acceptance_charter(*, level="human_on_the_loop",
                         calibration="calibrated",
+                        mode="auto",
                         eval_cmd=_EVAL_CMD,
                         subsprint_sequence=("sprint-001",)):
-    """Build an acceptance-ENABLED charter (derived from the p2 demo charter) so
-    the milestone-close path enters acceptance_pending."""
+    """Build an acceptance-ENABLED charter (canonical tooling.acceptance.mode) so
+    the milestone-close path enters acceptance_pending. `mode` ∈ {advisory, auto}
+    (or 'off'). An AUTHORITATIVE auto-ship (pass → STATE_DONE) needs mode='auto' +
+    calibration='calibrated' + level='fully_autonomous_within_budget' (design
+    §3.2); anything else makes a pass ADVISORY (→ advisory_acceptance_pass_signoff
+    HALT). The default (HOTL + auto + calibrated) is therefore advisory."""
     charter = load_charter(CHARTER_PATH)
     charter["autonomy"]["level"] = level
     charter["autonomy"]["approved_scope"]["subsprint_sequence"] = \
         list(subsprint_sequence)
-    charter["acceptance"] = {
-        "enabled": True,
+    tooling = charter.setdefault("tooling", {})
+    tooling["acceptance"] = {
+        "mode": mode,
         "run_at": "milestone_close",
         "on_fix_required": {
             "human_confirm_required": True,
@@ -485,9 +491,6 @@ def _acceptance_charter(*, level="human_on_the_loop",
                               "re_acceptance_after_evidence",
                               "research_contract_revision"],
         },
-    }
-    tooling = charter.setdefault("tooling", {})
-    tooling["acceptance"] = {
         "harness": "claude_code", "provider": "anthropic",
         "model": "claude-opus-4-8",
         "tools": ["Read", "Grep", "Glob"],
@@ -534,7 +537,8 @@ class TestAcceptanceDisabledIsIdentical(unittest.TestCase):
 class TestAcceptancePass(unittest.TestCase):
     def test_pass_ships_and_advances_citing_evidence(self):
         with tempfile.TemporaryDirectory() as d:
-            charter = _acceptance_charter()
+            # AUTHORITATIVE ship: auto + calibrated + fully-autonomous (design §3.2).
+            charter = _acceptance_charter(level="fully_autonomous_within_budget")
             drv_ = _driver(d, charter=charter,
                            adapters=_acceptance_adapters(ACC_PASS))
             final = drv_.run(subsprint_id="sprint-001")
@@ -552,6 +556,99 @@ class TestAcceptancePass(unittest.TestCase):
             self.assertIn("acceptance_pass", types)
             # Audit chain across the whole (P2 + acceptance) run still verifies.
             self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+
+class TestAcceptanceAdvisorySignoff(unittest.TestCase):
+    """Design §3.2/§3.3: an ADVISORY pass NEVER auto-ships — it HALTs at the
+    advisory_acceptance_pass_signoff checkpoint (#9) for human sign-off. Only an
+    AUTHORITATIVE pass (auto + calibrated + fully-autonomous) reaches STATE_DONE."""
+
+    def test_hotl_calibrated_pass_is_advisory_signoff_halt(self):
+        with tempfile.TemporaryDirectory() as d:
+            # HOTL (not fully-autonomous) → non-authoritative even though calibrated.
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_PASS))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            cps = os.listdir(drv_.checkpoints_dir)
+            cp = [c for c in cps if "advisory_acceptance_pass_signoff" in c]
+            self.assertTrue(cp, cps)
+            with open(os.path.join(drv_.checkpoints_dir, cp[0]),
+                      encoding="utf-8") as _fh:
+                body = _fh.read()
+            self.assertIn("confirm: ship|reject", body)
+            self.assertIn("ADVISORY", body)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("acceptance_advisory_pass_signoff", types)
+            self.assertNotIn("acceptance_pass", types)  # did NOT ship
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_advisory_mode_pass_halts_even_fully_autonomous_calibrated(self):
+        with tempfile.TemporaryDirectory() as d:
+            # mode=advisory NEVER ships, even fully-autonomous + calibrated.
+            charter = _acceptance_charter(
+                level="fully_autonomous_within_budget", mode="advisory")
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_PASS))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            self.assertTrue(
+                any("advisory_acceptance_pass_signoff" in c
+                    for c in os.listdir(drv_.checkpoints_dir)))
+
+    def test_auto_calibrated_fully_autonomous_pass_ships(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(
+                level="fully_autonomous_within_budget", mode="auto",
+                calibration="calibrated")
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_PASS))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_DONE)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("acceptance_pass", types)
+
+
+class TestAcceptanceNamespaceMigration(unittest.TestCase):
+    """P-A namespace normalization (charter_compat) at the Driver boundary."""
+
+    def test_legacy_enabled_true_maps_to_auto_and_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="fully_autonomous_within_budget")
+            # Simulate a LEGACY charter: drop `mode`, set the deprecated `enabled`.
+            charter["tooling"]["acceptance"].pop("mode")
+            charter["tooling"]["acceptance"]["enabled"] = True
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_PASS))
+            # enabled:true → mode:auto → authoritative ship (fully-auto + calibrated).
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_DONE)
+
+    def test_legacy_top_level_acceptance_block_normalized_and_audited(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="fully_autonomous_within_budget")
+            # Move on_fix_required to a legacy TOP-LEVEL acceptance block + drop mode.
+            acc = charter["tooling"]["acceptance"]
+            acc.pop("mode")
+            charter["acceptance"] = {"enabled": True,
+                                     "on_fix_required": acc.pop("on_fix_required")}
+            drv_ = _driver(d, charter=charter,
+                           adapters=_acceptance_adapters(ACC_PASS))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_DONE)
+            # The namespace migration was AUDITED (not silent).
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("charter_acceptance_normalized", types)
+
+    def test_enabled_mode_conflict_is_fatal_at_construction(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter()
+            charter["tooling"]["acceptance"]["mode"] = "off"
+            charter["tooling"]["acceptance"]["enabled"] = True  # disagree → fatal
+            with self.assertRaises(ValueError):
+                _driver(d, charter=charter,
+                        adapters=_acceptance_adapters(ACC_PASS))
 
 
 class TestAcceptanceFixRequiredHumanConfirm(unittest.TestCase):
@@ -608,8 +705,15 @@ class TestAcceptanceCalibrationGate(unittest.TestCase):
             self.assertEqual(deg_ev["payload"]["to_level"], "human_on_the_loop")
             self.assertEqual(deg_ev["payload"]["calibration_status"],
                              "uncalibrated")
-            # Acceptance still RAN (degraded, not aborted) → pass ships.
-            self.assertEqual(final.state, STATE_DONE)
+            # Acceptance still RAN (degraded, not aborted). Uncalibrated → the pass
+            # is ADVISORY (design §3.2): it does NOT ship — it HALTs at the
+            # advisory_acceptance_pass_signoff checkpoint for human sign-off.
+            self.assertEqual(final.state, STATE_HALTED)
+            self.assertTrue(
+                any("advisory_acceptance_pass_signoff" in c
+                    for c in os.listdir(drv_.checkpoints_dir)),
+                os.listdir(drv_.checkpoints_dir))
+            self.assertIn("acceptance_advisory_pass_signoff", types)
             self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
 
     def test_calibrated_autonomous_does_not_degrade(self):
@@ -761,7 +865,8 @@ class TestAcceptanceSpawnIsolation(unittest.TestCase):
         # sequence end is authoritative (§4.2.4). Counterpart to the omission case.
         seq = ("sprint-001", "sprint-002", "sprint-003")
         with tempfile.TemporaryDirectory() as d:
-            charter = _acceptance_charter(subsprint_sequence=seq)
+            charter = _acceptance_charter(
+                level="fully_autonomous_within_budget", subsprint_sequence=seq)
             terminal_close = dict(CLEAN_CLOSE, next_subsprint=None)
             adapters = _acceptance_adapters(ACC_PASS, close=terminal_close)
             drv_ = _driver(d, charter=charter, adapters=adapters)
@@ -2660,7 +2765,7 @@ class PromptContractCodexFixTests(unittest.TestCase):
 
     def test_acceptance_halt_is_genuinely_resumable(self):
         with tempfile.TemporaryDirectory() as d:
-            charter = _acceptance_charter()
+            charter = _acceptance_charter(level="fully_autonomous_within_budget")
             charter["mission"] = {"id": "M1"}
             charter["intent_contract"] = _SIGNED_IC  # signed: resume will resolve
             # Seed a HALTED state whose resume target is acceptance_pending (as the

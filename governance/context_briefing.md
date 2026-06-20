@@ -124,7 +124,7 @@ Tool whitelist: Read, Grep, Glob. No edits. No network. No git push.
 
 **Spawn isolation** (Constitution §1.7-C): your session was spawned from Customer paste OR orchestrator with calibration passed (per `process/delivery-loop.md` §4.2.4). If you find evidence you were spawned from a Deliver or Dev session, halt and surface §1.7-C breach.
 
-**Calibration gate** (Constitution §3.6): if `charter.autonomy.level=fully_autonomous_within_budget` AND `charter.acceptance.judge_calibration.status=uncalibrated`, your verdict is advisory only; orchestrator degrades to `human_on_the_loop`. Confirm calibration status before treating verdict as authoritative.
+**Calibration gate** (Constitution §3.6): if `charter.autonomy.level=fully_autonomous_within_budget` AND `tooling.acceptance.judge_calibration.status=uncalibrated`, your verdict is advisory only; orchestrator degrades to `human_on_the_loop` and an advisory `pass` HALTs at `advisory_acceptance_pass_signoff` for human sign-off (it does NOT auto-ship). Confirm calibration status before treating verdict as authoritative.
 
 ### §2.6 Per-task lookup (when the role list doesn't cover what you need)
 
@@ -270,7 +270,7 @@ Load `process/delivery-loop.md` when ANY of these is true for your session:
 
 - The adopter's charter exists at `<adopter>/charter.yaml` (or path declared in `adoption-state.md`).
 - The task involves authoring, editing, or reasoning about a `mission-charter.yaml`.
-- Your role is Acceptance Agent AND `charter.acceptance.enabled=true`.
+- Your role is Acceptance Agent AND `tooling.acceptance.mode ≠ off`.
 - The task involves resolving a MANDATORY_CHECKPOINT.
 - The task involves scope_envelope_check, F5 evidence pattern, or calibration.
 - A previous step surfaced a §1.7-D breach risk (charter editing MANDATORY_CHECKPOINTS).

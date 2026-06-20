@@ -86,7 +86,7 @@ Per Constitution §7.0 / §1.8, the following CANNOT have `status: divergent`:
 
 - Constitution §1.7 forbidden list (core 5 + v4 additions §1.7-A through §1.7-E).
 - Constitution §3.4 5-role boundary invariants.
-- `process/delivery-loop.md` §4.2.3 8 MANDATORY_CHECKPOINTS.
+- `process/delivery-loop.md` §4.2.3 9 MANDATORY_CHECKPOINTS.
 - Constitution §3.6 Acceptance judge calibration gate (when running fully autonomous).
 
 If you find yourself wanting to mark one of these `divergent`, halt: that's a framework breach, not an adopter override. Either restore conformance OR file a lesson explaining why the framework default is wrong for your context (lessons fold back to v5 evaluation).

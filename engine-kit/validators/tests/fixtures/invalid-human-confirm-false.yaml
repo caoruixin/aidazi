@@ -1,4 +1,4 @@
-# INVALID (iv): acceptance.on_fix_required.human_confirm_required = false.
+# INVALID (iv): tooling.acceptance.on_fix_required.human_confirm_required = false.
 # Expected semantic rule: human_confirm_required (Constitution §1.7-C).
 # Structurally also violates the schema const:true — both are correct.
 mission:

@@ -1,4 +1,4 @@
-# WARN-but-PASS: judge_calibration.status=calibrated while acceptance.skills is
+# WARN-but-PASS: judge_calibration.status=calibrated while tooling.acceptance.skills is
 # present/non-empty. Expected: warning calibration_skills_corollary, no errors,
 # exit 0 (warnings do not fail the charter).
 mission:

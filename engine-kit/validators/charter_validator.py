@@ -10,7 +10,7 @@ Two layers:
 
 NORMATIVE SOURCE for every rule below stays in the spec, NOT in this file:
   - process/delivery-loop.md §4.2.2 (charter editing rules + 4 bypass shapes)
-                              §4.2.3 (the 8 MANDATORY_CHECKPOINTS)
+                              §4.2.3 (the 9 MANDATORY_CHECKPOINTS)
                               §4.2.8 (anti-patterns)
   - governance/constitution.md §1.7-C, §1.7-D (non-bypass), §3.6 (calibration)
 This module is an engine-kit *implementation* of those rules. If the spec and
@@ -59,6 +59,10 @@ except ImportError as exc:  # pragma: no cover - import guard
 # walk up from this file to find schemas/mission-charter.schema.json.
 # --------------------------------------------------------------------------- #
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_ENGINE_KIT_DIR = os.path.dirname(_THIS_DIR)  # engine-kit/
+if _ENGINE_KIT_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_KIT_DIR)
+import charter_compat  # noqa: E402  (engine-kit/charter_compat.py — shared normalizer)
 
 
 def _find_schema_path() -> Optional[str]:
@@ -209,9 +213,11 @@ _VERDICT_ROLES: frozenset[str] = frozenset({"research", "deliver", "review", "ac
 _JUDGMENT_ROLES: frozenset[str] = frozenset({"acceptance", "research"})
 
 
-# The 8 default MANDATORY_CHECKPOINTS (process/delivery-loop.md §4.2.3). These
-# always fire; a charter MAY add custom checkpoints but MAY NOT bypass any of
-# these in any of the four shapes (omitted / emptied / disabled / overridden).
+# The 9 default MANDATORY_CHECKPOINTS (process/delivery-loop.md §4.2.3). These
+# fire when their condition occurs; a charter MAY add custom checkpoints but MAY
+# NOT bypass any of these in any of the four shapes (omitted / emptied / disabled
+# / overridden). #9 advisory_acceptance_pass_signoff (P-A) fires when Acceptance
+# produces an ADVISORY pass (design §3.2/§3.3).
 MANDATORY_CHECKPOINTS: tuple[str, ...] = (
     "mission_start",
     "research_proposal_selection",
@@ -221,6 +227,7 @@ MANDATORY_CHECKPOINTS: tuple[str, ...] = (
     "scope_deviation",
     "close_taxonomy_C_or_D",
     "gate_hard_fail",
+    "advisory_acceptance_pass_signoff",
 )
 
 # Keys whose mere presence anywhere in the charter weakens a checkpoint's
@@ -323,21 +330,21 @@ def validate_structure(charter: Any, schema: dict, report: Report) -> None:
 # Layer B — semantic rules from the spec.
 # --------------------------------------------------------------------------- #
 def _check_mandatory_checkpoints(charter: dict, report: Report) -> None:
-    """The 8 default MANDATORY_CHECKPOINTS must not be bypassed in any of the 4
+    """The 9 default MANDATORY_CHECKPOINTS must not be bypassed in any of the 4
     shapes (process/delivery-loop.md §4.2.2 / governance/constitution.md §1.7-D):
         omitted / emptied / disabled / overridden.
 
     The real charter shape (schemas/mission-charter.schema.json) does NOT
-    enumerate the 8 defaults — they fire implicitly, and the schema's top-level
+    enumerate the 9 defaults — they fire implicitly, and the schema's top-level
     ``additionalProperties: false`` already forbids a stray ``mandatory_checkpoints``
     key. So this check defends the *semantic* boundary the schema can't see:
 
       * OMITTED  — only meaningful if the charter introduces a checkpoint
         ENUMERATION section (a key whose name contains "mandatory_checkpoint" and
         is not the additive ``mandatory_checkpoints_added``). If such a section
-        exists, every one of the 8 defaults must appear in it; a missing default
+        exists, every one of the 9 defaults must appear in it; a missing default
         is the omitted bypass. (Absence of any such section is the legitimate
-        default state — the 8 fire implicitly — and is NOT a violation.)
+        default state — the 9 fire implicitly — and is NOT a violation.)
       * EMPTIED  — that enumeration section is present but empty/null, OR a
         per-checkpoint mapping keyed by a default id is empty/null.
       * DISABLED — a mapping keyed by a default checkpoint id carries a falsy
@@ -436,7 +443,7 @@ def _check_mandatory_checkpoints(charter: dict, report: Report) -> None:
 
 
 def _check_acceptance_on_fix_required(charter: dict, report: Report) -> None:
-    """acceptance.on_fix_required rules (delivery-loop §4.2.2; constitution §1.7-C):
+    """tooling.acceptance.on_fix_required rules (delivery-loop §4.2.2; constitution §1.7-C):
       - human_confirm_required MUST be true (reject false / absent).
       - route_options MUST be a non-empty list.
     """
@@ -454,7 +461,7 @@ def _check_acceptance_on_fix_required(charter: dict, report: Report) -> None:
     if hcr is not True:
         report.error(
             "human_confirm_required",
-            f"acceptance.on_fix_required.human_confirm_required MUST be true "
+            f"tooling.acceptance.on_fix_required.human_confirm_required MUST be true "
             f"(got {hcr!r}); Constitution §1.7-C — Acceptance never silently "
             f"routes fix_required to Deliver",
             f"{base}.human_confirm_required",
@@ -464,7 +471,7 @@ def _check_acceptance_on_fix_required(charter: dict, report: Report) -> None:
     if not isinstance(routes, list) or len(routes) == 0:
         report.error(
             "route_options_nonempty",
-            f"acceptance.on_fix_required.route_options MUST be a non-empty list "
+            f"tooling.acceptance.on_fix_required.route_options MUST be a non-empty list "
             f"(got {routes!r}); MAY be narrowed but MAY NOT be empty "
             f"(delivery-loop §4.2.2)",
             f"{base}.route_options",
@@ -1170,6 +1177,15 @@ def validate_charter(
     if schema is None:
         schema = load_schema()
     report = Report()
+    # P-A: normalize the acceptance namespace + mode IN PLACE *before* structure
+    # validation — the schema's root additionalProperties:false would otherwise
+    # reject a legacy top-level `acceptance` block before we could warn (design
+    # §1.4). charter_compat is pure; warnings/errors map straight to the Report.
+    _norm_warn, _norm_err = charter_compat.normalize_acceptance(charter)
+    for _m in _norm_err:
+        report.error("acceptance_namespace", _m, "tooling.acceptance")
+    for _m in _norm_warn:
+        report.warn("acceptance_namespace", _m, "tooling.acceptance")
     validate_structure(charter, schema, report)
     validate_semantics(charter, report, overrides)
     return report

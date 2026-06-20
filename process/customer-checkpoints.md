@@ -126,7 +126,7 @@ notes: <accepting residual risk; ship anyway>
 
 ## §2 MANDATORY_CHECKPOINTS the Customer resolves (Δ-18)
 
-When the Δ-18 orchestrator is adopted, additional MANDATORY_CHECKPOINTS (per `process/delivery-loop.md` §4.2.3) fire that the Customer resolves via the filesystem inbox. The 8 default checkpoints + what the Customer reads + writes at each:
+When the Δ-18 orchestrator is adopted, additional MANDATORY_CHECKPOINTS (per `process/delivery-loop.md` §4.2.3) fire that the Customer resolves via the filesystem inbox. The 9 default checkpoints + what the Customer reads + writes at each:
 
 | Checkpoint | When fires | Customer reads | Customer writes (`decision:` field) |
 |---|---|---|---|
@@ -138,6 +138,7 @@ When the Δ-18 orchestrator is adopted, additional MANDATORY_CHECKPOINTS (per `p
 | `scope_deviation` | `scope_envelope_check` fails | Deviation diff + observed_diff path set + `approved_scope` declaration | `accept_deviation` (widen scope) OR `reject_deviation` (Deliver plans narrower fix) OR `abandon` (halt milestone) |
 | `close_taxonomy_C_or_D` | Deliver close verdict = C or D | Deliver's close conversation per `templates/deliver-close-taxonomy.md` | The chosen C-subclass / D-subclass resolution |
 | `gate_hard_fail` | Deterministic gate fails AND auto_fix_iteration not eligible | Failed gate output + handoff §1 narrative | `retry` (with budget bump) OR `escalate` (return to plan_fix) OR `abandon` |
+| `advisory_acceptance_pass_signoff` | Acceptance returns an advisory pass (not authoritative) | The acceptance verdict + F5 evidence | `confirm: ship` OR `reject` |
 
 The full checkpoint file shape is in `process/delivery-loop.md` §4.2.3.
 

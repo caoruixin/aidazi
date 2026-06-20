@@ -86,7 +86,7 @@ This is the question adopters most want answered up front. The framework draws a
 
 - The LLM-vs-runtime ownership boundary and the §1.7 forbidden list (no keyword/regex for soft semantic decisions; no eval-phrase encoding; etc.).
 - The 5-role boundary invariants (§3.4): no self-grading; Acceptance spawn isolation; Code Reviewer ≠ Acceptance; Research–Acceptance contract symmetry; Deliver-no-code; intra-role skills inherit the role's boundary.
-- The 8 MANDATORY_CHECKPOINTS (if you adopt the Δ-18 Delivery Loop orchestrator): charter may ADD, never bypass.
+- The 9 MANDATORY_CHECKPOINTS (if you adopt the Δ-18 Delivery Loop orchestrator): charter may ADD, never bypass.
 - The Acceptance judge calibration gate for autonomous mode.
 
 **You decide (suggested defaults — override in `adoption-state.md` with a reason):**

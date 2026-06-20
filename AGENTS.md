@@ -65,7 +65,7 @@ Document divergences from framework defaults in `docs/current/adoption-state.md`
 Hard requirements (cannot be overridden — Constitution §1.8):
 - Constitution §1.7 forbidden list (incl. §1.7-A through §1.7-E).
 - Constitution §3.4 5-role boundary invariants.
-- `aidazi/process/delivery-loop.md` §4.2.3 8 MANDATORY_CHECKPOINTS (if Δ-18 adopted).
+- `aidazi/process/delivery-loop.md` §4.2.3 9 MANDATORY_CHECKPOINTS (if Δ-18 adopted).
 - Constitution §3.6 Acceptance judge calibration gate.
 
 Suggested defaults (override with rationale in adoption-state.md):

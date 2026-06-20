@@ -42,6 +42,67 @@ class ValidCharterTests(unittest.TestCase):
         )
 
 
+class AcceptanceNamespaceValidateCharterTests(unittest.TestCase):
+    """charter_compat normalization integrated through validate_charter (P-A §1.4)."""
+
+    def test_enabled_only_validates_clean_and_silent(self):
+        charter = cv.load_charter(_fixture("valid-charter.yaml"))
+        acc = charter["tooling"]["acceptance"]
+        acc.pop("mode", None)
+        acc["enabled"] = True  # legacy enabled-only → silent map to mode
+        report = cv.validate_charter(charter, cv.load_schema())
+        self.assertTrue(report.ok, report.render())
+        self.assertNotIn("acceptance_namespace", report.rules_fired)
+        self.assertEqual(acc["mode"], "auto")
+
+    def test_enabled_mode_conflict_is_validation_error(self):
+        charter = cv.load_charter(_fixture("valid-charter.yaml"))
+        acc = charter["tooling"]["acceptance"]
+        acc["enabled"] = True
+        acc["mode"] = "off"  # disagree → conflict
+        report = cv.validate_charter(charter, cv.load_schema())
+        self.assertFalse(report.ok)
+        self.assertIn("acceptance_namespace", {e.rule for e in report.errors})
+
+    def test_mode_only_validates_clean(self):
+        charter = cv.load_charter(_fixture("valid-charter.yaml"))
+        acc = charter["tooling"]["acceptance"]
+        acc.pop("enabled", None)
+        acc["mode"] = "advisory"
+        report = cv.validate_charter(charter, cv.load_schema())
+        self.assertTrue(report.ok, report.render())
+        self.assertNotIn("acceptance_namespace", report.rules_fired)
+
+    def test_both_present_agree_warns_only(self):
+        charter = cv.load_charter(_fixture("valid-charter.yaml"))
+        acc = charter["tooling"]["acceptance"]
+        acc["enabled"] = True
+        acc["mode"] = "auto"
+        report = cv.validate_charter(charter, cv.load_schema())
+        self.assertTrue(report.ok, report.render())
+        self.assertIn("acceptance_namespace", report.rules_fired)
+        self.assertEqual(report.errors, [])
+
+    def test_top_level_block_migrated_with_warning(self):
+        charter = cv.load_charter(_fixture("valid-charter.yaml"))
+        acc = charter["tooling"]["acceptance"]
+        acc.pop("mode", None)
+        acc["enabled"] = True
+        charter["acceptance"] = {"on_fix_required": acc.pop("on_fix_required")}
+        report = cv.validate_charter(charter, cv.load_schema())
+        self.assertTrue(report.ok, report.render())
+        self.assertNotIn("acceptance", charter)              # moved under tooling
+        self.assertIn("acceptance_namespace", report.rules_fired)  # warned
+
+    def test_malformed_canonical_acceptance_not_hidden(self):
+        charter = cv.load_charter(_fixture("valid-charter.yaml"))
+        charter["tooling"]["acceptance"] = "garbage"
+        charter["acceptance"] = {"enabled": True}
+        report = cv.validate_charter(charter, cv.load_schema())
+        self.assertFalse(report.ok)
+        self.assertIn("acceptance_namespace", {e.rule for e in report.errors})
+
+
 class CheckpointBypassTests(unittest.TestCase):
     def test_emptied_checkpoint_fails(self):
         report = cv.validate_file(_fixture("invalid-checkpoint-emptied.yaml"))
