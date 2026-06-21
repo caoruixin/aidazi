@@ -332,6 +332,37 @@ class TestCampaignEntry(unittest.TestCase):
                              "an unresolvable unit must not resolve the gate")
             self.assertEqual(rj["milestone_index"], 0)
 
+    def test_campaign_threads_memory_root_to_per_milestone_driver(self):
+        # The --campaign entrypoint threads memory_root through make_run_unit -> run_loop
+        # -> the per-milestone Driver. m1 is dispatched (paused at its Acceptance gate),
+        # so its Driver built a MemoryStore at the threaded root → entries/ exists.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            plan = _plan("cliMem", [{"id": "m1", "objective": "x",
+                                     "subsprint_sequence": ["sprint-001"]}], signed=True)
+            mem = os.path.join(d, "mem")
+            r = rl.run_campaign_entry(
+                plan, charter, clock=_clock(), campaign_run_dir=os.path.join(d, "home"),
+                adapters=_acceptance_adapters(ACC_PASS), memory_root=mem)
+            self.assertEqual(r["pause_reason"], "advisory_acceptance_pass_signoff")
+            self.assertTrue(
+                os.path.isdir(os.path.join(mem, "entries")),
+                "campaign must thread memory_root to the per-milestone Driver")
+
+    def test_campaign_without_memory_root_builds_no_store(self):
+        # byte-identical regression: no memory_root ⇒ the Driver never builds a store.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            plan = _plan("cliNoMem", [{"id": "m1", "objective": "x",
+                                       "subsprint_sequence": ["sprint-001"]}], signed=True)
+            mem = os.path.join(d, "mem")  # a path we do NOT pass
+            r = rl.run_campaign_entry(
+                plan, charter, clock=_clock(), campaign_run_dir=os.path.join(d, "home"),
+                adapters=_acceptance_adapters(ACC_PASS))  # no memory_root
+            self.assertEqual(r["pause_reason"], "advisory_acceptance_pass_signoff")
+            self.assertFalse(os.path.exists(mem),
+                             "no memory_root ⇒ no Loop Memory store (OFF)")
+
 
 class TestDecisionSchema(unittest.TestCase):
     """Gate-specific decision payload (schemas/campaign-decision.schema.json):

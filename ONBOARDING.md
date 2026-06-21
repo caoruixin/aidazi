@@ -340,6 +340,12 @@ Generate / install:
 6. **Create `.orchestrator/` and the audit dir** — the loop registry +
    `.orchestrator/audit/` for the hash-chained per-loop ledger (charter `audit.ledger_dir`,
    default `.orchestrator/audit`).
+7. **(Optional — ONLY when enabling Loop Memory) Create the memory store.** If the
+   charter sets `memory.enabled: true`, scaffold `<memory.root>/` (default `memory/`)
+   with an empty `entries/` subdir and a seed `index.md` (the store also self-creates on
+   first use). **With Loop Memory OFF (the default), create NOTHING** — the loop is
+   byte-identical to no memory. The root resolves against the charter dir and must stay
+   inside it (`modules/m-memory.md`; `schemas/mission-charter.schema.json`).
 
 > Properties: non-destructive (read-before-write + confirm-on-overwrite for every
 > artifact), idempotent (re-running skips files already recorded done), audited
@@ -362,6 +368,15 @@ Set the autonomy level and confirm the checkpoint posture in `charter.yaml`:
   bypass shapes (`process/delivery-loop.md` §4.2.2-§4.2.3; Constitution §1.7-D).
 - `tooling.acceptance.on_fix_required.human_confirm_required` MUST be `true` and
   `route_options` non-empty (Constitution §1.7-C).
+- **(Optional) `memory.enabled`** — turn on Loop Memory (default OFF). When on, the loop
+  injects prior generalizable lessons into role prompts at ingress and records lessons at
+  close (`modules/m-memory.md`). Enabling it does **not** raise autonomy, does **not**
+  auto-edit any load-bearing artifact (skill/charter/prompt), and adds **no** checkpoint —
+  but it **does** change role prompt context, so record the enable decision in
+  `adoption-state.md` (a `divergent` row vs the OFF default) and the §3.6 calibration
+  policy continues to apply (a memory entry only *suggests* a load-bearing change; the
+  human approves it). `memory.root` defaults to `memory` (resolved against the charter dir,
+  contained within it); CLI `--memory-root` overrides.
 
 **Recommend, then confirm.** Any override of a suggested default becomes a
 `divergent` row (with rationale) in `adoption-state.md`; hard requirements (§1.7,

@@ -111,6 +111,7 @@ Audit-Spine hash chain.
 | `--subsprint-id sprint-001` | which sub-sprint to drive |
 | `--repo-dir .` | enables **Loop Ingress** git isolation (per `charter.isolation`) |
 | `--allow-real` (+ env `AIDAZI_ALLOW_REAL_ADAPTER=1`) | build + run the **real** adapters; without it, **mock** (safe dry-run) |
+| `--memory-root <dir>` (or `charter.memory.enabled: true`) | enable **Loop Memory** (optional; OFF by default) — inject prior cross-loop lessons at ingress, record lessons at close; starts empty |
 
 Real adapters are **gated off by default** — an offline mock run is always safe and
 writes artifacts to a fresh temp dir, never your repo.
@@ -131,6 +132,11 @@ intent-contract re-confirm; only steps 4–5 change to manual role hand-offs.
   `run_loop.py` in plain **cron/CI** — never a harness scheduler (`engine-kit/scheduling/README.md`).
 - For the *substance* of the milestone, follow the per-track guide
   (`docs/greenfield-guide.md` STEP 5–6 or `docs/brownfield-guide.md` §5).
+- **Loop Memory (optional).** If enabled (`--memory-root` or `charter.memory.enabled:
+  true`), each loop injects prior generalizable lessons at ingress and records new ones at
+  close. The declarative default root is `<charter-dir>/memory/` (version-controlled md,
+  contained in the charter tree); `--memory-root` may point elsewhere. OFF by default —
+  a run without it is byte-identical to no memory (`modules/m-memory.md`).
 
 ---
 

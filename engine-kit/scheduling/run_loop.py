@@ -650,6 +650,65 @@ def _production_clock() -> Callable[[], str]:
     return _now
 
 
+def _resolve_memory_root(cli_root: Optional[str], charter: dict,
+                         charter_path: str) -> Optional[str]:
+    """Resolve the effective Loop Memory root — the SINGLE source both entrypoints
+    (single-loop and --campaign) share. Returns an absolute path to enable Loop
+    Memory, or ``None`` to keep it OFF (byte-identical to no memory).
+
+    Precedence + rules (all defaults applied EXPLICITLY here — a JSON-Schema
+    ``default`` is documentation, NOT a runtime assignment):
+
+    * CLI ``--memory-root`` WINS: it is an explicit enable AND override, honored even
+      when the charter omits ``memory`` or sets ``enabled: false``. It keeps the CLI's
+      existing path semantics — used verbatim, with NO charter-dir resolution and NO
+      containment check (the operator owns an explicit, possibly-external path).
+    * Else, charter-declared ``memory``: ``enabled`` must be literal ``true`` (absent
+      ⇒ treated as ``false`` ⇒ OFF). ``root`` defaults to ``"memory"`` when absent or
+      empty/whitespace. A RELATIVE ``root`` resolves against the charter's directory;
+      the resolved path MUST stay CONTAINED within that directory — a ``..``/absolute
+      escape is REJECTED (a declarative root must never write outside the adopter
+      tree; use ``--memory-root`` for an external path). Lexical (normpath)
+      containment; symlinks are not resolved.
+    * Else ⇒ ``None`` (OFF).
+
+    Raises ``ValueError`` on a declarative containment violation or a non-string root.
+    """
+    # CLI explicit enable + override — existing semantics, used verbatim, no
+    # containment check. argparse's default is None, so an explicitly-passed
+    # empty/whitespace value is a misuse → reject it (fail-closed) rather than
+    # silently fall through to charter.memory.
+    if cli_root is not None:
+        if not cli_root.strip():
+            raise ValueError("--memory-root must not be empty/whitespace")
+        return cli_root
+
+    mem = (charter or {}).get("memory")
+    if not isinstance(mem, dict):
+        return None
+    # Absent ⇒ False ⇒ OFF; only a literal boolean True enables (fail-closed).
+    if mem.get("enabled") is not True:
+        return None
+
+    root = mem.get("root")
+    if root is None or (isinstance(root, str) and not root.strip()):
+        root = "memory"  # EXPLICIT default (schema default ≠ runtime assignment)
+    if not isinstance(root, str):
+        raise ValueError(f"charter memory.root must be a string, got {type(root).__name__}")
+
+    charter_dir = os.path.normpath(os.path.dirname(os.path.abspath(charter_path)))
+    # normpath collapses '..' lexically; os.path.join honors an absolute root (which
+    # then fails the containment check below — declarative roots stay in-tree).
+    resolved = os.path.normpath(os.path.join(charter_dir, root))
+    if resolved != charter_dir and not resolved.startswith(charter_dir + os.sep):
+        raise ValueError(
+            f"charter memory.root {root!r} escapes the charter directory "
+            f"(resolved {resolved!r} is not within {charter_dir!r}); a declarative "
+            f"root must stay inside the adopter tree — use --memory-root for an "
+            f"external path")
+    return resolved
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="aidazi schedule entrypoint — run one loop (plain cron/CI).")
@@ -663,7 +722,9 @@ def main(argv=None) -> int:
     parser.add_argument("--repo-dir", default=None,
                         help="git repo for Loop Ingress (optional; off by default)")
     parser.add_argument("--memory-root", default=None,
-                        help="Loop Memory root (optional; off by default)")
+                        help="Loop Memory root (optional; off by default). Explicit "
+                             "enable + override: WINS over charter.memory and is used "
+                             "verbatim (no charter-dir resolution / containment check).")
     parser.add_argument("--loop-mode", choices=LOOP_MODES,
                         default=LOOP_MODE_DELIVERY_ONLY,
                         help="delivery_only (default) | full_chain_guided "
@@ -684,6 +745,16 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     charter = load_charter(args.charter)
+
+    # Resolve the effective Loop Memory root ONCE — shared by BOTH the campaign and the
+    # single-loop entrypoints below (CLI --memory-root wins; else charter.memory when
+    # enabled; else OFF). A declarative containment violation fails closed (exit 2).
+    try:
+        effective_memory_root = _resolve_memory_root(
+            args.memory_root, charter, args.charter)
+    except ValueError as exc:
+        print(f"memory.root ERROR: {exc} — aborted before any run.")
+        return 2
 
     # Campaign mode: drive the WHOLE milestone backlog (continuous multi-milestone
     # delivery, 以终为始) — NOT one sub-sprint. Pauses persist to the campaign home and
@@ -709,7 +780,7 @@ def main(argv=None) -> int:
             plan, charter, clock=_production_clock(),
             campaign_run_dir=args.campaign_run_dir, resume=args.resume,
             decision_path=args.decision, allow_real=args.allow_real,
-            repo_dir=args.repo_dir, memory_root=args.memory_root)
+            repo_dir=args.repo_dir, memory_root=effective_memory_root)
         print_campaign_result(result)
         return result["exit_code"]
     run_dir = args.run_dir or tempfile.mkdtemp(prefix=f"aidazi-{args.mode}-")
@@ -764,7 +835,7 @@ def main(argv=None) -> int:
         charter, run_dir=run_dir, loop_id=loop_id,
         subsprint_id=args.subsprint_id, clock=_production_clock(),
         allow_real=args.allow_real, mode=args.mode,
-        repo_dir=args.repo_dir, memory_root=args.memory_root,
+        repo_dir=args.repo_dir, memory_root=effective_memory_root,
         loop_mode=args.loop_mode, gate_resolver=gate_resolver,
         resume=args.resume,
     )

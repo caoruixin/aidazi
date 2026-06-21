@@ -40,9 +40,11 @@ Constitution §1.7-D):
     skill invalidates ``calibrated``; m-memory §5 row 2, Constitution §3.6).
 
 NORMATIVE SOURCE: modules/m-memory.md §5 (the five paths + their gates). On any
-conflict the spec wins and this file is the bug (plan §1 conflict rule). This is
-a STANDALONE module — wiring it into the driver's close is a separate step
-(mirrors the loop_controller / loop_ingress standalone-then-wire pattern).
+conflict the spec wins and this file is the bug (plan §1 conflict rule). This module
+is usable standalone and is WIRED into the driver's milestone close as an OPT-IN: at
+a successful close (memory enabled) the driver calls ``propose`` and writes
+``render_report`` as a human-pending, PROPOSE-ONLY checkpoint — it applies nothing
+(``driver._memory_feedback``).
 """
 
 from __future__ import annotations

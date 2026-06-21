@@ -300,6 +300,15 @@
         "hash_chain": {"type": "boolean", "default": true, "description": "Tamper-evident hash chaining (each event commits to prev_hash)."},
         "capture_execution_context": {"type": "boolean", "default": true, "description": "Capture per-spawn harness/provider/model/skill_pins/memory/tokens/cost (plan §4.5 G3)."}
       }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "v2 ADDITIVE (Loop Memory substrate; modules/m-memory.md). OPTIONAL, runtime-owned md files (sibling of `audit`, Constitution §1.4). DEFAULT OFF: absent OR enabled:false ⇒ the driver never touches the store (byte-identical to no memory). When enabled, the driver injects prior generalizable lessons into role prompts at ingress and records lessons at close; it does NOT raise autonomy, does NOT auto-edit any load-bearing artifact, and adds NO checkpoint — but it DOES change prompt context, so the enable decision is recorded (adoption-state) and stays subject to the existing calibration policy (Constitution §3.6). CLI --memory-root overrides this block. NOTE: the `default` values below are documentation; the runtime resolver (engine-kit/scheduling/run_loop._resolve_memory_root) assigns them EXPLICITLY (JSON-Schema defaults are not runtime assignments).",
+      "properties": {
+        "enabled": {"type": "boolean", "default": false, "description": "Activate Loop Memory. Absent ⇒ treated as false ⇒ OFF. Only literal boolean true enables; the resolver defaults this to false explicitly."},
+        "root": {"type": "string", "minLength": 1, "default": "memory", "description": "Loop Memory root directory. A RELATIVE path resolves against the charter's directory and MUST stay contained within it — a `..`/absolute escape is rejected (a declarative root must not write outside the adopter tree; use --memory-root for an external path). Defaults to \"memory\" when memory is enabled without an explicit (non-empty) root."}
+      }
     }
   },
   "$defs": {

@@ -5,8 +5,12 @@ close. This is the Loop Memory **substrate** from the v2 plan
 (`archive/2026-06-15-v2-loop-engine-plan.md` §4.4) — NOT a third loop and NOT a
 storage service. Storage is just files.
 
-This module is **standalone and deterministic**. It is not yet wired into the
-driver; a later integration step does that (see "Driver integration" below).
+This module is **deterministic** and has **no hard dependency on the driver** (it
+can be exercised standalone). It is now **wired into the Driver as an opt-in**: the
+Driver builds a `MemoryStore` only when a `memory_root` is supplied — CLI
+`--memory-root` or `charter.memory.enabled: true` (`schemas/mission-charter.schema.json`).
+Absent a root the Driver never touches the store (byte-identical to no memory). See
+"Driver integration" below.
 
 ## On-disk layout
 
@@ -105,12 +109,25 @@ promotes at a single occurrence; `select(scope)` returns only matching entries i
 stable order; `index.md` reflects entries; dedup doesn't duplicate; the guard
 rejects a case-specific input→output entry.
 
-## Driver integration (future step — NOT done here)
+## Driver integration (DONE — opt-in via `memory_root`)
+
+Wired in `engine-kit/orchestrator/driver.py` (guarded import; a Driver built without
+a `memory_root` is byte-identical to pre-integration):
 
 - **At ingress**, per role: `store.select({"role": [role], "module": [...]})` →
-  inject the returned L*-entries into the role's context (load-bearing changes stay
-  human-approved per Auto Loop §3.3).
-- **At close**, distill the loop's lessons: `store.record_observation(key, ts=…,
-  loop_id=…, …)` for recurring patterns (auto L1→L2 at n≥2) and
-  `store.write_entry(entry, ts=…, loop_id=…)` for net-new lessons. `ts` comes from
-  the orchestrator clock and `loop_id` from the Audit Spine.
+  inject the returned L*-entries into the role's prompt (`driver._lessons_block`,
+  for dev/review/deliver/research); the injected ids are recorded in the spawn's
+  `memory_injected` audit payload. Load-bearing changes stay human-approved (Auto
+  Loop §3.3).
+- **At close**, distill the loop's lessons: `store.record_observation(...)` for a
+  recurring fix-loop finding class (auto L1→L2 at n≥2; `driver._record_fix_lesson`).
+  `ts` comes from the orchestrator clock and `loop_id` from the Audit Spine.
+- **At a successful milestone close** (`advance`/`done`), the read-only PROPOSE-ONLY
+  feedback stage runs (`feedback.propose` → `driver._memory_feedback`): it writes a
+  human-pending report and applies nothing.
+- **Current capture scope**: close-time `record_observation` covers the recurring
+  fix-loop finding class only; broader role-lesson distillation is future work.
+
+Enable it: pass `--memory-root <dir>`, or set `charter.memory.enabled: true`
+(+ optional `root`, default `memory`, resolved against the charter dir and contained
+within it; CLI overrides). See `templates/mission-charter.yaml`.

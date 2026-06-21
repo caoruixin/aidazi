@@ -43,7 +43,8 @@ AIDAZI_ALLOW_REAL_ADAPTER=1 python engine-kit/scheduling/run_loop.py \
   --mode milestone_delivery \
   --allow-real \
   --repo-dir /srv/app           # optional: enable Loop Ingress
-  # --memory-root /srv/app/memory  # optional: enable Loop Memory
+  # --memory-root /srv/app/memory  # optional: enable Loop Memory (OFF by default; or set
+  #                                 # charter.memory.enabled:true — --memory-root overrides)
 ```
 
 See `examples/crontab.example` and `examples/github-actions-loop.yml` for wiring.

@@ -43,9 +43,14 @@ ANTI-GAMING GUARD (HARD — Constitution §1.7 / plan §4.4 / m-autoloop.md §3)
     the gaming m-autoloop.md §3 / §4 exist to prevent. The guard is intentionally
     simple but always-on; it raises ``AntiGamingViolation`` and the write fails.
 
-This module is STANDALONE: it is not yet wired into the driver. The future
-integration step calls ``select(scope)`` at ingress and ``record_observation`` /
-``write_entry`` at close.
+This module has NO hard dependency on the driver (usable standalone) and is now
+WIRED into the driver as an OPT-IN: the Driver builds a MemoryStore only when a
+``memory_root`` is supplied (CLI ``--memory-root`` or ``charter.memory.enabled``).
+It then calls ``select(scope)`` at ingress (``driver._lessons_block``) and, at close,
+``record_observation`` for the recurring fix-loop finding class
+(``driver._record_fix_lesson``); broader ``write_entry`` distillation is future work.
+Absent a ``memory_root`` the driver never touches the store (byte-identical to no
+memory).
 """
 
 from __future__ import annotations

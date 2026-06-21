@@ -78,3 +78,19 @@ tooling:
   eval:
     cmd: "true"                # placeholder; F5 eval not wired in this proof
     timeout_seconds: 60
+
+# OPTIONAL — Loop Memory substrate (modules/m-memory.md). Left OFF in this worked
+# example (no top-level `memory:` field is set, so the parsed charter — and its
+# canonical fingerprint — is unchanged; the driver never touches a store, exactly
+# as today). To enable it in YOUR adopter, add a real top-level block to your
+# charter (see templates/mission-charter.yaml):
+#   memory:
+#     enabled: true
+#     root: memory        # <adopter>/memory; relative roots resolve against the
+#                         # charter dir and must stay inside it (use --memory-root
+#                         # for an external path). CLI --memory-root overrides.
+# When enabled, the loop injects prior generalizable lessons into role prompts at
+# ingress and records lessons at close; it never raises autonomy, never auto-edits
+# a load-bearing artifact, and adds no checkpoint, but it does change prompt
+# context — record the enable decision in adoption-state.md (§3.6 calibration
+# policy still applies).

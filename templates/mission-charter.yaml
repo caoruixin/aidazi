@@ -181,6 +181,20 @@ tooling:
   #                                                             # ⇒ a CAPTURED failure vetoes a
   #                                                             # milestone pass (→ needs_human)
 
+# OPTIONAL — Loop Memory substrate (modules/m-memory.md). Top-level, runtime-owned
+# md files (sibling of the runtime-owned `audit`). DEFAULT OFF: with enabled:false
+# (or this block absent) the driver NEVER touches the store — byte-identical to no
+# memory. Flip enabled:true to let the loop inject prior generalizable lessons into
+# role prompts at ingress and record lessons at close. It does NOT raise autonomy,
+# does NOT auto-edit any load-bearing artifact (skill/charter/prompt), and adds NO
+# checkpoint — but it DOES change prompt context, so RECORD the enable decision in
+# adoption-state.md and keep the existing calibration policy (§3.6). A relative
+# `root` resolves against THIS charter's directory and must stay inside it; the CLI
+# `--memory-root` overrides this block for an external path.
+memory:
+  enabled: false
+  root: memory   # <adopter>/memory — version-controlled, diffable, adopter-portable
+
 # T1 profile overlay — populate one or more.
 
 profile_type_a:

@@ -233,5 +233,148 @@ class CharterEnforcementTests(unittest.TestCase):
             self.assertEqual(rc, 2)
 
 
+class MemoryRootResolutionTests(unittest.TestCase):
+    """run_loop._resolve_memory_root — the SINGLE Loop-Memory-root resolver shared by
+    BOTH entrypoints. Pure path math (no disk): CLI override > charter.memory > OFF,
+    with EXPLICIT defaults (a JSON-Schema `default` is documentation, not a runtime
+    assignment) and lexical (normpath) containment for declarative roots."""
+
+    _CHARTER = "/proj/app/charter.yaml"
+    _DIR = "/proj/app"
+
+    def _r(self, cli, charter):
+        return rl._resolve_memory_root(cli, charter, self._CHARTER)
+
+    # --- CLI override: explicit enable + override, verbatim, NO containment ----- #
+    def test_cli_root_wins_over_charter_disabled(self):
+        self.assertEqual(
+            self._r("/ext/mem", {"memory": {"enabled": False, "root": "x"}}), "/ext/mem")
+
+    def test_cli_root_wins_with_no_charter_memory(self):
+        self.assertEqual(self._r("/ext/mem", {}), "/ext/mem")
+
+    def test_cli_root_used_verbatim_even_when_outside_tree(self):
+        # CLI is the operator's explicit path — NOT subject to the containment check.
+        self.assertEqual(self._r("../../elsewhere/mem", {}), "../../elsewhere/mem")
+
+    def test_empty_or_whitespace_cli_root_rejected(self):
+        # An explicitly-passed empty/whitespace --memory-root is a misuse (argparse
+        # default is None) → fail closed rather than silently fall through to charter.
+        for bad in ("", "   ", "\t"):
+            with self.assertRaises(ValueError):
+                self._r(bad, {"memory": {"enabled": True, "root": "mem"}})
+
+    # --- charter-declared (enabled) -------------------------------------------- #
+    def test_charter_enabled_with_explicit_root(self):
+        self.assertEqual(self._r(None, {"memory": {"enabled": True, "root": "mem"}}),
+                         os.path.join(self._DIR, "mem"))
+
+    def test_charter_enabled_root_missing_defaults_to_memory(self):
+        # enabled:true but NO root → EXPLICIT "memory" default (the mandated case).
+        self.assertEqual(self._r(None, {"memory": {"enabled": True}}),
+                         os.path.join(self._DIR, "memory"))
+
+    def test_charter_enabled_root_empty_or_whitespace_defaults_to_memory(self):
+        for empty in ("", "   "):
+            self.assertEqual(self._r(None, {"memory": {"enabled": True, "root": empty}}),
+                             os.path.join(self._DIR, "memory"))
+
+    def test_relative_root_resolves_against_charter_dir(self):
+        self.assertEqual(self._r(None, {"memory": {"enabled": True, "root": "sub/mem"}}),
+                         os.path.join(self._DIR, "sub", "mem"))
+
+    def test_root_equal_charter_dir_is_contained(self):
+        self.assertEqual(self._r(None, {"memory": {"enabled": True, "root": "."}}), self._DIR)
+
+    # --- OFF (byte-identical regression) --------------------------------------- #
+    def test_charter_disabled_returns_none(self):
+        self.assertIsNone(self._r(None, {"memory": {"enabled": False, "root": "mem"}}))
+
+    def test_charter_enabled_absent_treated_false(self):
+        # `enabled` absent ⇒ treated as false ⇒ OFF (only literal true enables).
+        self.assertIsNone(self._r(None, {"memory": {"root": "mem"}}))
+
+    def test_charter_enabled_non_bool_truthy_fails_closed(self):
+        # a non-boolean (schema-invalid) enabled is NOT honored — fail closed.
+        self.assertIsNone(self._r(None, {"memory": {"enabled": "true", "root": "mem"}}))
+
+    def test_absent_or_malformed_memory_block_returns_none(self):
+        self.assertIsNone(self._r(None, {}))
+        self.assertIsNone(self._r(None, {"memory": None}))
+        self.assertIsNone(self._r(None, {"memory": "nope"}))
+
+    # --- containment (declarative roots stay inside the adopter tree) ---------- #
+    def test_containment_rejects_parent_escape(self):
+        with self.assertRaises(ValueError):
+            self._r(None, {"memory": {"enabled": True, "root": "../escape"}})
+
+    def test_containment_rejects_deep_parent_escape(self):
+        with self.assertRaises(ValueError):
+            self._r(None, {"memory": {"enabled": True, "root": "a/../../escape"}})
+
+    def test_containment_rejects_absolute_root(self):
+        with self.assertRaises(ValueError):
+            self._r(None, {"memory": {"enabled": True, "root": "/etc/evil"}})
+
+    def test_containment_rejects_sibling_prefix(self):
+        # /proj/app vs /proj/app-evil — the base+os.sep guard prevents a false match.
+        with self.assertRaises(ValueError):
+            self._r(None, {"memory": {"enabled": True, "root": "../app-evil/mem"}})
+
+    def test_non_string_root_rejected(self):
+        with self.assertRaises(ValueError):
+            self._r(None, {"memory": {"enabled": True, "root": 123}})
+
+
+class MemoryRootEntrypointTests(unittest.TestCase):
+    """The SINGLE-loop entrypoint (main → run_loop → Driver) honors the resolved
+    Loop-Memory root end-to-end. The Driver builds a MemoryStore (which creates
+    `<root>/entries/`) iff a root is threaded through; absent ⇒ no store (byte-
+    identical). The --campaign entrypoint is covered in test_run_loop_campaign.py."""
+
+    def _charter_with_memory(self, d, root_value):
+        # Reuse the mock-runnable example charter verbatim + a declarative memory block.
+        with open(_CHARTER_PATH, encoding="utf-8") as fh:
+            text = fh.read()
+        text += f"\nmemory:\n  enabled: true\n  root: {root_value}\n"
+        cpath = os.path.join(d, "charter.yaml")
+        with open(cpath, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return cpath
+
+    def test_main_single_threads_charter_memory_to_driver(self):
+        with tempfile.TemporaryDirectory() as d:
+            cpath = self._charter_with_memory(d, "memory")
+            rc = rl.main(["--charter", cpath, "--run-dir", os.path.join(d, "run"),
+                          "--loop-id", "mem-single-1"])
+            self.assertEqual(rc, 0)
+            # charter dir = d ; root "memory" → d/memory ; Driver built the store there.
+            self.assertTrue(os.path.isdir(os.path.join(d, "memory", "entries")),
+                            "single entrypoint must thread the resolved root to the Driver")
+
+    def test_main_single_no_charter_memory_builds_no_store(self):
+        # byte-identical regression: the unmodified example charter declares no memory
+        # → no store dir is created anywhere under the charter dir.
+        with tempfile.TemporaryDirectory() as d:
+            with open(_CHARTER_PATH, encoding="utf-8") as fh:
+                text = fh.read()
+            cpath = os.path.join(d, "charter.yaml")
+            with open(cpath, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            rc = rl.main(["--charter", cpath, "--run-dir", os.path.join(d, "run"),
+                          "--loop-id", "mem-single-off"])
+            self.assertEqual(rc, 0)
+            self.assertFalse(os.path.exists(os.path.join(d, "memory")),
+                             "no declared memory ⇒ Driver builds no store (OFF)")
+
+    def test_main_single_rejects_escaping_charter_memory_root_exit_2(self):
+        # A declarative containment violation fails closed BEFORE any run (exit 2).
+        with tempfile.TemporaryDirectory() as d:
+            cpath = self._charter_with_memory(d, "../escape")
+            rc = rl.main(["--charter", cpath, "--run-dir", os.path.join(d, "run"),
+                          "--loop-id", "mem-escape-1"])
+            self.assertEqual(rc, 2, "a declarative memory.root escape must fail closed")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
