@@ -1,6 +1,13 @@
 # AGENTS.md — consumer-side template (aidazi v4.0.0)
 
-This file is the **consumer template**. Copy it to your adopter repo's root as `AGENTS.md` (or `CLAUDE.md`, or `.cursor/rules`, depending on your tooling) and replace `<placeholders>` with project-specific values.
+This file is the **consumer template**. Copy it to your adopter repo's root as `AGENTS.md` and replace `<placeholders>` with project-specific values.
+
+**Harness root-file wiring (normative source: `aidazi/governance/context_briefing.md` §1.1).** Which root file a harness auto-loads differs, so wire per harness — `AGENTS.md` and `CLAUDE.md` are **not** interchangeable copies:
+- **Claude Code** auto-loads `CLAUDE.md`, not a bare `AGENTS.md`. Add a one-line root `CLAUDE.md` containing exactly `@AGENTS.md` so Claude Code imports this chain. Never duplicate the governance chain into `CLAUDE.md` — the two entry points drift; `CLAUDE.md` only imports `AGENTS.md`.
+- **OpenAI Codex** auto-loads this `AGENTS.md` directly — no `CLAUDE.md` needed.
+- **Cursor** needs its own `.cursor/rules` entry; a bare `AGENTS.md` is not Cursor wiring.
+
+Because Claude Code and Codex can be used alternately, the canonical scaffold ships **both** root files (`AGENTS.md` + a `CLAUDE.md` of `@AGENTS.md`). Validate with `engine-kit/validators/adopter_wiring_validator.py <root> --harness claude_code`.
 
 The file's purpose: a fresh role session (Customer / Research / Deliver / Dev / Code Reviewer / Acceptance) reads this file FIRST at cold-start, finds the @-included governance chain, and discovers the adopter-specific runtime contracts.
 

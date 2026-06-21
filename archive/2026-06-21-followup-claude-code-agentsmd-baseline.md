@@ -1,11 +1,56 @@
 # Follow-up — Claude Code does not auto-load AGENTS.md (Default-Full baseline gap)
 
-**Status:** OPEN (raised 2026-06-21) · **Priority:** HIGH (silent absence of the
-always-load governance chain for one harness × filename combination)
+**Status:** CLOSED 2026-06-22 by R1 (standalone increment; see "Resolution" below) ·
+**Priority was:** HIGH (silent absence of the always-load governance chain for one
+harness × filename combination)
 **Origin:** Quick-Fix Lane Commit 0 / QF-0 —
 [Full cold-start baseline evidence](2026-06-21-full-coldstart-baseline-evidence.md)
-**Boundary:** this is a **standalone** follow-up. It is **not** part of the Quick-Fix
-Lane runtime commits (Commit 1–3) and must not be folded into them.
+**Boundary:** this was a **standalone** follow-up — **not** part of the Quick-Fix Lane
+runtime commits (Commit 1–3), and R1 was delivered as its own increment that touches no
+Quick-Fix contract/runtime file.
+
+## Resolution (R1, 2026-06-22)
+
+Delivered as a single standalone increment:
+
+1. **Normative rule** — `governance/context_briefing.md` §1.1 ("Harness root-file wiring")
+   is now the single normative source: Claude Code ⇒ root `CLAUDE.md` importing the
+   same-root `@AGENTS.md`; Codex ⇒ `AGENTS.md`; Cursor ⇒ its own `.cursor/rules` (a bare
+   `AGENTS.md` is not Cursor wiring). Step-4 and the §3 Context-Pack prompt now defer to §1.1.
+2. **Template / onboarding / example** — the `AGENTS.md` preamble drops the "interchangeable"
+   wording for harness-specific wiring; `ONBOARDING.md` Step 6.1a scaffolds a one-line root
+   `CLAUDE.md` (`@AGENTS.md`) read-before-write + diff-confirm, never overwriting an existing
+   brownfield `CLAUDE.md`; Step 8 runs the validator as part of the GREEN gate;
+   `examples/minimal-greenfield/CLAUDE.md` (`@AGENTS.md`) + README explain the dual entry.
+3. **Deterministic validator** — `engine-kit/validators/adopter_wiring_validator.py`
+   (+ 45 tests) checks same-root wiring with harness target resolution
+   (`--harness` > a single contradiction-free declaration > unspecified; contradicting
+   persistent sources FAIL; unspecified WARNs exit 0).
+4. **Real harness proof** — `examples/claude-code-full-wiring/verify-full-coldstart.sh`
+   and [the 2026-06-22 evidence](2026-06-22-claude-code-default-full-wiring-evidence.md)
+   show, on real Claude Code 2.1.170, the positive (canary loaded via `CLAUDE.md`→`@AGENTS.md`)
+   and negative control (bare `AGENTS.md` not auto-loaded), reproduced twice.
+
+The standing constraint below is lifted: a **correctly wired** Claude-Code adopter (validated
+by the tool) now has a guaranteed Default-Full baseline; an unwired one is caught deterministically.
+
+### Legacy adopters MUST run the validator (closure caveat)
+
+R1 fixes the wiring **going forward** — the scaffold, template, and worked example now produce a
+root `CLAUDE.md`. It does **not** retroactively wire repos that onboarded **before** R1: a legacy
+adopter whose root still holds only a bare `AGENTS.md` (no `CLAUDE.md`) keeps the silent
+Default-Full gap until remediated. **Every existing adopter must run the validator against its
+root and remediate any FAIL** before relying on the Default-Full baseline under Claude Code:
+
+```bash
+python aidazi/engine-kit/validators/adopter_wiring_validator.py <adopter-root> --harness claude_code
+```
+
+On FAIL, add the one-line root `CLAUDE.md` (`@AGENTS.md`) per §1.1 (read-before-write +
+diff-confirm; if a `CLAUDE.md` already exists, append the import — never overwrite or duplicate the
+chain), then re-run until PASS. This caveat is the reason the follow-up is closed as *"correctly
+wired adopters guaranteed; unwired ones deterministically caught"* rather than *"all adopters
+guaranteed"*.
 
 ## Observation
 

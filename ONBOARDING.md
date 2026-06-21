@@ -321,6 +321,17 @@ Generate / install:
 1. **`AGENTS.md`** at the repo root — from the consumer template `AGENTS.md`
    (root). Fill §1 project identification (`project_name`, `adopter_track`,
    `framework_version`, `charter_path`) and §3 ledger paths.
+   1a. **Root `CLAUDE.md` harness wiring** (normative: `governance/context_briefing.md`
+       §1.1). Claude Code auto-loads `CLAUDE.md`, **not** a bare `AGENTS.md`, so a
+       Claude-Code session at a root that has only `AGENTS.md` starts with the always-load
+       governance chain silently absent (a Default-Full breach). Generate a **one-line root
+       `CLAUDE.md` containing exactly `@AGENTS.md`** so Claude Code imports the same chain
+       Codex auto-loads. Generate it **regardless of the primary harness** — Claude Code and
+       Codex are used alternately, and one wiring serves both. Discipline: **read-before-write
+       + diff-confirm** like every artifact; if a `CLAUDE.md` already exists (brownfield),
+       **do not overwrite it** — show the human the diff and, only after confirmation, ensure
+       it contains a valid `@AGENTS.md` import (append the line; never duplicate the governance
+       chain into it). Never replace existing human `CLAUDE.md` content.
 2. **`charter.yaml`** — from `templates/mission-charter.yaml`, populated with the
    Step 5 role bindings (execution/skills/connectors), the Step 7 autonomy
    posture, budget, and `tooling.eval.cmd`. Schema:
@@ -403,14 +414,29 @@ until this is green.**
    non-empty `route_options`, the Facet-A capability gate, Facet-B skill
    integrity, and Facet-C connector default-deny / transitive-grant / scope ⊆
    sandbox). Warnings are allowed; **errors block.** Fix and re-run until exit 0.
-2. **Structural checks** — confirm the generated tree exists and resolves:
+2. **`adopter_wiring_validator`** — confirm the Step 6.1a harness root-file wiring
+   (`governance/context_briefing.md` §1.1) is actually in place, so a Claude-Code
+   cold-start gets the Default-Full chain:
+   ```bash
+   python engine-kit/validators/adopter_wiring_validator.py . --harness claude_code
+   ```
+   **PASS** (exit 0, no findings) ⇒ root has a `CLAUDE.md` whose valid line-level
+   `@AGENTS.md` imports the same-root `AGENTS.md`. **FAIL** (exit non-zero) ⇒ a Claude-Code
+   target with `AGENTS.md` but no `CLAUDE.md`; a `CLAUDE.md` with no valid import, an escaping
+   import (`..`, absolute, subdir, symlink redirect), or one that re-copies the chain instead of
+   importing only `@AGENTS.md`; or **contradicting** persistent harness declarations (charter vs
+   adoption-state pin declaring disjoint harnesses) — fix and re-run. **WARN** (exit 0) ⇒ harness
+   unspecified, or a Cursor target (a bare `AGENTS.md` is not Cursor wiring); WARN does not block.
+   Omit `--harness` to validate against the charter's declared harness(es) instead; for a
+   Codex-only adopter the bare `AGENTS.md` PASSes and no `CLAUDE.md` is required.
+3. **Structural checks** — confirm the generated tree exists and resolves:
    `AGENTS.md`, `docs/current/*`, the copied `engine-kit/`, vendored skills +
    `skills/skills.lock`, `.orchestrator/audit/`, and that the intent contract
    triple is present. Also confirm the **Step 5 Facet A preflight** ran: every
    bound `(harness, provider)` pair has a `reachable yes` row in the onboarding
    record, or an explicit human-recorded deferral in `adoption-state.md`.
-3. Record the green result (validator exit code + timestamp) in the onboarding
-   record. Mark the relevant `adoption-state.md` rows `at-spec`.
+4. Record the green result (both validators' exit codes + timestamp) in the
+   onboarding record. Mark the relevant `adoption-state.md` rows `at-spec`.
 
 > Properties: audited (the green gate is recorded), idempotent (re-running the
 > validator is side-effect-free), harness-agnostic (a plain Python CLI, no
