@@ -125,11 +125,54 @@ intent-contract re-confirm; only steps 4–5 change to manual role hand-offs.
 ## After the first loop
 
 - **Subsequent loops** drop to `--loop-mode delivery_only` (the milestone is now
-  decomposed).
+  decomposed) — or, to drive the *whole* goal in one continuous run, use the
+  **Campaign Loop** below instead of re-invoking per milestone.
 - **Unattended runs** (overnight Auto Loop / scheduled Delivery Loop) wrap the same
   `run_loop.py` in plain **cron/CI** — never a harness scheduler (`engine-kit/scheduling/README.md`).
 - For the *substance* of the milestone, follow the per-track guide
   (`docs/greenfield-guide.md` STEP 5–6 or `docs/brownfield-guide.md` §5).
+
+---
+
+## Drive the whole goal — continuous multi-milestone delivery (以终为始)
+
+The plain `run_loop.py` above drives **one milestone** and returns — by design it
+stops at the milestone boundary so *you* decide what's next. To make the team work
+**backward from the end goal** and drive the WHOLE backlog (one milestone after
+another, pausing only at human-authority gates), use the **Campaign Loop**
+(`process/campaign-loop.md`):
+
+1. **Author the backlog.** Have your **Deliver agent** decompose the goal into an
+   ordered milestone backlog as a `campaign-plan.json` — start from
+   `templates/campaign-plan.example.json`; the contract is
+   `schemas/campaign-plan.schema.json`. Each milestone lists its ordered
+   `subsprint_sequence`.
+2. **Sign it once (the one upfront human gate).** Review the backlog and set
+   `"signed_by_human": true` — the `campaign_plan_signoff` gate. 以终为始: you sign
+   the *whole goal* once, not each milestone.
+3. **Drive it.** The runner auto-advances every milestone × sub-sprint through the
+   SAME Driver, running Acceptance at each milestone's close, pausing only at genuine
+   human gates:
+   ```
+   .venv/bin/python engine-kit/scheduling/run_loop.py \
+     --charter charter.yaml --campaign campaign-plan.json \
+     --campaign-run-dir .orchestrator/campaign
+   ```
+   (Mock/offline by default; add `--allow-real` + `AIDAZI_ALLOW_REAL_ADAPTER=1` for
+   live models. `--campaign-run-dir` is the campaign's persistent home — keep it
+   stable across `--resume`.)
+4. **Resolve a pause + resume.** At every pause the CLI prints what to do and exits
+   with a STABLE code (**0**=done, **10**=paused-for-a-human, **2**=invalid,
+   **11**=ended). Resolve the gate — sign the plan / fill a milestone's
+   `subsprint_sequence` / author a decision file
+   (`schemas/campaign-decision.schema.json`, identity-bound to the exact pause) —
+   then re-run with `--resume` (add `--decision <file>` for a sign-off/route gate).
+   Resume never re-runs a finished milestone or re-counts its Acceptance.
+
+**Tier-1 boundary (deferred).** The runner drives a *pre-decomposed* backlog: it
+does **not** yet auto-decompose an empty milestone (it pauses at
+`milestone_decompose_required` for Deliver to fill the sub-sprints) and runs
+milestones **sequentially** (no parallel execution). See `process/campaign-loop.md §6`.
 
 ---
 

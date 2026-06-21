@@ -13,6 +13,7 @@ aidazi is a framework for delivering software with a multi-agent team where the 
 - A **process layer** of ~25 numbered Δs (domain discovery, decision catalogs, runtime skeleton, OBS triage, bad-case lifecycle, etc.) — each Δ is a small portable process pattern.
 - **Two loops** named distinctly: **Auto Loop** (Concept 1; Type A agent self-improvement) vs **Delivery Loop** (Concept 2; Δ-18 multi-agent team delivery). They compose; they don't conflict.
 - An **orchestrator pattern** (Δ-18 Delivery Loop) — optional state machine + spawn functions + checkpoint inbox + scope envelope + F5 evidence + calibration gate. Adopters who want automation use it; pure human-paste adopters keep the chain without the automation.
+- A **Campaign Loop** (P-B) over the Delivery Loop — from a signed milestone backlog it auto-drives the WHOLE goal to completion (以终为始), running Acceptance at each milestone close and pausing only at human gates. Wired entrypoint: `engine-kit/scheduling/run_loop.py --campaign` (`process/campaign-loop.md`).
 - A **role-skill model** (`process/role-skill-model.md`) — roles are accountability boundaries; industry capability packs (Agent Skills / SKILL.md standard, coding-agent subagent libraries) mount INSIDE roles as role skills or intra-role fan-out, never as new chain roles. One exemplar packaged skill ships under `skills/`.
 - A **two-direction fold-back** (adopter → framework lessons; framework → adopter releases) so the framework evolves from real adopter experience, not committee decree.
 

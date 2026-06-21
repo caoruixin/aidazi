@@ -35,6 +35,7 @@ a reference implementation; on any conflict the spec wins and this file is the b
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -64,6 +65,16 @@ MODES = (MODE_OVERNIGHT_AUTOLOOP, MODE_MILESTONE_DELIVERY)
 
 # P6.1 — the loop-mode CLI choices (mirrors the Driver's loop_mode param).
 LOOP_MODES = (LOOP_MODE_DELIVERY_ONLY, LOOP_MODE_FULL_CHAIN_GUIDED)
+
+# --- campaign (--campaign) exit codes — STABLE machine-readable contract ------ #
+# A campaign is multi-invocation: exit 0 ONLY when the whole backlog is done; a
+# pause (awaiting a human gate) is a DISTINCT non-zero so cron/CI can tell "done"
+# from "needs a human" from "error/invalid". Documented in process/campaign-loop.md.
+CAMPAIGN_EXIT_DONE = 0      # backlog exhausted — the whole goal is delivered
+CAMPAIGN_EXIT_ERROR = 1     # unexpected runtime error (or an unreachable 'running' leak)
+CAMPAIGN_EXIT_INVALID = 2   # invalid plan/state/schema (fail-closed; matches the single-loop charter-error code)
+CAMPAIGN_EXIT_PAUSED = 10   # paused at a human-authority gate — resolve, then --resume
+CAMPAIGN_EXIT_ENDED = 11    # aborted — a human/abort decision ended the campaign
 
 # Default clean-pass canned verdicts for the offline DRY-RUN mock path. These let
 # a scheduled dry-run exercise the full P2 happy path (dev→gate→review→close→
@@ -315,6 +326,254 @@ def make_interactive_gate_resolver() -> Callable[[str, dict, "object"],
     return _resolve
 
 
+# --------------------------------------------------------------------------- #
+# Campaign mode (--campaign): drive a multi-milestone backlog to completion via
+# the production path make_run_unit -> run_loop -> the real Driver (campaign.py).
+# This is the WIRED entrypoint for continuous multi-milestone delivery (以终为始);
+# the single-loop path (run_loop/main below) drives ONE sub-sprint. The Driver and
+# the campaign runner are UNCHANGED — this only wires them to a CLI + a file-based
+# human-gate decision channel. Spec: process/campaign-loop.md.
+# --------------------------------------------------------------------------- #
+def make_campaign_decision_resolver(campaign_id: Optional[str],
+                                    decision_path: Optional[str],
+                                    campaign_home: str) -> Callable:
+    """A FILE-BASED ``decision_resolver`` for ``--campaign --resume``: returns
+    ``resolve(pause_reason, checkpoint_path) -> Optional[dict]`` that reads the
+    human's decision from ``decision_path`` (JSON), validates it against
+    ``schemas/campaign-decision.schema.json``, and FAIL-CLOSED enforces full IDENTITY
+    BINDING — the decision is honored ONLY when ALL of: ``campaign_id`` + the live
+    ``pause_reason`` + the ``checkpoint`` (basename, exact) match, AND — when the pause
+    is on a UNIT (the common case) — the live paused unit's ``milestone_id`` +
+    ``subsprint_id`` (read from ``campaign-state.json``) match. So a stale decision from
+    a DIFFERENT milestone/sub-sprint/gate — even one whose checkpoint basename collides
+    (a repeated sub-sprint id, a clock tie) — can never be replayed. A missing/
+    unreadable/parse-broken file, a schema violation, or ANY binding mismatch ⇒ None
+    (the gate is NOT resolved; the runner re-pauses) with a stderr diagnostic.
+    ``decision_path`` None ⇒ always None.
+
+    It passes the runner's decision fields through: ``choice`` for a dispatch-table
+    gate, OR ``confirm`` (+ ``route``) for the acceptance_fix_required gate (§3.5).
+
+    Gates resolved by editing the PLAN (campaign_plan_signoff,
+    milestone_decompose_required, deliver_followup_required) never reach this
+    resolver — the runner re-checks plan state for those (campaign.py)."""
+    def _paused_unit(checkpoint_path: Optional[str]) -> Optional[dict]:
+        """The live paused unit (milestone_id + subsprint_id) from the persisted
+        campaign-state — matched by its checkpoint_path. None for a checkpoint-less
+        pause (no unit, e.g. campaign_budget_exhausted) or an unreadable state."""
+        if not checkpoint_path:
+            return None
+        try:
+            with open(os.path.join(campaign_home, "campaign-state.json"),
+                      encoding="utf-8") as fh:
+                state = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        for u in reversed(state.get("units") or []):
+            if isinstance(u, dict) and u.get("checkpoint_path") == checkpoint_path:
+                return u
+        return None
+
+    def resolve(pause_reason: str, checkpoint_path: Optional[str]) -> Optional[dict]:
+        if not decision_path:
+            return None
+        try:
+            with open(decision_path, encoding="utf-8") as fh:
+                decision = json.load(fh)
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(
+                f"campaign decision: cannot read/parse {decision_path!r}: {exc}\n")
+            return None
+        import campaign as _cp  # lazy: campaign imports run_loop (avoid the cycle)
+        try:
+            _cp._validate_or_raise(decision, "campaign-decision.schema.json",
+                                   "decision")
+        except ValueError as exc:
+            sys.stderr.write(f"campaign decision: schema-invalid: {exc}\n")
+            return None
+
+        def _reject(what: str, got, want) -> None:
+            sys.stderr.write(f"campaign decision: {what} {got!r} != live {want!r} "
+                             f"— stale/mismatched, refusing (fail-closed)\n")
+            return None
+
+        if decision.get("campaign_id") != campaign_id:
+            return _reject("campaign_id", decision.get("campaign_id"), campaign_id)
+        if decision.get("pause_reason") != pause_reason:
+            return _reject("pause_reason", decision.get("pause_reason"), pause_reason)
+        live_cpt = os.path.basename(checkpoint_path) if checkpoint_path else None
+        if decision.get("checkpoint") != live_cpt:   # EXACT (no falsy coercion)
+            return _reject("checkpoint", decision.get("checkpoint"), live_cpt)
+        if checkpoint_path is not None:
+            # A checkpoint-bearing pause is ALWAYS on a unit: its milestone/sub-sprint
+            # identity MUST be resolvable from campaign-state.json AND match. A missed
+            # lookup (unreadable/tampered state, or no unit with this checkpoint_path)
+            # FAILS CLOSED — never bound loosely as if it were checkpoint-less.
+            unit = _paused_unit(checkpoint_path)
+            if unit is None:
+                sys.stderr.write(
+                    "campaign decision: cannot resolve the live paused unit from "
+                    "campaign-state.json for a checkpoint pause — refusing "
+                    "(fail-closed)\n")
+                return None
+            if decision.get("milestone_id") != unit.get("milestone_id"):
+                return _reject("milestone_id", decision.get("milestone_id"),
+                               unit.get("milestone_id"))
+            if decision.get("subsprint_id") != unit.get("subsprint_id"):
+                return _reject("subsprint_id", decision.get("subsprint_id"),
+                               unit.get("subsprint_id"))
+        # else: checkpoint_path is None → a genuinely checkpoint-less pause (no unit,
+        # e.g. campaign_budget_exhausted) → campaign_id + pause_reason + checkpoint:null.
+        # Pass through ONLY the runner's decision fields (choice for a dispatch gate;
+        # confirm/route for acceptance_fix_required; note for the audit).
+        out = {k: decision[k] for k in ("choice", "confirm", "route", "note")
+               if k in decision}
+        return out or None
+    return resolve
+
+
+def campaign_home_for(campaign_id: str, override: Optional[str] = None) -> str:
+    """The STABLE home dir for a campaign's state/audit/units. It MUST persist
+    across resume invocations — a fresh temp dir each run would lose the cursor and
+    silently restart. ``override`` (--campaign-run-dir) wins; else a deterministic
+    per-campaign dir under the system temp (OUTSIDE the repo) so ``--resume`` finds
+    the same campaign-state.json."""
+    if override:
+        return override
+    return os.path.join(tempfile.gettempdir(), f"aidazi-campaign-{campaign_id}")
+
+
+def run_campaign_entry(plan: dict, charter: dict, *,
+                       clock: Callable[[], str],
+                       campaign_run_dir: Optional[str] = None,
+                       resume: bool = False,
+                       decision_path: Optional[str] = None,
+                       allow_real: bool = False,
+                       adapters: Optional[Dict[str, object]] = None,
+                       repo_dir: Optional[str] = None,
+                       memory_root: Optional[str] = None) -> dict:
+    """Drive a CAMPAIGN (ordered milestone backlog) to completion or the next
+    human-authority gate, via make_run_unit -> run_loop -> the REAL Driver. Returns
+    a structured, machine-readable result dict carrying a STABLE ``exit_code``.
+
+    ``adapters`` (tests) inject mocks; production passes ``allow_real`` and run_loop
+    builds adapters per sub-sprint. The campaign HOME (state + audit + units) is kept
+    STABLE across resume (see ``campaign_home_for``). FAIL-CLOSED: an invalid
+    plan/state/schema (a ValueError from the campaign runner) ⇒ ``exit_code`` INVALID,
+    never a partial/forged advance. Per-milestone Acceptance, budget caps, and
+    resume integrity (no re-dispatch / no double-accounted Acceptance) are the
+    campaign runner's guarantees (campaign.py); this only wires + reports them."""
+    import campaign as _cp  # lazy (campaign imports run_loop)
+    campaign_id = (plan or {}).get("campaign_id")
+    home = campaign_home_for(campaign_id or "unidentified", campaign_run_dir)
+    units_dir = os.path.join(home, "units")
+    run_loop_kwargs: Dict[str, object] = {}
+    if repo_dir:
+        run_loop_kwargs["repo_dir"] = repo_dir
+    if memory_root:
+        run_loop_kwargs["memory_root"] = memory_root
+    if adapters is not None:
+        run_loop_kwargs["adapters"] = adapters
+    else:
+        run_loop_kwargs["allow_real"] = allow_real
+
+    base = {"campaign_id": campaign_id, "campaign_home": home, "units_dir": units_dir}
+    try:
+        run_unit = _cp.make_run_unit(charter, units_dir, campaign_id,
+                                     clock=clock, plan=plan, **run_loop_kwargs)
+        resolver = make_campaign_decision_resolver(campaign_id, decision_path, home)
+        st = _cp.run_campaign(plan, home, run_unit, clock=clock,
+                              resume=resume, decision_resolver=resolver)
+    except ValueError as exc:
+        # invalid plan / state / schema / mismatched campaign id → fail-closed.
+        return {**base, "status": "invalid", "error": str(exc),
+                "exit_code": CAMPAIGN_EXIT_INVALID}
+
+    # The live paused unit's identity (so the human can author an identity-bound
+    # decision); empty for a plan-edit gate / checkpoint-less pause with no unit.
+    paused_unit: Dict[str, object] = {}
+    if st.pause_checkpoint:
+        for u in reversed(st.units or []):
+            if isinstance(u, dict) and u.get("checkpoint_path") == st.pause_checkpoint:
+                paused_unit = u
+                break
+    exit_code = {
+        _cp.STATUS_DONE: CAMPAIGN_EXIT_DONE,
+        _cp.STATUS_PAUSED: CAMPAIGN_EXIT_PAUSED,
+        _cp.STATUS_ENDED: CAMPAIGN_EXIT_ENDED,
+    }.get(st.status, CAMPAIGN_EXIT_ERROR)  # a returned 'running' is unreachable → error
+    return {
+        **base,
+        "status": st.status,
+        "pause_reason": st.pause_reason,
+        "pause_checkpoint": st.pause_checkpoint,
+        "pause_milestone_id": paused_unit.get("milestone_id"),
+        "pause_subsprint_id": paused_unit.get("subsprint_id"),
+        "pause_loop_id": paused_unit.get("loop_id"),
+        "milestone_index": st.milestone_index,
+        "milestones_total": len(plan.get("milestones") or []),
+        "subsprints_run": st.subsprints_run,
+        "total_spawns": st.total_spawns,
+        "exit_code": exit_code,
+    }
+
+
+def _campaign_resume_hint(result: dict) -> str:
+    """One actionable line telling the human how to resolve THIS pause + resume."""
+    reason = result.get("pause_reason")
+    if reason == "campaign_plan_signoff":
+        return ('  -> sign the plan: set "signed_by_human": true, then re-run with '
+                "--resume")
+    if reason == "milestone_decompose_required":
+        return ("  -> fill this milestone's subsprint_sequence in the plan, then "
+                "re-run with --resume")
+    if reason == "deliver_followup_required":
+        return ("  -> Deliver inserts the follow-up sub-sprint into the milestone's "
+                "sequence, then re-run with --resume")
+    cpt = result.get("pause_checkpoint")
+    base = os.path.basename(cpt) if cpt else None
+    ident = (f'"campaign_id": {result.get("campaign_id")!r}, '
+             f'"milestone_id": {result.get("pause_milestone_id")!r}, '
+             f'"subsprint_id": {result.get("pause_subsprint_id")!r}, '
+             f'"pause_reason": {reason!r}, "checkpoint": {base!r}')
+    payload = ('"confirm": "no" (ship advisory) | "yes" + "route" (fix)'
+               if reason == "acceptance_fix_required" else '"choice": "<option>"')
+    return ("  -> author an identity-bound decision file "
+            f"(schemas/campaign-decision.schema.json): {{{ident}, {payload}}} "
+            "then re-run with --resume --decision <file>")
+
+
+def print_campaign_result(result: dict) -> None:
+    """Human summary + a STABLE machine-readable status line (constraint: machine
+    output). The ``CAMPAIGN_STATUS=`` prefix line is the parse contract."""
+    status = result.get("status")
+    print("=== aidazi campaign run ===")
+    print(f"campaign id    : {result.get('campaign_id')}")
+    print(f"campaign home  : {result.get('campaign_home')}")
+    print(f"status         : {status}")
+    if status == "invalid":
+        print(f"error          : {result.get('error')}")
+    else:
+        print(f"milestones     : {result.get('milestone_index')}/"
+              f"{result.get('milestones_total')} complete")
+        print(f"spent          : subsprints={result.get('subsprints_run')} "
+              f"spawns={result.get('total_spawns')}")
+    if status == "paused":
+        print(f"paused at      : {result.get('pause_reason')}")
+        if result.get("pause_milestone_id"):
+            print(f"paused unit    : milestone={result.get('pause_milestone_id')} "
+                  f"subsprint={result.get('pause_subsprint_id')} "
+                  f"loop={result.get('pause_loop_id')}")
+        print(f"checkpoint     : {result.get('pause_checkpoint')}")
+        print(_campaign_resume_hint(result))
+    machine = {k: result.get(k) for k in (
+        "campaign_id", "status", "pause_reason", "pause_checkpoint",
+        "pause_milestone_id", "pause_subsprint_id", "pause_loop_id",
+        "milestone_index", "milestones_total", "subsprints_run", "total_spawns",
+        "exit_code")}
+    print("CAMPAIGN_STATUS=" + json.dumps(machine, sort_keys=True))
+
+
 def run_loop(
     charter: dict,
     *,
@@ -411,9 +670,48 @@ def main(argv=None) -> int:
                              "(adds research → gate1 → decompose pre-states)")
     parser.add_argument("--allow-real", action="store_true",
                         help="build REAL adapters (still gated by AIDAZI_ALLOW_REAL_ADAPTER)")
+    parser.add_argument("--campaign", default=None,
+                        help="path to a campaign-plan.json — drive the WHOLE milestone "
+                             "backlog (continuous multi-milestone delivery), not one sub-sprint")
+    parser.add_argument("--campaign-run-dir", default=None,
+                        help="STABLE campaign home (state+audit+units); MUST be the same "
+                             "across --resume (default: a per-campaign dir under the temp dir)")
+    parser.add_argument("--decision", default=None,
+                        help="path to a campaign-decision.json resolving the current pause "
+                             "(for --campaign --resume at a Mechanism-B gate)")
+    parser.add_argument("--resume", action="store_true",
+                        help="resume a paused run from its persisted state")
     args = parser.parse_args(argv)
 
     charter = load_charter(args.charter)
+
+    # Campaign mode: drive the WHOLE milestone backlog (continuous multi-milestone
+    # delivery, 以终为始) — NOT one sub-sprint. Pauses persist to the campaign home and
+    # return a STABLE exit code; resolve the gate, then re-run with --resume.
+    if args.campaign:
+        try:
+            with open(args.campaign, encoding="utf-8") as fh:
+                plan = json.load(fh)
+        except (OSError, ValueError) as exc:
+            result = {"campaign_id": None, "campaign_home": None,
+                      "status": "invalid", "error": f"unreadable plan: {exc}",
+                      "exit_code": CAMPAIGN_EXIT_INVALID}
+            print_campaign_result(result)
+            return result["exit_code"]
+        # Real runs resolve provider base URLs / API keys from .env.local (like the
+        # single-loop path); mock dry-runs need none.
+        if args.allow_real:
+            for r in (os.path.dirname(os.path.abspath(args.campaign)),
+                      os.path.dirname(os.path.abspath(args.charter)), os.getcwd()):
+                if r:
+                    load_local_env(root=r)
+        result = run_campaign_entry(
+            plan, charter, clock=_production_clock(),
+            campaign_run_dir=args.campaign_run_dir, resume=args.resume,
+            decision_path=args.decision, allow_real=args.allow_real,
+            repo_dir=args.repo_dir, memory_root=args.memory_root)
+        print_campaign_result(result)
+        return result["exit_code"]
     run_dir = args.run_dir or tempfile.mkdtemp(prefix=f"aidazi-{args.mode}-")
     loop_id = args.loop_id or f"{args.mode}-{args.subsprint_id}"
 
@@ -468,6 +766,7 @@ def main(argv=None) -> int:
         allow_real=args.allow_real, mode=args.mode,
         repo_dir=args.repo_dir, memory_root=args.memory_root,
         loop_mode=args.loop_mode, gate_resolver=gate_resolver,
+        resume=args.resume,
     )
 
     print(f"=== aidazi schedule run ({info['mode']}) ===")

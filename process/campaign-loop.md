@@ -169,16 +169,33 @@ stays 9 (P-A).
 Implemented (Codex-reviewed): the runner (iterate / pause-detect / spend / audit /
 resume two-mechanisms / plan-signoff), the fail-closed inventory, the production
 `run_unit` wrapper (`make_run_unit` around `run_loop`, converting `GateHardFail` to a
-paused unit), and **per-milestone Acceptance via the derived execution context**
-(§3.6) — so every milestone closes through its own Acceptance gate, with real-Driver
-production-path coverage in `test_campaign_e2e.py`. **Parallel execution of
-dependency-independent milestones is DEFERRED**:
-the sequential runner enforces deterministic topological order and rejects
-duplicate/cyclic/unknown deps, but **lock contention (`module_locks`) and parallel
-execution are NOT implemented** — those schema fields are forward-compat seams for a
-future parallel runner. The per-milestone `full_chain_guided` decompose of
-an empty `subsprint_sequence` is surfaced (`milestone_decompose_required`), not yet
-auto-driven.
+paused unit), **per-milestone Acceptance via the derived execution context** (§3.6) —
+so every milestone closes through its own Acceptance gate, with real-Driver
+production-path coverage in `test_campaign_e2e.py` — AND the **wired CLI entrypoint**
+`engine-kit/scheduling/run_loop.py --campaign <plan.json>` (`run_campaign_entry`): it
+loads + schema-validates the plan, drives the backlog via the production path, and
+returns STABLE exit codes (**0** done / **10** paused-for-a-human / **11** ended /
+**2** invalid) plus a machine-readable `CAMPAIGN_STATUS=` status line. Human gates are
+resolved either by editing the PLAN (`campaign_plan_signoff` → `signed_by_human: true`;
+`milestone_decompose_required` → fill `subsprint_sequence`; `deliver_followup_required`
+→ Deliver inserts the sub-sprint) or, for a Mechanism-B sign-off/route gate, by an
+**identity-bound decision file** (`schemas/campaign-decision.schema.json` — honored only
+when its `campaign_id` + `pause_reason` + `checkpoint`(basename, exact) AND — for a unit
+pause — the live paused unit's `milestone_id` + `subsprint_id` (read from
+`campaign-state.json`) all match; fail-closed, so a stale decision from another
+milestone/sub-sprint/gate — even one with a colliding checkpoint basename — can't be
+replayed. It carries `choice` for a dispatch-table gate, or `confirm`(+`route`) for the
+`acceptance_fix_required` gate (§3.5); `--resume --decision <file>`). A fresh-process
+`--resume` re-dispatches no completed unit and re-counts no Acceptance (the runner's
+presence-/crash-recovery guarantees). CLI coverage:
+`engine-kit/scheduling/tests/test_run_loop_campaign.py`.
+
+**Deferred (Tier-1 boundary).** **Parallel execution of dependency-independent
+milestones is NOT implemented**: the sequential runner enforces deterministic
+topological order and rejects duplicate/cyclic/unknown deps, but lock contention
+(`module_locks`) and parallel execution are forward-compat schema seams only. The
+per-milestone `full_chain_guided` decompose of an empty `subsprint_sequence` is
+surfaced (`milestone_decompose_required`), not yet auto-driven.
 
 ## §7 Editing this doc
 Process-tier; edits at fold-back cadence (Constitution §8). The code in

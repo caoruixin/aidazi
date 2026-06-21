@@ -1,0 +1,25 @@
+{
+  "campaign_id": "demo-campaign",
+  "goal": "Deliver the demo feature end-to-end across two milestones (以终为始: this whole goal, not one milestone).",
+  "signed_by_human": false,
+  "budget": {
+    "max_subsprints": 20,
+    "max_total_spawns": 200,
+    "max_wall_clock_minutes": 600
+  },
+  "milestones": [
+    {
+      "id": "m1-foundation",
+      "objective": "Establish the foundational module and its public contracts.",
+      "acceptance_bar": "Foundation module builds, its unit tests pass, and its contracts are documented.",
+      "subsprint_sequence": ["sprint-001", "sprint-002"]
+    },
+    {
+      "id": "m2-feature",
+      "objective": "Build the user-facing feature on top of the foundation.",
+      "acceptance_bar": "The feature works end-to-end against the signed acceptance checklist.",
+      "functional_acceptance": "static",
+      "subsprint_sequence": ["sprint-003"]
+    }
+  ]
+}

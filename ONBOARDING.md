@@ -428,6 +428,13 @@ The bootstrap is done. Hand off to the **standalone driver** — this is where
 - **Scheduling** (overnight Auto Loop / milestone Delivery Loop) is plain cron /
   CI — never a harness scheduler (plan §4.2). Wire it when you want unattended
   runs.
+- **Drive the whole goal** (continuous multi-milestone delivery, 以终为始): the
+  single-loop driver above runs ONE milestone and stops. Once the Deliver agent has
+  authored + the Customer has signed an ordered milestone backlog
+  (`templates/campaign-plan.example.json`; `schemas/campaign-plan.schema.json`), the
+  **Campaign Loop** drives the ENTIRE backlog through the same driver, pausing only at
+  human gates: `engine-kit/scheduling/run_loop.py --charter charter.yaml --campaign
+  campaign-plan.json`. See `FIRST-LOOP.md` → "Drive the whole goal" + `process/campaign-loop.md`.
 
 Point the human at the per-track guide for the substance of the first
 milestone: `docs/greenfield-guide.md` STEP 5-6 (the Phase 1-5 funnel) or

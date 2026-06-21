@@ -64,6 +64,13 @@ fix-route, a review follow-up, a scope re-plan), author the routed sub-sprint; t
 campaign resumes once it exists. You do NOT edit the campaign runner or auto-advance
 logic — that is deterministic engine behavior.
 
+The human starts the Campaign Loop with `engine-kit/scheduling/run_loop.py --charter
+<charter> --campaign <campaign-plan.json>` (`FIRST-LOOP.md` → "Drive the whole goal");
+it pauses at `campaign_plan_signoff` until the backlog is signed, then auto-drives.
+YOU author the plan (`templates/campaign-plan.example.json` is the starting shape) and
+resolve `deliver_followup_required` / `milestone_decompose_required` pauses by editing
+the plan; you do NOT run the CLI.
+
 ### §2.1 Path 1 — Research-driven (most common)
 
 Trigger: a Research Agent brief lands with `customer_signed: true` (gate 1 passed).
