@@ -24,13 +24,13 @@ notes: >
 
 # Quick-Fix lane
 
-> **STATUS — Commit 1 of 3 (specification + contracts only).** This spec, the
-> request/record schemas, and the machine-readable protected-surface policy have
-> landed. The **launcher, ephemeral worktree, guard, verification, and record runtime
-> are NOT yet delivered** (Commit 2) and **no harness adapter exists yet** (Commit 3).
-> **The Quick-Fix lane is therefore NOT yet usable.** Do not advertise it as available,
-> and do not attempt to run it, until Commit 3 lands a supported harness adapter with
-> recorded cold-start evidence. Until then every entry point fails closed.
+> **STATUS — Commit 2 of 3 (runtime core delivered; still NOT usable).** This spec, the
+> request/record schemas, the protected-surface policy, AND the runtime (launcher,
+> ephemeral worktree, bundle, guard, verification, record, harness-support registry) have
+> landed. But **no harness adapter exists yet** (Commit 3), and the shipped harness-support
+> registry marks every harness **UNSUPPORTED**, so **every real launch fails closed** and
+> **the Quick-Fix lane is NOT yet usable.** Do not advertise it as available, or attempt to
+> run it, until Commit 3 lands a supported harness adapter with recorded cold-start evidence.
 
 ## §1 What it is (and what it is NOT)
 

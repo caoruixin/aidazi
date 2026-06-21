@@ -455,8 +455,9 @@ The bootstrap is done. Hand off to the **standalone driver** — this is where
   (`process/quickfix-lane.md`) instead of a loop — a human-explicit, per-session lane
   that runs OUTSIDE the Delivery/Campaign Loop. It is **not** a loop and never skips
   MANDATORY_CHECKPOINTS. Naming discipline (§1.7-E): keep it distinct from every "*Loop*"
-  concept. Its launcher lands in a later increment, so it is **not yet usable**; until
-  then, do everything through the loops above or pure human-paste.
+  concept. Its runtime has landed but there is no supported harness adapter yet, so every
+  launch **fails closed** and it is **not yet usable**; until then, do everything through
+  the loops above or pure human-paste.
 
 Point the human at the per-track guide for the substance of the first
 milestone: `docs/greenfield-guide.md` STEP 5-6 (the Phase 1-5 funnel) or

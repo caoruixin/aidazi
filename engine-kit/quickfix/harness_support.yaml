@@ -1,0 +1,20 @@
+# Tiered Quick-Fix harness support (process/quickfix-lane.md §10).
+#
+# A harness is `supported` ONLY when it has a delivered adapter AND recorded real
+# cold-start evidence. Until then it is `unsupported` and the launcher FAILS CLOSED for it
+# — there is no silent degradation onto an unproven harness.
+#
+# Commit 2 ships EVERY harness unsupported (no adapter exists yet). Commit 3 flips the
+# first real adapter (claude_code) to `supported` and records its evidence pointer.
+
+version: 1
+harnesses:
+  claude_code:
+    status: unsupported
+    reason: "adapter + real cold-start evidence land in Commit 3"
+  codex:
+    status: unsupported
+    reason: "no adapter yet"
+  cursor:
+    status: unsupported
+    reason: "no adapter yet"

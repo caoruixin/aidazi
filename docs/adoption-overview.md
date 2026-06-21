@@ -110,7 +110,7 @@ One-liners: Auto Loop = *"my agent gets better at being itself."* Delivery Loop 
 
 Conflating them in your docs is a §1.7-E framework breach — not pedantry, but because they have different debugging implications. Full disambiguation: `docs/two-loops-explainer.md`.
 
-**A third, loop-independent concept — the Quick-Fix lane.** Distinct from both loops above, the **Quick-Fix lane** (`process/quickfix-lane.md`) is a human-explicit, per-session maintenance lane for small non-behavioral fixes that runs *outside* any loop. Name it distinctly too (§1.7-E): it is not the Auto Loop, not the Delivery Loop, and it never skips MANDATORY_CHECKPOINTS — it never enters a loop in the first place. Default behavior stays Full; the agent never self-downgrades. *Status: specified; not yet usable — the launcher lands in a later increment.*
+**A third, loop-independent concept — the Quick-Fix lane.** Distinct from both loops above, the **Quick-Fix lane** (`process/quickfix-lane.md`) is a human-explicit, per-session maintenance lane for small non-behavioral fixes that runs *outside* any loop. Name it distinctly too (§1.7-E): it is not the Auto Loop, not the Delivery Loop, and it never skips MANDATORY_CHECKPOINTS — it never enters a loop in the first place. Default behavior stays Full; the agent never self-downgrades. *Status: spec + runtime landed; not yet usable — a supported harness adapter lands in a later increment.*
 
 ## §6 Tracks (what kind of thing are you building?)
 
