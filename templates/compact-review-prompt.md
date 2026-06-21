@@ -168,6 +168,8 @@ aidazi/schemas/review-verdict.schema.json:
 Use scope_claim field to sign the sub-sprint scope you judged against.
 ```
 
+**Severity policy:** only **P0/P1** are blocking — they set `decision: fix_required` and count toward `blocking_count`. **P2 is record-only:** list it in `findings` for the record, but never set `decision: fix_required` or raise `blocking_count` for a P2, and don't expect it to be fixed — the delivery loop injects only P0/P1 into the Dev auto-fix round (a verdict whose findings are all P2 must be `pass`; `process/delivery-loop.md` §4.4).
+
 ### §7 Pre-output checklist
 
 ```

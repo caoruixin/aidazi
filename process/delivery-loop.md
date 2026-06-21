@@ -548,11 +548,13 @@ Adopters tighten / loosen this trigger set in `docs/current/adoption-state.md` p
 
 ### §4.4 Auto-fix iteration bounds
 
-When `run_review` returns `fix_required` AND charter permits `auto_fix_iteration.enabled: true`:
+**Severity policy (P0/P1 block; P2 is record-only).** Only **P0/P1** findings are blocking: they drive `decision: fix_required`, count toward `blocking_count`, and are the ONLY findings injected into the Dev auto-fix brief. **P2 is strictly record-only** — it stays in the Reviewer verdict (`docs/codex-findings.md`) and the audit ledger (and/or an improvement backlog), but is never fixed, never counted, and never blocks close. A `fix_required` whose findings are **all P2** carries no blocking work: the engine **normalizes it to a clean pass** — fail-closed (only when `findings` is non-empty and every entry is a known-severity P2; an empty / unknown-severity / malformed finding set keeps the existing `fix_required` handling) — and audits the original + effective decision + reason as `review_decision_normalized`.
+
+When `run_review` returns `fix_required` (carrying ≥1 blocking P0/P1 finding) AND charter permits `auto_fix_iteration.enabled: true`:
 - Orchestrator increments `fix_round` counter.
 - If `fix_round > charter.auto_pass_rules.auto_fix_iteration.max_rounds` → halt; emit `gate_hard_fail`.
 - If any finding severity > `only_if_findings_severity_at_most` → halt; emit MANDATORY_CHECKPOINT.
-- Else spawn `spawn_deliver_plan_fix` with review findings as input; produce new sub-sprint; re-enter `dev_pending`.
+- Else spawn `spawn_deliver_plan_fix` with the **blocking (P0/P1) review findings** as input (P2 findings are NOT injected into the fix brief); produce new sub-sprint; re-enter `dev_pending`.
 
 The bound prevents infinite Dev ↔ Review ping-pong.
 

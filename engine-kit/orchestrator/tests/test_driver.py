@@ -901,12 +901,18 @@ def _fix_review(findings, blocking=1, summary="needs fix"):
 
 
 def _autofix_charter(*, enabled=True, max_rounds=3,
-                     only_if_severity_at_most="P2",
+                     only_if_severity_at_most="P1",
                      dry_stop_threshold=None,
                      max_fix_rounds_total=None):
     """A charter with autonomy.auto_pass_rules.auto_fix_iteration configured so
     the controller can authorize auto-iteration (NOT the HITL human-confirm
-    path)."""
+    path).
+
+    Default severity ceiling is P1: P2 is record-only (a fix_required whose
+    findings are all P2 is normalized to a pass upstream and never reaches the
+    auto-fix loop), so a P1 ceiling — auto-fix P1, escalate P0 — is the meaningful
+    default. Tests asserting severity escalation pass an explicit ceiling (e.g.
+    "P2" with a P0 finding)."""
     charter = load_charter(CHARTER_PATH)
     afi = {
         "enabled": enabled,
@@ -948,7 +954,7 @@ class TestLoopControllerAutoFixContinue(unittest.TestCase):
         # Auto-fix enabled + within bounds → controller `continue` → the driver
         # spawns ANOTHER dev→gate→review round, then advances on the clean verdict.
         review_responses = {
-            ("review", 0): _fix_review([_finding("F1", "P2")]),
+            ("review", 0): _fix_review([_finding("F1", "P1")]),
             ("review", 1): CLEAN_REVIEW,
         }
         with tempfile.TemporaryDirectory() as d:
@@ -980,7 +986,7 @@ class TestLoopControllerAutoFixContinue(unittest.TestCase):
         # enabler where the fix round re-dispatched the bare plan projection.
         review_responses = {
             ("review", 0): _fix_review(
-                [_finding("FX-1", "P2", layer="semantic_planner")]),
+                [_finding("FX-1", "P1", layer="semantic_planner")]),
             ("review", 1): CLEAN_REVIEW,
         }
         with tempfile.TemporaryDirectory() as d:
@@ -1007,7 +1013,7 @@ class TestLoopControllerAutoFixContinue(unittest.TestCase):
             self.assertIn("Fix round 1", fix)
             self.assertIn("EXISTING code", fix)
             self.assertIn("FX-1", fix)
-            self.assertIn("P2", fix)
+            self.assertIn("P1", fix)
             self.assertIn("semantic_planner", fix)
             self.assertIn("src/x.py:4", fix)  # _finding evidence = src/x.py:len(id)
 
@@ -1065,8 +1071,8 @@ class TestLoopControllerAutoFixContinue(unittest.TestCase):
         # clean. Each fix-round Dev prompt must carry THAT round's findings, never a
         # stale earlier set (round 2 Dev sees B2, not A1). (Codex P2.)
         review_responses = {
-            ("review", 0): _fix_review([_finding("A1", "P2")]),
-            ("review", 1): _fix_review([_finding("B2", "P2")]),
+            ("review", 0): _fix_review([_finding("A1", "P1")]),
+            ("review", 1): _fix_review([_finding("B2", "P1")]),
             ("review", 2): CLEAN_REVIEW,
         }
         with tempfile.TemporaryDirectory() as d:
@@ -1098,7 +1104,7 @@ class TestLoopControllerAutoFixContinue(unittest.TestCase):
             charter = _autofix_charter(enabled=False, max_rounds=3)
             drv_ = _driver(
                 d, charter=charter,
-                adapters=_adapters(review=_fix_review([_finding("F1", "P2")])))
+                adapters=_adapters(review=_fix_review([_finding("F1", "P1")])))
             final = drv_.run(subsprint_id="sprint-001")
             self.assertEqual(final.state, STATE_HALTED)
             self.assertEqual(final.fix_round, 1)
@@ -1208,7 +1214,7 @@ class TestLoopControllerHalts(unittest.TestCase):
             charter = _autofix_charter(enabled=False)  # any path records it
             drv_ = _driver(
                 d, charter=charter,
-                adapters=_adapters(review=_fix_review([_finding("F1", "P2")])))
+                adapters=_adapters(review=_fix_review([_finding("F1", "P1")])))
             drv_.run(subsprint_id="sprint-001")
             events = audit.read_events(drv_.audit_ledger)
             decs = [e for e in events if e["type"] == "controller_decision"]
@@ -1267,7 +1273,7 @@ class TestLoopMemoryIngressAndClose(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
                 tempfile.TemporaryDirectory() as mem:
             charter = _autofix_charter(enabled=False)  # HITL path still records
-            fix_review = _fix_review([_finding("F1", "P2",
+            fix_review = _fix_review([_finding("F1", "P1",
                                                layer="semantic_planner")])
             # Loop 1.
             drv1 = Driver(charter, d, _adapters(review=fix_review),
@@ -2993,6 +2999,137 @@ class PromptContractCodexFixTests(unittest.TestCase):
             drv_._step_review = _halting_step_review
             drv_._handle_fix_required(_fix_review([_finding("F1")]))  # must NOT raise
             self.assertEqual(drv_.state.state, STATE_HALTED)
+
+
+class TestRecordOnlyP2Policy(unittest.TestCase):
+    """P2 is strictly record-only: only P0/P1 block close / drive the auto-fix
+    round; a fix_required carrying only P2 findings normalizes to a clean pass.
+    (Item 1 — fix P0/P1 only; record-only, non-blocking P2.)"""
+
+    def test_fix_round_guidance_injects_only_blocking_p0_p1(self):
+        # The auto-fix Dev brief carries ONLY blocking (P0/P1) findings; a P2
+        # (record-only) finding in the SAME verdict is never injected.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=_autofix_charter(enabled=True))
+            drv_.state = RunState(loop_id=drv_.loop_id, subsprint_id="sprint-001")
+            drv_.state.fix_round = 1
+            drv_.state.last_verdict = _fix_review([
+                _finding("BLK-P0", "P0"),
+                _finding("BLK-P1", "P1"),
+                _finding("REC-P2", "P2"),
+            ])
+            g = drv_._fix_round_guidance()
+            self.assertIn("BLK-P0", g)
+            self.assertIn("BLK-P1", g)
+            self.assertNotIn("REC-P2", g)        # P2 stays OUT of the fix brief
+            self.assertIn("EXISTING code", g)
+
+    def test_all_p2_fix_required_normalizes_to_pass(self):
+        # A fix_required whose findings are ALL P2 → effective clean pass: it
+        # advances (reaches close), spends NO fix round, and audits the
+        # normalization (original + effective decision + reason).
+        with tempfile.TemporaryDirectory() as d:
+            review = _fix_review([_finding("REC-1", "P2"),
+                                  _finding("REC-2", "P2")], blocking=0)
+            drv_ = _driver(d, charter=_autofix_charter(enabled=False),
+                           adapters=_adapters(review=review))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            self.assertEqual(final.fix_round, 0)          # no fix round entered
+            events = audit.read_events(drv_.audit_ledger)
+            types = [e["type"] for e in events]
+            self.assertIn("review_decision_normalized", types)
+            self.assertNotIn("review_fix_required", types)
+            self.assertNotIn("controller_decision", types)
+            norm = next(e for e in events
+                        if e["type"] == "review_decision_normalized")
+            self.assertEqual(norm["payload"]["original_decision"], "fix_required")
+            self.assertEqual(norm["payload"]["effective_decision"], "pass")
+            self.assertEqual(norm["payload"]["reason"],
+                             "all_findings_record_only_p2")
+            self.assertEqual(sorted(norm["payload"]["finding_ids"]),
+                             ["REC-1", "REC-2"])
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_all_p2_re_review_normalizes_and_advances(self):
+        # The inner auto-fix re-review is uniform with the main dispatch: a blocking
+        # P1 triggers a fix round; the re-review returns only P2 → it is normalized to
+        # a pass and the loop ADVANCEs. The P2 re-review finding must NEVER reach a Dev
+        # prompt (record-only), and the normalization must be audited.
+        review_responses = {
+            ("review", 0): _fix_review([_finding("BLK", "P1")]),
+            ("review", 1): _fix_review([_finding("REC", "P2")], blocking=0),
+        }
+        with tempfile.TemporaryDirectory() as d:
+            dev = _PromptCapturingMock(
+                {("dev",): DEV_ARTIFACT}, harness="claude_code",
+                provider="anthropic", model="claude-sonnet-4-6")
+            adapters = _adapters()
+            adapters["dev"] = dev
+            adapters["review"] = MockAdapter(
+                review_responses, harness="headless",
+                provider="deepseek", model="deepseek-chat")
+            drv_ = _driver(d, charter=_autofix_charter(enabled=True, max_rounds=3),
+                           adapters=adapters)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            # exactly: initial Dev + one fix round; the blocking P1 reached the fix
+            # round's Dev prompt, the record-only P2 re-review finding reached NONE.
+            self.assertEqual(len(dev.prompts), 2)
+            self.assertIn("BLK", dev.prompts[1])
+            self.assertFalse(any("REC" in p for p in dev.prompts),
+                             "the record-only P2 re-review finding must not be injected")
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("review_decision_normalized", types)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_record_only_predicate_is_fail_closed(self):
+        # _is_record_only_fix_required is the policy guard: true ONLY for a
+        # SCHEMA-VALID, non-empty, all-EXACTLY-P2 fix_required. A blocking finding,
+        # an out-of-contract P3, an unknown/missing severity, a malformed entry,
+        # empty findings, or a non-fix decision → False (fail-closed).
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            # schema-valid + all P2 → True
+            self.assertTrue(drv_._is_record_only_fix_required(
+                _fix_review([_finding("A", "P2"), _finding("B", "P2")], blocking=0)))
+            # schema-valid but a blocking P1 present → False (the all-P2 semantic gate)
+            self.assertFalse(drv_._is_record_only_fix_required(
+                _fix_review([_finding("A", "P2"), _finding("B", "P1")])))
+            # out-of-contract P3 severity → schema-invalid → False (NOT record-only)
+            self.assertFalse(drv_._is_record_only_fix_required(
+                _fix_review([_finding("A", "P3")])))
+            # unknown severity → schema-invalid → False
+            self.assertFalse(drv_._is_record_only_fix_required(
+                _fix_review([_finding("A", "P9")])))
+            # missing severity → schema-invalid → False
+            self.assertFalse(drv_._is_record_only_fix_required(
+                {"decision": "fix_required", "blocking_count": 0, "summary": "x",
+                 "findings": [{"id": "A", "layer": "infra",
+                               "evidence": ["x:1"], "rationale": "r"}]}))
+            # empty findings → False (no blocking work, but nothing to record either)
+            self.assertFalse(drv_._is_record_only_fix_required(
+                {"decision": "fix_required", "blocking_count": 0, "summary": "x",
+                 "findings": []}))
+            # malformed (non-dict) entry alongside a P2 → schema-invalid → False
+            self.assertFalse(drv_._is_record_only_fix_required(
+                {"decision": "fix_required", "blocking_count": 0, "summary": "x",
+                 "findings": [_finding("A", "P2"), "nope"]}))
+            # not a fix_required → False
+            self.assertFalse(drv_._is_record_only_fix_required(CLEAN_REVIEW))
+
+    def test_empty_findings_fix_required_fails_closed(self):
+        # A fix_required with NO findings must NOT auto-pass — it keeps the
+        # existing fix_required handling (HITL halt here); no normalization audit.
+        with tempfile.TemporaryDirectory() as d:
+            review = {"decision": "fix_required", "blocking_count": 0,
+                      "summary": "x", "findings": []}
+            drv_ = _driver(d, charter=_autofix_charter(enabled=False),
+                           adapters=_adapters(review=review))
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_HALTED)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertNotIn("review_decision_normalized", types)
 
 
 if __name__ == "__main__":

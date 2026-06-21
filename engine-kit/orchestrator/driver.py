@@ -1548,8 +1548,11 @@ class Driver:
             "defect that ships wrong behavior.\n"
             "- P1: a blocking defect within scope (e.g. a missing test on a semantic "
             "surface, a contract violation) that is not P0.\n"
-            "- P2: a non-blocking improvement.\n"
-            "- blocking_count = count of P0 + P1 findings.\n\n",
+            "- P2: a non-blocking improvement — RECORD-ONLY. List it in findings for "
+            "the record, but it MUST NOT set decision=fix_required and MUST NOT be "
+            "counted in blocking_count. Only P0/P1 block close or drive a fix round; "
+            "P2 is never fixed or re-driven in this loop.\n"
+            "- blocking_count = count of P0 + P1 findings (P2 excluded).\n\n",
             "## Output — emit a review-verdict (schemas/review-verdict.schema.json)\n"
             "Return ONE JSON object and nothing else:\n"
             "  decision: \"pass\" | \"fix_required\" | \"out_of_scope_review\" "
@@ -1663,7 +1666,14 @@ class Driver:
         if not isinstance(lv, dict) or lv.get("decision") != "fix_required":
             return ""
         findings = [f for f in (lv.get("findings") or []) if isinstance(f, dict)]
-        if not findings:
+        # P2 is strictly RECORD-ONLY: only blocking (P0/P1) findings drive the
+        # auto-fix round. Non-blocking P2 findings are NEVER injected into the Dev
+        # fix brief — they live in the Reviewer verdict (docs/codex-findings.md) and
+        # the audit record, not the fix prompt. A fix_required whose findings are
+        # ALL P2 is normalized to a clean pass upstream (_is_record_only_fix_required),
+        # so a genuine fix round always carries >=1 blocking finding here.
+        blocking = [f for f in findings if self._is_blocking_finding(f)]
+        if not blocking:
             return ""
         lines = [
             "",
@@ -1674,7 +1684,7 @@ class Driver:
             "sub-sprint from scratch, do NOT widen scope, and preserve passing work.",
             "",
         ]
-        for f in findings:
+        for f in blocking:
             fid = f.get("id") or "(no-id)"
             sev = f.get("severity") or "P?"
             layer = f.get("layer")
@@ -2247,6 +2257,16 @@ class Driver:
                 review_verdict = self._step_review()
                 if self.state.state == STATE_HALTED:
                     return  # review-spec refinement halt — do not decide/advance
+                # P2-record-only normalization: a fix_required whose findings are
+                # ALL record-only (P2) carries no blocking work — normalize it to an
+                # effective clean pass (decision -> "pass") so non-blocking
+                # improvements never trigger a fix round or block close. Strictly
+                # guarded + fail-closed (no-op otherwise; see
+                # _maybe_normalize_record_only). A normalized verdict then falls
+                # through (no handler) and the loop advances REVIEW_PENDING →
+                # CLOSE_PENDING exactly as a genuine pass would.
+                if review_verdict.get("decision") == "fix_required":
+                    self._maybe_normalize_record_only(review_verdict)
                 decision = review_verdict.get("decision")
                 if decision == "fix_required":
                     self._handle_fix_required(review_verdict)
@@ -2326,6 +2346,85 @@ class Driver:
             if worst is None or lc.severity_rank(sev) < lc.severity_rank(worst):
                 worst = str(sev).upper()
         return worst
+
+    @staticmethod
+    def _is_blocking_finding(f: object) -> bool:
+        """A finding BLOCKS close / drives the auto-fix round iff it carries a
+        KNOWN severity at or worse than P1 (rank <= 1 = P0/P1). P2 (record-only)
+        and any unknown/absent severity are NOT blocking. An unknown severity is
+        deliberately non-blocking here — the verdict-level fail-closed admission
+        (_is_record_only_fix_required), not this per-finding helper, decides what a
+        malformed verdict does."""
+        if not isinstance(f, dict):
+            return False
+        r = lc.severity_rank(f.get("severity"))
+        return r is not None and r <= 1
+
+    @staticmethod
+    def _is_record_only_finding(f: object) -> bool:
+        """A finding is RECORD-ONLY iff it carries severity EXACTLY P2 (rank == 2).
+        Record-only findings stay in the Reviewer verdict + audit record but are
+        NEVER injected into the Dev fix brief and never block close. The taxonomy is
+        strictly P0/P1/P2; an unknown/absent severity OR a vestigial out-of-contract
+        rank (e.g. P3 in loop_controller.SEVERITY_RANK) is NOT record-only — it is
+        ambiguous and fails closed at the caller (never silently auto-passed)."""
+        if not isinstance(f, dict):
+            return False
+        return lc.severity_rank(f.get("severity")) == 2
+
+    def _is_record_only_fix_required(self, review_verdict: dict) -> bool:
+        """True iff a ``fix_required`` verdict carries ONLY record-only (P2)
+        findings — no blocking work — so it is normalized to a clean pass (_drive).
+
+        STRICTLY guarded + fail-closed (constraint): true ONLY when
+          * the decision is ``fix_required``;
+          * the verdict is SCHEMA-VALID against review-verdict.schema.json — the
+            policy guard RE-VALIDATES rather than trusting the caller, so a verdict
+            reaching this via a non-standard path with an out-of-contract severity
+            (e.g. a vestigial P3) or a missing required field is NEVER auto-passed;
+          * ``findings`` is a NON-EMPTY list; and
+          * EVERY finding is record-only (a known severity of EXACTLY P2).
+        ANY blocking (P0/P1) finding, ANY non-P2/unknown severity, ANY schema
+        violation, ANY malformed entry, or an empty/absent ``findings`` ⇒ False ⇒
+        the existing _handle_fix_required path runs UNCHANGED."""
+        if review_verdict.get("decision") != "fix_required":
+            return False
+        review_schema = self.schemas.get("review")
+        if (not review_schema
+                or validate_verdict(review_verdict, review_schema) is not None):
+            return False
+        findings = review_verdict.get("findings")
+        if not isinstance(findings, list) or not findings:
+            return False
+        return all(self._is_record_only_finding(f) for f in findings)
+
+    def _maybe_normalize_record_only(self, review_verdict: dict) -> bool:
+        """If ``review_verdict`` is a record-only (all-P2) ``fix_required``,
+        normalize it IN PLACE to an effective clean pass (``decision`` -> "pass")
+        and audit the normalization (constraint: the audit retains the ORIGINAL +
+        EFFECTIVE decision + reason). Returns True iff it normalized.
+
+        Fail-closed + idempotent: returns False and leaves the verdict UNTOUCHED for
+        anything not strictly record-only (a blocking/unknown/malformed/empty-finding
+        verdict, or one already 'pass'), so the existing _handle_fix_required path
+        runs unchanged. Used by BOTH the main review dispatch and the inner auto-fix
+        re-review so the policy is uniform across paths. ``review_verdict`` is the
+        same object as ``self.state.last_verdict`` (set in _spawn), so the persisted
+        effective decision stays consistent; the original is preserved in the audit
+        ledger only."""
+        if not self._is_record_only_fix_required(review_verdict):
+            return False
+        self._audit("review_decision_normalized", {
+            "original_decision": "fix_required",
+            "effective_decision": "pass",
+            "reason": "all_findings_record_only_p2",
+            "blocking_count": review_verdict.get("blocking_count"),
+            "finding_ids": [str(f.get("id") or "(no-id)")
+                            for f in review_verdict.get("findings") or []
+                            if isinstance(f, dict)],
+        })
+        review_verdict["decision"] = "pass"
+        return True
 
     def _build_loop_state(self, review_verdict: dict,
                           new_keys: Sequence[str]) -> "lc.LoopState":
@@ -2418,9 +2517,17 @@ class Driver:
                 self.state.rounds_since_new_finding += 1
             self._save_state()
 
+            _findings = [f for f in (verdict.get("findings") or [])
+                         if isinstance(f, dict)]
             self._audit("review_fix_required",
                         {"blocking_count": verdict.get("blocking_count"),
                          "fix_round": self.state.fix_round,
+                         "blocking_finding_ids":
+                             [str(f.get("id") or "(no-id)") for f in _findings
+                              if self._is_blocking_finding(f)],
+                         "recorded_only_p2_finding_ids":
+                             [str(f.get("id") or "(no-id)") for f in _findings
+                              if self._is_record_only_finding(f)],
                          "new_finding_keys": list(new_keys),
                          "rounds_since_new_finding":
                              self.state.rounds_since_new_finding})
@@ -2517,11 +2624,19 @@ class Driver:
             if d2 == "out_of_scope_review":
                 self._handle_out_of_scope_review(verdict)
                 return
+            if d2 == "fix_required":
+                # A record-only (all-P2) re-review carries no blocking work →
+                # normalize it to an effective clean pass too (uniform with the main
+                # dispatch) so the loop ADVANCEs instead of spending empty fix rounds
+                # on non-blocking findings.
+                self._maybe_normalize_record_only(verdict)
+                d2 = verdict.get("decision")
             if d2 != "fix_required":
-                # The re-review came back clean (or any non-fix verdict): hand the
-                # clean verdict to the controller via the loop top, which maps it
-                # to ADVANCE. We loop with this verdict; fix_round is NOT bumped
-                # again for a clean pass, so step back one (the top re-bumps).
+                # The re-review came back clean (a genuine pass, or a normalized
+                # record-only verdict): hand the clean verdict to the controller via
+                # the loop top, which maps it to ADVANCE. We loop with this verdict;
+                # fix_round is NOT bumped again for a clean pass, so step back one
+                # (the top re-bumps).
                 self.state.fix_round -= 1
             # loop: re-decide on the new verdict.
 
