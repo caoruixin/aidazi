@@ -636,6 +636,233 @@ class TestCampaignCrashRecovery(unittest.TestCase):
             self.assertEqual(errs, [], f"persisted state diverges from schema: {errs}")
 
 
+class TestCampaignFailClosedIngress(unittest.TestCase):
+    """Fail-closed campaign-tier I/O: the plan (admitted at construction) and the
+    persisted state (admitted on resume) are validated against their JSON schemas
+    BEFORE they drive the outer loop — a malformed plan or a corrupted state.json
+    raises rather than silently degrading (delivery-loop §4.2.7 discipline)."""
+
+    def test_malformed_plan_missing_goal_rejected_at_construction(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = {"campaign_id": "camp-1",
+                   "milestones": [{"id": "m1", "objective": "a"}]}  # no `goal`
+            with self.assertRaises(ValueError) as ctx:
+                cp.Campaign(bad, d, _fake_run_unit({}), clock=_clock())
+            self.assertIn("schema validation", str(ctx.exception))
+
+    def test_plan_with_unknown_top_level_key_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = _plan([{"id": "m1", "objective": "a"}])
+            bad["surprise"] = True  # plan root is additionalProperties:false
+            with self.assertRaises(ValueError):
+                cp.Campaign(bad, d, _fake_run_unit({}), clock=_clock())
+
+    def test_milestone_missing_objective_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = _plan([{"id": "m1"}])  # a milestone requires id + objective
+            with self.assertRaises(ValueError):
+                cp.Campaign(bad, d, _fake_run_unit({}), clock=_clock())
+
+    def test_corrupted_persisted_state_rejected_on_resume(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1"]}])
+            cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())._save()
+            sp = os.path.join(d, "campaign-state.json")
+            with open(sp) as fh:
+                st = json.load(fh)
+            st["status"] = "bogus"  # not in the status enum
+            with open(sp, "w") as fh:
+                json.dump(st, fh)
+            with self.assertRaises(ValueError) as ctx:
+                cp.Campaign(plan, d, _fake_run_unit({}),
+                            clock=_clock()).run(resume=True)
+            self.assertIn("schema validation", str(ctx.exception))
+
+    def test_state_for_different_campaign_rejected_on_resume(self):
+        # A schema-valid state whose campaign_id belongs to ANOTHER campaign must not
+        # drive THIS plan (state↔plan binding, like the Driver's loop_id binding).
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1"]}], campaign_id="camp-A")
+            cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())._save()
+            sp = os.path.join(d, "campaign-state.json")
+            with open(sp) as fh:
+                st = json.load(fh)
+            st["campaign_id"] = "camp-B"  # schema-valid id, but a different campaign
+            with open(sp, "w") as fh:
+                json.dump(st, fh)
+            with self.assertRaises(ValueError) as ctx:
+                cp.Campaign(plan, d, _fake_run_unit({}),
+                            clock=_clock()).run(resume=True)
+            self.assertIn("does not match", str(ctx.exception))
+
+    def test_out_of_range_cursor_rejected_on_resume(self):
+        # A schema-valid cursor that points PAST the backlog must be rejected rather
+        # than silently completing the campaign (the Codex-flagged silent-done bug):
+        # `while milestone_index < len(milestones)` would otherwise fall through.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1"]}])
+            cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())._save()
+            sp = os.path.join(d, "campaign-state.json")
+            with open(sp) as fh:
+                st = json.load(fh)
+            st["status"] = "running"
+            st["cursor"]["milestone_index"] = 5  # the plan has 1 milestone
+            with open(sp, "w") as fh:
+                json.dump(st, fh)
+            with self.assertRaises(ValueError) as ctx:
+                cp.Campaign(plan, d, _fake_run_unit({}),
+                            clock=_clock()).run(resume=True)
+            self.assertIn("out-of-range", str(ctx.exception))
+
+    def test_boundary_cursor_without_units_rejected_on_resume(self):
+        # The Codex-flagged hole: a boundary cursor (subsprint_index == len(seq)) with
+        # NO completed units behind it would fall through the inner loop and skip the
+        # milestone. The cursor must be backed by the unit ledger.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1", "s2"]}])
+            cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())._save()
+            sp = os.path.join(d, "campaign-state.json")
+            with open(sp) as fh:
+                st = json.load(fh)
+            st["status"] = "running"
+            st["cursor"]["subsprint_index"] = 2  # == len(seq), but units is empty
+            with open(sp, "w") as fh:
+                json.dump(st, fh)
+            with self.assertRaises(ValueError) as ctx:
+                cp.Campaign(plan, d, _fake_run_unit({}),
+                            clock=_clock()).run(resume=True)
+            self.assertIn("cursor/ledger", str(ctx.exception))
+
+    def test_paused_at_backlog_end_rejected_on_resume(self):
+        # A paused campaign pauses INSIDE a milestone — it can never sit at the
+        # backlog end. A tampered paused/done-boundary state is rejected.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1"]}])
+            cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())._save()
+            sp = os.path.join(d, "campaign-state.json")
+            with open(sp) as fh:
+                st = json.load(fh)
+            st["status"] = "paused"
+            st["cursor"]["milestone_index"] = 1  # == len(milestones)
+            st["cursor"]["subsprint_index"] = 0
+            # m1 has a recorded unit (so the prefix check passes) — isolate the
+            # paused-at-backlog-end rejection.
+            st["units"] = [{"milestone_id": "m1", "subsprint_id": "s1",
+                            "status": "done", "final_state": "advance"}]
+            with open(sp, "w") as fh:
+                json.dump(st, fh)
+            with self.assertRaises(ValueError) as ctx:
+                cp.Campaign(plan, d, _fake_run_unit({}),
+                            clock=_clock()).run(resume=True)
+            self.assertIn("backlog end", str(ctx.exception))
+
+    def test_cursor_skipping_incomplete_prefix_milestone_rejected(self):
+        # mi points at milestone 2 but milestone 1 has NO completion evidence in the
+        # ledger → resuming there would silently skip milestone 1's work.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                          {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}])
+            cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())._save()
+            sp = os.path.join(d, "campaign-state.json")
+            with open(sp) as fh:
+                st = json.load(fh)
+            st["status"] = "running"
+            st["cursor"]["milestone_index"] = 1  # jump to m2 with no m1 units
+            with open(sp, "w") as fh:
+                json.dump(st, fh)
+            with self.assertRaises(ValueError) as ctx:
+                cp.Campaign(plan, d, _fake_run_unit({}),
+                            clock=_clock()).run(resume=True)
+            self.assertIn("skips milestone", str(ctx.exception))
+
+    def test_done_status_without_full_backlog_evidence_rejected(self):
+        # status=done but the cursor has not reached the backlog end (no completion
+        # evidence) → run(resume) would otherwise return immediately, skipping work.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1"]}])
+            cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())._save()
+            sp = os.path.join(d, "campaign-state.json")
+            with open(sp) as fh:
+                st = json.load(fh)
+            st["status"] = "done"  # claims done at mi=0, units empty
+            with open(sp, "w") as fh:
+                json.dump(st, fh)
+            with self.assertRaises(ValueError) as ctx:
+                cp.Campaign(plan, d, _fake_run_unit({}),
+                            clock=_clock()).run(resume=True)
+            self.assertIn("'done'", str(ctx.exception))
+
+    def test_legit_multi_milestone_resume_is_not_false_rejected(self):
+        # A genuine resume across a completed milestone: m1 fully advanced (cursor at
+        # m2). The prefix check must ACCEPT it (m1 is complete in the ledger).
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                          {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}])
+            camp = cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())
+            camp.state.status = cp.STATUS_RUNNING
+            camp.state.milestone_index = 1            # m1 done, now on m2
+            camp.state.subsprint_index = 0
+            camp.state.units = [{"milestone_id": "m1", "subsprint_id": "s1",
+                                 "status": "done", "final_state": "advance"}]
+            camp._save()
+            done = {"s2": {"final_state": "done", "spawn_count": 1}}
+            resumed = cp.Campaign(plan, d, _fake_run_unit(done),
+                                  clock=_clock()).run(resume=True)
+            self.assertEqual(resumed.status, cp.STATUS_DONE)
+
+    def test_legit_advance_boundary_with_units_resumes(self):
+        # The == len boundary IS legal when backed by advanced units (the crash window
+        # after the last sub-sprint advanced, before the milestone-reset save): it must
+        # NOT be rejected — it resumes by falling through to the next milestone/done.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1"]}])
+            camp = cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())
+            camp.state.status = cp.STATUS_RUNNING
+            camp.state.subsprint_index = 1  # == len(seq), backed by one advanced unit
+            camp.state.units = [{"milestone_id": "m1", "subsprint_id": "s1",
+                                 "status": "done", "final_state": "advance"}]
+            camp._save()
+            resumed = cp.Campaign(plan, d, _fake_run_unit({}),
+                                  clock=_clock()).run(resume=True)
+            self.assertEqual(resumed.status, cp.STATUS_DONE)
+
+    def test_cursor_past_halted_unit_not_false_rejected(self):
+        # A human-resolved ACT_ADVANCE_SUBSPRINT (e.g. an accepted review_out_of_scope)
+        # advances the cursor PAST a HALTED unit whose final_state is NOT 'advance'. The
+        # current-milestone presence check must ACCEPT it (presence, not final_state) —
+        # a strict advanced-count equality would false-reject this legitimate resume.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1", "s2"]}])
+            camp = cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())
+            camp.state.status = cp.STATUS_RUNNING
+            camp.state.subsprint_index = 1            # advanced PAST s1 ...
+            camp.state.units = [{"milestone_id": "m1", "subsprint_id": "s1",
+                                 "status": "halted",
+                                 "final_state": "review_out_of_scope"}]  # ... a HALT
+            camp._save()
+            done = {"s2": {"final_state": "done", "spawn_count": 1}}
+            resumed = cp.Campaign(plan, d, _fake_run_unit(done),
+                                  clock=_clock()).run(resume=True)
+            self.assertEqual(resumed.status, cp.STATUS_DONE)
+
+    def test_valid_plan_round_trips_through_the_gate(self):
+        # The gate admits a well-formed plan and round-trips its own saved state.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1"]}])
+            done = {"s1": {"final_state": "done", "spawn_count": 1}}
+            final = cp.run_campaign(plan, d, _fake_run_unit(done), clock=_clock())
+            self.assertEqual(final.status, cp.STATUS_DONE)
+
+
 class TestProductionRunUnit(unittest.TestCase):
     """make_run_unit — the production wrapper around run_loop (increment 2)."""
 

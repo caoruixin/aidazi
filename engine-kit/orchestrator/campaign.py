@@ -53,6 +53,56 @@ _SAFE_CAMPAIGN_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _CHECKPOINT_FILE_RE = re.compile(r"\A\d{8}-\d{6}__[A-Za-z0-9_]+__.+\.md\Z")
 
 # --------------------------------------------------------------------------- #
+# Fail-closed campaign-tier I/O validation (delivery-loop §4.2.7 discipline, one
+# tier up). The campaign plan (admitted at construction) and the persisted campaign
+# state (admitted on resume) are the campaign's two ingress boundaries; both are
+# validated against their authored JSON schemas BEFORE they drive the outer loop, so
+# a malformed plan or a corrupted/tampered state.json can never silently advance the
+# milestone backlog. Mirrors the Driver's verdict-admission gate (driver._spawn →
+# gate_hard_fail on a schema-invalid verdict), and the §3.5c sync guard already
+# asserted statically by test_persisted_state_with_halted_unit_validates_against_schema.
+_SCHEMA_CACHE: Dict[str, dict] = {}
+
+
+def _find_schemas_dir(start: str = _ENGINE_KIT_DIR) -> Optional[str]:
+    """Walk UP from ``start`` to the nearest ``schemas/`` dir (same discipline as
+    driver._find_schemas_dir — robust to an adopter's vendored layout)."""
+    cur = start
+    while True:
+        cand = os.path.join(cur, "schemas")
+        if os.path.isdir(cand):
+            return cand
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _campaign_schema(filename: str) -> dict:
+    """Load (+ cache) a campaign schema by filename. Raises FileNotFoundError when
+    the schemas/ dir or the file is absent — fail-closed: an unvalidatable campaign
+    must NOT run rather than run un-checked."""
+    if filename not in _SCHEMA_CACHE:
+        base = _find_schemas_dir()
+        if not base:
+            raise FileNotFoundError(
+                "schemas/ directory not found for campaign schema validation")
+        with open(os.path.join(base, filename), encoding="utf-8") as fh:
+            _SCHEMA_CACHE[filename] = json.load(fh)
+    return _SCHEMA_CACHE[filename]
+
+
+def _validate_or_raise(obj: Any, filename: str, what: str) -> None:
+    """Fail-closed schema gate: validate ``obj`` against the named campaign schema
+    and raise ValueError on the FIRST error. ``jsonschema`` is a declared kit
+    dependency (the Driver/e2e_stage hard-require it); imported lazily so importing
+    this module for its dataclasses alone does not require it."""
+    from jsonschema import Draft202012Validator  # kit dependency (driver/e2e_stage)
+    for err in Draft202012Validator(_campaign_schema(filename)).iter_errors(obj):
+        raise ValueError(
+            f"campaign {what} failed schema validation ({filename}): {err.message}")
+
+# --------------------------------------------------------------------------- #
 # Resume classes (design §5.4a) — how the campaign resumes after a pause.
 # --------------------------------------------------------------------------- #
 RESUME_DRIVER = "driver_resume"        # Mechanism A: Driver.run(resume=True) re-enters
@@ -309,6 +359,14 @@ class Campaign:
         self.run_dir = run_dir
         self.run_unit = run_unit
         self.clock = clock
+        # Fail-closed plan ingress: validate the WHOLE plan against
+        # schemas/campaign-plan.schema.json BEFORE any field access or dispatch, so a
+        # malformed backlog cannot enter the outer loop. The schema pins the
+        # campaign_id/goal/milestones shapes; the semantic checks below (path-safe id,
+        # topological cycle, per-milestone sub-sprint uniqueness) cover what the schema
+        # cannot express. A KeyError on plan["campaign_id"] below is now unreachable —
+        # the schema's required:["campaign_id",…] rejects it first with a clear message.
+        _validate_or_raise(plan, "campaign-plan.schema.json", "plan")
         self.campaign_id = plan["campaign_id"]
         if not _SAFE_CAMPAIGN_ID_RE.match(self.campaign_id or ""):
             raise ValueError(
@@ -350,8 +408,136 @@ class Campaign:
         if not os.path.isfile(self.state_path):
             return False
         with open(self.state_path, encoding="utf-8") as fh:
-            self.state = CampaignState.from_dict(json.load(fh))
+            data = json.load(fh)
+        # Fail-closed resume ingress, TWO layers:
+        #  (1) STRUCTURAL — the persisted state must match campaign-state.schema.json
+        #      (the runtime enforcement of the runtime↔schema sync that
+        #      test_persisted_state_with_halted_unit_validates_against_schema asserts).
+        _validate_or_raise(data, "campaign-state.schema.json", "state")
+        #  (2) SEMANTIC — a schema-VALID state can still be wrong FOR THIS plan: a state
+        #      file from a DIFFERENT campaign, or a cursor that points PAST the backlog
+        #      (which would silently skip the `while milestone_index < len(milestones)`
+        #      loop and mark the campaign done without running it). Bind the state to
+        #      this campaign + plan before it can drive the loop.
+        self._check_state_consistency(data)
+        self.state = CampaignState.from_dict(data)
         return True
+
+    def _has_unit(self, units: list, milestone_id: str,
+                  subsprint_id: Optional[str] = None) -> bool:
+        """Did the runner record ANY unit for a milestone (or, when ``subsprint_id`` is
+        given, that specific sub-sprint within it)? The runner appends a unit for every
+        sub-sprint it dispatches, so anything the cursor has moved PAST must have ≥1
+        unit. Presence ONLY — never the unit's final_state: the cursor legitimately
+        advances past a HALTED unit (an acceptance-gated milestone keeps a
+        final_state='halted' terminal unit after it ships; a human-resolved
+        ACT_ADVANCE_SUBSPRINT advances past an accepted review_out_of_scope halt; a
+        deliver_followup jump advances past the halted origin). Reading completion from
+        final_state would false-reject all three (verified)."""
+        return any(
+            isinstance(u, dict) and u.get("milestone_id") == milestone_id
+            and (subsprint_id is None or u.get("subsprint_id") == subsprint_id)
+            for u in units)
+
+    def _check_state_consistency(self, data: dict) -> None:
+        """Fail-closed semantic gate on a resumed state (post-schema). Binds the
+        persisted state to THIS campaign + plan AND requires the WHOLE state (cursor +
+        status + unit ledger) to be a configuration the runner could actually have
+        PERSISTED — so a schema-valid but tampered/bug-written state cannot silently
+        skip the backlog or jump to done.
+
+        Invariants enforced (each verified to hold at every `_save()` the runner emits,
+        INCLUDING the advisory-acceptance resume flow):
+          * `campaign_id` matches the plan.
+          * the cursor is in range (`0 <= milestone_index <= len(milestones)`,
+            `subsprint_index <= len(seq)`).
+          * PREFIX: every milestone the cursor has moved PAST has ≥1 recorded unit —
+            you cannot have advanced past a milestone that never ran (closes the
+            silent-skip hole). This deliberately checks PRESENCE, not advance/done
+            final_state, because an acceptance-gated milestone keeps a 'halted'
+            terminal unit after it ships (verified) — asserting completion would
+            false-reject that legitimate flow.
+          * CURRENT milestone: `subsprint_index` equals its advanced-unit count (the
+            cursor is lock-step with the ledger). The `== len(seq)` boundary is the
+            legitimate crash window between an advance `_save()` and the milestone reset.
+          * STATUS: `done` only at the exhausted boundary (`milestone_index == len`);
+            `paused` only INSIDE a milestone (never at a completed boundary — a pause
+            lands on a halted sub-sprint, `subsprint_index < len(seq)`, or an
+            empty-sequence decompose pause). `ended` (abort) may sit mid-backlog."""
+        sid = data.get("campaign_id")
+        if sid != self.campaign_id:
+            raise ValueError(
+                f"campaign state campaign_id {sid!r} does not match the plan's "
+                f"{self.campaign_id!r} — refusing to resume a different campaign's "
+                f"state against this plan (fail-closed)")
+        status = data.get("status")
+        cur = data.get("cursor") or {}
+        mi = cur.get("milestone_index", 0)
+        si = cur.get("subsprint_index", 0)
+        units = data.get("units") or []
+        n_ms = len(self.milestones)
+        if mi > n_ms:
+            raise ValueError(
+                f"campaign state cursor.milestone_index {mi} exceeds the plan's "
+                f"{n_ms} milestone(s) — out-of-range cursor (fail-closed)")
+        # PREFIX: a milestone the cursor moved past must have ≥1 recorded unit — else
+        # resuming at `mi` silently skips earlier work that never ran (the silent-skip
+        # hole). Presence-only by design (see the docstring's acceptance-flow note).
+        for j in range(mi):
+            if not self._has_unit(units, self.milestones[j]["id"]):
+                raise ValueError(
+                    f"campaign state cursor.milestone_index {mi} skips milestone "
+                    f"{self.milestones[j]['id']!r} which has NO recorded unit — would "
+                    f"silently skip unrun work (fail-closed)")
+        # STATUS_DONE only at the exhausted boundary (the prefix check then guarantees
+        # every milestone ran). STATUS_ENDED (abort) is exempt — it may be mid-backlog.
+        if status == STATUS_DONE and mi != n_ms:
+            raise ValueError(
+                f"campaign state status is 'done' but the cursor.milestone_index {mi} "
+                f"has not reached the backlog end ({n_ms}) — not a reachable done "
+                f"state (fail-closed)")
+        if mi == n_ms:
+            # The done/exhausted boundary. A PAUSED campaign is paused INSIDE a
+            # milestone, so it can never sit here; the runner resets subsprint_index
+            # to 0 before the cursor reaches this boundary.
+            if status == STATUS_PAUSED:
+                raise ValueError(
+                    "campaign state is paused but the cursor is at the backlog end "
+                    f"({n_ms}) — a paused campaign pauses inside a milestone "
+                    "(fail-closed)")
+            if si != 0:
+                raise ValueError(
+                    f"campaign state cursor at the backlog end ({n_ms}) has "
+                    f"subsprint_index {si}, not 0 — not a reachable cursor (fail-closed)")
+            return
+        # mi < n_ms — the current (in-progress) milestone.
+        ms = self.milestones[mi]
+        seq = list(ms.get("subsprint_sequence") or [])
+        if si > len(seq):
+            raise ValueError(
+                f"campaign state cursor.subsprint_index {si} exceeds milestone "
+                f"{ms['id']!r}'s {len(seq)} sub-sprint(s) — out-of-range cursor "
+                f"(fail-closed)")
+        # Each sub-sprint the cursor has PASSED within the current milestone must have
+        # ≥1 recorded unit — presence, NOT final_state (same rationale as the prefix
+        # check). The cursor legitimately advances past a HALTED unit on a human-resolved
+        # ACT_ADVANCE_SUBSPRINT (an accepted review_out_of_scope) or a deliver_followup
+        # insertion (campaign.py run-loop), neither of which is final_state='advance'.
+        # This still rejects a boundary cursor (subsprint_index == len(seq)) with no
+        # units behind it, without false-rejecting those non-'advance' advances.
+        for k in range(si):
+            if not self._has_unit(units, ms["id"], seq[k]):
+                raise ValueError(
+                    f"campaign state cursor.subsprint_index {si} for milestone "
+                    f"{ms['id']!r} passed sub-sprint {seq[k]!r} which has NO recorded "
+                    f"unit — inconsistent cursor/ledger (fail-closed)")
+        # A PAUSE lands on a HALTED sub-sprint (subsprint_index < len(seq)), or on an
+        # empty-sequence decompose pause — never at a COMPLETED non-empty boundary.
+        if status == STATUS_PAUSED and seq and si >= len(seq):
+            raise ValueError(
+                f"campaign state is paused at milestone {ms['id']!r}'s completed "
+                f"boundary (subsprint_index {si} == {len(seq)}) — a pause lands on a "
+                f"halted sub-sprint inside the sequence (fail-closed)")
 
     # ----- budget (countable proxies; design §5.4a) ---------------------- #
     def _over_budget(self) -> Optional[str]:
