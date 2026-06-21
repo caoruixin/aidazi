@@ -971,6 +971,125 @@ class TestLoopControllerAutoFixContinue(unittest.TestCase):
             self.assertIn("controller_decision", types)
             self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
 
+    def test_fix_round_dev_prompt_carries_review_findings(self):
+        # delivery-loop §4.4: the auto-fix Dev re-entry must run "with review
+        # findings as input". The re-entered Dev prompt MUST carry the Reviewer's
+        # SPECIFIC findings (id/severity/layer/evidence/rationale) + a "fix THESE in
+        # the existing code" instruction, while the FIRST (initial) Dev prompt stays
+        # byte-identical with NO fix guidance. Regression guard for the whack-a-mole
+        # enabler where the fix round re-dispatched the bare plan projection.
+        review_responses = {
+            ("review", 0): _fix_review(
+                [_finding("FX-1", "P2", layer="semantic_planner")]),
+            ("review", 1): CLEAN_REVIEW,
+        }
+        with tempfile.TemporaryDirectory() as d:
+            dev = _PromptCapturingMock(
+                {("dev",): DEV_ARTIFACT}, harness="claude_code",
+                provider="anthropic", model="claude-sonnet-4-6")
+            adapters = _adapters()
+            adapters["dev"] = dev
+            adapters["review"] = MockAdapter(
+                review_responses, harness="headless",
+                provider="deepseek", model="deepseek-chat")
+            charter = _autofix_charter(enabled=True, max_rounds=3)
+            drv_ = _driver(d, charter=charter, adapters=adapters)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            # Two dev spawns: the initial implementation + one auto-fix round.
+            self.assertEqual(len(dev.prompts), 2)
+            first, fix = dev.prompts[0], dev.prompts[1]
+            # Initial Dev prompt: NO fix guidance (byte-identical path preserved).
+            self.assertNotIn("Fix round", first)
+            self.assertNotIn("FX-1", first)
+            # Fix-round Dev prompt: carries the finding details + the incremental,
+            # in-place fix instruction.
+            self.assertIn("Fix round 1", fix)
+            self.assertIn("EXISTING code", fix)
+            self.assertIn("FX-1", fix)
+            self.assertIn("P2", fix)
+            self.assertIn("semantic_planner", fix)
+            self.assertIn("src/x.py:4", fix)  # _finding evidence = src/x.py:len(id)
+
+    def test_fix_round_guidance_gated_and_fail_safe(self):
+        # The guidance is gated: empty on the first implementation (fix_round 0) and
+        # empty when last_verdict is NOT a fix_required review verdict — so a stale
+        # close/dev artifact can never leak findings into a fresh sub-sprint's Dev.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=_autofix_charter(enabled=True))
+            drv_.state = RunState(loop_id=drv_.loop_id, subsprint_id="sprint-001")
+            # fix_round 0 → "" even with a fix_required verdict present.
+            drv_.state.fix_round = 0
+            drv_.state.last_verdict = _fix_review([_finding("F1")])
+            self.assertEqual(drv_._fix_round_guidance(), "")
+            # fix_round > 0 but last_verdict is a (non-review) close verdict → "".
+            drv_.state.fix_round = 1
+            drv_.state.last_verdict = CLEAN_CLOSE
+            self.assertEqual(drv_._fix_round_guidance(), "")
+            # fix_round > 0 + a real fix_required review verdict → guidance present.
+            drv_.state.last_verdict = _fix_review([_finding("F1", "P1")])
+            g = drv_._fix_round_guidance()
+            self.assertIn("F1", g)
+            self.assertIn("EXISTING code", g)
+
+    def test_fix_round_guidance_survives_resume_into_dev_pending(self):
+        # Crash/resume INTO an auto-fix Dev round: the persisted state carries
+        # fix_round>0 + the triggering fix_required verdict, so the RESUMED Dev prompt
+        # still carries the findings — the guidance is sourced from the RELOADED
+        # last_verdict (state.json), not from any in-process local. (Codex P2.)
+        with tempfile.TemporaryDirectory() as d:
+            seed = _driver(d, charter=_autofix_charter(enabled=True))
+            seed.state = RunState(loop_id=seed.loop_id, subsprint_id="sprint-001")
+            seed.state.state = STATE_DEV_PENDING
+            seed.state.fix_round = 1
+            seed.state.last_verdict = _fix_review([_finding("RX-9", "P1")])
+            seed._save_state()
+            # A fresh Driver reloads the persisted state and re-enters _step_dev.
+            dev = _PromptCapturingMock(
+                {("dev",): DEV_ARTIFACT}, harness="claude_code",
+                provider="anthropic", model="claude-sonnet-4-6")
+            adapters = _adapters()
+            adapters["dev"] = dev
+            drv2 = _driver(d, charter=_autofix_charter(enabled=True),
+                           adapters=adapters)
+            drv2.state = drv2._load_state()
+            self.assertEqual(drv2.state.fix_round, 1)            # reloaded from disk
+            self.assertEqual(drv2.state.state, STATE_DEV_PENDING)
+            drv2._step_dev()
+            self.assertTrue(dev.prompts)
+            self.assertIn("RX-9", dev.prompts[0])
+            self.assertIn("EXISTING code", dev.prompts[0])
+
+    def test_multi_round_fix_uses_latest_findings_only(self):
+        # Round 0 review → fix_required[A1]; round 1 → fix_required[B2]; round 2 →
+        # clean. Each fix-round Dev prompt must carry THAT round's findings, never a
+        # stale earlier set (round 2 Dev sees B2, not A1). (Codex P2.)
+        review_responses = {
+            ("review", 0): _fix_review([_finding("A1", "P2")]),
+            ("review", 1): _fix_review([_finding("B2", "P2")]),
+            ("review", 2): CLEAN_REVIEW,
+        }
+        with tempfile.TemporaryDirectory() as d:
+            dev = _PromptCapturingMock(
+                {("dev",): DEV_ARTIFACT}, harness="claude_code",
+                provider="anthropic", model="claude-sonnet-4-6")
+            adapters = _adapters()
+            adapters["dev"] = dev
+            adapters["review"] = MockAdapter(
+                review_responses, harness="headless",
+                provider="deepseek", model="deepseek-chat")
+            drv_ = _driver(d, charter=_autofix_charter(enabled=True, max_rounds=5),
+                           adapters=adapters)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            # 3 dev spawns: initial + fix round 1 (A1) + fix round 2 (B2).
+            self.assertEqual(len(dev.prompts), 3)
+            self.assertNotIn("Fix round", dev.prompts[0])
+            self.assertIn("A1", dev.prompts[1])
+            self.assertNotIn("B2", dev.prompts[1])
+            self.assertIn("B2", dev.prompts[2])   # latest findings...
+            self.assertNotIn("A1", dev.prompts[2])  # ...not the stale round-1 set
+
     def test_continue_disabled_keeps_hitl_human_confirm(self):
         # BACKWARD-COMPAT: auto_fix NOT enabled → controller `continue` must NOT
         # auto-iterate; the existing fix_required human-confirm checkpoint fires

@@ -1635,6 +1635,61 @@ class Driver:
              f"compact/{sid}-review-prompt.md under the repo to derive the review "
              f"prompt from"])
 
+    def _fix_round_guidance(self) -> str:
+        """Auto-fix round (fix_round > 0): render the Reviewer's SPECIFIC findings
+        as a narrower, INCREMENTAL fix brief appended to the Dev prompt.
+
+        The prior round's code is already on disk — the working tree is frozen
+        across rounds (loop_ingress sets the context up ONCE; the auto-fix re-entry
+        never resets/regenerates it). Without this brief the fix round re-dispatches
+        the byte-identical plan projection, inviting Dev to RE-DERIVE the sub-sprint
+        and regress an earlier fix — the "whack-a-mole" failure mode. delivery-loop
+        §4.4 requires the fix round to run "with review findings as input"; this is
+        that input.
+
+        Returns "" when NOT in a fix round, or when ``last_verdict`` is not a
+        ``fix_required`` review verdict carrying findings — so the FIRST Dev prompt
+        of every sub-sprint stays byte-identical to the pre-fix behaviour. Source is
+        ``self.state.last_verdict``: at fix-round Dev-prompt-build time this still
+        holds the review verdict that triggered the round (the Dev spawn that
+        overwrites it has not run yet), and ``_handle_fix_required`` persists it
+        before re-entry, so reading it is resume-safe. The
+        ``decision == "fix_required"`` guard prevents a stale non-review
+        ``last_verdict`` from leaking findings into a fresh sub-sprint's first Dev."""
+        assert self.state is not None
+        if self.state.fix_round <= 0:
+            return ""
+        lv = self.state.last_verdict
+        if not isinstance(lv, dict) or lv.get("decision") != "fix_required":
+            return ""
+        findings = [f for f in (lv.get("findings") or []) if isinstance(f, dict)]
+        if not findings:
+            return ""
+        lines = [
+            "",
+            f"## Fix round {self.state.fix_round} — resolve THESE review findings "
+            f"in the EXISTING code",
+            "The prior round's implementation is already on disk. Make the MINIMAL "
+            "edits that clear each blocking finding below — do NOT re-implement the "
+            "sub-sprint from scratch, do NOT widen scope, and preserve passing work.",
+            "",
+        ]
+        for f in findings:
+            fid = f.get("id") or "(no-id)"
+            sev = f.get("severity") or "P?"
+            layer = f.get("layer")
+            head = f"- [{sev}] {fid}" + (f" @ {layer}" if layer else "")
+            lines.append(head)
+            for ev in (f.get("evidence") or []):
+                lines.append(f"    - evidence: {ev}")
+            rationale = f.get("rationale")
+            if rationale:
+                lines.append(f"    - required fix: {rationale}")
+            clause = f.get("constitution_clause")
+            if clause:
+                lines.append(f"    - constitution: {clause}")
+        return "\n".join(lines) + "\n"
+
     def _step_dev(self) -> None:
         # The Dev spec is resolved from the decompose plan (canonical) or an
         # adopter-authored compact prompt, validated by CONTENT. A live run with no
@@ -1649,6 +1704,11 @@ class Driver:
             prompt = (self._lessons_block("dev")
                       + f"Implement sub-sprint {self.state.subsprint_id}; "
                         f"write the handoff.")
+        # On an auto-fix round the Reviewer's specific findings are appended as a
+        # narrower, incremental fix brief (delivery-loop §4.4 — "with review findings
+        # as input"). Empty on the first implementation, so the initial Dev prompt is
+        # byte-identical to the pre-fix behaviour (offline/mock test suite included).
+        prompt += self._fix_round_guidance()
         verdict = self._spawn(
             "dev", prompt,
             schema_key=None,  # spawn_dev's artifact IS the code+handoff, no verdict schema
