@@ -131,6 +131,21 @@ tooling:
       agreement_threshold: 0.9
       flip_threshold: 0.1
       labeled_set_path: calibration/labeled_acceptance_cases/manifest.json
+    # OPT-IN (P-C — browser-E2E / user-perspective functional acceptance). ABSENT ⇒ the
+    # acceptance class is `static` (M1), today's behavior, byte-identical. Uncomment +
+    # add tooling.e2e (below) to switch a USER-FACING milestone to the browser-E2E class.
+    # Full spec: process/browser-e2e-acceptance.md.
+    # functional:
+    #   mode: static                       # static (M1, default) | browser_e2e (M3)
+    #   checklist_path: docs/research-briefs/<id>-functional-checklist.json
+    #                                      # Research-OWNED, signed + FROZEN at Gate-1
+    #                                      # (schemas/functional-checklist.schema.json);
+    #                                      # unique criterion_id per user-visible outcome.
+    #   judge_calibration_m3:              # M3 is a SEPARATE calibration record from M1
+    #     status: uncalibrated             # v1 ships no M3 record ⇒ M3 stays ADVISORY
+    #                                      # (a functional pass HALTs at
+    #                                      # advisory_acceptance_pass_signoff for sign-off).
+    #     record_id: <m3-calibration-record-id>
     run_at: milestone_close
     on_fix_required:
       human_confirm_required: true  # MUST be true; Constitution §1.7-C
@@ -138,6 +153,33 @@ tooling:
         - deliver_fix_iteration
         - re_acceptance_after_evidence
         - research_contract_revision
+
+  # OPT-IN (P-C — browser-E2E executor MECHANICS; the HOW, Deliver/adopter-owned, MUTABLE).
+  # REQUIRED only when tooling.acceptance.functional.mode: browser_e2e (above). The MECHANICS
+  # produce evidence; they NEVER define pass/fail (the signed functional-checklist does, and
+  # Acceptance judges read-only). Local/demo only in v1: no auth, no remote deploy, no cloud
+  # browser. Shape: schemas/executor-contract.schema.json. The driver injects per-run values
+  # (substitutes {port}/{store}/{mode} in app_start_cmd; sets a concrete base_url with an
+  # allocated port). Leaving this commented keeps the static (M1) default unchanged.
+  # e2e:
+  #   executor_kind: local_http            # local_http (deterministic, offline CI) | playwright
+  #                                        #   (real browser, env-gated AIDAZI_E2E_PLAYWRIGHT=1)
+  #   app_start_cmd: ["python", "-m", "myapp", "--port", "{port}", "--store", "{store}"]
+  #   readiness: { url: /__health, timeout_seconds: 20 }
+  #   base_url: http://127.0.0.1            # LOCAL only; portless (driver injects the port)
+  #   allowed_origins: ["http://127.0.0.1"] # LOCAL origins the executor may navigate (fail-closed)
+  #   shutdown: { process_owned: true }     # orchestrator terminates the process it started
+  #   journeys:
+  #     - id: happy_path
+  #       steps:
+  #         - { action: navigate, url: / }
+  #         - { action: fill, selector: "#name", value: "Ada" }
+  #         - { action: click, submit_url: /submit, form: { name: "Ada" } }
+  #         - { action: assert_text, selector: "#result", text: "Welcome, Ada",
+  #             criterion_id: shows_welcome, critical: true }   # criterion_id MUST exist in
+  #                                                             # the signed checklist; critical
+  #                                                             # ⇒ a CAPTURED failure vetoes a
+  #                                                             # milestone pass (→ needs_human)
 
 # T1 profile overlay — populate one or more.
 

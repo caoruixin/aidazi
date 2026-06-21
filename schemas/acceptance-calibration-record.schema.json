@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/acceptance-calibration-record.schema.json",
+  "title": "Acceptance calibration record (P-C — per class, keyed by judge identity)",
+  "description": "One record per acceptance class (static = M1 / browser_e2e = M3), keyed by the FULL judge identity. A change to ANY identity field invalidates the record (extends Constitution §3.4 invariant #6 / §3.6). The authority gate checks the record matching the ACTIVE class; M3 stays advisory until an M3-class browser/E2E bad-case suite exists AND the record is calibrated to threshold. v1 ships NO M3 record ⇒ M3 is never authoritative ⇒ a browser-functional pass HALTs for human sign-off.",
+  "type": "object",
+  "required": ["record_id", "acceptance_class", "role", "harness", "provider", "model", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "record_id": {"type": "string", "minLength": 1},
+    "acceptance_class": {"type": "string", "enum": ["static", "browser_e2e"], "description": "static = M1 (code/F5 evidence); browser_e2e = M3 (functional/browser)."},
+    "role": {"type": "string", "const": "acceptance"},
+    "harness": {"type": "string"},
+    "provider": {"type": "string"},
+    "model": {"type": "string"},
+    "agent_kind": {"type": "string"},
+    "capability_ref": {"type": "string"},
+    "skill_set_hash": {"type": "string", "description": "Hash of the mounted evidence-reading skill set (a change invalidates the record)."},
+    "prompt_version": {"type": "string"},
+    "verdict_schema_version": {"type": "string"},
+    "evidence_contract_id": {"type": "string", "description": "The browser-evidence-manifest contract version the M3 judge was calibrated against."},
+    "executor_contract_id": {"type": "string", "description": "The executor-contract id the M3 record is bound to."},
+    "status": {"type": "string", "enum": ["calibrated", "uncalibrated"]},
+    "agreement_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.9},
+    "flip_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.1},
+    "labeled_set_path": {"type": "string"},
+    "calibrated_at": {"type": "string"}
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/browser-evidence-manifest.schema.json",
+  "title": "Browser-E2E evidence manifest (P-C — OUTPUT, driver-written)",
+  "description": "manifest.json written by the ORCHESTRATOR after a browser-E2E run: the committed, hash-anchored evidence record under .orchestrator/audit/browser/<loop_id>/<run_id>/. The driver computes per-artifact sha256 + artifact_manifest_hash and appends a matching browser_e2e_evidence event to the Audit Spine; reconcile + pre-acceptance recompute and verify both. checklist-results.json (an array of $defs/checklist_result) is a sibling artifact listed in artifacts[]. The executor produces OBSERVATIONS; this record never carries a milestone verdict.",
+  "type": "object",
+  "required": ["run_id", "app_start_cmd", "base_url", "exit_code", "artifacts", "artifact_manifest_hash"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "loop_id": {"type": "string"},
+    "executor_kind": {"type": "string"},
+    "app_start_cmd": {"type": "string"},
+    "base_url": {"type": "string"},
+    "clean_state_proof": {"type": "string", "description": "Optional reference to the pre-run clean-state proof (fixture reset / empty store)."},
+    "exit_code": {"type": "integer", "description": "Executor exit code. 0 = ran cleanly (captured criterion failures are still 0); non-zero is a RUNTIME failure → the driver gate_hard_fails before this manifest is trusted."},
+    "artifacts": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["name", "path", "sha256"],
+        "properties": {
+          "name": {"type": "string"},
+          "path": {"type": "string", "description": "Normalized relative path strictly under the run dir."},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "artifact_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256(canonical_json(sorted [{name, sha256}])). Recomputed by the driver at reconcile + pre-acceptance; mismatch → gate_hard_fail."}
+  },
+  "$defs": {
+    "checklist_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["criterion_id", "criterion", "action_performed", "observed_result", "evidence_refs", "executor_status"],
+      "properties": {
+        "criterion_id": {"type": "string"},
+        "criterion": {"type": "string"},
+        "action_performed": {"type": "string"},
+        "observed_result": {"type": "string"},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}, "description": "Relative paths under the run dir (screenshots/console/network/...)."},
+        "executor_status": {"type": "string", "enum": ["pass", "fail", "error", "skipped"], "description": "OBSERVATION ONLY. Acceptance judges independently; the driver vetoes a milestone pass that contradicts a critical 'fail'/'error' (§3.2)."}
+      }
+    }
+  }
+}

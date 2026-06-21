@@ -43,7 +43,7 @@ def _fake_run_unit(script):
     Accepts (ignores) the `subsprint_sequence` the campaign passes for per-milestone
     derivation — the fake bypasses the real Driver, so it needs no charter projection."""
     def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
-                 resume=False):
+                 resume=False, functional_acceptance=None):
         return dict(script[subsprint_id])
     return run_unit
 
@@ -55,7 +55,7 @@ def _seq_run_unit(seqs, record=None):
     resume=True and that the campaign passes the milestone's live sequence."""
     counters: dict = {}
     def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
-                 resume=False):
+                 resume=False, functional_acceptance=None):
         i = counters.get(subsprint_id, 0)
         counters[subsprint_id] = i + 1
         if record is not None:
@@ -513,6 +513,127 @@ class TestCampaignResume(unittest.TestCase):
             resumed = cp.Campaign(plan, d, _fake_run_unit(done),
                                   clock=_clock()).run(resume=True)
             self.assertEqual(resumed.status, cp.STATUS_DONE)
+
+
+class TestCampaignCrashRecovery(unittest.TestCase):
+    """§3.5c STATUS_RUNNING crash recovery (design §3.5c; Codex impl-review MAJOR-2).
+    Two branches: (1) the cursor unit was ALREADY run + accounted + appended (a crash
+    between the pause-branch save and the _pause finalize) → REPLAY from the recorded
+    final_state, with NO run_unit re-dispatch and NO double-account; (2) the cursor
+    unit was NOT yet recorded (a crash mid-run) → re-dispatch run_unit with resume=True
+    and account EXACTLY once."""
+
+    def test_already_recorded_unit_replays_no_redispatch_no_double_account(self):
+        with tempfile.TemporaryDirectory() as d:
+            clk = _clock()   # shared so the cross-resume audit ledger stays monotonic
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1", "s2"]}])
+            # s1 advances; s2 HALTS at an advisory sign-off → s2 is recorded + accounted,
+            # then the campaign pauses (subsprints_run=2, total_spawns=2+3=5).
+            script = {"s1": {"final_state": "advance", "spawn_count": 2, "loop_id": "l1"},
+                      "s2": {"final_state": "halted", "spawn_count": 3, "loop_id": "l2",
+                             "pause_reason": "advisory_acceptance_pass_signoff",
+                             "checkpoint_path": "docs/checkpoints/s2.md"}}
+            paused = cp.run_campaign(plan, d, _fake_run_unit(script), clock=clk)
+            self.assertEqual(paused.status, cp.STATUS_PAUSED)
+            self.assertEqual(paused.pause_reason, "advisory_acceptance_pass_signoff")
+            self.assertEqual((paused.subsprints_run, paused.total_spawns), (2, 5))
+            # The recorded cursor unit (s2) now carries the pause_reason + checkpoint_path
+            # the replay re-pauses from (the MAJOR-2 fix persists them into the record).
+            rec = paused.units[-1]
+            self.assertEqual(rec["subsprint_id"], "s2")
+            self.assertEqual(rec["pause_reason"], "advisory_acceptance_pass_signoff")
+            self.assertEqual(rec["checkpoint_path"], "docs/checkpoints/s2.md")
+
+            # Rewind the PERSISTED state into the crash window: the pause-branch _save()
+            # wrote status=RUNNING + the recorded s2 unit, but the _pause finalize (which
+            # sets STATUS_PAUSED) never landed before the crash.
+            sp = os.path.join(d, "campaign-state.json")
+            with open(sp) as fh:
+                st = json.load(fh)
+            st["status"] = cp.STATUS_RUNNING
+            st["pause_reason"] = None
+            st["pause_checkpoint"] = None
+            with open(sp, "w") as fh:
+                json.dump(st, fh)
+
+            # Resume with a TRIPWIRE run_unit: it records every dispatch and would return
+            # an ADVANCING summary if called — so a re-dispatch would visibly advance the
+            # cursor + grow the accounting instead of re-pausing.
+            calls = []
+            def tripwire(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
+                         resume=False, functional_acceptance=None):
+                calls.append(subsprint_id)
+                return {"final_state": "advance", "spawn_count": 99,
+                        "loop_id": "REDISPATCH"}
+            resumed = cp.run_campaign(plan, d, tripwire, clock=clk, resume=True)
+
+            # (1) NO re-dispatch — run_unit was never called during the replay.
+            self.assertEqual(calls, [], "the recorded cursor unit must NOT be re-dispatched")
+            # (2) Replayed from the recorded final_state → re-paused at the SAME reason +
+            #     checkpoint, re-derived from the unit record (NOT from a re-run).
+            self.assertEqual(resumed.status, cp.STATUS_PAUSED)
+            self.assertEqual(resumed.pause_reason, "advisory_acceptance_pass_signoff")
+            self.assertEqual(resumed.pause_checkpoint, "docs/checkpoints/s2.md")
+            # (3) NO double-account and NO duplicate append.
+            self.assertEqual((resumed.subsprints_run, resumed.total_spawns), (2, 5))
+            self.assertEqual([u["subsprint_id"] for u in resumed.units], ["s1", "s2"])
+            # (4) the append-only ledger still verifies after the replay re-emit.
+            ledger = os.path.join(d, "audit", os.listdir(os.path.join(d, "audit"))[0])
+            self.assertTrue(audit.verify_chain(ledger).ok)
+
+    def test_in_flight_unit_not_yet_recorded_redispatches_with_resume_true(self):
+        # The §3.5c "else" branch: a crash BEFORE the cursor unit was recorded → the unit
+        # is re-dispatched with resume=True (idempotent Driver re-entry) and accounted
+        # EXACTLY once (no fresh restart, no double-count).
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            rec = []
+            seqs = {"s1": [{"final_state": "done", "spawn_count": 4, "loop_id": "l1"}]}
+            # Seed a mid-flight RUNNING state with NOTHING recorded yet (the crash window
+            # before the unit's branch save).
+            seed = cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())
+            seed.state.status = cp.STATUS_RUNNING
+            seed.state.pause_reason = None
+            seed._save()
+            resumed = cp.Campaign(plan, d, _seq_run_unit(seqs, rec),
+                                  clock=_clock()).run(resume=True)
+            self.assertEqual(resumed.status, cp.STATUS_DONE)
+            self.assertEqual(rec[-1]["resume"], True,
+                             "an unrecorded in-flight unit re-dispatches with resume=True")
+            self.assertEqual((resumed.subsprints_run, resumed.total_spawns), (1, 4),
+                             "accounted exactly once")
+            self.assertEqual([u["subsprint_id"] for u in resumed.units], ["s1"])
+
+    def test_persisted_state_with_halted_unit_validates_against_schema(self):
+        # Runtime↔schema sync: the persisted campaign-state.json — INCLUDING a halted
+        # unit's §3.5c pause_reason + checkpoint_path — must conform to
+        # schemas/campaign-state.schema.json (units.items is additionalProperties:false,
+        # so a persisted field the schema doesn't declare would diverge fail-closed).
+        from jsonschema import Draft202012Validator
+        schema_path = os.path.abspath(
+            os.path.join(_ENGINE_KIT_DIR, os.pardir, "schemas",
+                         "campaign-state.schema.json"))
+        with open(schema_path, encoding="utf-8") as fh:
+            schema = json.load(fh)
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a",
+                           "subsprint_sequence": ["s1", "s2"]}])
+            script = {"s1": {"final_state": "advance", "spawn_count": 2, "loop_id": "l1"},
+                      "s2": {"final_state": "halted", "spawn_count": 3, "loop_id": "l2",
+                             "pause_reason": "advisory_acceptance_pass_signoff",
+                             "checkpoint_path": "docs/checkpoints/s2.md"}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            with open(os.path.join(d, "campaign-state.json"), encoding="utf-8") as fh:
+                persisted = json.load(fh)
+            halted = [u for u in persisted["units"] if u["status"] == "halted"]
+            self.assertTrue(
+                halted and halted[-1].get("pause_reason")
+                and halted[-1].get("checkpoint_path"),
+                "the halted unit must carry the §3.5c replay fields")
+            errs = [e.message
+                    for e in Draft202012Validator(schema).iter_errors(persisted)]
+            self.assertEqual(errs, [], f"persisted state diverges from schema: {errs}")
 
 
 class TestProductionRunUnit(unittest.TestCase):

@@ -5,7 +5,7 @@ doc_category: live
 status: current
 implementation_status: partial
 source_of_truth: this file
-last_reviewed: 2026-06-11
+last_reviewed: 2026-06-21
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
@@ -323,10 +323,18 @@ For Acceptance `fix_required` specifically: follows Constitution §3.5 shape; `d
         │ milestone_    │
         │ close         │ ← MANDATORY_CHECKPOINT bad_case_manual_review here
         └───────┬───────┘
+                ↓ (P-C: if tooling.acceptance.functional.mode == browser_e2e)
+        ┌─────────────────────┐
+        │ e2e_evidence_pending│ Dev self-smoke gate → orchestrator drives the
+        │ (out-of-band; only  │ running app through the declared journeys →
+        │ for browser_e2e)    │ commit hash-anchored evidence (manifest +
+        └───────┬─────────────┘ checklist-results) → browser_e2e_evidence event
+                ↓ (then; static milestones skip straight to acceptance_pending)
                 ↓ (if tooling.acceptance.mode ≠ off)
         ┌───────────────────┐
-        │ acceptance_pending│ run F5 eval evidence → spawn run_acceptance
-        └───────┬───────────┘
+        │ acceptance_pending│ static (M1): run F5 eval evidence; browser_e2e
+        │                   │ (M3): VERIFY the committed manifest → spawn
+        └───────┬───────────┘ run_acceptance (read-only over the evidence)
                 ↓ acceptance verdict
        ┌────────┼─────────────────────────┐
        ↓        ↓                          ↓
@@ -346,6 +354,8 @@ For Acceptance `fix_required` specifically: follows Constitution §3.5 shape; `d
 ```
 
 **Acceptance `pass` splits by authority** (design §3.2/§3.3): a `pass` is **AUTHORITATIVE** (mode==auto AND judge calibrated for the active class AND autonomy==fully_autonomous_within_budget) → ship → `STATE_DONE`; otherwise it is **ADVISORY** (advisory mode, or uncalibrated, or non-fully-autonomous) → write the `advisory_acceptance_pass_signoff` checkpoint + HALT for human `confirm: ship|reject`. `mode: off` skips Acceptance (`STATE_ADVANCE`, byte-identical to the legacy disabled path). `fix_required` / `needs_human` routing is unchanged.
+
+**`e2e_evidence_pending` (P-C browser-E2E gate)**: an OUT-OF-BAND state (like `acceptance_pending`) that runs ONLY when the active acceptance class is `browser_e2e` (charter `tooling.acceptance.functional.mode == browser_e2e`, derived per milestone) — between the milestone-close advance and `acceptance_pending`. The orchestrator (not Acceptance) drives the running app through the declared journeys, commits hash-anchored evidence under `.orchestrator/audit/browser/<loop_id>/<run_id>/`, and anchors it with a `browser_e2e_evidence` Audit Spine event, then proceeds into `acceptance_pending` with the committed manifest as read-only evidence. It is preceded by the Dev self-smoke structural gate (`docs/self-smoke.json {command,result}` present; absent → resumable `gate_hard_fail`). A non-browser_e2e milestone NEVER enters this state (byte-identical to the static path). Resume re-enters `e2e_evidence_pending` BEFORE the acceptance re-entry and is non-duplicating (reconcile keyed on the persisted `run_id` + the ledger event). Full spec: `process/browser-e2e-acceptance.md`. M3 ships advisory in v1 (no M3 calibration record) → a functional `pass` HALTs at `advisory_acceptance_pass_signoff`.
 
 **Type B variant** (placeholder; OQ-V4-001): instead of `gate_pending`'s `run_tests`, run the SOP per-step verification gates from `charter.profile_type_b.sop_definition.verification_gates_per_step`. Full spec deferred.
 
@@ -483,6 +493,7 @@ Each violation is a framework breach; orchestrator implementations MUST refuse /
 11. **Auto-promoting an OBS-item to an R-item without human review** (per Δ-9). Orchestrator may surface candidate; promotion is human.
 12. **Mid-milestone scope expansion via adaptive_insert beyond `max_inserted_subsprints`**. Bounded; over-limit = halt.
 13. **Mounting a role skill (or spawning an intra-role sub-agent) that exceeds the role's tool whitelist or sandbox** — e.g., a review/acceptance skill declaring tools beyond `[Read, Grep, Glob]`, or a Dev sub-agent with network access (Constitution §3.4 invariant #6; `process/role-skill-model.md` §4). Inheritance is transitive; the spawning role's session owns the breach.
+14. **Acceptance drives the browser itself** (P-C; `process/browser-e2e-acceptance.md` §4). The browser-E2E EVIDENCE run is orchestrator-executed in the out-of-band `e2e_evidence_pending` state; Acceptance stays read-only (`[Read, Grep, Glob]`, no network) and judges the COMMITTED, hash-anchored manifest. An Acceptance session that launches the app, drives a browser, or runs the executor is a sandbox breach (same shape as anti-pattern #5: judging from self-run execution rather than orchestrator-captured evidence) and forfeits the read-only-judge independence. The executor produces OBSERVATIONS only (`executor_status`); the verdict is Acceptance's alone.
 
 #### §4.2.9 Filesystem layout for an orchestrator run
 

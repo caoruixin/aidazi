@@ -40,6 +40,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Sequence
@@ -121,6 +122,15 @@ import loop_ingress as li  # noqa: E402
 # (engine-kit/charter_compat.py; _ENGINE_KIT_DIR is on sys.path above).
 import charter_compat  # noqa: E402
 
+# P-C — the browser-E2E evidence stage: e2e_stage holds the PURE fail-closed helpers
+# (hashing / reconcile / consistency gate / reuse fingerprints, §3.2/§3.5); e2e_executor
+# is the orchestrator-owned capture runner (observations only). Both are siblings under
+# orchestrator/ (on sys.path above). They are only EXERCISED when a milestone runs
+# tooling.acceptance.functional.mode=browser_e2e — a non-browser_e2e run never touches
+# them, so the path stays byte-identical for every existing charter.
+import e2e_stage  # noqa: E402
+import e2e_executor  # noqa: E402
+
 # P3 INTEGRATION 2 — Loop Memory (engine-kit/memory/memory_store.py) is OPTIONAL.
 # It is imported lazily/guarded so the driver has NO hard dependency on it: a
 # Driver built without a memory_root never touches the store (behaviour is then
@@ -155,6 +165,7 @@ STATE_GATE_PENDING = "gate_pending"
 STATE_REVIEW_PENDING = "review_pending"
 STATE_CLOSE_PENDING = "close_pending"
 STATE_ACCEPTANCE_PENDING = "acceptance_pending"  # P3 piece 1 (delivery-loop §4.2.4)
+STATE_E2E_PENDING = "e2e_evidence_pending"  # P-C browser-E2E evidence (before acceptance)
 STATE_ADVANCE = "advance"
 STATE_DONE = "done"
 STATE_HALTED = "halted"
@@ -424,6 +435,26 @@ class RunState:
     #                        projected Review prompt references.
     halt_resume_state: Optional[str] = None
     last_dev_output_ref: Optional[str] = None
+    # ---- P-C browser-E2E commit/reuse state (persisted for resume; §3.5a/b). All
+    #      default to the pre-P-C baseline, so a non-browser_e2e RunState round-trips
+    #      byte-identically (from_dict tolerates their absence in an older state.json).
+    #   e2e_run_id           : deterministic per-(loop,subsprint) run id, persisted UP
+    #                          FRONT (pending phase) — recovery keys on THIS + the ledger
+    #                          event, NOT on the cache fields below (§3.5a).
+    #   e2e_evidence_ref     : run-dir-relative path to the committed manifest.json (cache).
+    #   e2e_manifest_hash    : the committed manifest's artifact_manifest_hash (cache).
+    #   acceptance_evidence_hash : the evidence hash the persisted last_verdict judged
+    #                          (browser: manifest hash; static: sha256 of the F5 file) —
+    #                          binds a committed verdict to its evidence (§3.5b).
+    #   acceptance_snapshot  : {evidence_hash, authority_fingerprint, acceptance_input_hash,
+    #                          authoritative} FROZEN at verdict production; routing reads
+    #                          authoritative from here, and resume reuses ONLY when all
+    #                          three hashes match the recompute (§3.5b).
+    e2e_run_id: Optional[str] = None
+    e2e_evidence_ref: Optional[str] = None
+    e2e_manifest_hash: Optional[str] = None
+    acceptance_evidence_hash: Optional[str] = None
+    acceptance_snapshot: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return {
@@ -445,6 +476,11 @@ class RunState:
             "planned_subsprints": list(self.planned_subsprints),
             "halt_resume_state": self.halt_resume_state,
             "last_dev_output_ref": self.last_dev_output_ref,
+            "e2e_run_id": self.e2e_run_id,
+            "e2e_evidence_ref": self.e2e_evidence_ref,
+            "e2e_manifest_hash": self.e2e_manifest_hash,
+            "acceptance_evidence_hash": self.acceptance_evidence_hash,
+            "acceptance_snapshot": self.acceptance_snapshot,
         }
 
     @classmethod
@@ -468,6 +504,11 @@ class RunState:
             planned_subsprints=list(d.get("planned_subsprints", [])),
             halt_resume_state=d.get("halt_resume_state"),
             last_dev_output_ref=d.get("last_dev_output_ref"),
+            e2e_run_id=d.get("e2e_run_id"),
+            e2e_evidence_ref=d.get("e2e_evidence_ref"),
+            e2e_manifest_hash=d.get("e2e_manifest_hash"),
+            acceptance_evidence_hash=d.get("acceptance_evidence_hash"),
+            acceptance_snapshot=d.get("acceptance_snapshot"),
         )
 
 
@@ -613,6 +654,23 @@ class Driver:
 
         self.budget = charter.get("budget") or {}
         self.autonomy = charter.get("autonomy") or {}
+
+        # P-C — browser-E2E evidence root (created only when a browser_e2e milestone
+        # actually runs): .orchestrator/audit/browser/<loop_id>/<run_id>/ (§5). Lives
+        # under the Audit Spine so refs+hashes co-locate with the hash chain.
+        self.browser_dir = os.path.join(
+            self.audit_dir, "browser", self._safe_path_component(self.loop_id))
+        self._pc_schema_cache: dict = {}
+        # §2a runtime hard-fail (Codex MAJOR-1): browser_e2e functional acceptance with
+        # acceptance OFF is incoherent (a browser-evidence run with no judge). Enforce at
+        # CONSTRUCTION — independent of the charter validator, which run_loop invokes only
+        # on allow_real. Fires only for the net-new browser_e2e+off combination; every
+        # pre-P-C charter (no functional block) is unaffected.
+        if (self._acceptance_class() == "browser_e2e"
+                and charter_compat.acceptance_mode(charter) == "off"):
+            raise ValueError(
+                "tooling.acceptance.functional.mode=browser_e2e requires "
+                "tooling.acceptance.mode != off (a browser-evidence run needs a judge)")
 
         # P6.1 — resolve the loop mode (ctor param WINS over charter, else the
         # delivery_only default) + stash the injected gate resolver. delivery_only
@@ -2091,9 +2149,17 @@ class Driver:
                 return  # still halted at a pre-state (e.g. resolver still None)
             self.state.state = STATE_DEV_PENDING
             self._save_state()
+        # Resume INTO the P-C browser-E2E stage: if a prior process died mid-capture,
+        # re-enter it. Idempotent via §3.5a (reconcile from the persisted run_id + the
+        # ledger event → no duplicate executor run; an incomplete dir re-runs). It then
+        # proceeds into acceptance, so handle it BEFORE the acceptance re-entry.
+        if self.state.state == STATE_E2E_PENDING:
+            self._run_e2e_evidence()
+            return
         # Resume INTO acceptance: if a prior process died mid-acceptance, re-enter
-        # the acceptance state (idempotent: re-runs the F5 eval + spawn). The
-        # acceptance state is out-of-band (not in LOOP_ORDER), so handle it first.
+        # the acceptance state. Idempotent: §3.5b reuses an already-committed verdict
+        # bound to the same evidence/authority/criteria, else re-spawns. The acceptance
+        # state is out-of-band (not in LOOP_ORDER), so handle it here.
         if self.state.state == STATE_ACCEPTANCE_PENDING:
             self._run_acceptance()
             return
@@ -2478,12 +2544,17 @@ class Driver:
         self._milestone_closed = self._milestone_complete(close_verdict)
         self._save_state()
 
-        # P3 piece 1 — after the milestone COMPLETES (the terminal clean-pass
-        # advance of the sub-sprint sequence), run Acceptance IF the charter
-        # enables it (delivery-loop §4.2.4). When acceptance is absent/disabled
-        # this is a no-op and the run ends in STATE_ADVANCE exactly as in P2.
-        if self._acceptance_enabled() and self._milestone_complete(close_verdict):
-            self._run_acceptance()
+        # P3 piece 1 / P-C — after the milestone COMPLETES (the terminal clean-pass
+        # advance of the sub-sprint sequence): for a browser_e2e milestone run the
+        # orchestrator-owned browser EVIDENCE stage first (which then drives Acceptance),
+        # else run Acceptance directly IF the charter enables it (delivery-loop §4.2.4).
+        # When neither applies this is a no-op and the run ends in STATE_ADVANCE exactly
+        # as in P2 (a non-functional, acceptance-off charter is byte-identical).
+        if self._milestone_complete(close_verdict):
+            if self._acceptance_class() == "browser_e2e":
+                self._run_e2e_evidence()      # commit evidence (§3.5a) → then acceptance
+            elif self._acceptance_enabled():
+                self._run_acceptance()
 
     # ----- P3 piece 1: Acceptance state + §3.6 calibration + F5 evidence ---- #
     def _acceptance_mode(self) -> str:
@@ -2497,19 +2568,60 @@ class Driver:
         """Back-compat shim used by the close path: acceptance runs iff mode≠off."""
         return self._acceptance_mode() != "off"
 
-    def _acceptance_authoritative(self) -> bool:
-        """A pass auto-ships (STATE_DONE) ONLY when AUTHORITATIVE: mode==auto AND
-        the judge is calibrated (active class) AND autonomy is
-        fully_autonomous_within_budget (design §3.2 authority matrix). Anything
-        else → an advisory pass-signoff HALT. P-A's active class is the M1 static
-        judge (`_calibration_status`); the M3 functional class arrives in P-C.
+    def _acceptance_class(self) -> str:
+        """P-C active acceptance class: 'browser_e2e' (M3) when the (derived) charter
+        sets tooling.acceptance.functional.mode=browser_e2e, else 'static' (M1 — today's
+        behavior). In a campaign this reads the per-milestone DERIVED charter (the
+        functional mode is projected there by campaign.derive_milestone_context), so the
+        class is correct per milestone."""
+        functional = (((self.charter.get("tooling") or {}).get("acceptance") or {})
+                      .get("functional") or {})
+        return "browser_e2e" if functional.get("mode") == "browser_e2e" else "static"
 
-        The §3.6 calibration gate (`_calibration_gate`) has already run by the time
-        a verdict is handled: an uncalibrated autonomous run was degraded to
-        human_on_the_loop, so it is correctly non-authoritative (advisory) here."""
+    def _calibration_record_id(self) -> Optional[str]:
+        """The active class's calibration-record id (browser_e2e → the M3 record id;
+        static → None, M1 has no record-id field). Part of the §3.5b authority
+        fingerprint + stamped on the verdict."""
+        if self._acceptance_class() == "browser_e2e":
+            m3 = (((self.charter.get("tooling") or {}).get("acceptance") or {})
+                  .get("functional") or {}).get("judge_calibration_m3") or {}
+            return m3.get("record_id")
+        return None
+
+    def _pc_schema(self, filename: str) -> dict:
+        """Load (+ cache) a P-C config/contract schema by filename from the schemas/
+        dir (no auto-discovery exists; each consumer loads what it needs)."""
+        if filename not in self._pc_schema_cache:
+            base = _find_schemas_dir()
+            if not base:
+                raise FileNotFoundError("schemas/ directory not found for P-C schema")
+            with open(os.path.join(base, filename), "r", encoding="utf-8") as fh:
+                self._pc_schema_cache[filename] = json.load(fh)
+        return self._pc_schema_cache[filename]
+
+    def _acceptance_authoritative(self) -> bool:
+        """A pass auto-ships (STATE_DONE) ONLY when AUTHORITATIVE: mode==auto AND the
+        judge is calibrated FOR THE ACTIVE CLASS AND autonomy is
+        fully_autonomous_within_budget (design §3.2 authority matrix). Anything else →
+        an advisory pass-signoff HALT. The active class is M1 (static) or M3
+        (browser_e2e); v1 ships no M3 record ⇒ M3 is never calibrated ⇒ M3 never
+        authoritative ⇒ a browser-functional pass is advisory.
+
+        NOTE (§3.5b): for a RESUMED/reused verdict the driver routes from the FROZEN
+        acceptance_snapshot.authoritative, NOT this live recompute — this method is the
+        FRESH-production computation that the snapshot freezes."""
         if self._acceptance_mode() != "auto":
             return False
-        if self._calibration_status() != "calibrated":
+        # v1 ships NO validated M3 calibration record, so a browser_e2e (M3) pass is NEVER
+        # authoritative — it is ADVISORY and HALTs at advisory_acceptance_pass_signoff,
+        # REGARDLESS of any charter-declared judge_calibration_m3.status (which has no
+        # backing record / validation path in v1). Enforced by construction here so an
+        # adopter cannot self-declare M3 'calibrated' to auto-ship a browser pass (Codex
+        # impl r2 BLOCKING-2; design §6 + §10 non-goal: no M3 acceptance-authority
+        # expansion). M1 (static) authority is byte-identical to P-A below.
+        if self._acceptance_class() == "browser_e2e":
+            return False
+        if self._calibration_status(self._acceptance_class()) != "calibrated":
             return False
         return self.autonomy.get("level") == "fully_autonomous_within_budget"
 
@@ -2550,26 +2662,36 @@ class Driver:
             return True
         return False
 
-    def _calibration_status(self) -> str:
-        """charter.tooling.acceptance.judge_calibration.status (default
-        'uncalibrated' — absence is NOT calibrated; §3.6 fails closed)."""
-        jc = (((self.charter.get("tooling") or {}).get("acceptance") or {})
-              .get("judge_calibration") or {})
+    def _calibration_status(self, cls: Optional[str] = None) -> str:
+        """Calibration status for the ACTIVE acceptance class (§3.6; P-C class-aware).
+        cls defaults to `_acceptance_class()`. static (M1) reads
+        tooling.acceptance.judge_calibration.status (byte-identical to P-A); browser_e2e
+        (M3) reads tooling.acceptance.functional.judge_calibration_m3.status. Default
+        'uncalibrated' — absence is NOT calibrated; fails closed. v1 ships no M3 record,
+        so the M3 path is always 'uncalibrated' ⇒ M3 advisory."""
+        cls = cls or self._acceptance_class()
+        acc = ((self.charter.get("tooling") or {}).get("acceptance") or {})
+        if cls == "browser_e2e":
+            m3 = (acc.get("functional") or {}).get("judge_calibration_m3") or {}
+            return str(m3.get("status") or "uncalibrated")
+        jc = acc.get("judge_calibration") or {}
         return str(jc.get("status") or "uncalibrated")
 
     def _calibration_gate(self) -> str:
-        """§3.6 calibration gate. If autonomy.level is fully_autonomous_within_budget
-        AND the judge is not calibrated, AUTO-DEGRADE autonomy.level to
-        human_on_the_loop and emit a recorded checkpoint + audit event (the
-        degradation is automatic and NEVER silent/opaque — §4.2.8 anti-pattern
-        #2/#6, Constitution §3.6). Returns the calibration_status to stamp on the
-        verdict context ('calibrated' | 'uncalibrated' | 'not_required').
+        """§3.6 calibration gate (P-C class-aware). If autonomy.level is
+        fully_autonomous_within_budget AND the judge is not calibrated FOR THE ACTIVE
+        CLASS, AUTO-DEGRADE autonomy.level to human_on_the_loop and emit a recorded
+        checkpoint + audit event (the degradation is automatic and NEVER silent/opaque —
+        §4.2.8 anti-pattern #2/#6, Constitution §3.6). Returns the calibration_status to
+        stamp on the verdict context ('calibrated' | 'uncalibrated' | 'not_required').
 
         Returns 'not_required' when autonomy is already human_in_the_loop /
-        human_on_the_loop (calibration only gates autonomous Acceptance)."""
+        human_on_the_loop (calibration only gates autonomous Acceptance). Reading the
+        ACTIVE class (not always M1) is what makes a browser_e2e run with M1-calibrated
+        but M3-uncalibrated correctly degrade (Codex round-2/3 BLOCKING)."""
         assert self.state is not None
         level = self.autonomy.get("level", "human_in_the_loop")
-        status = self._calibration_status()
+        status = self._calibration_status(self._acceptance_class())
         if level != "fully_autonomous_within_budget":
             # Calibration only gates AUTONOMOUS acceptance; HITL/HOTL never run
             # acceptance unattended, so the gate is not_required here.
@@ -2603,6 +2725,238 @@ class Driver:
             resolved_at=self.clock(),
         )
         return status
+
+    # ----- P-C: browser-E2E evidence stage (STATE_E2E_PENDING; §2/§3.5a) ------ #
+    def _e2e_run_id(self) -> str:
+        """Deterministic, PERSISTED per-(loop, subsprint) run id (§3.5a). Generated once
+        on first entry and reused on resume, so recovery keys on it + the ledger event —
+        never on the unsaved cache fields."""
+        assert self.state is not None
+        if not self.state.e2e_run_id:
+            digest = hashlib.sha256(
+                (self.loop_id + "\x00" + self.state.subsprint_id).encode()).hexdigest()
+            self.state.e2e_run_id = "r" + digest[:16]
+            self._save_state()
+        return self.state.e2e_run_id
+
+    def _e2e_final_dir(self, run_id: str) -> str:
+        return os.path.join(self.browser_dir, run_id)
+
+    def _e2e_rel_prefix(self, run_id: str) -> str:
+        """The committed run dir RELATIVE to run_dir — the prefix a verdict's
+        functional_evidence_refs must use (.orchestrator/audit/browser/<loop>/<run>)."""
+        return os.path.relpath(self._e2e_final_dir(run_id), self.run_dir).replace(os.sep, "/")
+
+    def _e2e_config(self) -> dict:
+        """charter.tooling.e2e (executor MECHANICS). Absent on a browser_e2e run →
+        gate_hard_fail (the §2a ctor check also catches mode:off; this guards the
+        mechanics)."""
+        e2e = (self.charter.get("tooling") or {}).get("e2e")
+        if not isinstance(e2e, dict):
+            raise self._gate_hard_fail(
+                "browser_e2e requires charter.tooling.e2e (executor mechanics)",
+                STATE_E2E_PENDING)
+        return e2e
+
+    def _e2e_checklist_path(self) -> str:
+        functional = (((self.charter.get("tooling") or {}).get("acceptance") or {})
+                      .get("functional") or {})
+        path = functional.get("checklist_path")
+        if not path:
+            raise self._gate_hard_fail(
+                "browser_e2e requires tooling.acceptance.functional.checklist_path",
+                STATE_E2E_PENDING)
+        return path if os.path.isabs(path) else os.path.join(self.run_dir, path)
+
+    def _e2e_checklist(self) -> dict:
+        """Load + schema-validate the signed functional-checklist CRITERIA (§4.3).
+        Missing / invalid → gate_hard_fail."""
+        abspath = self._e2e_checklist_path()
+        if not os.path.isfile(abspath):
+            raise self._gate_hard_fail(
+                f"functional-checklist not found at {abspath}", STATE_E2E_PENDING)
+        try:
+            with open(abspath, "r", encoding="utf-8") as fh:
+                checklist = json.load(fh)
+        except (OSError, ValueError) as exc:
+            raise self._gate_hard_fail(
+                f"functional-checklist invalid JSON: {exc}", STATE_E2E_PENDING)
+        err = e2e_stage.validate(
+            checklist, self._pc_schema("functional-checklist.schema.json"))
+        if err:
+            raise self._gate_hard_fail(
+                f"functional-checklist does not validate: {err}", STATE_E2E_PENDING)
+        return checklist
+
+    def _e2e_runtime_contract(self, run_id: str) -> dict:
+        """Build the concrete runtime executor-contract from charter.tooling.e2e:
+        validate the static mechanics, allocate a free port + per-run store, project
+        {port}/{store}/{mode}. Re-validate the runtime form (fail-closed, since run_loop
+        only validates on allow_real)."""
+        e2e = self._e2e_config()
+        ec_schema = self._pc_schema("executor-contract.schema.json")
+        err = e2e_stage.validate(e2e, ec_schema)
+        if err:
+            raise self._gate_hard_fail(
+                f"tooling.e2e invalid (executor-contract): {err}", STATE_E2E_PENDING)
+        port = e2e_stage.allocate_free_port()
+        store = os.path.join(self.orch_dir, f"e2e_store_{run_id}.json")
+        contract = e2e_stage.build_runtime_contract(
+            e2e, port=port, store_path=store, mode=e2e.get("mode", "normal"))
+        err2 = e2e_stage.validate(contract, ec_schema)
+        if err2:
+            raise self._gate_hard_fail(
+                f"runtime executor-contract invalid: {err2}", STATE_E2E_PENDING)
+        return contract
+
+    def _checklist_summary(self, final_dir: str) -> dict:
+        """Count executor_status across checklist-results.json (audit context only)."""
+        out = {"pass": 0, "fail": 0, "error": 0, "skipped": 0}
+        try:
+            with open(os.path.join(final_dir, "checklist-results.json"),
+                      "r", encoding="utf-8") as fh:
+                for row in json.load(fh) or []:
+                    st = row.get("executor_status")
+                    if st in out:
+                        out[st] += 1
+        except (OSError, ValueError):  # pragma: no cover - summary is best-effort
+            pass
+        return out
+
+    def _emit_e2e_event(self, run_id: str, final_dir: str, manifest: dict) -> None:
+        """Append the ONE hash-chained browser_e2e_evidence event that anchors a committed
+        evidence set (§5). Reconcile matches on {run_id, manifest_sha256}."""
+        self._audit(e2e_stage.EVIDENCE_EVENT_TYPE, {
+            "run_id": run_id,
+            "manifest_ref": os.path.relpath(
+                os.path.join(final_dir, "manifest.json"), self.run_dir).replace(os.sep, "/"),
+            "manifest_sha256": manifest.get("artifact_manifest_hash"),
+            "artifacts": [{"name": a["name"], "sha256": a["sha256"]}
+                          for a in manifest.get("artifacts", [])],
+            "exit_code": manifest.get("exit_code"),
+            "checklist_summary": self._checklist_summary(final_dir),
+        })
+
+    def _cache_e2e_commit(self, run_id: str, final_dir: str, manifest_hash: str) -> None:
+        assert self.state is not None
+        self.state.e2e_run_id = run_id
+        self.state.e2e_evidence_ref = os.path.relpath(
+            os.path.join(final_dir, "manifest.json"), self.run_dir).replace(os.sep, "/")
+        self.state.e2e_manifest_hash = manifest_hash
+        self._save_state()
+
+    def _commit_e2e(self) -> dict:
+        """§3.5a durable commit/reconcile — returns the committed manifest dict.
+          A) reconcile passes (dir complete + per-artifact hashes + matching ledger event)
+             → return, NO re-run;
+          B) dir complete + hashes ok but NO matching ledger event (crash between publish
+             and append) → append the one event, return (do NOT re-run);
+          C) absent / partial / corrupt → run the executor into a fresh staging dir, build
+             + verify the manifest, atomically publish (rmtree any existing final first —
+             os.replace cannot overwrite a non-empty dir), append the event, cache.
+        A RUNTIME executor failure → gate_hard_fail (resumable). Recovery is authoritative
+        from the persisted run_id + disk + ledger, so an unsaved cache never causes a skip."""
+        assert self.state is not None
+        run_id = self._e2e_run_id()
+        final = self._e2e_final_dir(run_id)
+        m_schema = self._pc_schema("browser-evidence-manifest.schema.json")
+        cr_item = (m_schema.get("$defs") or {}).get("checklist_result")
+        events = (audit.read_events(self.audit_ledger)
+                  if os.path.isfile(self.audit_ledger) else [])
+
+        if e2e_stage.dir_complete_and_hashes_ok(final, m_schema, cr_item):
+            manifest = e2e_stage.load_manifest(final)
+            mh = manifest.get("artifact_manifest_hash")
+            if not e2e_stage.evidence_event_present(events, run_id, mh):
+                self._emit_e2e_event(run_id, final, manifest)   # B
+            self._cache_e2e_commit(run_id, final, mh)           # A / B
+            return manifest
+
+        # C — (re)run into a fresh staging dir; publish atomically.
+        staging = final + ".staging"
+        shutil.rmtree(staging, ignore_errors=True)
+        checklist = self._e2e_checklist()
+        contract = self._e2e_runtime_contract(run_id)
+        self._audit("e2e_start", {"subsprint_id": self.state.subsprint_id,
+                                  "run_id": run_id,
+                                  "executor_kind": contract.get("executor_kind")})
+        os.makedirs(staging, exist_ok=True)
+        try:
+            executor = e2e_executor.make_executor(contract.get("executor_kind", ""))
+            result = executor.run(contract, checklist, staging, env={})
+        except e2e_executor.ExecutorUnavailable as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise self._gate_hard_fail(
+                f"browser executor unavailable: {exc}", STATE_E2E_PENDING)
+        except e2e_executor.ExecutorRuntimeError as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise self._gate_hard_fail(
+                f"browser executor runtime failure: {exc}", STATE_E2E_PENDING)
+        except ValueError as exc:  # unknown executor kind / bad config
+            shutil.rmtree(staging, ignore_errors=True)
+            raise self._gate_hard_fail(
+                f"browser executor config error: {exc}", STATE_E2E_PENDING)
+
+        manifest = e2e_stage.build_manifest(
+            staging, result, contract, run_id=run_id, loop_id=self.loop_id)
+        with open(os.path.join(staging, "manifest.json"), "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, sort_keys=True, indent=2)
+        if not e2e_stage.dir_complete_and_hashes_ok(staging, m_schema, cr_item):
+            shutil.rmtree(staging, ignore_errors=True)
+            raise self._gate_hard_fail(
+                "browser evidence incomplete after capture (staging failed completeness)",
+                STATE_E2E_PENDING)
+        shutil.rmtree(final, ignore_errors=True)
+        os.makedirs(os.path.dirname(final), exist_ok=True)
+        os.replace(staging, final)        # atomic publish onto a now-absent path
+        mh = manifest.get("artifact_manifest_hash")
+        self._emit_e2e_event(run_id, final, manifest)
+        self._cache_e2e_commit(run_id, final, mh)
+        return manifest
+
+    def _check_dev_self_smoke(self) -> None:
+        """§6a (Codex MAJOR-2) — a browser_e2e milestone REQUIRES a Dev self-smoke
+        attestation: the running app exercised once on the changed happy path, recorded
+        at docs/self-smoke.json as {command, result}. This is a STRUCTURAL PRESENCE gate
+        (NOT a judgment of correctness — necessary, not authoritative; distinct from the
+        independent browser evidence gate). Absent/malformed → resumable gate_hard_fail."""
+        assert self.state is not None
+        path = os.path.join(self.run_dir, "docs", "self-smoke.json")
+        if not os.path.isfile(path):
+            raise self._gate_hard_fail(
+                "browser_e2e milestone requires a Dev self-smoke attestation at "
+                "docs/self-smoke.json ({command, result} — run the app + exercise the "
+                "changed happy path once); none found", STATE_E2E_PENDING)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                ss = json.load(fh)
+        except (OSError, ValueError) as exc:
+            raise self._gate_hard_fail(
+                f"Dev self-smoke attestation is not valid JSON: {exc}",
+                STATE_E2E_PENDING)
+        if not (isinstance(ss, dict) and ss.get("command") and ss.get("result")):
+            raise self._gate_hard_fail(
+                "Dev self-smoke attestation must contain non-empty {command, result}",
+                STATE_E2E_PENDING)
+        self._audit("dev_self_smoke_present",
+                    {"subsprint_id": self.state.subsprint_id,
+                     "command": str(ss.get("command"))[:200]})
+
+    def _run_e2e_evidence(self) -> None:
+        """Drive STATE_E2E_PENDING (§2): verify the Dev self-smoke attestation (§6a),
+        commit the browser evidence (idempotent via §3.5a), then proceed into
+        milestone-close Acceptance. Out-of-band like acceptance; resume re-enters here
+        and is non-duplicating."""
+        assert self.state is not None
+        self.state.state = STATE_E2E_PENDING
+        if STATE_E2E_PENDING not in self.state.history:
+            self.state.history.append(STATE_E2E_PENDING)
+        self._milestone_closed = True
+        self._save_state()
+        self._check_dev_self_smoke()       # §6a structural gate (resumable halt if absent)
+        self._commit_e2e()                 # reconcile-or-run; gate_hard_fail on runtime fail
+        if self._acceptance_enabled():
+            self._run_acceptance()
 
     def _run_eval_f5(self, acc: dict) -> str:
         """F5 evidence (delivery-loop §4.2.6): the DRIVER (orchestrator) executes
@@ -2866,26 +3220,19 @@ class Driver:
             return body.strip()
         return self._project_acceptance_prompt(ic, evidence_path, calibration_status)
 
-    def _spawn_acceptance(self, evidence_path: str,
-                          calibration_status: str) -> dict:
-        """Spawn run_acceptance via the role adapter (§1.7-C permitted surface:
-        the calibration-gated orchestrator). Acceptance receives the F5 evidence
-        PATH (read-only) — NOT raw code (anti-pattern #5). The driver validates
-        the returned verdict against acceptance-verdict.schema.json; invalid →
-        gate_hard_fail (§4.2.7)."""
+    def _build_acceptance_prompt(self, evidence_path: str, calibration_status: str,
+                                 manifest: Optional[dict] = None,
+                                 run_id: Optional[str] = None):
+        """Build the Acceptance prompt: resolved from an adopter compact/<scope>-
+        acceptance-prompt.md OR PROJECTED from the SIGNED intent + closure contract +
+        the evidence (validated by CONTENT); offline/mock keeps the legacy inline prompt
+        (byte-identical to P-A). A live run with no usable source HALTS (resumable) and
+        returns _ACCEPTANCE_SPEC_HALT. For a browser_e2e run a DETERMINISTIC
+        browser-evidence section is appended (manifest + checklist-results refs + the
+        signed criteria + the 'executor_status is an OBSERVATION, not a verdict'
+        instruction). The driver computes the §3.5b acceptance_input_hash over THIS
+        prompt + the resolver graph, so the verdict is bound to exactly what it judged."""
         assert self.state is not None
-        adapter = self.adapters.get("acceptance")
-        if adapter is None:
-            raise self._gate_hard_fail(
-                "acceptance enabled but no adapter wired for role 'acceptance'",
-                STATE_ACCEPTANCE_PENDING)
-        routing = route_for_role(self.charter, "acceptance")
-        # The Acceptance prompt is resolved from an adopter compact/<scope>-
-        # acceptance-prompt.md or PROJECTED from the SIGNED intent contract + closure
-        # contract + F5 evidence, validated by CONTENT. A live run with no usable
-        # source HALTS (resumable) — it never dispatches a one-line acceptance
-        # request. Offline/mock keeps the legacy inline prompt (byte-identical). This
-        # runs AFTER the calibration gate + eval and only REPORTS calibration_status.
         resolved = self._resolve_acceptance_spec(evidence_path, calibration_status)
         if resolved is _ACCEPTANCE_SPEC_HALT:
             return _ACCEPTANCE_SPEC_HALT  # checkpoint + STATE_HALTED; caller stops
@@ -2899,6 +3246,26 @@ class Driver:
                 f"research brief; emit an acceptance-verdict. Calibration status: "
                 f"{calibration_status}. You MUST NOT run the eval harness yourself."
             )
+        if self._acceptance_class() == "browser_e2e" and run_id is not None:
+            prompt += self._browser_evidence_prompt_section(run_id, manifest)
+        return prompt
+
+    def _spawn_acceptance(self, prompt: str, evidence_path: str,
+                          calibration_status: str, snapshot: dict) -> dict:
+        """Spawn run_acceptance via the role adapter (§1.7-C permitted surface: the
+        calibration-gated orchestrator) with the PREBUILT ``prompt``. Acceptance receives
+        evidence PATHS (read-only) — NOT raw code (anti-pattern #5). The driver validates
+        the returned verdict against acceptance-verdict.schema.json (invalid →
+        gate_hard_fail) and, on a valid verdict, PERSISTS it with its §3.5b reuse binding
+        (acceptance_evidence_hash + the frozen ``snapshot``) BEFORE the caller routes — so
+        a crash before routing reuses THIS exact verdict on resume rather than re-rolling."""
+        assert self.state is not None
+        adapter = self.adapters.get("acceptance")
+        if adapter is None:
+            raise self._gate_hard_fail(
+                "acceptance enabled but no adapter wired for role 'acceptance'",
+                STATE_ACCEPTANCE_PENDING)
+        routing = route_for_role(self.charter, "acceptance")
         input_hash = "sha256:" + hashlib.sha256(
             ("acceptance\x00" + prompt).encode("utf-8")).hexdigest()[:16]
         self.state.spawn_count += 1
@@ -2960,65 +3327,326 @@ class Driver:
                 f"acceptance verdict failed schema validation "
                 f"(acceptance-verdict.schema.json): {err}",
                 STATE_ACCEPTANCE_PENDING)
+        # §3.5b: persist the verdict + its reuse binding (evidence hash + the FROZEN
+        # authority/criteria snapshot) BEFORE the caller routes, so a crash between here
+        # and routing reuses THIS verdict (bound to this evidence/authority/criteria) on
+        # resume instead of re-spawning and possibly flipping the outcome.
         self.state.last_verdict = verdict
+        self.state.acceptance_evidence_hash = snapshot.get("evidence_hash")
+        self.state.acceptance_snapshot = dict(snapshot)
+        self._save_state()
         return verdict
 
+    def _acceptance_browser_evidence(self):
+        """§3.5a integrity gate — Acceptance MUST NOT run on incomplete browser evidence.
+        Reconcile the committed evidence (dir complete + per-artifact hashes + a matching
+        ledger event); ANY failure → gate_hard_fail (Acceptance never spawns). Returns
+        (manifest, manifest_relpath, run_id)."""
+        assert self.state is not None
+        run_id = self._e2e_run_id()
+        final = self._e2e_final_dir(run_id)
+        m_schema = self._pc_schema("browser-evidence-manifest.schema.json")
+        cr_item = (m_schema.get("$defs") or {}).get("checklist_result")
+        events = (audit.read_events(self.audit_ledger)
+                  if os.path.isfile(self.audit_ledger) else [])
+        if not e2e_stage.dir_complete_and_hashes_ok(final, m_schema, cr_item):
+            raise self._gate_hard_fail(
+                "browser evidence incomplete/corrupt at acceptance (reconcile failed); "
+                "Acceptance cannot run on incomplete evidence", STATE_ACCEPTANCE_PENDING)
+        manifest = e2e_stage.load_manifest(final)
+        mh = manifest.get("artifact_manifest_hash")
+        if not e2e_stage.evidence_event_present(events, run_id, mh):
+            raise self._gate_hard_fail(
+                "browser evidence not anchored on the Audit Spine (no matching "
+                "browser_e2e_evidence event); refusing to judge unanchored evidence",
+                STATE_ACCEPTANCE_PENDING)
+        rel = os.path.relpath(os.path.join(final, "manifest.json"),
+                              self.run_dir).replace(os.sep, "/")
+        return manifest, rel, run_id
+
+    def _browser_evidence_prompt_section(self, run_id: str,
+                                         manifest: Optional[dict]) -> str:
+        """Deterministic browser-evidence addendum for the Acceptance prompt (M3)."""
+        prefix = self._e2e_rel_prefix(run_id)
+        arts = sorted(a.get("name", "") for a in (manifest or {}).get("artifacts", []))
+        return (
+            "\n\n## Browser-E2E evidence (read-only; M3 functional acceptance)\n"
+            f"Committed, hash-anchored evidence under: `{prefix}/` "
+            f"(manifest.json + {', '.join(arts)}).\n"
+            "Judge EACH signed functional-checklist criterion (by criterion_id) "
+            "INDEPENDENTLY against the captured evidence. The checklist-results.json "
+            "`executor_status` values are OBSERVATIONS, not verdicts — you may fail a "
+            "criterion the executor marked pass, and you MUST NOT pass a criterion the "
+            "executor observed fail/error.\n"
+            "Emit acceptance_class: \"browser_e2e\"; every case carries its criterion_id "
+            f"and functional_evidence_refs ({{kind, path, sha256}}) citing artifacts under "
+            f"`{prefix}/` (the driver binds each ref to the committed manifest — a fake or "
+            "uncommitted ref hard-fails). Cases MUST cover the full checklist criterion "
+            "set; a milestone pass requires every case pass AND no critical executor "
+            "failure.\n")
+
+    def _acceptance_resolver_graph(self, evidence_path: str,
+                                   run_id: Optional[str]):
+        """rev7 resolver graph: the load set the Acceptance prompt instructs the judge to
+        read, content-hashed (so an edit to ANY loaded input invalidates §3.5b reuse). The
+        driver enumerates it from the SAME sources it wires into the prompt + cold-start:
+        the executor mechanics (inline), the signed criteria sources, the derived context,
+        the Reviewer outcomes, the role card + verdict schema, the evidence manifest, and
+        the adopter cold-start ledgers — each that EXISTS. A MANDATORY member that is
+        missing/unreadable is returned in `missing` (the caller gate_hard_fails)."""
+        assert self.state is not None
+        base = _find_schemas_dir()
+        repo_root = os.path.dirname(base) if base else self.run_dir
+
+        def _abs(p):
+            return p if os.path.isabs(p) else os.path.join(self.run_dir, p)
+
+        entries = []
+        e2e = (self.charter.get("tooling") or {}).get("e2e")
+        if isinstance(e2e, dict):
+            entries.append({"path": "tooling.e2e", "purpose": "executor_contract",
+                            "inline": e2e})
+        fnl = (((self.charter.get("tooling") or {}).get("acceptance") or {})
+               .get("functional") or {})
+        if fnl.get("checklist_path"):
+            entries.append({"path": _abs(fnl["checklist_path"]),
+                            "rel": fnl["checklist_path"],
+                            "purpose": "functional_checklist", "mandatory": True})
+        if self.state.brief_draft_ref:
+            entries.append({"path": _abs(self.state.brief_draft_ref),
+                            "rel": self.state.brief_draft_ref,
+                            "purpose": "closure_contract"})
+        for rel in ("derived-context.json",
+                    os.path.join("docs", "codex-findings.md")):
+            ap = os.path.join(self.run_dir, rel)
+            if os.path.isfile(ap):
+                entries.append({"path": ap, "rel": rel.replace(os.sep, "/"),
+                                "purpose": "review_context"})
+        if base:
+            entries.append({"path": os.path.join(base, "acceptance-verdict.schema.json"),
+                            "rel": "schemas/acceptance-verdict.schema.json",
+                            "purpose": "verdict_schema"})
+        entries.append({"path": os.path.join(repo_root, "role-cards",
+                                             "acceptance-agent.md"),
+                        "rel": "role-cards/acceptance-agent.md", "purpose": "role_card"})
+        if run_id is not None:
+            entries.append({"path": os.path.join(self._e2e_final_dir(run_id),
+                                                 "manifest.json"),
+                            "rel": evidence_path, "purpose": "evidence_manifest",
+                            "mandatory": True})
+        else:
+            entries.append({"path": _abs(evidence_path), "rel": evidence_path,
+                            "purpose": "f5_evidence", "mandatory": True})
+        # Adopter cold-start lives in the ADOPTER repo (self.repo_dir), NOT run_dir (the
+        # /tmp artifact dir, "outside the repo") — binding it under run_dir would miss the
+        # REAL AGENTS.md / docs/current ledgers, so an edit there could not invalidate
+        # §3.5b reuse (Codex impl r2 BLOCKING-3). When ingress is off (repo_dir is None)
+        # there is no adopter repo, so there is no adopter cold-start to bind here — the
+        # framework cold-start below still anchors the always-load governance chain.
+        adopter_root = self.repo_dir
+        if adopter_root:
+            ag = os.path.join(adopter_root, "AGENTS.md")
+            if os.path.isfile(ag):
+                entries.append({"path": ag, "rel": "AGENTS.md",
+                                "purpose": "adopter_cold_start"})
+            cur = os.path.join(adopter_root, "docs", "current")
+            if os.path.isdir(cur):
+                for fn in sorted(os.listdir(cur)):
+                    if fn.endswith(".md"):
+                        entries.append({"path": os.path.join(cur, fn),
+                                        "rel": f"docs/current/{fn}",
+                                        "purpose": "adopter_ledger"})
+        # The framework cold-start root: AGENTS.md @-includes the always-load governance
+        # chain, so the transitive resolver reaches constitution / doc_governance /
+        # context_briefing (and whatever else they include) — an edit to any invalidates reuse.
+        fw_agents = os.path.join(repo_root, "AGENTS.md")
+        if os.path.isfile(fw_agents):
+            entries.append({"path": fw_agents, "rel": "AGENTS.md",
+                            "purpose": "framework_cold_start"})
+        return e2e_stage.resolve_load_graph(entries, repo_root=repo_root)
+
     def _run_acceptance(self) -> None:
-        """Drive the acceptance_pending state (delivery-loop §4.2.4):
-          1. §3.6 calibration gate (auto-degrade if uncalibrated + autonomous);
-          2. F5 evidence — driver runs eval.cmd, captures artifact paths;
-          3. spawn run_acceptance with the evidence PATH (read-only);
-          4. validate verdict; route per Constitution §3.5.
-        The run is already in STATE_ADVANCE on entry; acceptance may move it to
-        STATE_HALTED (fix_required / needs_human) or DONE (pass)."""
+        """Drive acceptance_pending (delivery-loop §4.2.4) — class-aware (P-C):
+          1. §3.6 calibration gate (auto-degrade if uncalibrated + autonomous), ACTIVE class;
+          2. EVIDENCE — browser_e2e: VERIFY the committed browser evidence (§3.5a reconcile,
+             else gate_hard_fail) + use the manifest; static: F5 eval.cmd. Compute the
+             evidence_hash for BOTH classes (§3.5b);
+          3. prompt + resolver graph → acceptance_input_hash; authority_fingerprint +
+             authoritative → the FROZEN snapshot;
+          4. §3.5b reuse-on-resume — a committed verdict bound to the SAME evidence +
+             authority + criteria is RE-ROUTED (no re-spawn, no flip); else spawn fresh;
+          5. §3.2 consistency gate (browser_e2e) + route per §3.5 from the FROZEN snapshot.
+        On entry the run is STATE_ADVANCE; acceptance may move it to STATE_HALTED
+        (advisory/fix_required/needs_human) or STATE_DONE (authoritative pass)."""
         assert self.state is not None
         if "acceptance" not in self.schemas:
             raise self._gate_hard_fail(
                 "acceptance enabled but acceptance-verdict schema not loaded "
-                "(pass verdict_schemas including 'acceptance' or use the default "
-                "loader)",
+                "(pass verdict_schemas including 'acceptance' or use the default loader)",
                 STATE_ACCEPTANCE_PENDING)
         acc = ((self.charter.get("tooling") or {}).get("acceptance") or {})
-        # Acceptance only runs at MILESTONE close, so mark it (covers a resume that
-        # re-enters at acceptance_pending, where _handle_close didn't run) — this
-        # gates the P5 propose-only feedback stage.
+        active_class = self._acceptance_class()
         self._milestone_closed = True
         self.state.state = STATE_ACCEPTANCE_PENDING
-        self.state.history.append(STATE_ACCEPTANCE_PENDING)
+        if STATE_ACCEPTANCE_PENDING not in self.state.history:
+            self.state.history.append(STATE_ACCEPTANCE_PENDING)
         self._save_state()
         self._audit("acceptance_start",
                     {"subsprint_id": self.state.subsprint_id,
-                     "run_at": acc.get("run_at", "milestone_close")})
+                     "run_at": acc.get("run_at", "milestone_close"),
+                     "acceptance_class": active_class})
 
-        # 1. §3.6 calibration gate (may auto-degrade autonomy + checkpoint).
+        # Capture the CHARTER-DECLARED (pre-degrade) autonomy level BEFORE the gate runs —
+        # the gate mutates the live autonomy dict (which aliases charter['autonomy']), so the
+        # §3.5b authority fingerprint MUST use this captured value, not a post-gate read
+        # (Codex impl MAJOR-1).
+        declared_autonomy = (self.charter.get("autonomy") or {}).get("level")
+        # 1. §3.6 calibration gate (class-aware; re-establishes the non-persisted degrade
+        #    on resume so the authority basis is consistent across produce/resume).
         calibration_status = self._calibration_gate()
+        cal_record_id = self._calibration_record_id()
 
-        # 2. F5 evidence — the DRIVER runs the eval harness (not Acceptance).
-        evidence_path = self._run_eval_f5(acc)
+        # 2. Evidence + evidence_hash (BOTH classes — §3.5b binds reuse to it).
+        manifest: Optional[dict] = None
+        run_id: Optional[str] = None
+        if active_class == "browser_e2e":
+            manifest, evidence_path, run_id = self._acceptance_browser_evidence()
+            evidence_hash = manifest.get("artifact_manifest_hash")
+        else:
+            evidence_path = self._run_eval_f5(acc)
+            evidence_hash = e2e_stage.sha256_file(
+                os.path.join(self.run_dir, evidence_path))
 
-        # 3. spawn run_acceptance with the evidence PATH (read-only).
-        verdict = self._spawn_acceptance(evidence_path, calibration_status)
+        # 3. Prompt + resolver graph → the three reuse fingerprints + the FROZEN snapshot.
+        prompt = self._build_acceptance_prompt(
+            evidence_path, calibration_status, manifest, run_id)
+        if prompt is _ACCEPTANCE_SPEC_HALT:
+            return  # acceptance-spec refinement halt: checkpoint written, STATE_HALTED
+        graph, missing = self._acceptance_resolver_graph(evidence_path, run_id)
+        if missing:
+            raise self._gate_hard_fail(
+                "acceptance resolver-graph missing mandatory input(s): "
+                + ", ".join(m.get("purpose", m.get("path", "?")) for m in missing),
+                STATE_ACCEPTANCE_PENDING)
+        snapshot = {
+            "evidence_hash": evidence_hash,
+            "authority_fingerprint": e2e_stage.authority_fingerprint(
+                self.charter, active_class=active_class,
+                calibration_status=calibration_status,
+                calibration_record_id=cal_record_id,
+                autonomy_level_declared=declared_autonomy),
+            "acceptance_input_hash": e2e_stage.acceptance_input_hash(prompt, graph),
+            "authoritative": bool(self._acceptance_authoritative()),
+        }
+
+        # 4. §3.5b reuse-on-resume: a committed verdict bound to the SAME evidence +
+        #    authority + criteria is re-routed (NO re-spawn, no flip). Any divergence on
+        #    ANY of the three (or no committed verdict yet) → spawn fresh.
+        lv, snap = self.state.last_verdict, self.state.acceptance_snapshot
+        if (isinstance(lv, dict) and "milestone_verdict" in lv and isinstance(snap, dict)
+                and snap.get("evidence_hash") == snapshot["evidence_hash"]
+                and snap.get("authority_fingerprint") == snapshot["authority_fingerprint"]
+                and snap.get("acceptance_input_hash") == snapshot["acceptance_input_hash"]
+                # The triple binds authority INPUTS; ALSO bind the derived authority
+                # DECISION. Routing ships from the FROZEN snap.authoritative (below), so a
+                # stale snap.authoritative that disagrees with the current policy — e.g. an
+                # M3 'true' produced before the §10 M3-advisory guard, or any authority
+                # logic change between produce and resume — must NOT be reused-and-shipped.
+                # On a mismatch we re-spawn; the fresh snapshot (authoritative=False for M3)
+                # then routes advisory (Codex impl r3 BLOCKING; design §3.5b/§10).
+                and bool(snap.get("authoritative")) == snapshot["authoritative"]):
+            self._audit("acceptance_reuse",
+                        {"subsprint_id": self.state.subsprint_id,
+                         "reason": "evidence+authority+criteria+decision all match"})
+            self._handle_acceptance_verdict(lv, evidence_path, snapshot=snap,
+                                            manifest=manifest, run_id=run_id)
+            return
+
+        verdict = self._spawn_acceptance(
+            prompt, evidence_path, calibration_status, snapshot)
         if verdict is _ACCEPTANCE_SPEC_HALT:
             return  # acceptance-spec refinement halt: checkpoint written, STATE_HALTED
-        self._handle_acceptance_verdict(verdict, evidence_path)
+        self._handle_acceptance_verdict(verdict, evidence_path, snapshot=snapshot,
+                                        manifest=manifest, run_id=run_id)
 
-    def _handle_acceptance_verdict(self, verdict: dict,
-                                   evidence_path: str) -> None:
+    def _load_checklist_results(self, run_id: Optional[str]) -> list:
+        if run_id is None:
+            return []
+        try:
+            with open(os.path.join(self._e2e_final_dir(run_id),
+                                   "checklist-results.json"), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, list) else []
+        except (OSError, ValueError):  # pragma: no cover - reconcile already verified it
+            return []
+
+    def _handle_acceptance_verdict(self, verdict: dict, evidence_path: str, *,
+                                   snapshot: dict,
+                                   manifest: Optional[dict] = None,
+                                   run_id: Optional[str] = None) -> None:
         """Route the acceptance verdict per Constitution §3.5:
-          pass         → ship/advance (run completes in STATE_DONE);
-          fix_required → write the human-confirm checkpoint with the 3 route
-                         options and HALT (NEVER route to Deliver without it —
-                         §1.7-C behavioural counterpart);
-          needs_human  → surface_approve checkpoint + HALT."""
+          pass         → ship/advance (STATE_DONE) ONLY when the FROZEN snapshot says
+                         authoritative (§3.5b — NOT a live recompute); else advisory HALT;
+          fix_required → human-confirm checkpoint + HALT (NEVER route to Deliver without
+                         it — §1.7-C counterpart);
+          needs_human  → surface_approve checkpoint + HALT.
+        For a browser_e2e run the §3.2 CONSISTENCY GATE runs FIRST: an integrity breach
+        (wrong class / unbound or malformed evidence ref) → gate_hard_fail; a pass that
+        CONTRADICTS the captured evidence (failed case / critical executor failure /
+        coverage gap) is coerced to needs_human (surface_approve) — never shipped."""
         assert self.state is not None
+        consistency_reason = ""
+        active_class = self._acceptance_class()
+        if active_class == "browser_e2e":
+            checklist = self._e2e_checklist()
+            cresults = self._load_checklist_results(run_id)
+            outcome = e2e_stage.check_acceptance_consistency(
+                verdict, manifest or {}, checklist, cresults,
+                evidence_rel_prefix=self._e2e_rel_prefix(run_id or self._e2e_run_id()))
+            if outcome is not None:
+                action, reason = outcome
+                self._audit("acceptance_consistency",
+                            {"action": action, "reason": reason,
+                             "subsprint_id": self.state.subsprint_id})
+                if action == "gate_hard_fail":
+                    raise self._gate_hard_fail(
+                        f"acceptance consistency gate: {reason}",
+                        STATE_ACCEPTANCE_PENDING)
+                # needs_human: a pass that contradicts the committed evidence is coerced
+                # to needs_human (surface_approve) and NEVER shipped (§3.2).
+                verdict = {**verdict, "milestone_verdict": "needs_human"}
+                consistency_reason = reason
+        else:
+            # STATIC active class: enforce the SYMMETRIC class match (design §3.1/§3.2.1 —
+            # "verdict omits/mismatches active class → gate_hard_fail"). The branch-correct
+            # schema ACCEPTS a browser_e2e-shaped verdict (functional_evidence_refs, NO
+            # evidence_path required), which on a static run would skip BOTH the browser
+            # consistency gate (only run above) AND the static evidence binding, so a 'pass'
+            # could auto-ship when M1 is authoritative. A static run therefore REQUIRES the
+            # verdict's acceptance_class to be absent or 'static' (Codex impl r4 BLOCKING —
+            # closes the static-side browser-pass auto-ship path). Legit M1 verdicts (no
+            # acceptance_class) are byte-identical to P-A.
+            vclass = verdict.get("acceptance_class")
+            if vclass not in (None, "static"):
+                self._audit("acceptance_consistency",
+                            {"action": "gate_hard_fail",
+                             "reason": f"static active class but verdict "
+                                       f"acceptance_class={vclass!r}",
+                             "subsprint_id": self.state.subsprint_id})
+                raise self._gate_hard_fail(
+                    f"acceptance verdict class mismatch: active=static, verdict "
+                    f"acceptance_class={vclass!r}", STATE_ACCEPTANCE_PENDING)
+
         mv = verdict.get("milestone_verdict")
         self._audit("acceptance_verdict",
                     {"milestone_verdict": mv,
                      "suggested_route": verdict.get("suggested_route"),
+                     "acceptance_class": self._acceptance_class(),
+                     "authoritative": bool(snapshot.get("authoritative")),
                      "evidence_path": evidence_path})
 
         if mv == "pass":
-            if self._acceptance_authoritative():
+            if snapshot.get("authoritative"):
                 # Authoritative pass (auto mode + calibrated + fully-autonomous):
                 # the milestone ships. STATE_DONE marks a fully-accepted close.
                 self.state.state = STATE_DONE
@@ -3085,13 +3713,16 @@ class Driver:
             return
 
         if mv == "needs_human":
+            coerced = (f" The driver's §3.2 consistency gate COERCED this to needs_human "
+                       f"(a pass would contradict the captured evidence): "
+                       f"{consistency_reason}." if consistency_reason else "")
             path = self._write_checkpoint(
                 "acceptance_surface_approve", self.state.subsprint_id,
                 context_md=(
                     f"Acceptance milestone_verdict = needs_human on sub-sprint "
                     f"{self.state.subsprint_id}: the Acceptance Agent could not "
                     f"reach an autonomous verdict and surfaces the decision to the "
-                    f"Customer (surface_approve). F5 evidence: {evidence_path}."),
+                    f"Customer (surface_approve).{coerced} Evidence: {evidence_path}."),
                 options_md=("- approve_ship\n- route_to_deliver_fix\n- abort"),
             )
             self._audit("acceptance_needs_human",

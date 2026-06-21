@@ -140,6 +140,11 @@
             "timeout_seconds": {"type": "integer", "minimum": 1}
           }
         },
+        "e2e": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "P-C. Browser-E2E executor MECHANICS (the HOW), conforming to schemas/executor-contract.schema.json. The charter validator cross-validates this against that schema; the driver RE-validates at the e2e gate (fail-closed, since run_loop validates only on allow_real). OPTIONAL; required when any milestone runs tooling.acceptance.functional.mode=browser_e2e. archive/2026-06-20-pc-browser-e2e-design.md §4.2."
+        },
         "acceptance": {
           "type": "object",
           "required": ["on_fix_required"],
@@ -185,6 +190,25 @@
                 "agreement_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.9},
                 "flip_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.1},
                 "labeled_set_path": {"type": "string"}
+              }
+            },
+            "functional": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "P-C. Browser-E2E functional acceptance. mode absent ⇒ static (today's behavior, byte-identical). browser_e2e engages the orchestrator-owned evidence executor between Code Review and milestone-close Acceptance; it REQUIRES tooling.e2e + a signed checklist_path, and acceptance.mode ≠ off (the driver hard-fails browser_e2e+mode:off at construction). M3 functional acceptance stays ADVISORY until an M3 calibration record is calibrated. archive/2026-06-20-pc-browser-e2e-design.md.",
+              "properties": {
+                "mode": {"type": "string", "enum": ["static", "browser_e2e"], "description": "static (M1; default) | browser_e2e (M3; runs the browser evidence gate). No schema default — absence ⇒ static at the driver."},
+                "executor_contract": {"type": "string", "description": "OPTIONAL id/path label for the executor-contract MECHANICS; the live mechanics are tooling.e2e (schemas/executor-contract.schema.json)."},
+                "checklist_path": {"type": "string", "description": "Path to the signed functional-checklist (schemas/functional-checklist.schema.json) — Research-owned CRITERIA, frozen at Gate-1. Required when mode=browser_e2e."},
+                "judge_calibration_m3": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "M3 (browser-functional) calibration, SEPARATE from the M1 judge_calibration above. Absent ⇒ uncalibrated ⇒ M3 advisory (v1 ships no M3 record).",
+                  "properties": {
+                    "status": {"type": "string", "enum": ["calibrated", "uncalibrated"]},
+                    "record_id": {"type": "string", "description": "acceptance-calibration-record id (acceptance_class: browser_e2e)."}
+                  }
+                }
               }
             },
             "run_at": {"type": "string", "enum": ["milestone_close", "release_cut", "both"]},

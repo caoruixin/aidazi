@@ -5,7 +5,7 @@ doc_category: live
 status: current
 implementation_status: implemented
 source_of_truth: this file
-last_reviewed: 2026-06-12
+last_reviewed: 2026-06-21
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
@@ -140,6 +140,7 @@ The two are different artifacts at different scales. The sprint-close header is 
 
 - Edit code, tests, configs, or any file outside `docs/codex-findings.md`.
 - Run scripts, the eval harness, or any network call.
+- Run the browser-E2E evidence run (P-C) — that is the orchestrator's out-of-band `e2e_evidence_pending` stage (`process/browser-e2e-acceptance.md`), not the Reviewer's job; you stay read-only/static and do not launch the app or drive a browser.
 - Spawn other agents (including Acceptance — Constitution §1.7-C lens applies, though weaker — Reviewer is not Acceptance's spawning peer; the rule is "don't spawn Acceptance from anywhere downstream of yourself").
 - Treat your verdict as the outcome gate — your verdict is code-side; Acceptance's verdict is outcome-side; they are independent.
 - Apply keyword matching as a passing condition — anchor phrases in closure_criterion are EVIDENCE you cite (Constitution §1.7-B; same rule that binds Acceptance).

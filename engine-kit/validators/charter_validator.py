@@ -1126,6 +1126,67 @@ class Overrides:
     connector_catalog_path: Optional[str] = None
 
 
+def _check_functional_e2e(charter: dict, report: Report) -> None:
+    """P-C. Validate the browser-E2E functional acceptance config. Fires ONLY when
+    tooling.acceptance.functional OR tooling.e2e is present, so every pre-P-C charter
+    is a NO-OP. archive/2026-06-20-pc-browser-e2e-design.md §2a/§4.2.
+
+      - tooling.acceptance.functional.mode == browser_e2e REQUIRES: acceptance.mode
+        != off (a browser-evidence run needs a judge), a functional.checklist_path
+        (the signed CRITERIA), and tooling.e2e (the executor MECHANICS). The driver
+        ALSO hard-fails browser_e2e+mode:off at construction (run_loop only validates
+        on allow_real) — this is the static, fail-closed counterpart.
+      - tooling.e2e, when present, must validate against executor-contract.schema.json,
+        and its base_url must sit under one of its allowed_origins (local-only).
+    """
+    tooling = charter.get("tooling")
+    if not isinstance(tooling, dict):
+        return
+    acc = tooling.get("acceptance") if isinstance(tooling.get("acceptance"), dict) else {}
+    functional = acc.get("functional") if isinstance(acc.get("functional"), dict) else None
+    e2e = tooling.get("e2e") if isinstance(tooling.get("e2e"), dict) else None
+    if functional is None and e2e is None:
+        return  # NO-OP — no P-C config.
+
+    if (functional or {}).get("mode") == "browser_e2e":
+        if charter_compat.acceptance_mode(charter) == "off":
+            report.error(
+                "functional_e2e",
+                "tooling.acceptance.functional.mode=browser_e2e requires "
+                "tooling.acceptance.mode != off (a browser-evidence run needs a judge)",
+                "tooling.acceptance.functional.mode")
+        if not (functional or {}).get("checklist_path"):
+            report.error(
+                "functional_e2e",
+                "tooling.acceptance.functional.mode=browser_e2e requires a "
+                "checklist_path (the signed functional-checklist CRITERIA)",
+                "tooling.acceptance.functional.checklist_path")
+        if e2e is None:
+            report.error(
+                "functional_e2e",
+                "tooling.acceptance.functional.mode=browser_e2e requires "
+                "tooling.e2e (the executor MECHANICS)",
+                "tooling.e2e")
+
+    if e2e is not None:
+        ec_schema = _load_named_schema("executor-contract.schema.json")
+        if ec_schema is not None:
+            for err in Draft202012Validator(ec_schema).iter_errors(e2e):
+                report.error(
+                    "executor_contract_invalid",
+                    "tooling.e2e does not validate executor-contract.schema.json: "
+                    f"{err.message}",
+                    "tooling.e2e." + ".".join(str(p) for p in err.absolute_path))
+        base = e2e.get("base_url")
+        origins = e2e.get("allowed_origins") or []
+        if isinstance(base, str) and isinstance(origins, list) and origins and not any(
+                isinstance(o, str) and base.startswith(o) for o in origins):
+            report.error(
+                "functional_e2e",
+                f"tooling.e2e.base_url ({base!r}) is not under any allowed_origins entry",
+                "tooling.e2e.base_url")
+
+
 def validate_semantics(charter: Any, report: Report, overrides: Optional[Overrides] = None) -> None:
     if not isinstance(charter, dict):
         report.error("structural", "charter root must be a mapping/object", "<root>")
@@ -1145,6 +1206,7 @@ def validate_semantics(charter: Any, report: Report, overrides: Optional[Overrid
     _check_capability_gate(charter, report, model_registry_path=ov.model_registry_path)
     _check_skill_integrity(charter, report, skill_catalog_path=ov.skill_catalog_path)
     _check_network_access(charter, report)
+    _check_functional_e2e(charter, report)  # P-C
 
 
 # --------------------------------------------------------------------------- #

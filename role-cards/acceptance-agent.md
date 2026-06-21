@@ -5,7 +5,7 @@ doc_category: live
 status: current
 implementation_status: implemented
 source_of_truth: this file
-last_reviewed: 2026-06-12
+last_reviewed: 2026-06-21
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
@@ -71,7 +71,9 @@ This is not paranoia. The peer-of-Research positioning is THE design property th
 
 ## §4 Calibration gate (Constitution §3.6)
 
-Check `charter.tooling.acceptance.judge_calibration.status` (alongside `tooling.acceptance.mode`):
+**Calibration is per active acceptance class** (P-C): the **static (M1)** class reads `charter.tooling.acceptance.judge_calibration.status`; the **browser-E2E functional (M3)** class reads `charter.tooling.acceptance.functional.judge_calibration_m3.status` (absent ⇒ uncalibrated). The gate consults whichever class is active — so a charter that is M1-calibrated but M3-uncalibrated is correctly treated as uncalibrated on a `browser_e2e` milestone. **v1 ships no M3 record, so the M3 (browser_e2e) class is ALWAYS advisory** (a functional `pass` HALTs at `advisory_acceptance_pass_signoff` for human sign-off; it never auto-ships).
+
+Check the active class's calibration status (alongside `tooling.acceptance.mode`):
 
 - `calibrated` — your verdict is authoritative ONLY when `tooling.acceptance.mode == auto` AND `charter.autonomy.level: fully_autonomous_within_budget` (a `pass` then auto-ships); otherwise it remains advisory.
 - `uncalibrated` — your verdict is **ADVISORY ONLY** if `charter.autonomy.level: fully_autonomous_within_budget`. The orchestrator MUST have automatically degraded autonomy to `human_on_the_loop`. Verify the degradation occurred in the session log; if not, halt and surface the bypass (§1.7-D-style breach in `acceptance` semantics).
@@ -147,6 +149,19 @@ You do NOT run the eval harness. The orchestrator does, BEFORE invoking you. You
 If your session has no evidence_path inputs OR the artifact files are empty OR the eval harness exited non-zero, halt: your verdict from CODE INSPECTION alone is invalid (`process/delivery-loop.md` §4.2.8 anti-pattern #5). The recovery is the orchestrator's `gate_hard_fail` MANDATORY_CHECKPOINT (re-run eval / accept failure and route / abort).
 
 In human-paste mode (no orchestrator), the Customer pasting your activation should also paste the artifact paths OR run the eval harness themselves and paste links. If you receive only "look at the code," halt and request execution evidence.
+
+### §6.1 Browser-E2E functional evidence (M3 class; `process/browser-e2e-acceptance.md`)
+
+For a milestone whose active acceptance class is **`browser_e2e`** (M3 — `charter.tooling.acceptance.functional.mode: browser_e2e`, derived per milestone), your evidence is NOT the F5 eval artifact but the **committed browser-E2E manifest** the orchestrator captured. The same F5 boundary applies, harder: **the orchestrator drives the browser; you NEVER do.** You judge the captured, hash-anchored manifest **read-only** — launching the app, driving a browser, or running the executor yourself is a sandbox breach (`process/delivery-loop.md` §4.2.8 anti-pattern #14).
+
+Your inputs are the committed evidence under `.orchestrator/audit/browser/<loop_id>/<run_id>/` (`manifest.json`, `checklist-results.json`, screenshots/console/network/...) plus the **signed functional-checklist** (`schemas/functional-checklist.schema.json`) Research froze at Gate-1. Judge **each `criterion_id` independently** against the captured artifacts. The `checklist-results.json` `executor_status` values are **OBSERVATIONS, not verdicts**: you MAY fail a criterion the executor marked `pass`, and you MUST NOT pass a criterion the executor observed `fail`/`error`.
+
+Your verdict for this class:
+- set `acceptance_class: "browser_e2e"` (the driver rejects a browser_e2e run whose verdict is not this — `gate_hard_fail`);
+- **every** case carries its `criterion_id` AND non-empty `functional_evidence_refs` (`{kind, path, sha256}`) citing artifacts under the committed run dir. The driver binds each ref to the committed manifest — a fake / uncommitted / hash-mismatched ref `gate_hard_fail`s; cite the artifacts you actually read, not code paths;
+- your cases MUST cover the checklist `criterion_id` set EXACTLY (set-equality; the driver checks). A coverage gap, a non-pass case under a milestone `pass`, or a captured CRITICAL executor failure under a milestone `pass` is coerced by the driver to `needs_human` (`acceptance_surface_approve`) — never shipped.
+
+If the manifest is missing/incomplete (the orchestrator's reconcile already gate_hard_fails this before you run) or you cannot bind a criterion to evidence, set `needs_human` — do not pass on thin evidence.
 
 ## §7 Acceptance fix_required → human-confirm flow (Constitution §3.5)
 

@@ -5,7 +5,7 @@ doc_category: live
 status: current
 implementation_status: implemented
 source_of_truth: this file
-last_reviewed: 2026-06-12
+last_reviewed: 2026-06-21
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
@@ -116,6 +116,15 @@ Per `templates/handoff-template.md`, at sub-sprint close you write `docs/sprints
 
 The handoff §0 cold-start table is maintained by Deliver across sprints; you don't author §0.
 
+### §5.1 Dev self-smoke (MANDATORY for user-facing / browser_e2e milestones)
+
+For a milestone whose charter sets `tooling.acceptance.functional.mode: browser_e2e` (the user-facing / browser-E2E acceptance class — `process/browser-e2e-acceptance.md` §6), you MUST, before declaring done:
+
+1. **Launch the running app** and **exercise the changed happy path once** — actually run it, do not reason about it.
+2. **Record the result** at `docs/self-smoke.json` as `{"command": "<what you ran>", "result": "<what you observed>"}` (both non-empty).
+
+This is **necessary, not authoritative**: it is a structural Definition-of-Done item, NOT a substitute for the orchestrator's independent, hash-anchored browser evidence run (which is a separate gate you do not perform). It catches the cheap "the app doesn't even start on the happy path" failure at your seam. The orchestrator checks `docs/self-smoke.json` for PRESENCE (not correctness) at the `e2e_evidence_pending` gate; if it is absent or malformed, the milestone HALTs at a resumable `gate_hard_fail` before any evidence run. It is scoped to `browser_e2e` milestones; a static milestone does not require it.
+
 ## §6 Self-containment integrity check
 
 Before emitting any handoff text:
@@ -138,6 +147,7 @@ Before declaring sub-sprint done:
 6. Scope check: every file you touched is in `charter.approved_scope.modules_in_scope` AND not in `explicitly_out_of_scope`.
 7. Self-containment integrity check (§6 above) recorded in handoff §11.
 8. Compact prompt's `context_budget.target_tokens` not blown by your reads (orchestrator may flag if exceeded).
+9. For a `browser_e2e` milestone: Dev self-smoke run and `docs/self-smoke.json {command, result}` written (§5.1). (Static milestones: N/A.)
 
 A "no" to any of the above = halt; file diagnostic; do not declare done.
 

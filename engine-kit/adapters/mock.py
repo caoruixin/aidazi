@@ -109,5 +109,12 @@ class MockAdapter(Adapter):
         if isinstance(canned, type) and issubclass(canned, AdapterError):
             raise canned(f"mock simulated transport failure for {role}", role=role)
 
+        # A CALLABLE canned response is materialized at spawn time from (role, prompt,
+        # schema). This lets a browser-E2E acceptance mock build a verdict that CITES the
+        # real committed evidence (path+sha256) — which only exists once the executor has
+        # run — so the driver's §3.2 evidence-ref binding has something real to bind to.
+        if callable(canned):
+            return copy.deepcopy(canned(role, prompt, schema))
+
         # Deep-copy so the driver can't mutate the replay table.
         return copy.deepcopy(canned)

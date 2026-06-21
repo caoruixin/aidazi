@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/functional-checklist.schema.json",
+  "title": "Functional acceptance checklist (P-C — signed CRITERIA)",
+  "description": "The user-visible observable outcomes a browser-E2E milestone must satisfy — a functional projection of the Customer-signed closure_contract (§1.7-B shape). AUTHORED BY RESEARCH, frozen at Gate-1 sign-off; Acceptance judges ONLY against these. Deliver/Dev MAY NOT edit post-sign-off (a needed change → research_contract_revision, Gate-1 re-fires). DISTINCT from the executor-contract MECHANICS (the how). criterion_id values must be UNIQUE (the driver enforces uniqueness + verdict set-equality coverage).",
+  "type": "object",
+  "required": ["checklist_id", "criteria"],
+  "additionalProperties": false,
+  "properties": {
+    "checklist_id": {"type": "string", "minLength": 1},
+    "signed_by_human": {"type": "boolean", "description": "Gate-1 sign-off marker; the orchestrator treats an unsigned checklist as not-frozen."},
+    "sign_off_date": {"type": "string"},
+    "closure_contract_ref": {"type": "string", "description": "The signed closure_contract / research brief this projects."},
+    "criteria": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["criterion_id", "criterion"],
+        "properties": {
+          "criterion_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "description": "Stable, UNIQUE id; the verdict's browser cases must cover this set exactly (driver set-equality check)."},
+          "criterion": {"type": "string", "minLength": 1, "description": "The user-visible observable outcome (NOT a selector or mechanic)."},
+          "critical": {"type": "boolean", "default": false, "description": "true ⇒ a captured executor failure on this criterion vetoes a milestone pass (→ needs_human, §3.2)."}
+        }
+      }
+    }
+  }
+}

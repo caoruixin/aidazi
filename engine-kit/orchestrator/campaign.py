@@ -482,6 +482,7 @@ class Campaign:
         human's voice on resume for Mechanism-B gates (injected, like the Driver's
         gate_resolver); None / a None return ⇒ the pause stays (re-pause)."""
         self._pending_driver_resume = False
+        self._crash_recovery = False  # §3.5c: set True only on STATUS_RUNNING recovery
         if resume and self._load():
             self._audit("campaign_resume",
                         {"from_status": self.state.status,
@@ -496,8 +497,13 @@ class Campaign:
                 self.state.status = STATUS_RUNNING
                 self.state.pause_reason = None
                 self.state.pause_checkpoint = None
-            # else STATUS_RUNNING → crash recovery: continue from the persisted cursor
-            # WITHOUT re-interpreting a (non-existent) pause (Codex inc-2 blocking #4).
+            elif self.state.status == STATUS_RUNNING:
+                # STATUS_RUNNING on load → crash recovery: continue from the persisted
+                # cursor WITHOUT re-interpreting a (non-existent) pause (Codex inc-2
+                # blocking #4). §3.5c: arm the one-shot reconcile so the first cursor unit
+                # re-dispatches with resume=True (idempotent Driver re-entry) and is not
+                # double-accounted / double-appended if it already ran before the crash.
+                self._crash_recovery = True
         else:
             self._audit("campaign_start",
                         {"campaign_id": self.campaign_id,
@@ -538,30 +544,57 @@ class Campaign:
                                        "campaign_budget_exhausted", {"dimension": over})
 
                 subsprint_id = seq[self.state.subsprint_index]
-                resume_this = self._pending_driver_resume
-                self._pending_driver_resume = False
-                # Pass THIS milestone's LIVE sequence so the production run_unit can
-                # derive a per-milestone execution context whose terminal sub-sprint is
-                # this milestone's last — making the Driver fire Acceptance per
-                # milestone (design §5). `seq` is re-read each milestone (top of loop),
-                # so a governed deliver_followup insertion is reflected (Codex review #3).
-                summary = self.run_unit(subsprint_id,
-                                        milestone_id=milestone["id"],
-                                        subsprint_sequence=seq,
-                                        resume=resume_this)
-                final_state = summary.get("final_state")
-                self.state.subsprints_run += 1
-                self.state.total_spawns += int(summary.get("spawn_count") or 0)
-                self.state.wall_clock_minutes = (
-                    self._base_wall
-                    + _iso_minutes(self._invocation_start, self.clock()))
+                # §3.5c crash-recovery reconcile (Codex round-2 BLOCKING-1 / MAJOR-1 +
+                # impl-review MAJOR-2): on a STATUS_RUNNING recovery the cursor unit may
+                # already have RUN + been ACCOUNTED + appended (a crash between the
+                # pause-branch `_save()` at the bottom of this body and the STATUS_PAUSED
+                # save inside `_pause`). Detect it — the last recorded unit matches the
+                # cursor — and REPLAY the advance/done/pause branch from that unit's
+                # RECORDED `final_state` WITHOUT re-dispatching run_unit (no fresh re-run of
+                # the whole unit, no duplicate browser execution / Acceptance) and WITHOUT
+                # re-accounting / re-appending. The pause branch persists `pause_reason` +
+                # `checkpoint_path` INTO the unit record, so a halted replay re-pauses with
+                # no re-run. `crash_recover` is one-shot (only the first cursor unit); an
+                # in-flight unit NOT yet recorded instead re-dispatches with resume=True so
+                # the Driver re-enters its persisted state idempotently, accounted once.
+                crash_recover = self._crash_recovery
+                self._crash_recovery = False
+                already = bool(
+                    crash_recover and self.state.units
+                    and self.state.units[-1].get("milestone_id") == milestone["id"]
+                    and self.state.units[-1].get("subsprint_id") == subsprint_id)
+                if already:
+                    # REPLAY from the recorded unit — do NOT call run_unit, do NOT account.
+                    self._pending_driver_resume = False
+                    summary = dict(self.state.units[-1])
+                    final_state = summary.get("final_state")
+                else:
+                    resume_this = self._pending_driver_resume or crash_recover
+                    self._pending_driver_resume = False
+                    # Pass THIS milestone's LIVE sequence + its functional_acceptance so the
+                    # production run_unit derives a per-milestone execution context whose
+                    # terminal sub-sprint anchors Acceptance (design §5) and whose acceptance
+                    # class (static | browser_e2e) is projected per milestone (P-C). `seq` is
+                    # re-read each milestone, so a governed deliver_followup insertion is
+                    # reflected (Codex review #3).
+                    summary = self.run_unit(
+                        subsprint_id, milestone_id=milestone["id"],
+                        subsprint_sequence=seq, resume=resume_this,
+                        functional_acceptance=milestone.get("functional_acceptance"))
+                    final_state = summary.get("final_state")
+                    self.state.subsprints_run += 1
+                    self.state.total_spawns += int(summary.get("spawn_count") or 0)
+                    self.state.wall_clock_minutes = (
+                        self._base_wall
+                        + _iso_minutes(self._invocation_start, self.clock()))
                 unit = {"milestone_id": milestone["id"], "subsprint_id": subsprint_id,
                         "status": "done", "final_state": final_state,
                         "loop_id": summary.get("loop_id")}
 
                 if final_state in _ADVANCE_STATES:
                     unit["status"] = "done"
-                    self.state.units.append(unit)
+                    if not already:
+                        self.state.units.append(unit)
                     self.state.subsprint_index += 1
                     self._audit("campaign_subsprint_advance",
                                 {"milestone_id": milestone["id"],
@@ -575,7 +608,8 @@ class Campaign:
                     continue
                 if final_state in _MILESTONE_DONE_STATES:
                     unit["status"] = "done"
-                    self.state.units.append(unit)
+                    if not already:
+                        self.state.units.append(unit)
                     self._audit("campaign_milestone_done",
                                 {"milestone_id": milestone["id"],
                                  "subsprint_id": subsprint_id,
@@ -586,7 +620,12 @@ class Campaign:
                 # pending states; design §5.4a pause detection).
                 reason = summary.get("pause_reason") or final_state or "unknown_halt"
                 unit["status"] = "halted"
-                self.state.units.append(unit)
+                # Persist the pause reason + checkpoint INTO the unit record so a §3.5c
+                # crash-recovery REPLAY (already) can re-pause WITHOUT re-running the unit.
+                unit["pause_reason"] = reason
+                unit["checkpoint_path"] = summary.get("checkpoint_path")
+                if not already:
+                    self.state.units.append(unit)
                 self._save()
                 return self._pause(
                     reason, summary.get("checkpoint_path"),
@@ -667,24 +706,56 @@ def _canonical_sha256(obj: Any) -> str:
 def derive_milestone_context(charter: dict, milestone_id: str,
                              subsprint_sequence: List[str], *,
                              campaign_id: Optional[str],
-                             plan_fingerprint: Optional[str]):
+                             plan_fingerprint: Optional[str],
+                             functional_acceptance: Optional[str] = None):
     """Project `charter` onto ONE milestone. Returns (derived_charter, provenance).
 
     `derived_charter` is a DEEP COPY whose autonomy.approved_scope.subsprint_sequence
     is THIS milestone's sequence, so the Driver anchors terminality — and therefore
     its milestone-close Acceptance gate — to this milestone's FINAL sub-sprint
-    (driver._milestone_complete), not the campaign's last sub-sprint. It adds NO
-    charter fields. `provenance` is returned SEPARATELY (recorded as a sidecar by the
-    caller): it preserves the source hashes (charter + signed plan) so the derivation
-    is reproducible/auditable, and is explicitly NOT a new Customer signature."""
+    (driver._milestone_complete), not the campaign's last sub-sprint.
+
+    P-C: the per-milestone `functional_acceptance` (from the campaign plan's milestone)
+    is projected into the derived charter's tooling.acceptance.functional.mode so ONLY
+    the milestones declaring it run the browser-E2E evidence gate. PRECEDENCE (Codex
+    round-2 MAJOR-2, no schema default): an EXPLICIT milestone value (incl. 'static')
+    OVERRIDES; absent INHERITS the charter-level functional.mode; else 'static'. The
+    resolved {mode, source} is recorded in the provenance sidecar.
+
+    `provenance` is returned SEPARATELY (recorded as a sidecar by the caller): it
+    preserves the source hashes (charter + signed plan) so the derivation is
+    reproducible/auditable, and is explicitly NOT a new Customer signature."""
     derived = copy.deepcopy(charter)
     scope = derived.setdefault("autonomy", {}).setdefault("approved_scope", {})
     scope["subsprint_sequence"] = list(subsprint_sequence)
+
+    charter_mode = (((charter.get("tooling") or {}).get("acceptance") or {})
+                    .get("functional") or {}).get("mode")
+    if functional_acceptance is not None:
+        fmode, fsource = functional_acceptance, "milestone"
+    elif charter_mode is not None:
+        fmode, fsource = charter_mode, "charter"
+    else:
+        fmode, fsource = "static", "default"
+    # Materialize the resolved mode onto the derived charter so the Driver's
+    # _acceptance_class() reads it per milestone. Only touch the functional block when a
+    # decision is needed (browser_e2e engages the gate; an explicit static neutralizes a
+    # charter-level browser_e2e for THIS milestone).
+    if fmode == "browser_e2e":
+        derived.setdefault("tooling", {}).setdefault("acceptance", {}) \
+            .setdefault("functional", {})["mode"] = "browser_e2e"
+    else:
+        fnl = (((derived.get("tooling") or {}).get("acceptance") or {})
+               .get("functional"))
+        if isinstance(fnl, dict):
+            fnl["mode"] = "static"
+
     provenance = {
         "kind": "per_milestone_execution_context",
         "campaign_id": campaign_id,
         "milestone_id": milestone_id,
         "subsprint_sequence": list(subsprint_sequence),
+        "functional_acceptance": {"mode": fmode, "source": fsource},
         "derived_from": {
             "charter_sha256": _canonical_sha256(charter),
             "campaign_plan_sha256": plan_fingerprint,
@@ -767,7 +838,7 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
             f"{campaign_id!r} — refusing to derive contexts from a mismatched plan")
 
     def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
-                 resume=False):
+                 resume=False, functional_acceptance=None):
         # Validate id components BEFORE building any path (fail-closed; never makedirs
         # an unsafe path), then build a COLLISION-FREE, bounded loop_id by hashing the
         # (campaign, milestone, subsprint) tuple — a raw '-' join is ambiguous when ids
@@ -798,7 +869,8 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
                     f"sequence {seq} — cannot anchor its Acceptance gate (fail-closed)")
             unit_charter, provenance = derive_milestone_context(
                 charter, milestone_id, seq,
-                campaign_id=campaign_id, plan_fingerprint=plan_fingerprint)
+                campaign_id=campaign_id, plan_fingerprint=plan_fingerprint,
+                functional_acceptance=functional_acceptance)
             with open(os.path.join(unit_run_dir, "derived-context.json"),
                       "w", encoding="utf-8") as fh:
                 json.dump(provenance, fh, indent=2, sort_keys=True)

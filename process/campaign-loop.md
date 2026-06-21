@@ -5,7 +5,7 @@ doc_category: live
 status: current
 implementation_status: partial
 source_of_truth: this file
-last_reviewed: 2026-06-20
+last_reviewed: 2026-06-21
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
@@ -124,6 +124,29 @@ guided decompose is deferred — §6). The campaign's pause-on-non-advance loop 
 then withholds the next milestone until this milestone's Acceptance/human gate is
 resolved — the derivation only ensures the gate EXISTS. Real-Driver coverage (incl.
 single-, two-, and multi-sub-sprint milestones): `test_campaign_e2e.py`.
+
+### §3.7 Per-milestone functional-acceptance class (P-C projection)
+A campaign milestone MAY carry an optional `functional_acceptance: static | browser_e2e`
+(`schemas/campaign-plan.schema.json`). It selects, **per milestone**, whether the
+milestone-close Acceptance gate runs the static (M1) F5 path or the browser-E2E (M3)
+evidence path (`process/browser-e2e-acceptance.md`). There is **NO schema default** — the
+key's ABSENCE is distinguishable from an explicit `static`, which is what makes precedence
+well-defined. `derive_milestone_context` resolves the class as:
+
+```
+mode = milestone.functional_acceptance            if PRESENT (explicit OVERRIDES — incl. static)
+     else charter.tooling.acceptance.functional.mode  if present (INHERITS the charter default)
+     else "static"
+```
+
+The resolved `{mode, source ∈ {milestone, charter, default}}` is recorded in the per-unit
+`derived-context.json` sidecar (alongside the projected `subsprint_sequence`, §3.6), so a
+campaign can mix functional and static milestones — e.g. a charter-wide `browser_e2e`
+default with a back-end-only milestone pinned to `static`, or a charter-wide `static`
+default with one user-facing milestone pinned to `browser_e2e`. The Driver reads the
+DERIVED charter, so `_acceptance_class()` is correct per milestone. The browser-E2E
+mechanics (`tooling.e2e`) + signed checklist (`tooling.acceptance.functional.checklist_path`)
+remain charter-level; the per-milestone key only flips the CLASS.
 
 ## §4 Gates (where the campaign pauses for a human)
 The campaign-tier gate `campaign_plan_signoff` (the runner pauses until the

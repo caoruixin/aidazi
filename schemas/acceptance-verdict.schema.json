@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aidazi.framework/schemas/acceptance-verdict.schema.json",
   "title": "Acceptance Agent verdict",
-  "description": "Output shape for the Acceptance Agent's milestone-close / release-cut / sub-sprint judgment. Per Constitution §3.5: on milestone_verdict: fix_required, the Acceptance Agent ALSO writes a human-confirm checkpoint file (process/delivery-loop.md §4.2.3 item 'acceptance_fix_required'); Deliver picks up the gap brief ONLY after that checkpoint resolves with confirm: yes + route: deliver_fix_iteration.",
+  "description": "Output shape for the Acceptance Agent's milestone-close / release-cut / sub-sprint judgment. Per Constitution §3.5: on milestone_verdict: fix_required, the Acceptance Agent ALSO writes a human-confirm checkpoint file (process/delivery-loop.md §4.2.3 item 'acceptance_fix_required'); Deliver picks up the gap brief ONLY after that checkpoint resolves with confirm: yes + route: deliver_fix_iteration. P-C: acceptance_class ∈ {static (M1, absent⇒static), browser_e2e (M3)} selects the per-case branch — static requires evidence_path (^eval/runs/.+); browser_e2e requires criterion_id + functional_evidence_refs (under .orchestrator/audit/browser/). The DRIVER additionally enforces active-class match and binds each functional_evidence_ref to the committed browser-evidence-manifest (a fake/uncommitted ref → gate_hard_fail).",
   "type": "object",
   "required": ["milestone_verdict", "cases", "suggested_route"],
   "additionalProperties": false,
@@ -11,6 +11,19 @@
       "type": "string",
       "enum": ["pass", "fix_required", "needs_human"]
     },
+    "acceptance_class": {
+      "type": "string",
+      "enum": ["static", "browser_e2e"],
+      "description": "P-C. Absent ⇒ static (M1, today's behavior, byte-identical). browser_e2e (M3) selects the functional branch. No schema default (so absence stays distinguishable); the driver rejects a browser_e2e RUN whose verdict is not acceptance_class: browser_e2e."
+    },
+    "authoritative": {
+      "type": "boolean",
+      "description": "P-C. DERIVED, never self-asserted: the driver stamps whether the verdict was authoritative at production (mode==auto AND calibrated-for-active-class AND fully_autonomous). Advisory (false/absent) HALTs for human sign-off."
+    },
+    "calibration_record_id": {
+      "type": "string",
+      "description": "P-C. The acceptance-calibration-record id (per active class M1/M3) matched at verdict time; absent when uncalibrated / not_required."
+    },
     "closure_contract_ref": {
       "type": "string",
       "description": "Path to docs/research-briefs/<id>.md whose closure_contract was the evaluation source. Front-matter sign_off_date should match milestone start (Constitution §3.4 invariant #4 — Research-Acceptance contract symmetry)."
@@ -18,19 +31,24 @@
     "calibration_status": {
       "type": "string",
       "enum": ["calibrated", "uncalibrated", "not_required"],
-      "description": "Confirms §3.6 calibration gate state at verdict time. 'not_required' means autonomy.level was human_in_the_loop or human_on_the_loop."
+      "description": "Confirms §3.6 calibration gate state at verdict time (for the ACTIVE class). 'not_required' means autonomy.level was human_in_the_loop or human_on_the_loop."
     },
     "cases": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["case_id", "criterion", "evidence_path", "verdict", "rationale"],
+        "required": ["case_id", "criterion", "verdict", "rationale"],
         "additionalProperties": false,
         "properties": {
           "case_id": {
             "type": "string",
             "description": "closure_contract clause ref OR bad-case suite id."
+          },
+          "criterion_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "P-C (browser_e2e). The functional-checklist criterion_id this case judges. Required + unique in the browser_e2e branch; the driver checks set-equality coverage against the signed functional-checklist."
           },
           "criterion": {
             "type": "string",
@@ -38,8 +56,12 @@
           },
           "evidence_path": {
             "type": "string",
-            "pattern": "^eval/runs/.+",
-            "description": "Artifact path from orchestrator's F5 evidence run. Framework default: pattern starts with 'eval/runs/' (process/delivery-loop.md §4.2.6). Adopters who use a different evidence directory MUST (a) record the override in docs/current/adoption-state.md as a divergent row against Δ-18 with rationale, AND (b) maintain a local schema override that relaxes this pattern. Without both, the validator rejects. Acceptance verdicts citing code paths alone instead of execution evidence violate §4.2.8 anti-pattern #5 regardless of pattern."
+            "description": "Static (M1) F5 execution-evidence artifact path. REQUIRED + patterned ^eval/runs/.+ in the static branch (below); omitted for browser_e2e (which cites functional_evidence_refs instead). Acceptance verdicts citing code paths instead of execution evidence violate §4.2.8 anti-pattern #5."
+          },
+          "functional_evidence_refs": {
+            "type": "array",
+            "description": "P-C (browser_e2e). Citations into the COMMITTED browser-evidence-manifest. Required + constrained in the browser branch (below). The driver binds every {path,sha256} to a committed manifest artifact (mismatch / uncommitted → gate_hard_fail).",
+            "items": {"type": "object"}
           },
           "verdict": {
             "type": "string",
@@ -48,7 +70,7 @@
           "rationale": {
             "type": "string",
             "minLength": 1,
-            "description": "Paragraph citing positive shape held, anti-pattern avoided, anchor-phrase semantic match (NOT keyword match per Constitution §1.7-B)."
+            "description": "Paragraph citing positive shape held, anti-pattern avoided, anchor-phrase semantic match (NOT keyword match per Constitution §1.7-B). For browser_e2e, cite the specific observed artifact; executor_status values in the evidence are OBSERVATIONS, not verdicts."
           }
         }
       }
@@ -69,7 +91,7 @@
           "severity": {"type": "string", "enum": ["P0", "P1", "P2"]}
         }
       },
-      "description": "Required (non-empty) iff milestone_verdict = fix_required."
+      "description": "Required (non-empty) iff milestone_verdict = fix_required (enforced by the conditional below)."
     },
     "residual_risks": {
       "type": "array",
@@ -90,5 +112,49 @@
       "type": "string",
       "description": "Required if milestone_verdict = fix_required: path to docs/checkpoints/<timestamp>__acceptance_fix_required__<scope>.md written by Acceptance per Constitution §3.5. Verdict-without-checkpoint is a §1.7-C breach."
     }
-  }
+  },
+  "allOf": [
+    {
+      "$comment": "P-C branch-correct cases: JSON-Schema constraints are additive, so evidence_path is NOT in the base cases.items.required — it is re-required (with the ^eval/runs/.+ pattern) only in the static ELSE branch; browser_e2e requires criterion_id + functional_evidence_refs. A static verdict (no acceptance_class) takes ELSE and is byte-identical to the pre-P-C contract.",
+      "if": {
+        "required": ["acceptance_class"],
+        "properties": {"acceptance_class": {"const": "browser_e2e"}}
+      },
+      "then": {
+        "properties": {"cases": {"items": {
+          "required": ["criterion_id", "functional_evidence_refs"],
+          "properties": {
+            "functional_evidence_refs": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "path", "sha256"],
+                "properties": {
+                  "kind": {"type": "string", "enum": ["screenshot", "console", "network", "manifest", "checklist", "backend_state"]},
+                  "path": {"type": "string", "pattern": "^\\.orchestrator/audit/browser/.+"},
+                  "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              }
+            }
+          }
+        }}}
+      },
+      "else": {
+        "properties": {"cases": {"items": {
+          "required": ["evidence_path"],
+          "properties": {"evidence_path": {"pattern": "^eval/runs/.+"}}
+        }}}
+      }
+    },
+    {
+      "$comment": "fix_required ⇒ non-empty failure_briefs (Constitution §3.5; the driver also enforces pass⇒empty + cross-consistency).",
+      "if": {"properties": {"milestone_verdict": {"const": "fix_required"}}},
+      "then": {
+        "required": ["failure_briefs"],
+        "properties": {"failure_briefs": {"minItems": 1}}
+      }
+    }
+  ]
 }

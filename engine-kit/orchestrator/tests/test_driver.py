@@ -2682,7 +2682,12 @@ class AcceptanceSpecResolutionTests(unittest.TestCase):
             drv_ = self._live(d, intent_contract=self._SIGNED_IC,
                               adapters=_acceptance_adapters(ACC_PASS))
             drv_.adapters["acceptance"] = cap
-            verdict = drv_._spawn_acceptance(_EVID, "calibrated")
+            # P-C refactor: the prompt is built (and projected) by _build_acceptance_prompt,
+            # then materialized through _spawn_acceptance with the §3.5b reuse snapshot.
+            prompt = drv_._build_acceptance_prompt(_EVID, "calibrated")
+            snap = {"evidence_hash": "e", "authority_fingerprint": "a",
+                    "acceptance_input_hash": "i", "authoritative": False}
+            verdict = drv_._spawn_acceptance(prompt, _EVID, "calibrated", snap)
             self.assertEqual(verdict, ACC_PASS)
             self.assertIn("Acceptance Agent for the milestone close", cap.prompts[-1])
             spawn = next(e["payload"] for e in audit.read_events(drv_.audit_ledger)

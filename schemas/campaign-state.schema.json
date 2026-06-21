@@ -44,7 +44,9 @@
           "subsprint_id": {"type": "string"},
           "status": {"type": "string", "enum": ["pending", "in_progress", "done", "halted", "failed"]},
           "final_state": {"type": ["string", "null"], "description": "The Driver final_state the run returned (advance|done|halted|gate1_pending|...)."},
-          "loop_id": {"type": ["string", "null"], "description": "The Driver loop_id, for cross-referencing the per-sub-sprint audit ledger."}
+          "loop_id": {"type": ["string", "null"], "description": "The Driver loop_id, for cross-referencing the per-sub-sprint audit ledger."},
+          "pause_reason": {"type": ["string", "null"], "description": "When this unit HALTED: the pause checkpoint_id, persisted INTO the record so a §3.5c STATUS_RUNNING crash-recovery REPLAY re-pauses from the recorded unit WITHOUT re-running it (no duplicate execution/Acceptance)."},
+          "checkpoint_path": {"type": ["string", "null"], "description": "When this unit HALTED: the checkpoint file path, persisted alongside pause_reason for the same §3.5c crash-recovery replay (the human resolves it on resume)."}
         }
       }
     }
