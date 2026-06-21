@@ -86,6 +86,10 @@ def prepare(request_path: str, repo_dir: str, *, registry_path=None,
     assert_supported(request.harness, registry_path or paths.harness_support_path(fr))
 
     wt_mod.assert_clean(repo_dir)
+    # The lane writes its record + launch evidence under <repo>/.orchestrator/quickfix/;
+    # that path MUST be git-ignored or those writes would dirty the adopter's tracked tree
+    # (original-repo-unpolluted). Enforce it fail-closed BEFORE any side effect.
+    wt_mod.assert_state_dir_ignored(repo_dir)
     # Honor the request's base_ref (the QF-1 contract allows it); default HEAD. Fail-closed
     # on an invalid ref. Every later operation binds to THIS resolved SHA.
     baseline = wt_mod.resolve_baseline(repo_dir, getattr(request, "base_ref", None))

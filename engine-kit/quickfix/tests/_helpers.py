@@ -74,3 +74,72 @@ def write_request(repo, request_id="fix-pag-001", harness="claude_code",
 
 def supported_registry(harness="claude_code"):
     return {"version": 1, "harnesses": {harness: {"status": "supported"}}}
+
+
+# --- fake harness (for offline adapter + CLI launch-path tests; no real CLI is run) --- #
+
+from quickfix.adapters.base import HarnessCapability, QuickfixAdapter  # noqa: E402
+
+# Responds to `--version` with a semver; otherwise reads the prompt from stdin and (per
+# --behavior) writes --target under --worktree, sleeps (timeout test), or exits non-zero.
+_FAKE_HARNESS_SRC = """#!{python}
+import sys, os, time
+args = sys.argv[1:]
+if "--version" in args:
+    sys.stdout.write("fake harness 9.9.9\\n"); sys.exit(0)
+behavior, wt, target = "edit", None, "target.txt"
+record_prompt = "--record-prompt" in args
+for i, a in enumerate(args):
+    if a == "--behavior": behavior = args[i + 1]
+    if a == "--worktree": wt = args[i + 1]
+    if a == "--target": target = args[i + 1]
+data = sys.stdin.read()
+if behavior == "sleep":
+    time.sleep(30); sys.exit(0)
+if behavior == "fail":
+    sys.stderr.write("fake boom\\n"); sys.exit(3)
+p = os.path.join(wt, target)
+os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+# received_prompt.txt is written ONLY when asked (it is out-of-scope for a real request,
+# so the guarded CLI path leaves it off; the adapter unit test turns it on to assert
+# stdin prompt delivery against an unguarded temp worktree).
+if record_prompt:
+    with open(os.path.join(wt, "received_prompt.txt"), "w") as f: f.write(data)
+with open(p, "w") as f: f.write("def paginate(n):\\n    return [n]\\n")
+sys.stdout.write("edited\\n"); sys.exit(0)
+"""
+
+
+def make_fake_harness(path):
+    """Write an executable fake-harness script (shebang to THIS interpreter) at ``path``."""
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(_FAKE_HARNESS_SRC.format(python=sys.executable))
+    os.chmod(path, 0o755)
+    return path
+
+
+class FakeHarnessAdapter(QuickfixAdapter):
+    """A QuickfixAdapter whose CLI is the fake harness above — drives the real launch
+    lifecycle (discover/version/Popen/timeout/evidence) offline + deterministically."""
+    harness = "fake"
+    MEMORY_FILENAME = "CLAUDE.md"
+    MIN_VERSION = (1, 0, 0)
+    PROMPT_DELIVERY = "stdin"
+
+    def __init__(self, *, behavior="edit", target="target.txt", record_prompt=False, **kw):
+        super().__init__(**kw)
+        self.behavior = behavior
+        self.target = target
+        self.record_prompt = record_prompt
+
+    def capability(self):
+        return HarnessCapability(
+            headless=True, alternate_cwd=True, worktree_write_grant=True,
+            cold_start_isolation=True, isolation_mechanism="fake (test)")
+
+    def build_argv(self, spec, executable, *, prompt):
+        argv = [executable, "--behavior", self.behavior, "--worktree", spec.worktree_dir,
+                "--target", self.target]
+        if self.record_prompt:
+            argv.append("--record-prompt")
+        return argv

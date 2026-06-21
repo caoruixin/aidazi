@@ -1,0 +1,20 @@
+{
+  "request_id": "e2e-bump-version-001",
+  "created_by": "rex",
+  "human_activation": true,
+  "harness": "claude_code",
+  "task_summary": "Bump the version string in version.txt from 1.2.2 to 1.2.3 (no other change).",
+  "allowed_globs": ["version.txt"],
+  "eligibility_attestation": {
+    "non_behavioral_or_restores_agreed_behavior": true,
+    "no_new_product_semantics_or_design_choice": true,
+    "no_protected_surface": true,
+    "targeted_verification_available": true,
+    "within_approved_scope": true
+  },
+  "targeted_verification": {
+    "argv": ["python3", "-c", "import sys; sys.exit(0 if open('version.txt').read().strip()=='1.2.3' else 1)"],
+    "cwd": "."
+  },
+  "notes": "Worked example used by examples/quickfix/e2e-claude-code.sh. The REAL activation is a human running the Quick-Fix launcher with this request; human_activation:true is an attestation, not the activation mechanism. See process/quickfix-lane.md."
+}

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import _helpers as H  # noqa: E402
 
 from quickfix import launcher, paths, worktree  # noqa: E402
-from quickfix.errors import HarnessUnsupportedError  # noqa: E402
+from quickfix.errors import HarnessUnsupportedError, StateDirError  # noqa: E402
 from quickfix.guard import GuardResult  # noqa: E402
 
 FR = H.FRAMEWORK_ROOT
@@ -276,8 +276,8 @@ class BaselineBinding(LauncherBase):
 
 class HarnessFailClosed(LauncherBase):
     def test_unsupported_harness_fails_closed_no_sideeffects(self):
-        # shipped registry (registry_path=None default) marks all harnesses unsupported
-        reqp = H.write_request(self.repo, request_id="r-unsup", harness="claude_code")
+        # shipped registry marks kimi_code unsupported -> fail closed, no side effects.
+        reqp = H.write_request(self.repo, request_id="r-unsup", harness="kimi_code")
         with self.assertRaises(HarnessUnsupportedError):
             launcher.prepare(reqp, self.repo, registry_path=paths.harness_support_path(FR),
                              worktree_root=os.path.join(self.tmp, "wtx"),
@@ -287,13 +287,63 @@ class HarnessFailClosed(LauncherBase):
         self.assertTrue(self._repo_clean())
         self.assertEqual(self._records(), [])
 
-    def test_shipped_registry_is_all_unsupported(self):
+    def test_shipped_registry_commit3_tiers_and_strict_launch_gate(self):
         import yaml
-        data = yaml.safe_load(open(paths.harness_support_path(FR)))
-        statuses = {h: e.get("status") for h, e in data["harnesses"].items()}
-        self.assertTrue(statuses, "registry must list harnesses")
-        self.assertTrue(all(s == "unsupported" for s in statuses.values()),
-                        f"Commit 2 ships all-unsupported; got {statuses}")
+        from quickfix.harness_support import is_supported
+        reg = paths.harness_support_path(FR)
+        statuses = {h: e.get("status")
+                    for h, e in yaml.safe_load(open(reg))["harnesses"].items()}
+        # Commit 3: claude_code is the first `supported` harness; others are not launchable.
+        self.assertEqual(statuses.get("claude_code"), "supported")
+        self.assertEqual(statuses.get("codex"), "experimental")
+        self.assertEqual(statuses.get("kimi_code"), "unsupported")
+        # the launch gate stays STRICT: only `supported` is launchable (no widening).
+        self.assertTrue(is_supported("claude_code", reg))
+        self.assertFalse(is_supported("codex", reg))      # experimental != launchable
+        self.assertFalse(is_supported("kimi_code", reg))
+        self.assertFalse(is_supported("cursor", reg))
+
+
+class StateDirIgnoredGate(LauncherBase):
+    def test_unignored_state_dir_fails_closed_no_sideeffects(self):
+        # Drop the `.orchestrator/` ignore the fixture ships -> the lane's record/evidence
+        # writes would dirty the tracked tree, so prepare() must fail closed BEFORE any
+        # side effect (no worktree, repo clean).
+        H.write(self.repo, ".gitignore", "__pycache__/\n*.pyc\n")
+        H.commit_all(self.repo, "drop .orchestrator ignore")
+        with self.assertRaises(StateDirError):
+            self._prepare()
+        self.assertNotIn("quickfix/", H.git(self.repo, "worktree", "list"))
+        self.assertTrue(self._repo_clean())
+        self.assertEqual(self._records(), [])
+
+    def test_partial_ignore_missing_a_subtree_fails_closed(self):
+        # Ignore ONLY the record file, leaving evidence/ + escalations/ writable -> the gate
+        # must still fail closed (every write subtree is probed, not just the record).
+        H.write(self.repo, ".gitignore",
+                "__pycache__/\n*.pyc\n.orchestrator/quickfix/records.jsonl\n")
+        H.commit_all(self.repo, "ignore only records.jsonl (partial)")
+        with self.assertRaises(StateDirError):
+            self._prepare()
+        self.assertNotIn("quickfix/", H.git(self.repo, "worktree", "list"))
+
+    def test_per_file_partial_ignore_missing_one_filename_fails_closed(self):
+        # Ignore 5 of the 6 real lane-state filenames but NOT stdout.txt -> the gate probes
+        # every written filename, so the missing one must still fail closed.
+        H.write(self.repo, ".gitignore",
+                "__pycache__/\n*.pyc\nrecords.jsonl\nstderr.txt\nedit-evidence.json\n"
+                "work.patch\nhandoff.md\n")  # stdout.txt deliberately absent
+        H.commit_all(self.repo, "ignore 5 of 6 lane filenames (stdout.txt leaks)")
+        with self.assertRaises(StateDirError):
+            self._prepare()
+        self.assertNotIn("quickfix/", H.git(self.repo, "worktree", "list"))
+
+    def test_ignored_state_dir_allows_prepare(self):
+        # The fixture ships `.orchestrator/` ignored -> prepare() proceeds normally.
+        ctx = self._prepare()
+        self.assertTrue(os.path.isdir(ctx.worktree.work_dir))
+        launcher.wt_mod.teardown(ctx.worktree, keep_branch=False)
+        launcher.bundle_mod.teardown(ctx.bundle)
 
 
 if __name__ == "__main__":

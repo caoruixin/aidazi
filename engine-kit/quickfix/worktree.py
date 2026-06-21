@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from .errors import CleanTreeError
+from .errors import CleanTreeError, StateDirError
 from .gitutil import git_out, run_git
 
 
@@ -23,6 +23,46 @@ def assert_clean(repo_dir: str) -> None:
             "working tree is not clean; Quick-Fix v1 requires a clean tree at launch "
             "(commit or stash first, then relaunch)"
         )
+
+
+# Paths mirroring EVERY filename the runtime actually writes under .orchestrator/quickfix/ in
+# the MAIN repo (they must survive ephemeral teardown, so they live here and MUST be
+# git-ignored). The check probes each real filename — not just a per-subtree sample — so even
+# a per-FILE partial .gitignore that misses any one of them fails closed. The `<id>` segment
+# (`_qf_ignore_probe`) stands in for the request_id; a realistic directory-level ignore
+# (`.orchestrator/`, `.orchestrator/quickfix/`, `.orchestrator/quickfix/*`) covers them all.
+# This list MUST mirror the real writes: record.py (records.jsonl); cli.py + adapters/base.py
+# (evidence/<id>/{stdout,stderr}.txt + edit-evidence.json); launcher.py
+# (escalations/<id>/{work.patch,handoff.md}).
+_QF_PROBE_ID = "_qf_ignore_probe"
+_STATE_WRITE_PATHS = (
+    os.path.join(".orchestrator", "quickfix", "records.jsonl"),
+    os.path.join(".orchestrator", "quickfix", "evidence", _QF_PROBE_ID, "stdout.txt"),
+    os.path.join(".orchestrator", "quickfix", "evidence", _QF_PROBE_ID, "stderr.txt"),
+    os.path.join(".orchestrator", "quickfix", "evidence", _QF_PROBE_ID, "edit-evidence.json"),
+    os.path.join(".orchestrator", "quickfix", "escalations", _QF_PROBE_ID, "work.patch"),
+    os.path.join(".orchestrator", "quickfix", "escalations", _QF_PROBE_ID, "handoff.md"),
+)
+
+
+def assert_state_dir_ignored(repo_dir: str) -> None:
+    """Fail closed unless EVERY lane-state write subtree is git-ignored in ``repo_dir``.
+
+    Probes a path under each real write location (record, per-request evidence, per-request
+    escalation), so a *partial* ignore that covers only some subtrees cannot slip an untracked
+    file past the original-repo-unpolluted guarantee. Uses ``git check-ignore`` (exit 0 =
+    ignored, 1 = not ignored) rather than assuming the adopter configured it
+    (process/quickfix-lane.md §9 documents the requirement; this enforces it before any side
+    effect)."""
+    for rel in _STATE_WRITE_PATHS:
+        rc, _out, _err = run_git(repo_dir, ["check-ignore", "-q", "--", rel], check=False)
+        if rc != 0:
+            raise StateDirError(
+                f"Quick-Fix writes lane state under .orchestrator/quickfix/, but {rel!r} is "
+                f"not git-ignored in this repo (git check-ignore exit {rc}). Add "
+                f"`.orchestrator/` to .gitignore so the lane never dirties your tracked "
+                f"tree, then relaunch."
+            )
 
 
 def capture_baseline(repo_dir: str) -> str:

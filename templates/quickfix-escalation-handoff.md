@@ -8,10 +8,13 @@
 ## Why it escalated
 
 - **Trigger:** `<one of: scope_expansion | protected_surface_hit | verification_failure |
-  unknown_semantic_or_new_design_choice | unprovable_eligibility | uncertainty>`
+  symlink_or_gitlink_change | inconsistent_result | original_repo_polluted |
+  harness_launch_failure | unknown_semantic_or_new_design_choice | unprovable_eligibility |
+  uncertainty>`
 - **Detail:** `<concise, factual reason — e.g. "touched governance/** (protected:
   governance)", or "rename destination outside allowed_globs", or "introducing a new
-  routing decision the LLM should own (Constitution §1.7)">`
+  routing decision the LLM should own (Constitution §1.7)", or "harness exited non-zero /
+  timed out during the edit phase">`
 - **Detected at:** `<preliminary_guard | edit | targeted_verification | final_guard>`
 
 ## What was attempted

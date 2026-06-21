@@ -32,6 +32,16 @@ class CleanTreeError(QuickfixError):
     """The repo working tree is dirty at launch (QF v1 requires a clean tree)."""
 
 
+class StateDirError(QuickfixError):
+    """The lane's state dir (.orchestrator/quickfix/) is not git-ignored in the adopter repo.
+
+    The lane writes its append-only record + per-launch evidence there; if that path is not
+    ignored, those writes would dirty the adopter's TRACKED tree and break the
+    original-repo-unpolluted guarantee. Fail closed BEFORE any side effect rather than
+    silently polluting the repo.
+    """
+
+
 class GitError(QuickfixError):
     """A git subprocess failed. Carries cmd/returncode/stderr for a clean report."""
 
@@ -67,6 +77,11 @@ class EscalationRequired(QuickfixError):
     INCONSISTENT_RESULT = "inconsistent_result"
     ORIGINAL_REPO_POLLUTED = "original_repo_polluted"
     UNKNOWN_SEMANTIC = "unknown_semantic_or_new_design_choice"
+    # Commit 3 (harness adapters): the harness CLI could not be launched, exited non-zero,
+    # or timed out during the edit phase. Harness-NEUTRAL (no adapter-private meaning) — the
+    # generic launch lifecycle in quickfix.adapters.base raises it; the launcher treats it
+    # like any other in-lane stop (preserve investigation, record `escalated`, tear down).
+    HARNESS_LAUNCH_FAILURE = "harness_launch_failure"
 
     def __init__(self, reason: str, detail: str,
                  violations: Optional[Sequence[str]] = None):

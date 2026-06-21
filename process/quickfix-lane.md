@@ -6,7 +6,7 @@ status: current
 implementation_status: partial
 source_of_truth: this file
 created: 2026-06-21
-last_reviewed: 2026-06-21
+last_reviewed: 2026-06-22
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
@@ -24,13 +24,13 @@ notes: >
 
 # Quick-Fix lane
 
-> **STATUS — Commit 2 of 3 (runtime core delivered; still NOT usable).** This spec, the
-> request/record schemas, the protected-surface policy, AND the runtime (launcher,
-> ephemeral worktree, bundle, guard, verification, record, harness-support registry) have
-> landed. But **no harness adapter exists yet** (Commit 3), and the shipped harness-support
-> registry marks every harness **UNSUPPORTED**, so **every real launch fails closed** and
-> **the Quick-Fix lane is NOT yet usable.** Do not advertise it as available, or attempt to
-> run it, until Commit 3 lands a supported harness adapter with recorded cold-start evidence.
+> **STATUS — Commit 3 of 3 (usable on Claude Code).** The spec, schemas, protected-surface
+> policy, runtime, AND the per-harness adapter layer (`engine-kit/quickfix/adapters/`) have
+> landed. The `claude_code` harness is **`supported`** — a delivered adapter with recorded
+> real-launch cold-start evidence (`archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`)
+> for a correctly-wired adopter. `codex` is **`experimental`** and `kimi_code`
+> **`unsupported`**; the launch gate stays strict (only `supported` runs), so every other
+> harness still **fails closed**. See `QUICK-FIX.md` for adopter usage.
 
 ## §1 What it is (and what it is NOT)
 
@@ -204,10 +204,25 @@ later session — activation is always a fresh human launcher invocation (§2).
 
 ## §10 Harness support is tiered
 
-Policy and core are harness-agnostic, but a harness is **`supported`** only once it has
-a delivered adapter **and** recorded real cold-start evidence (the registry is
-`engine-kit/quickfix/harness_support.yaml`). The launcher **fails closed** for any
-harness not marked `supported` — there is no silent degradation onto an unproven harness.
+Policy and core are harness-agnostic; a harness's support is decided **per-adapter on
+evidence**, in `engine-kit/quickfix/harness_support.yaml`, with three tiers:
+
+- **`supported`** — a delivered adapter (`engine-kit/quickfix/adapters/<harness>.py`) AND
+  recorded real-launch cold-start evidence. The launcher will run it.
+- **`experimental`** — adapter delivered and cold-start isolation is achievable, but no
+  recorded real-launch proof yet. NOT launchable.
+- **`unsupported`** — no adapter, or the harness cannot satisfy cold-start isolation at all.
+  NOT launchable.
+
+The launch gate is **strict and never widens**: `assert_supported()` admits only
+`supported`; `experimental`/`unsupported` both **fail closed** — no silent degradation onto
+an unproven harness. As of Commit 3: `claude_code` is `supported`
+(`archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`); `codex` is `experimental`
+(achievable via an out-of-tree `-C` root + `--skip-git-repo-check` + `--add-dir`, evidence
+pending); `kimi_code` is `unsupported` (no `-C`/`--add-dir`, so its cwd is both the
+memory-load root and the only writable dir — the bundle cwd and the worktree edit target
+cannot be separated). The per-harness adapter is the ONLY place that knows a harness's CLI
+flags / memory filename; the launcher core stays harness-neutral.
 
 ## §11 Fail-closed summary
 

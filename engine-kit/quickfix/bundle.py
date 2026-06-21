@@ -21,9 +21,11 @@ from . import paths
 from .errors import QuickfixError
 
 # harness id -> the memory filename that harness auto-loads from cwd at cold-start.
+# MUST agree with the adapter's MEMORY_FILENAME (test_quickfix_adapters asserts no drift).
 _MEMORY_FILENAME = {
     "claude_code": "CLAUDE.md",
     "codex": "AGENTS.md",
+    "kimi_code": "AGENTS.md",  # kimi merges AGENTS.md root->cwd (v1.29.0); unsupported, never launched
     "cursor": os.path.join(".cursor", "rules", "quickfix.mdc"),
 }
 
