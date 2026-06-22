@@ -29,12 +29,17 @@ harnesses:
     verified_on: "2026-06-22"
 
   codex:
-    status: experimental
+    status: supported
     adapter: engine-kit/quickfix/adapters/codex.py
-    min_version: "0.130.0"
-    cli_version_seen: "0.134.0"
-    cold_start_isolation: "achievable: -C out-of-tree bundle + --skip-git-repo-check keeps AGENTS.md discovery cwd-only (codex does not walk up from a non-git root); --add-dir grants worktree write access without loading its AGENTS.md"
-    reason: "Adapter delivered and isolation is documented, but no RECORDED real-launch cold-start proof on this environment yet (the supported bar). Open caveat: a global ~/.codex/AGENTS.md, if present, is not suppressed by a documented flag (absent here). NOT launchable until evidence lands."
+    cli_version_verified: "0.134.0"
+    min_version: "0.134.0"
+    os_verified: "darwin (23.6.0 / macOS 14.7.4 arm64)"
+    launch_argv: "codex exec --json -C <bundle> --add-dir <worktree> --sandbox workspace-write --skip-git-repo-check --ephemeral [--model M]"
+    bundle_cwd: "out-of-tree ephemeral bundle (ships AGENTS.md, codex's memory file)"
+    worktree_access: "--add-dir <worktree> (write grant; the worktree's AGENTS.md is not cold-started)"
+    cold_start_isolation: "cwd=out-of-tree bundle via -C; codex auto-loads the bundle's AGENTS.md only; --skip-git-repo-check keeps AGENTS.md discovery off the SIBLING adopter repo (the adopter Full chain is never an ancestor of the bundle), so it is not cold-started. A global ~/.codex/AGENTS.md is EXECUTOR-level and is NOT a blocker: the lane's machine boundary (scope guard + targeted verification + closure) holds regardless of any global prompt; on the verified run it was absent."
+    evidence: archive/2026-06-22-quickfix-codex-e2e-evidence.md
+    verified_on: "2026-06-22"
 
   kimi_code:
     status: unsupported

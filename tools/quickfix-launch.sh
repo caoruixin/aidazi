@@ -8,9 +8,9 @@
 # Stable exit codes (from quickfix.cli): 0=ok 1=error 2=invalid 3=dirty-tree
 # 10=escalated 11=unsupported-harness.
 #
-# NOTE (Commit 3): usable on Claude Code (`claude_code` is `supported`). `codex` is
-# `experimental` and `kimi_code` `unsupported` — the launch gate is strict, so anything not
-# `supported` fails closed (exit 11). See QUICK-FIX.md.
+# NOTE: usable on Claude Code and Codex (`claude_code` + `codex` are `supported`). `kimi_code`
+# is `unsupported` — the launch gate is strict, so anything not `supported` fails closed
+# (exit 11). See QUICK-FIX.md.
 set -euo pipefail
 
 usage() {

@@ -44,10 +44,15 @@ class CliExitCodes(unittest.TestCase):
         self.assertEqual(H.git(self.repo, "status", "--porcelain").strip(), "")
 
     def test_experimental_harness_is_not_launchable_exit_11(self):
-        # codex is `experimental` in the shipped registry -> the strict gate refuses it
-        # BEFORE any adapter subprocess (no codex launch in this unit test).
+        # `experimental` != launchable: the strict gate refuses it BEFORE any adapter subprocess.
+        # codex is `supported` in the shipped registry now (Increment B), so this tests the gate
+        # SEMANTIC with an explicit experimental registry (no real codex launched in this unit).
+        regp = os.path.join(self.tmp, "reg-experimental.yaml")
+        with open(regp, "w") as f:
+            f.write("version: 1\nharnesses:\n  codex:\n    status: experimental\n")
         reqp = H.write_request(self.repo, harness="codex")
-        code = cli.main(["--request", reqp, "--repo-dir", self.repo, "--framework-root", FR])
+        code = cli.main(["--request", reqp, "--repo-dir", self.repo,
+                         "--registry", regp, "--framework-root", FR])
         self.assertEqual(code, cli.EXIT_UNSUPPORTED)
         self.assertNotIn("quickfix/", H.git(self.repo, "worktree", "list"))
 

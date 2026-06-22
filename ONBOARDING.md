@@ -476,15 +476,16 @@ The bootstrap is done. Hand off to the **standalone driver** — this is where
   **Campaign Loop** drives the ENTIRE backlog through the same driver, pausing only at
   human gates: `engine-kit/scheduling/run_loop.py --charter charter.yaml --campaign
   campaign-plan.json`. See `FIRST-LOOP.md` → "Drive the whole goal" + `process/campaign-loop.md`.
-- **Quick-Fix lane** (loop-independent; **usable on Claude Code**). For small,
+- **Quick-Fix lane** (loop-independent; **usable on Claude Code and Codex**). For small,
   non-behavioral fixes a human may use the **Quick-Fix lane** (`process/quickfix-lane.md`,
   `QUICK-FIX.md`) instead of a loop — a human-explicit, per-session lane that runs OUTSIDE
   the Delivery/Campaign Loop. It is **not** a loop and never skips MANDATORY_CHECKPOINTS.
   Naming discipline (§1.7-E): keep it distinct from every "*Loop*" concept. The
-  `claude_code` harness is `supported` (recorded real-launch cold-start evidence,
-  `archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`); `codex` is `experimental` and
-  `kimi_code` `unsupported`. The launch gate is strict — anything not `supported` **fails
-  closed**, so on other harnesses do everything through the loops above or pure human-paste.
+  `claude_code` (`archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`) and `codex`
+  (`archive/2026-06-22-quickfix-codex-e2e-evidence.md`) harnesses are both `supported`
+  (recorded real-launch cold-start evidence); `kimi_code` is `unsupported`. The launch gate
+  is strict — anything not `supported` **fails closed**, so on other harnesses do everything
+  through the loops above or pure human-paste.
 
 Point the human at the per-track guide for the substance of the first
 milestone: `docs/greenfield-guide.md` STEP 5-6 (the Phase 1-5 funnel) or

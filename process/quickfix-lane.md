@@ -24,13 +24,14 @@ notes: >
 
 # Quick-Fix lane
 
-> **STATUS — Commit 3 of 3 (usable on Claude Code).** The spec, schemas, protected-surface
-> policy, runtime, AND the per-harness adapter layer (`engine-kit/quickfix/adapters/`) have
-> landed. The `claude_code` harness is **`supported`** — a delivered adapter with recorded
-> real-launch cold-start evidence (`archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`)
-> for a correctly-wired adopter. `codex` is **`experimental`** and `kimi_code`
-> **`unsupported`**; the launch gate stays strict (only `supported` runs), so every other
-> harness still **fails closed**. See `QUICK-FIX.md` for adopter usage.
+> **STATUS — Commit 3 of 3 (usable on Claude Code + Codex).** The spec, schemas,
+> protected-surface policy, runtime, AND the per-harness adapter layer
+> (`engine-kit/quickfix/adapters/`) have landed. `claude_code`
+> (`archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`) and `codex`
+> (`archive/2026-06-22-quickfix-codex-e2e-evidence.md`, codex 0.134.0) are both **`supported`**
+> — delivered adapters with recorded real-launch cold-start evidence for a correctly-wired
+> adopter. `kimi_code` is **`unsupported`**; the launch gate stays strict (only `supported`
+> runs), so every other harness still **fails closed**. See `QUICK-FIX.md` for adopter usage.
 
 ## §1 What it is (and what it is NOT)
 
@@ -216,12 +217,13 @@ evidence**, in `engine-kit/quickfix/harness_support.yaml`, with three tiers:
 
 The launch gate is **strict and never widens**: `assert_supported()` admits only
 `supported`; `experimental`/`unsupported` both **fail closed** — no silent degradation onto
-an unproven harness. As of Commit 3: `claude_code` is `supported`
-(`archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`); `codex` is `experimental`
-(achievable via an out-of-tree `-C` root + `--skip-git-repo-check` + `--add-dir`, evidence
-pending); `kimi_code` is `unsupported` (no `-C`/`--add-dir`, so its cwd is both the
-memory-load root and the only writable dir — the bundle cwd and the worktree edit target
-cannot be separated). The per-harness adapter is the ONLY place that knows a harness's CLI
+an unproven harness. `claude_code`
+(`archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`) and `codex`
+(`archive/2026-06-22-quickfix-codex-e2e-evidence.md`, real-launch proof via an out-of-tree
+`-C` root + `--skip-git-repo-check` + `--add-dir`) are both `supported`; `kimi_code` is
+`unsupported` (no `-C`/`--add-dir`, so its cwd is both the memory-load root and the only
+writable dir — the bundle cwd and the worktree edit target cannot be separated). The
+per-harness adapter is the ONLY place that knows a harness's CLI
 flags / memory filename; the launcher core stays harness-neutral.
 
 ## §11 Fail-closed summary

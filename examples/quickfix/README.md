@@ -25,5 +25,7 @@ Requires: the `claude` CLI (≥ 2.0.0) on PATH and authenticated, plus `python3.
 result: `16 passed, 0 failed`. The latest recorded run is
 `archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`.
 
-> The lane is fail-closed by design. `codex` is `experimental` and `kimi_code` `unsupported`
-> in the shipped registry, so the lane refuses them (exit `11`); only `claude_code` runs.
+> The lane is fail-closed by design. `claude_code` and `codex` are `supported` in the shipped
+> registry; `kimi_code` is `unsupported`, so the lane refuses it (exit `11`). The codex
+> qualification E2E is `examples/quickfix/e2e-codex.sh`
+> (`archive/2026-06-22-quickfix-codex-e2e-evidence.md`).

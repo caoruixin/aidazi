@@ -293,13 +293,14 @@ class HarnessFailClosed(LauncherBase):
         reg = paths.harness_support_path(FR)
         statuses = {h: e.get("status")
                     for h, e in yaml.safe_load(open(reg))["harnesses"].items()}
-        # Commit 3: claude_code is the first `supported` harness; others are not launchable.
+        # claude_code (Commit 3) and codex (Increment B real-launch proof) are `supported`;
+        # kimi_code / cursor are not launchable.
         self.assertEqual(statuses.get("claude_code"), "supported")
-        self.assertEqual(statuses.get("codex"), "experimental")
+        self.assertEqual(statuses.get("codex"), "supported")
         self.assertEqual(statuses.get("kimi_code"), "unsupported")
         # the launch gate stays STRICT: only `supported` is launchable (no widening).
         self.assertTrue(is_supported("claude_code", reg))
-        self.assertFalse(is_supported("codex", reg))      # experimental != launchable
+        self.assertTrue(is_supported("codex", reg))
         self.assertFalse(is_supported("kimi_code", reg))
         self.assertFalse(is_supported("cursor", reg))
 

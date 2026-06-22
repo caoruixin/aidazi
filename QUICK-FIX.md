@@ -34,7 +34,7 @@ degradation onto an unproven harness. Tiers live in
 | Harness | Status | Notes |
 |---|---|---|
 | **Claude Code** (`claude_code`) | **`supported`** | Adapter + recorded real-launch cold-start evidence (`archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`). cwd = out-of-tree bundle; `--add-dir` grants the worktree file access without loading its `CLAUDE.md`. |
-| **Codex** (`codex`) | `experimental` | Adapter delivered; isolation achievable (`-C` out-of-tree root + `--skip-git-repo-check` keeps AGENTS.md discovery cwd-only, + `--add-dir` worktree). **Not launchable** until a real-launch proof is recorded. |
+| **Codex** (`codex`) | **`supported`** | Adapter + recorded real-launch cold-start evidence (`archive/2026-06-22-quickfix-codex-e2e-evidence.md`, codex 0.134.0). cwd = out-of-tree bundle (`-C`, loads bundle `AGENTS.md` only); `--skip-git-repo-check` keeps discovery off the sibling adopter repo; `--add-dir` grants the worktree write access. A global `~/.codex/AGENTS.md` (executor-level) is **not** a blocker — the lane's machine boundary holds regardless. |
 | **Kimi Code** (`kimi_code`) | `unsupported` | Kimi merges `AGENTS.md` root→cwd but has no `-C`/`--add-dir`, so its cwd is both the memory-load root and the only writable dir — cold-start isolation is not achievable. **Not launchable.** |
 
 > **Correctly-wired-adopter caveat (Claude Code).** The `supported` claim is scoped to the
