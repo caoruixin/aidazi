@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/connector-catalog.schema.json",
+  "title": "Connector catalog (connectors/registry.yaml)",
+  "description": "Formalizes connectors/registry.yaml (plan §4.1 Facet C / §6) — parallel to the skill catalog. Source-of-truth for the connectors an adopter has VETTED and may grant to roles; granting itself is per-role and DEFAULT-DENY in the charter (schemas/connector-binding.schema.json). Each entry pins the server, names its provenance, declares its capability class (which bounds which role sandboxes may hold it), and lists required secrets BY NAME (values live in the adopter env). HARD (Constitution §1.7 new item + §3.4 invariant #6): pinned + provenance; default-deny; capability class ⊆ role sandbox; secrets by-name only; MCP servers a trust decision.",
+  "type": "object",
+  "required": ["catalog_version", "connectors"],
+  "additionalProperties": false,
+  "properties": {
+    "catalog_version": {"type": "integer", "minimum": 1},
+    "last_updated": {"type": "string", "format": "date"},
+    "connectors": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/connector_entry"}
+    }
+  },
+  "$defs": {
+    "connector_entry": {
+      "type": "object",
+      "required": ["kind", "server", "capability_class", "provenance"],
+      "additionalProperties": false,
+      "properties": {
+        "title": {"type": "string"},
+        "kind": {
+          "type": "string",
+          "enum": ["mcp", "http_api", "cli"]
+        },
+        "server": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Pinned server reference: '<ref>@<pin>' for MCP (pin = version/commit/digest), base URL for http_api, command for cli. Unpinned/runtime-fetched = FORBIDDEN (Constitution §1.7 new item)."
+        },
+        "provenance": {
+          "type": "string",
+          "enum": ["first_party", "community", "vendor", "adopter"],
+          "description": "Trust class. Third-party = an explicit trust decision recorded here."
+        },
+        "capability_class": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["read", "write", "network"]},
+          "minItems": 1,
+          "description": "The maximal capability classes this connector can exercise. A role may bind it only if its sandbox covers this class (binding scopes ⊆ capability_class ⊆ role sandbox)."
+        },
+        "required_secrets": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+          "description": "Secret env-var NAMES the connector needs. Values resolved from the adopter env at runtime; never stored here."
+        },
+        "harness_compat": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["claude_code", "codex", "headless", "aider"]},
+          "description": "Harnesses whose adapter can translate this connector to a native grant (Claude Code .mcp.json + allowed-tools / Codex tool config / headless function list)."
+        },
+        "tools": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "OPTIONAL: tool/function names the connector exposes (catalog reference; a binding may narrow further)."
+        },
+        "notes": {"type": "string"}
+      }
+    }
+  }
+}

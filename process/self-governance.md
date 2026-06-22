@@ -54,7 +54,7 @@ Itemized here for self-governance review purposes; the canonical statement is Co
   - Code-Reviewer ≠ Acceptance lens distinction.
   - Research-Acceptance contract symmetry.
   - Deliver-does-not-write-code.
-- **`process/delivery-loop.md` §4.2.3 — 8 MANDATORY_CHECKPOINTS** — if Δ-18 orchestrator adopted, all 8 fire; charter MAY add; charter MAY NOT BYPASS in any of the four shapes (omitted / emptied / disabled / overridden) per §1.7-D + `process/delivery-loop.md` §4.2.2 charter editing rules.
+- **`process/delivery-loop.md` §4.2.3 — 9 MANDATORY_CHECKPOINTS** — if Δ-18 orchestrator adopted, all 9 fire (the 9th, `advisory_acceptance_pass_signoff`, only when Acceptance runs advisory); charter MAY add; charter MAY NOT BYPASS in any of the four shapes (omitted / emptied / disabled / overridden) per §1.7-D + `process/delivery-loop.md` §4.2.2 charter editing rules.
 - **Constitution §3.6 Acceptance judge calibration** — if Acceptance enabled in `fully_autonomous_within_budget` mode, calibration is required; uncalibrated → automatic degradation to `human_on_the_loop`. Degradation is not optional; orchestrator implements it.
 
 Violations of hard requirements are framework breaches, not adopter customizations. They are NOT eligible for `status: divergent` in `docs/current/adoption-state.md`.

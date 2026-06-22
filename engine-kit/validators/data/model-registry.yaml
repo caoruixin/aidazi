@@ -1,0 +1,112 @@
+# model-registry.yaml — DEFAULT model capability registry shipped with the
+# charter validator's capability gate (Facet A). Validates
+# schemas/model-registry.schema.json.
+#
+# Extracted from process/model-capability-registry.md §3 ("Example registry
+# instance") — an ILLUSTRATIVE snapshot covering anthropic / openai / deepseek /
+# moonshot. Tiers + costs are suggested-default and adopter-tunable
+# (Constitution §7.0); refresh against provider docs at the doc's review cadence.
+#
+# Each top-level key under `models` is a capability-profile id — the value a
+# charter's tooling.<role>.capability_ref points at. The capability gate
+# (engine-kit/validators/charter_validator.py::_check_capability_gate) loads
+# this file (an override path may be supplied) and validates each role's
+# (harness, provider, model) triple against process/role-configuration-contract.md §4.
+#
+# last_updated is QUOTED so PyYAML keeps it a string (schema format: date expects
+# a string, not a parsed datetime.date).
+registry_version: 1
+last_updated: "2026-06-17"
+models:
+  anthropic-opus-judge:
+    provider: anthropic
+    model: claude-opus-4-8
+    context_window: 200000
+    tool_use: true
+    structured_output_tier: high
+    reasoning_tier: high
+    endpoint_kind: native
+    harness_compat: [claude_code, headless]
+    cost: { currency: USD, input_per_mtok: 5.0, output_per_mtok: 25.0 }
+    calibratable: true
+    notes: "Default judgment/planning model; native via Claude Code, API via headless."
+
+  anthropic-sonnet-dev:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    context_window: 200000
+    tool_use: true
+    structured_output_tier: high
+    reasoning_tier: medium
+    endpoint_kind: native
+    harness_compat: [claude_code]
+    cost: { currency: USD, input_per_mtok: 3.0, output_per_mtok: 15.0 }
+    calibratable: true
+    notes: "Coding-agent harness with tool_use — suits Dev."
+
+  openai-gpt5-codex:
+    provider: openai
+    model: gpt-5.5
+    context_window: 256000
+    tool_use: true
+    structured_output_tier: high
+    reasoning_tier: high
+    endpoint_kind: native
+    harness_compat: [codex, headless]
+    cost: { currency: USD, input_per_mtok: null, output_per_mtok: null }
+    calibratable: true
+    notes: "Codex harness is provider-locked to OpenAI; cost may be subscription-billed (null). Model availability is ACCOUNT-TYPE dependent: a ChatGPT-subscription Codex account serves general models (e.g. gpt-5.5, verified 2026-06-17) and REJECTS gpt-5-codex (HTTP 400); an API-key Codex account can use gpt-5-codex. Confirm via the onboarding Facet A preflight."
+
+  deepseek-chat-api:
+    provider: deepseek
+    model: deepseek-v4-pro
+    context_window: 128000
+    tool_use: true
+    structured_output_tier: medium
+    reasoning_tier: medium
+    endpoint_kind: openai_compatible
+    harness_compat: [headless]
+    cost: { currency: USD, input_per_mtok: 0.27, output_per_mtok: 1.10 }
+    calibratable: true
+    notes: "DeepSeek chat-family flagship via the headless OpenAI-compatible endpoint (model id refreshed to deepseek-v4-pro 2026-06-17; the prior deepseek-chat id is retired). Cost/tiers illustrative — refresh against provider docs."
+
+  moonshot-kimi-128k:
+    provider: moonshot
+    model: moonshot-v1-128k
+    context_window: 128000
+    tool_use: true
+    structured_output_tier: medium
+    reasoning_tier: medium
+    endpoint_kind: openai_compatible
+    harness_compat: [headless]
+    cost: { currency: USD, input_per_mtok: 0.84, output_per_mtok: 0.84 }
+    calibratable: true
+    notes: "Kimi via headless; large context suits evidence-reading roles."
+
+  moonshot-kimi-code:
+    provider: moonshot
+    model: kimi-code/kimi-for-coding
+    context_window: 256000
+    tool_use: true
+    structured_output_tier: medium
+    reasoning_tier: high
+    endpoint_kind: native
+    harness_compat: [kimi]
+    cost: { currency: USD, input_per_mtok: null, output_per_mtok: null }
+    calibratable: true
+    notes: "Kimi Code agentic CLI (Moonshot AI 'K2.7 Code'), a NATIVE file-editing coding-agent harness — suits Dev. Distinct from moonshot-kimi-128k (that profile is the headless OpenAI-compatible API for evidence-reading roles; THIS one drives the `kimi` CLI). Model alias `kimi-code/kimi-for-coding` per the kimi adapter's `kimi --help` verification (Kimi Code 0.16.0; engine-kit/adapters/kimi.py); confirm with your installed CLI. Cost may be subscription-billed (null). Tiers/context illustrative — adopter-tunable."
+
+  # A sub-medium structured-output model — illustrative ONLY, so a verdict role
+  # bound to it deterministically trips the structured-output floor in tests/demos.
+  deepseek-weak-api:
+    provider: deepseek
+    model: deepseek-weak
+    context_window: 64000
+    tool_use: true
+    structured_output_tier: low
+    reasoning_tier: low
+    endpoint_kind: openai_compatible
+    harness_compat: [headless]
+    cost: { currency: USD, input_per_mtok: 0.10, output_per_mtok: 0.20 }
+    calibratable: false
+    notes: "Illustrative low-tier model; below the verdict structured-output floor."

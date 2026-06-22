@@ -9,13 +9,15 @@ Copy this directory as the starting skeleton for a greenfield adoption (`docs/gr
 ```
 minimal-greenfield/
 ├── AGENTS.md                              # consumer root: project id + @-include chain + ledger paths
+├── CLAUDE.md                              # one line `@AGENTS.md` — routes Claude Code into AGENTS.md
 ├── docs/
-│   ├── current/                           # the three domain contracts + context guide + adoption state
+│   ├── current/                           # the three domain contracts + context guide + adoption state + impl-stack snapshot
 │   │   ├── domain_taxonomy.md
 │   │   ├── runtime_invariants.md
 │   │   ├── eval_acceptance_bars.md
 │   │   ├── agent_context_guide.md
-│   │   └── adoption-state.md
+│   │   ├── adoption-state.md
+│   │   └── implementation-stack.md         # present-tense product tech facts (Step 4a); NOT a domain contract
 │   ├── milestone_objective.md             # M1 north star (cites the closure_contract)
 │   ├── sprint_objective.md                # sub-sprint 1 scope
 │   ├── 10-handoff.md                      # §0 cold-start table + §1 narrative
@@ -26,6 +28,19 @@ minimal-greenfield/
 ├── compact/_placeholder.md                # where per-sprint dev/review/acceptance prompts land
 └── eval/bad_cases/_manifest.md            # the bad-case suite manifest
 ```
+
+## How Claude Code and Codex enter the same chain
+
+Both harnesses reach the **one** governance chain in `AGENTS.md`, via the harness-specific root
+file each one auto-loads (normative source: `aidazi/governance/context_briefing.md` §1.1):
+
+- **Claude Code** auto-loads `CLAUDE.md`, not a bare `AGENTS.md`. The one-line `CLAUDE.md`
+  (`@AGENTS.md`) imports `AGENTS.md`, so the always-load chain is in context from turn one.
+- **OpenAI Codex** auto-loads `AGENTS.md` directly — no `CLAUDE.md` needed.
+
+`CLAUDE.md` only *imports* `AGENTS.md`; it never re-copies the chain (dual entry points drift).
+This single wiring serves both harnesses, so they can be used alternately on the same repo. The
+deterministic check is `python aidazi/engine-kit/validators/adopter_wiring_validator.py . --harness claude_code`.
 
 ## How to use it
 

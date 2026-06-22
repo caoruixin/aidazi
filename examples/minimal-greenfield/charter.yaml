@@ -1,0 +1,96 @@
+# Mission charter — Acme Returns Bot, milestone M1 / sub-sprint sprint-001.
+#
+# This is the worked-example charter for the minimal-greenfield adopter (the
+# Acme Returns Bot). It is read LENIENTLY as plain YAML by the framework-owned
+# standalone driver (engine-kit/orchestrator/driver.py); it mirrors the plan §5
+# field shapes (see engine-kit/orchestrator/examples/p2-charter.yaml) but is
+# pinned to THIS example's mission (RB-001 refund-eligibility, UC-1), not the
+# generic demo. It is deliberately NOT validated against
+# schemas/mission-charter.schema.json (that schema is extended concurrently; the
+# driver stays decoupled).
+#
+# The recorded-run proof (docs/recorded-run.md) wires a MockAdapter per role,
+# standing in for the real harness named in each role's `harness` field, so the
+# Delivery Loop runs fully OFFLINE + deterministically. Per-role routing matches
+# this example's AGENTS.md §4 (Claude Code backs every human-paste role) while
+# still demonstrating a multi-model Review on a headless harness:
+#   Dev     -> harness claude_code (Anthropic)
+#   Review  -> harness headless    (multi-model, OpenAI-compatible endpoint)
+#   Deliver -> harness claude_code (Anthropic)
+# autonomy.level = human_in_the_loop (this example is human-paste, no Auto Loop;
+# Acceptance runs at milestone close as a Customer paste, gate 2 — NOT wired into
+# this offline loop proof, which exercises only the per-sub-sprint mechanics).
+
+mission:
+  id: M1
+  goal: >-
+    Determine refund eligibility for a specific order (UC-1), confirming
+    eligibility with a clear timeline or explaining the specific blocking reason,
+    grounded in a real policy check — per RB-001 (Customer-signed).
+  brief: docs/research-briefs/RB-001-refund-eligibility.md
+
+autonomy:
+  level: human_in_the_loop
+  approved_scope:
+    # sprint-001 is the sub-sprint this loop drives. M1's full sequence is 3
+    # sub-sprints (docs/milestone_objective.md); the proof runs sub-sprint 1.
+    subsprint_sequence:
+      - sprint-001
+    layers_allowed:
+      - semantic_planner
+      - prompt_projection
+    modules_in_scope:
+      - src/tools/eligibility.py
+      - src/pipeline/check.py
+    explicitly_out_of_scope:
+      # denial-reason wording (sprint-002) + escalation (sprint-003) are later
+      # sub-sprints; touching them in sprint-001 is a scope deviation.
+      - src/pipeline/denial.py
+      - src/pipeline/escalation.py
+
+budget:
+  max_api_usd: 0          # mock adapter — no real spend in the offline proof
+  max_fix_rounds_total: 2
+  max_wall_clock_minutes: 60
+
+tooling:
+  # Facet A — per-role execution binding (harness / provider / model).
+  research:
+    harness: claude_code
+    provider: anthropic
+    model: claude-opus-4-8
+  deliver:
+    harness: claude_code
+    provider: anthropic
+    model: claude-opus-4-8
+  dev:
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    sandbox: workspace_write
+  review:
+    harness: headless          # OpenAI-compatible endpoint (multi-model review)
+    provider: deepseek
+    model: deepseek-v4-pro
+    endpoint: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY   # value lives in a gitignored .env.local, never here
+    tools: [Read, Grep, Glob]
+  eval:
+    cmd: "true"                # placeholder; F5 eval not wired in this proof
+    timeout_seconds: 60
+
+# OPTIONAL — Loop Memory substrate (modules/m-memory.md). Left OFF in this worked
+# example (no top-level `memory:` field is set, so the parsed charter — and its
+# canonical fingerprint — is unchanged; the driver never touches a store, exactly
+# as today). To enable it in YOUR adopter, add a real top-level block to your
+# charter (see templates/mission-charter.yaml):
+#   memory:
+#     enabled: true
+#     root: memory        # <adopter>/memory; relative roots resolve against the
+#                         # charter dir and must stay inside it (use --memory-root
+#                         # for an external path). CLI --memory-root overrides.
+# When enabled, the loop injects prior generalizable lessons into role prompts at
+# ingress and records lessons at close; it never raises autonomy, never auto-edits
+# a load-bearing artifact, and adds no checkpoint, but it does change prompt
+# context — record the enable decision in adoption-state.md (§3.6 calibration
+# policy still applies).

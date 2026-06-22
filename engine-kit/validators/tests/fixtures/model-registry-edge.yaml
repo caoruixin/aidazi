@@ -1,0 +1,32 @@
+# Edge-case capability registry for capability-gate regression tests ONLY.
+# Holds profiles that the shipped default registry deliberately does NOT (e.g. a
+# coding model with tool_use:false), so the strengthened gate's per-role checks
+# can be exercised in isolation. NOT a real registry — test fixture.
+registry_version: 1
+last_updated: "2026-06-19"
+models:
+  edge-no-tooluse:
+    provider: anthropic
+    model: edge-no-tooluse-model
+    context_window: 100000
+    tool_use: false
+    structured_output_tier: high
+    reasoning_tier: high
+    endpoint_kind: native
+    harness_compat: [claude_code]
+    cost: { currency: USD, input_per_mtok: 1.0, output_per_mtok: 1.0 }
+    calibratable: true
+    notes: "Edge: a coding-harness model with tool_use=false, to exercise dev_needs_tool_use."
+  edge-no-harness-compat:
+    # Intentionally OMITS harness_compat (schema now requires it; the gate must FAIL
+    # CLOSED on a resolved profile that lacks it). Test-only — not schema-valid.
+    provider: anthropic
+    model: edge-no-compat-model
+    context_window: 100000
+    tool_use: true
+    structured_output_tier: high
+    reasoning_tier: high
+    endpoint_kind: native
+    cost: { currency: USD, input_per_mtok: 1.0, output_per_mtok: 1.0 }
+    calibratable: true
+    notes: "Edge: no harness_compat, to exercise the harness_compat_missing fail-closed."

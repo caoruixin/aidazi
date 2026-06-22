@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/quickfix-protected-surfaces.overlay.schema.json",
+  "title": "Quick-Fix protected-surface overlay (ADOPTER, additive-only)",
+  "description": "Validates an adopter overlay (docs/current/quickfix-protected-surfaces.overlay.yaml). It uses `additional_surfaces` and deliberately does NOT permit `mandatory_surfaces` (additionalProperties:false) — so an overlay can ONLY extend the baseline, never redefine, remove, or weaken it. A mis-authored overlay that tries to carry `mandatory_surfaces` (or any remove/exclude/override key) is REJECTED (fail-closed), not silently ignored. The guard unions baseline.mandatory_surfaces ∪ overlay.additional_surfaces. Normative source: process/quickfix-lane.md §4.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "additional_surfaces"],
+  "properties": {
+    "version": { "const": 1 },
+    "additional_surfaces": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Adopter-added protected surfaces. Additive only.",
+      "items": { "$ref": "#/$defs/surface" }
+    }
+  },
+  "$defs": {
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "globs", "reason"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]{0,63}$" },
+        "globs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!~)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/*?-]+$",
+            "description": "Repo-relative POSIX glob, SAFE SUBSET only (see the baseline schema). Leading '**/' matches any depth."
+          }
+        },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "request_id": "fix-pagination-helper-001",
+  "created_by": "rex",
+  "human_activation": true,
+  "harness": "claude_code",
+  "task_summary": "Restore the previously-agreed inclusive upper bound in the pure paginate() range helper (a regression introduced by a refactor).",
+  "allowed_globs": [
+    "src/pagination.py",
+    "tests/test_pagination.py"
+  ],
+  "eligibility_attestation": {
+    "non_behavioral_or_restores_agreed_behavior": true,
+    "no_new_product_semantics_or_design_choice": true,
+    "no_protected_surface": true,
+    "targeted_verification_available": true,
+    "within_approved_scope": true
+  },
+  "targeted_verification": {
+    "argv": ["python", "-m", "pytest", "-q", "tests/test_pagination.py"],
+    "cwd": "."
+  },
+  "notes": "Example only. The real activation is a human running the Quick-Fix launcher with this request; human_activation:true here is an attestation, not the activation mechanism. See process/quickfix-lane.md."
+}

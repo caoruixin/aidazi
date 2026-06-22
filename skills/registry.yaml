@@ -1,0 +1,162 @@
+# skills/registry.yaml — aidazi skill catalog
+#
+# Source-of-truth for WHICH skills are default-bound per role + their provenance.
+# Normative discipline lives in process/role-skill-model.md (spec). This file is
+# the CATALOG; vendored content lives under skills/vendored/<id>/ and is pinned +
+# integrity-locked by skills/skills.lock. A future schema
+# (schemas/skill-catalog.schema.json, P-0a) will formalize this shape; the
+# charter_validator (P1) will check bindings against it.
+#
+# Supply-chain rules (see plan): vendored = copied + pinned by commit; NO runtime
+# fetch; each skills/vendored/<id>/ retains upstream LICENSE + _provenance.yaml.
+
+catalog_version: 1
+last_updated: 2026-06-15
+
+# ─────────────────────────────────────────────────────────────────────────
+# Role default bindings  (the "default config")
+# Suggested defaults (Constitution §7.1): an adopter MAY override in
+# docs/current/adoption-state.md with documented rationale. What is NOT
+# overridable: tool-whitelist compliance, and — for acceptance — the §3.6
+# calibration coupling (swapping the skill invalidates `calibrated`).
+# ─────────────────────────────────────────────────────────────────────────
+role_defaults:
+  research:      [brainstorming]
+  deliver:       [writing-plans, architecture-decision-records]  # architect = decomposition + ADR
+  dev:           [test-driven-development]
+  code_reviewer: [code-review-excellence]
+  acceptance:    [advanced-evaluation]   # ⚠ changing this invalidates §3.6 calibration
+
+# ─────────────────────────────────────────────────────────────────────────
+# Vendored skills  (committed under skills/vendored/, pinned in skills.lock)
+# All MIT, all read-only-safe (no `allowed-tools` declared in frontmatter).
+# harness_compat = harness-agnostic methodology skills (prose instructions).
+# ─────────────────────────────────────────────────────────────────────────
+skills:
+  brainstorming:
+    title: "Brainstorming — turn ideas/intent into designs & closure-contracts"
+    role_default_for: research
+    source: { repo: obra/superpowers, url: "https://github.com/obra/superpowers", commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/brainstorming }
+    license: MIT
+    provenance: community
+    recognition: { stars: 228000, maintained: true }
+    tool_requirements: []          # read-only safe; bundles OPTIONAL node "visual companion" scripts (not required)
+    harness_compat: [claude_code, codex, headless]
+    status: active
+    vendored: true
+
+  writing-plans:
+    title: "Writing Plans — decompose a spec into bite-sized, testable tasks"
+    role_default_for: deliver
+    source: { repo: obra/superpowers, url: "https://github.com/obra/superpowers", commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/writing-plans }
+    license: MIT
+    provenance: community
+    recognition: { stars: 228000, maintained: true }
+    tool_requirements: []
+    harness_compat: [claude_code, codex, headless]
+    status: active
+    vendored: true
+
+  architecture-decision-records:
+    title: "Architecture Decision Records — author/maintain ADRs"
+    role_default_for: deliver
+    source: { repo: wshobson/agents, url: "https://github.com/wshobson/agents", commit: cc37bfdd292ce520ba1c44df7a3a70d5f8137236, path: plugins/documentation-generation/skills/architecture-decision-records }
+    license: MIT
+    provenance: community
+    recognition: { stars: 36800, maintained: true }
+    tool_requirements: []
+    harness_compat: [claude_code, codex, headless]
+    status: active
+    vendored: true
+
+  test-driven-development:
+    title: "Test-Driven Development — red/green/refactor discipline"
+    role_default_for: dev
+    source: { repo: obra/superpowers, url: "https://github.com/obra/superpowers", commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/test-driven-development }
+    license: MIT
+    provenance: community
+    recognition: { stars: 228000, maintained: true }
+    tool_requirements: []          # methodology; uses whatever edit/test tools the Dev harness already has
+    harness_compat: [claude_code, codex, headless]
+    status: active
+    vendored: true
+
+  code-review-excellence:
+    title: "Code Review Excellence — constructive, systematic review"
+    role_default_for: code_reviewer
+    source: { repo: wshobson/agents, url: "https://github.com/wshobson/agents", commit: cc37bfdd292ce520ba1c44df7a3a70d5f8137236, path: plugins/developer-essentials/skills/code-review-excellence }
+    license: MIT
+    provenance: community
+    recognition: { stars: 36800, maintained: true }
+    tool_requirements: []          # read-only safe; fits [Read, Grep, Glob] reviewer whitelist
+    harness_compat: [claude_code, codex, headless]
+    status: active
+    vendored: true
+
+  advanced-evaluation:
+    title: "Advanced Evaluation — LLM-as-judge, rubric calibration, bias mitigation"
+    role_default_for: acceptance
+    source: { repo: muratcankoylan/Agent-Skills-for-Context-Engineering, url: "https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering", commit: 25e1fa79a33f0985793bcab3c64dde8d020c5132, path: skills/advanced-evaluation }
+    license: MIT
+    provenance: community
+    recognition: { stars: 16600, maintained: true }
+    tool_requirements: []          # read-only safe; bundles a python example under scripts/ (reference only)
+    harness_compat: [claude_code, codex, headless]
+    status: active
+    vendored: true
+    calibration_coupled: true      # §3.6: changing/updating this invalidates acceptance `calibrated`
+
+  using-git-worktrees:
+    title: "Using git worktrees for isolated parallel work"
+    role_default_for: engine/dev          # engine/dev utility skill — NOT a role default
+    source: { repo: obra/superpowers, url: "https://github.com/obra/superpowers", commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/using-git-worktrees }
+    license: MIT
+    provenance: community
+    recognition: { stars: 228000, maintained: true }
+    tool_requirements: []          # read-only-safe methodology; no `allowed-tools` in frontmatter (uses Dev's own git tooling)
+    harness_compat: [claude_code, codex, headless]
+    status: active
+    vendored: true
+
+# Authored (non-vendored) exemplar already in repo; normative source in templates/.
+authored:
+  anti-hardcode-review-kernel:
+    title: "Anti-hardcode review kernel (aidazi-authored exemplar)"
+    role_default_for: code_reviewer
+    source: { repo: local, path: skills/anti-hardcode-review-kernel, normative_source: templates/anti-hardcode-review-kernel.md }
+    license: aidazi
+    provenance: authored
+    tool_requirements: [Read, Grep, Glob]
+    status: active
+    vendored: false
+
+# ─────────────────────────────────────────────────────────────────────────
+# Candidates — evaluated, NOT vendored. Recorded for traceability + opt-in.
+# ─────────────────────────────────────────────────────────────────────────
+candidates:
+  differential-review:
+    title: "Security differential review (Trail of Bits)"
+    intended_role: code_reviewer
+    source: { repo: trailofbits/skills, url: "https://github.com/trailofbits/skills", commit: c070b9b, path: plugins/differential-review/skills/differential-review }
+    license: CC-BY-SA-4.0
+    not_vendored_reason: >
+      copyleft/share-alike (would propagate to redistributed copy) AND declares
+      allowed-tools: Read Write Grep Glob Bash — Write+Bash exceed the read-only
+      reviewer whitelist (anti-pattern #13). Opt-in only: requires explicit
+      charter whitelist relaxation + accepting CC-BY-SA-4.0.
+  deep-research:
+    title: "Multi-source deep research with citations"
+    intended_role: research
+    source: { repo: affaan-m/ECC, url: "https://github.com/affaan-m/ECC", commit: 5b173d2, path: .agents/skills/deep-research }
+    license: MIT
+    not_vendored_reason: >
+      requires external `firecrawl` + `exa` MCP connectors (runtime web
+      dependency). Revisit once the connector layer (R4) lands.
+  verification-before-completion:
+    title: "Verification before completion (evidence before claims)"
+    intended_role: dev
+    source: { repo: obra/superpowers, url: "https://github.com/obra/superpowers", commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/verification-before-completion }
+    license: MIT
+    not_vendored_reason: >
+      good Dev self-check; implies running verify commands (needs Bash) — bind
+      to Dev (not the read-only judge). Candidate for a later round.

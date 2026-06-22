@@ -1,0 +1,69 @@
+# INVALID: adaptive_insert.enabled=true but max_inserted_subsprints absent.
+# Expected semantic rule: adaptive_insert_bound (delivery-loop §4.2.2).
+mission:
+  id: M5-charter-validator
+  goal: Ship the deterministic charter validator hard kernel.
+
+autonomy:
+  level: human_on_the_loop
+  approved_scope:
+    subsprint_sequence:
+      - S5-1
+    layers_allowed:
+      - prompt_projection
+    modules_in_scope:
+      - engine-kit/validators
+    explicitly_out_of_scope: []
+  auto_pass_rules:
+    clean_pass_auto_advance: false
+    auto_fix_iteration:
+      enabled: false
+      max_rounds: 0
+      only_if_findings_severity_at_most: P2
+    adaptive_insert:
+      enabled: true   # <-- enabled but no max_inserted_subsprints bound below
+
+budget:
+  max_api_usd: 0
+  max_fix_rounds_total: 3
+  max_wall_clock_minutes: 240
+
+tooling:
+  research:
+    agent_kind: claude_code
+    model: claude-opus-4-7
+  deliver:
+    agent_kind: claude_code
+    model: claude-opus-4-7
+  dev:
+    agent_kind: claude_code
+    model: claude-sonnet-4-6
+    sandbox: workspace_write
+  review:
+    agent_kind: codex
+    model: gpt-5.5
+    tools: [Read, Grep, Glob]
+  eval:
+    cmd: pytest -q engine-kit/validators/tests
+    timeout_seconds: 600
+  acceptance:
+    enabled: false
+    agent_kind: claude_code
+    model: claude-opus-4-7
+    tools: [Read, Grep, Glob]
+    judge_calibration:
+      status: uncalibrated
+      agreement_threshold: 0.9
+      flip_threshold: 0.1
+      labeled_set_path: calibration/labeled_acceptance_cases/manifest.json
+    run_at: milestone_close
+    on_fix_required:
+      human_confirm_required: true
+      route_options:
+        - deliver_fix_iteration
+
+profile_type_a:
+  closure_contract_source: research_brief
+  phase_pipeline_required: true
+
+mandatory_checkpoints_added: []

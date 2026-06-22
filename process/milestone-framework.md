@@ -31,7 +31,7 @@ A milestone has:
 - **One milestone objective document** at `docs/milestone_objective.md` (live; archived to `docs/sprints/<milestone-id>/milestone_objective.md` at milestone close).
 - **3-5 sub-sprint contracts** (suggested default per Constitution §7.0; adopters may override).
 - **One milestone acceptance bar** derived from the curated bad-case suite per `process/badcase-lifecycle.md` — typically one or more named bad cases must close or improve materially.
-- **Acceptance verdict at milestone close** per Constitution §3.4 + §3.5 (`charter.acceptance.run_at: milestone_close` or `both`).
+- **Acceptance verdict at milestone close** per Constitution §3.4 + §3.5 (`tooling.acceptance.run_at: milestone_close` or `both`).
 - **Code Reviewer verdict at milestone close** per §2 below.
 
 A **sub-sprint** within a milestone is a single dev-session unit of work that ships a coherent slice of the milestone scope. Each sub-sprint:

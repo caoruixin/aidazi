@@ -1,0 +1,52 @@
+# Tiered Quick-Fix harness support (process/quickfix-lane.md §10).
+#
+# STATUS VOCABULARY (per-harness, decided on EVIDENCE — not on whether an adapter exists):
+#   supported    = adapter delivered AND a recorded real-launch cold-start proof exists.
+#                  The launcher will actually run it.
+#   experimental = adapter delivered, cold-start isolation is achievable, but no recorded
+#                  real-launch proof on this environment yet. NOT launchable.
+#   unsupported  = no adapter, or the harness cannot satisfy cold-start isolation at all.
+#                  NOT launchable.
+#
+# THE LAUNCH GATE IS STRICT AND DOES NOT WIDEN: harness_support.assert_supported() admits
+# ONLY `supported`. `experimental` and `unsupported` both FAIL CLOSED — there is no silent
+# degradation onto an unproven harness. Promoting a harness to `supported` requires landing
+# its evidence, exactly like claude_code did in Commit 3.
+
+version: 1
+harnesses:
+  claude_code:
+    status: supported
+    adapter: engine-kit/quickfix/adapters/claude_code.py
+    cli_version_verified: "2.1.170"
+    min_version: "2.0.0"
+    os_verified: "darwin (24.x)"
+    launch_argv: "claude -p --output-format json --permission-mode acceptEdits --add-dir <worktree> --allowed-tools <edit-only>"
+    bundle_cwd: "out-of-tree ephemeral bundle (ships CLAUDE.md)"
+    worktree_access: "--add-dir <worktree> (file access only; CLAUDE.md not auto-loaded)"
+    cold_start_isolation: "cwd=out-of-tree bundle + --add-dir worktree; adopter repo governance chain is never an ancestor of the bundle, so it is not cold-started (only ~/.claude/CLAUDE.md, orthogonal, still loads)"
+    evidence: archive/2026-06-22-quickfix-claude-code-e2e-evidence.md
+    verified_on: "2026-06-22"
+
+  codex:
+    status: supported
+    adapter: engine-kit/quickfix/adapters/codex.py
+    cli_version_verified: "0.134.0"
+    min_version: "0.134.0"
+    os_verified: "darwin (23.6.0 / macOS 14.7.4 arm64)"
+    launch_argv: "codex exec --json -C <bundle> --add-dir <worktree> --sandbox workspace-write --skip-git-repo-check --ephemeral [--model M]"
+    bundle_cwd: "out-of-tree ephemeral bundle (ships AGENTS.md, codex's memory file)"
+    worktree_access: "--add-dir <worktree> (write grant; the worktree's AGENTS.md is not cold-started)"
+    cold_start_isolation: "cwd=out-of-tree bundle via -C; codex auto-loads the bundle's AGENTS.md only; --skip-git-repo-check keeps AGENTS.md discovery off the SIBLING adopter repo (the adopter Full chain is never an ancestor of the bundle), so it is not cold-started. A global ~/.codex/AGENTS.md is EXECUTOR-level and is NOT a blocker: the lane's machine boundary (scope guard + targeted verification + closure) holds regardless of any global prompt; on the verified run it was absent."
+    evidence: archive/2026-06-22-quickfix-codex-e2e-evidence.md
+    verified_on: "2026-06-22"
+
+  kimi_code:
+    status: unsupported
+    adapter: engine-kit/quickfix/adapters/kimi_code.py
+    cli_version_seen: "0.18.0"
+    reason: "Kimi Code merges AGENTS.md + .kimi/AGENTS.md root->cwd (v1.29.0) but has NO -C/--cd and NO --add-dir: its process cwd is BOTH the memory-load root and the only writable dir, so an out-of-tree bundle cwd and the worktree edit target cannot be separated. Cold-start isolation is not achievable with the current CLI. Stays unsupported pending a kimi working-root + extra-writable-dir capability (follow-up)."
+
+  cursor:
+    status: unsupported
+    reason: "no Quick-Fix adapter delivered"

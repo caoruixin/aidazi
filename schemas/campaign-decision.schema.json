@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "campaign-decision.schema.json",
+  "title": "Campaign human-gate decision",
+  "description": "The file a human authors to resolve ONE campaign pause on `run_loop.py --campaign ... --resume --decision <file>` (the file-based decision_resolver). It is IDENTITY-BOUND to the EXACT paused unit: the runner honors it ONLY when campaign_id + pause_reason + checkpoint(basename) AND — when the pause is on a unit — the live paused unit's milestone_id + subsprint_id all match (read from campaign-state.json); a checkpoint-bearing pause whose unit cannot be resolved is REFUSED (never bound loosely). Fail-closed: a decision from a different campaign/milestone/sub-sprint/gate (even one whose checkpoint basename collides) is refused, never replayed. The payload is GATE-SPECIFIC: the acceptance_fix_required gate (Constitution §3.5) takes `confirm` (yes|no) + optional `route` and forbids `choice`; every other gate takes `choice` and forbids `confirm`/`route`; campaign_budget_exhausted's `choice` is restricted to raise_cap|abort (so an ambiguous decision re-pauses, never silently aborts). Gates resolved by editing the PLAN (campaign_plan_signoff -> signed_by_human:true; milestone_decompose_required -> fill subsprint_sequence; deliver_followup_required -> Deliver inserts the sub-sprint) do NOT use this file. process/campaign-loop.md §4/§6.",
+  "type": "object",
+  "required": ["campaign_id", "pause_reason"],
+  "additionalProperties": false,
+  "properties": {
+    "campaign_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "MUST equal the live campaign-state campaign_id (and the plan's)."
+    },
+    "milestone_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "MUST equal the live PAUSED unit's milestone id (printed by the CLI). Identity binding: a decision authored for another milestone — even one with the same pause_reason and checkpoint basename (e.g. a repeated sub-sprint id) — is refused. Omit ONLY for a checkpoint-less pause with no unit (e.g. campaign_budget_exhausted)."
+    },
+    "subsprint_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "MUST equal the live PAUSED unit's sub-sprint id (printed by the CLI). Same binding as milestone_id."
+    },
+    "pause_reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "MUST equal the current campaign-state pause_reason (printed by the CLI), e.g. advisory_acceptance_pass_signoff, acceptance_fix_required, gate_hard_fail, campaign_budget_exhausted."
+    },
+    "checkpoint": {
+      "type": ["string", "null"],
+      "pattern": "^\\d{8}-\\d{6}__[A-Za-z0-9_]+__.+\\.md$",
+      "description": "The BASENAME of the paused checkpoint file (campaign-state pause_checkpoint, printed by the CLI), or null when the pause carries no checkpoint (e.g. campaign_budget_exhausted). Compared EXACTLY to the live pause_checkpoint basename; an empty string is rejected (not a valid checkpoint filename)."
+    },
+    "choice": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The selected option for a dispatch-table gate (campaign.interpret_dispatch), e.g. ship|reject (advisory_acceptance_pass_signoff), raise_cap|abort (campaign_budget_exhausted), accept_and_advance|open_followup_subsprint|abort (review_out_of_scope). Required for every gate EXCEPT acceptance_fix_required; an unrecognized (gate, choice) fail-closes to a Deliver follow-up, never an auto-advance."
+    },
+    "confirm": {
+      "type": "string",
+      "enum": ["yes", "no"],
+      "description": "ONLY for the acceptance_fix_required gate (Constitution §3.5): `no` ships the advisory pass (assume residual risk -> advance the milestone); `yes` (+ route) routes a Deliver fix follow-up."
+    },
+    "route": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional route for a confirm:yes acceptance_fix_required decision (e.g. deliver_fix_iteration), per the charter's tooling.acceptance.on_fix_required.route_options."
+    },
+    "note": {
+      "type": "string",
+      "description": "Optional free-text rationale recorded with the decision (audit only)."
+    }
+  },
+  "allOf": [
+    {
+      "description": "Gate-specific payload: acceptance_fix_required uses confirm (+route), forbids choice; every other gate uses choice, forbids confirm/route.",
+      "if": {
+        "required": ["pause_reason"],
+        "properties": {"pause_reason": {"const": "acceptance_fix_required"}}
+      },
+      "then": {"required": ["confirm"], "properties": {"choice": false}},
+      "else": {"required": ["choice"], "properties": {"confirm": false, "route": false}}
+    },
+    {
+      "description": "campaign_budget_exhausted accepts ONLY raise_cap|abort, so an ambiguous decision is schema-rejected (re-pauses) rather than silently aborting.",
+      "if": {
+        "required": ["pause_reason"],
+        "properties": {"pause_reason": {"const": "campaign_budget_exhausted"}}
+      },
+      "then": {"properties": {"choice": {"enum": ["raise_cap", "abort"]}}}
+    }
+  ]
+}

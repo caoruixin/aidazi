@@ -86,13 +86,13 @@ This is the question adopters most want answered up front. The framework draws a
 
 - The LLM-vs-runtime ownership boundary and the §1.7 forbidden list (no keyword/regex for soft semantic decisions; no eval-phrase encoding; etc.).
 - The 5-role boundary invariants (§3.4): no self-grading; Acceptance spawn isolation; Code Reviewer ≠ Acceptance; Research–Acceptance contract symmetry; Deliver-no-code; intra-role skills inherit the role's boundary.
-- The 8 MANDATORY_CHECKPOINTS (if you adopt the Δ-18 Delivery Loop orchestrator): charter may ADD, never bypass.
+- The 9 MANDATORY_CHECKPOINTS (if you adopt the Δ-18 Delivery Loop orchestrator): charter may ADD, never bypass.
 - The Acceptance judge calibration gate for autonomous mode.
 
 **You decide (suggested defaults — override in `adoption-state.md` with a reason):**
 
 - Track and profile depth (Type A/B/C/A+B; how much of each Δ you adopt now vs later).
-- Backing coding-agent per role (`charter.tooling.<role>.agent_kind` — Claude Code / Codex / other) and any role skills (`process/role-skill-model.md`).
+- Backing harness × provider/model per role (`charter.tooling.<role>` execution facet — `harness`/`provider`/`model`, or legacy `agent_kind`; e.g. Claude Code↔Anthropic, Codex↔OpenAI, or `headless` against an OpenAI-compatible endpoint for DeepSeek/Kimi/other) and any role skills. Full binding contract: `process/role-configuration-contract.md`; skills: `process/role-skill-model.md`.
 - All numeric thresholds (size targets, calibration thresholds, token budgets, cadences).
 - Whether to run the orchestrator at all, or stay pure-human-paste.
 - Your domain contracts, KPIs, scope boundaries.
@@ -109,6 +109,8 @@ aidazi names two different "loop" concepts that adopters routinely conflate. The
 One-liners: Auto Loop = *"my agent gets better at being itself."* Delivery Loop = *"my dev team converges on what the customer asked for."*
 
 Conflating them in your docs is a §1.7-E framework breach — not pedantry, but because they have different debugging implications. Full disambiguation: `docs/two-loops-explainer.md`.
+
+**A third, loop-independent concept — the Quick-Fix lane.** Distinct from both loops above, the **Quick-Fix lane** (`process/quickfix-lane.md`) is a human-explicit, per-session maintenance lane for small non-behavioral fixes that runs *outside* any loop. Name it distinctly too (§1.7-E): it is not the Auto Loop, not the Delivery Loop, and it never skips MANDATORY_CHECKPOINTS — it never enters a loop in the first place. Default behavior stays Full; the agent never self-downgrades. *Status: **usable on Claude Code and Codex** — `claude_code` and `codex` are both `supported` (recorded real-launch cold-start evidence) for a correctly-wired adopter; `kimi_code` is `unsupported`. The launch gate is strict: anything not `supported` fails closed. See `QUICK-FIX.md`.*
 
 ## §6 Tracks (what kind of thing are you building?)
 

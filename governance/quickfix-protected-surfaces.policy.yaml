@@ -1,0 +1,86 @@
+# Quick-Fix protected-surface policy — CANONICAL, MACHINE-READABLE baseline.
+#
+# Single source of truth for the framework-MANDATORY protected surfaces a Quick Fix
+# may never touch. Loaded by engine-kit/quickfix/guard.py; REFERENCED (never restated)
+# by process/quickfix-lane.md. Validated against schemas/quickfix-protected-surfaces.schema.json.
+#
+# EXTENSION, NOT SUBTRACTION (mirrors Constitution §1.8): an adopter overlay
+# (docs/current/quickfix-protected-surfaces.overlay.yaml) may add `additional_surfaces`
+# ONLY. It is validated against schemas/quickfix-protected-surfaces.overlay.schema.json,
+# which forbids `mandatory_surfaces` and has no remove/exclude/override vocabulary — so an
+# overlay that tries to redefine or weaken a baseline surface is REJECTED (fail-closed),
+# NOT silently ignored. The guard unions baseline.mandatory_surfaces ∪
+# overlay.additional_surfaces.
+#
+# DEFENSE-IN-DEPTH ONLY (process/quickfix-lane.md §two-layer): a clean guard pass is
+# NECESSARY, not SUFFICIENT. Surfaces that cannot be globbed — new product semantics,
+# architecture/policy choices, LLM-vs-runtime ownership shifts (Constitution §1.7) — are
+# caught at Layer A (human attestation + the anti-hardcode kernel + agent judgment), and
+# `semantic_surfaces_layer_a` below names them for the protocol.
+#
+# Glob semantics — REQUIREMENT ON THE COMMIT-2 GUARD: gitignore-style, matched against the
+# repo-relative POSIX path of every touched path. A leading `**/` matches at any depth, so
+# `**/schemas/**` must protect `schemas/x` at the repo root AND `aidazi/schemas/x` when the
+# framework is vendored. The guard MUST implement this (a plain fnmatch would miss the
+# root-level case); Commit 2 ships the matcher together with a test asserting `**/schemas/**`
+# matches both. The glob grammar is the SAFE SUBSET only (letters, digits, '.', '_', '-',
+# '/', '*'/'**'/'?'); character classes, brace expansion, commas, and negation are rejected
+# by the schema so a glob cannot smuggle traversal/absolute. Over-matching is intentional:
+# it fails toward escalation.
+
+version: 1
+
+mandatory_surfaces:
+  - id: contract_schemas
+    globs: ["**/schemas/**"]
+    reason: "Contract / authority / acceptance schemas."
+
+  - id: governance
+    globs: ["**/governance/**"]
+    reason: "Constitution + the always-load governance chain."
+
+  - id: checkpoints_routing_loop
+    globs:
+      - "**/process/delivery-loop.md"
+      - "**/process/campaign-loop.md"
+      - "**/engine-kit/orchestrator/**"
+      - "**/engine-kit/scheduling/**"
+    reason: "MANDATORY_CHECKPOINTS, routing, Delivery/Campaign Loop, scheduler."
+
+  - id: charter_autonomy_authority
+    globs: ["**/charter.yaml", "**/mission-charter.yaml"]
+    reason: "Autonomy level, authority posture, acceptance/eval configuration."
+
+  - id: acceptance_eval_calibration
+    globs: ["**/role-cards/acceptance-agent.md", "**/eval/**", "**/*calibration*"]
+    reason: "Acceptance gate, eval suite, judge calibration."
+
+  - id: persistence_migration
+    globs: ["**/migrations/**", "**/migration/**"]
+    reason: "Persistence format / database migrations."
+
+  - id: security_auth_secrets
+    globs: ["**/.env", "**/.env.*", "**/*secret*", "**/*credential*", "**/auth/**"]
+    reason: "Security, authentication, secrets."
+
+  - id: release_boundary
+    globs: ["**/VERSION", "**/CHANGELOG*", "**/*.lock", "**/skills.lock"]
+    reason: "Release / publish boundary and pinned lockfiles."
+
+  - id: quickfix_self
+    globs:
+      - "**/engine-kit/quickfix/**"
+      - "**/governance/quickfix-protected-surfaces.policy.yaml"
+      - "**/process/quickfix-lane.md"
+      - "**/schemas/quickfix-request.schema.json"
+      - "**/schemas/quickfix-record.schema.json"
+      - "**/schemas/quickfix-protected-surfaces.schema.json"
+      - "**/tools/quickfix-launch.sh"
+      - "**/QUICK-FIX.md"
+    reason: "The Quick-Fix lane must not modify its own governance, guard, schemas, or launcher."
+
+# Named for the protocol; NOT glob-enforceable — escalate via Layer A.
+semantic_surfaces_layer_a:
+  - "Introducing new product semantics, a new architecture, or a policy/strategy decision."
+  - "Any shift of the LLM-vs-runtime ownership boundary (Constitution §1.7 forbidden list)."
+  - "Any change the human cannot prove is purely non-behavioral and within the approved scope."

@@ -1,0 +1,39 @@
+# Test-fixture skill catalog. Passed via skill_catalog_path override ONLY for the
+# tests that need (a) a skill whose tool_requirements exceed a read-only role's
+# whitelist, and (b) a skill that declares connector_requirements (for the
+# grant ⊇ skill-requirements check). The live skills/registry.yaml is NOT touched.
+#
+# NOTE: `connector_requirements` is an ADDITIVE test field the validator reads
+# leniently; the strict skill-catalog.schema.json does not declare it, so loading
+# this fixture emits a benign `skill_catalog_invalid` WARN — the affected tests
+# assert on the specific target rule, not on report.ok.
+catalog_version: 1
+last_updated: "2026-06-15"
+role_defaults:
+  research: [brainstorming]
+  deliver: [writing-plans]
+  dev: [test-driven-development]
+  code_reviewer: [code-review-excellence]
+  acceptance: [advanced-evaluation]
+skills:
+  # A real vendored skill, but here declared as needing Write+Bash — exceeds the
+  # read-only reviewer whitelist [Read, Grep, Glob] (anti-pattern #13).
+  code-review-excellence:
+    title: "Code Review Excellence (with overbroad tool_requirements for the test)"
+    source: { repo: wshobson/agents, url: "https://github.com/wshobson/agents", commit: cc37bfdd292ce520ba1c44df7a3a70d5f8137236, path: plugins/developer-essentials/skills/code-review-excellence }
+    license: MIT
+    provenance: community
+    tool_requirements: [Read, Grep, Glob, Write, Bash]
+    status: active
+    vendored: true
+  # A skill that requires an MCP connector the granting role must provide.
+  advanced-evaluation:
+    title: "Advanced Evaluation (declares a connector requirement for the test)"
+    source: { repo: muratcankoylan/Agent-Skills-for-Context-Engineering, url: "https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering", commit: 25e1fa79a33f0985793bcab3c64dde8d020c5132, path: skills/advanced-evaluation }
+    license: MIT
+    provenance: community
+    tool_requirements: []
+    connector_requirements: [evidence-store]
+    status: active
+    vendored: true
+    calibration_coupled: true

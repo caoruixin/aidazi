@@ -1,0 +1,13 @@
+# Provenance for vendored skill. normative source = upstream pin below.
+# To update: re-vendor at a new pin + re-vet (+ recalibrate if role=acceptance).
+id: test-driven-development
+source: { repo: obra/superpowers, url: https://github.com/obra/superpowers, commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/test-driven-development }
+license: MIT
+copyright: "Copyright (c) 2025 Jesse Vincent"
+retrieved_at: 2026-06-15T13:25:19Z
+role_default_for: dev
+tree_sha256: d69fff777d2ece5980618d7804382d4e6ab691587bbe5eb7f7b3129c4cf3c39e
+files:
+  - { path: LICENSE, sha256: a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400 }
+  - { path: SKILL.md, sha256: 7dee67b4af6bdccc7a914ca34533184d64592d0f5b23aeae631538168db14994 }
+  - { path: testing-anti-patterns.md, sha256: bde453bc258f06543987477c837939afaa774ea2acbd9f308d702fc452bc4283 }

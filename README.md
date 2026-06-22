@@ -6,6 +6,8 @@
 
 aidazi is a framework for delivering software with a multi-agent team where the LLM is responsible for soft semantic decisions and a deterministic runtime owns hard kernel-level invariants. It defines a 5-role chain (Research / Deliver / Dev / Code Reviewer / Acceptance) + a human Customer + the governance + process docs + templates + schemas to run them coherently.
 
+> **Adopting aidazi?** Feed `ONBOARDING.md` to your coding agent (Claude Code / Codex / Cursor) — it drives an interactive, idempotent, non-destructive, audited one-time install into your codebase.
+
 ## The framework at a glance (top-down)
 
 aidazi reads top-down. One governing idea sits at the apex; everything below exists to make it operational.
@@ -63,6 +65,8 @@ Each Δ is one small, portable pattern, loaded on demand by the role that needs 
 - A **process layer** of ~25 numbered Δs (domain discovery, decision catalogs, runtime skeleton, OBS triage, bad-case lifecycle, etc.) — each Δ is a small portable process pattern.
 - **Two loops** named distinctly: **Auto Loop** (Concept 1; Type A agent self-improvement) vs **Delivery Loop** (Concept 2; Δ-18 multi-agent team delivery). They compose; they don't conflict.
 - An **orchestrator pattern** (Δ-18 Delivery Loop) — optional state machine + spawn functions + checkpoint inbox + scope envelope + F5 evidence + calibration gate. Adopters who want automation use it; pure human-paste adopters keep the chain without the automation.
+- A **Campaign Loop** (P-B) over the Delivery Loop — from a signed milestone backlog it auto-drives the WHOLE goal to completion (以终为始), running Acceptance at each milestone close and pausing only at human gates. Wired entrypoint: `engine-kit/scheduling/run_loop.py --campaign` (`process/campaign-loop.md`).
+- A **Quick-Fix lane** (`process/quickfix-lane.md`, `QUICK-FIX.md`) — a human-explicit, per-session maintenance lane for small non-behavioral fixes that runs OUTSIDE any loop (so there are no checkpoints to skip, and it may never be used to route around them). Default behavior stays Full; only an explicit human launch activates it, and the agent never self-downgrades. *Status: **usable on Claude Code and Codex** — the `claude_code` (`archive/2026-06-22-quickfix-claude-code-e2e-evidence.md`) and `codex` (`archive/2026-06-22-quickfix-codex-e2e-evidence.md`, codex 0.134.0) adapters are both `supported` with recorded real-launch cold-start evidence for a correctly-wired adopter; `kimi_code` is `unsupported`. The launch gate is strict: anything not `supported` **fails closed**.*
 - A **role-skill model** (`process/role-skill-model.md`) — roles are accountability boundaries; industry capability packs (Agent Skills / SKILL.md standard, coding-agent subagent libraries) mount INSIDE roles as role skills or intra-role fan-out, never as new chain roles. One exemplar packaged skill ships under `skills/`.
 - A **two-direction fold-back** (adopter → framework lessons; framework → adopter releases) so the framework evolves from real adopter experience, not committee decree.
 
@@ -276,7 +280,7 @@ aidazi/
 │   ├── hermes-reference/        — Type A+B hybrid snapshot (build-trigger)
 │   └── fortunes-reference-placeholder/  — Type C placeholder
 ├── lessons/                     — adopter → framework fold-back inbox (.gitkeep until first lesson)
-├── tools/                       — referenced-but-deferred scripts (OQ-V4-009 tracker)
+├── tools/                       — optional convenience scripts (OQ-V4-009 resolved; governance validators ship in engine-kit/validators/)
 └── archive/                     — v3.2 + v4 design-history snapshots (read-only)
 ```
 

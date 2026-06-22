@@ -41,7 +41,7 @@ Before any work output, every agent session loads, in order:
 1. `aidazi/governance/constitution.md` (this is `always-load`).
 2. `aidazi/governance/doc_governance.md` (this is `always-load`).
 3. `aidazi/governance/context_briefing.md` (this file; `always-load`).
-4. The adopter's `AGENTS.md` (or `CLAUDE.md`, or `.cursor/rules`) at the adopter repo root — this names the project, the 5-role registry instantiation, and the @-includes the constitution chain.
+4. The adopter's root governance entry — the `AGENTS.md` that names the project, instantiates the 5-role registry, and @-includes the constitution chain. **Which root file the harness auto-loads to reach that `AGENTS.md` is harness-specific — see §1.1.**
 5. The adopter's `docs/current/adoption-state.md` — read this BEFORE loading process docs so you know which Δs are at-spec vs divergent vs not-applicable in this adopter (§5).
 6. The role card for the role you're about to play (e.g., `aidazi/role-cards/dev-agent.md`).
 7. The per-role briefing list in §2 below.
@@ -54,6 +54,45 @@ Then begin work.
 - Step 5 tells you what's customized vs at-spec (so you don't apply a Δ that the adopter has documented as divergent).
 - Step 6 tells you what role you're playing — different roles read different things.
 - Step 7 narrows to the task-specific context.
+
+### §1.1 Harness root-file wiring (normative)
+
+Cold-start step 4 assumes the adopter's `AGENTS.md` governance chain is in context from the
+first turn. Whether that happens automatically depends on **which root file the coding harness
+auto-loads** — and harnesses differ. This subsection is the **single normative source** for
+adopter root-file wiring; the consumer template (`AGENTS.md` preamble), `ONBOARDING.md`, the
+worked example (`examples/minimal-greenfield/`), and the deterministic check
+(`engine-kit/validators/adopter_wiring_validator.py`) all defer here.
+
+| Harness | Auto-loads at repo root | Required adopter wiring |
+|---|---|---|
+| **Claude Code** | `CLAUDE.md` (a bare `AGENTS.md` is **not** auto-loaded) | a root `CLAUDE.md` that **imports** the same-root `AGENTS.md` |
+| **OpenAI Codex** | `AGENTS.md` | the root `AGENTS.md` (the existing chain) — **no** `CLAUDE.md` required |
+| **Cursor** | its own rules mechanism (`.cursor/rules` / `.mdc`) | a real Cursor rules entry — a bare `AGENTS.md` is **not** Cursor wiring |
+| headless / API-backed | nothing at the repo root (driven programmatically) | n/a — no root-file requirement |
+
+**Claude Code canonical wiring (fixed shape):**
+
+```
+<adopter-root>/CLAUDE.md
+    → @AGENTS.md
+<adopter-root>/AGENTS.md
+    → the existing canonical governance chain (this file's §1 + the AGENTS.md §2 @-includes)
+```
+
+The `CLAUDE.md` carries the one-line import `@AGENTS.md` (it MAY also hold other human-authored
+notes). It **MUST NOT** re-copy the governance chain — a second full entry point is forbidden
+because the two copies drift. `AGENTS.md` stays the single source of the chain; `CLAUDE.md` only
+routes Claude Code into it. The import must reference the **same-root** `AGENTS.md` by a clean
+relative path: no absolute path, no `..`, no subdirectory, no symlink redirect.
+
+Because Claude Code and Codex may be used **alternately** on the same adopter repo, the canonical
+greenfield scaffold ships **both** a root `AGENTS.md` and a root `CLAUDE.md` (`@AGENTS.md`); that
+single wiring satisfies both harnesses at once. A Claude-Code adopter whose root holds only a bare
+`AGENTS.md` (no `CLAUDE.md`) gets **none** of the always-load chain at cold-start — the
+Default-Full baseline is silently absent (this is the Default-Full breach R1 closes). Run
+`adopter_wiring_validator.py` to catch it deterministically: at onboarding (Step 8) and after any
+scaffold.
 
 ## §2 Per-role briefing lists
 
@@ -124,7 +163,7 @@ Tool whitelist: Read, Grep, Glob. No edits. No network. No git push.
 
 **Spawn isolation** (Constitution §1.7-C): your session was spawned from Customer paste OR orchestrator with calibration passed (per `process/delivery-loop.md` §4.2.4). If you find evidence you were spawned from a Deliver or Dev session, halt and surface §1.7-C breach.
 
-**Calibration gate** (Constitution §3.6): if `charter.autonomy.level=fully_autonomous_within_budget` AND `charter.acceptance.judge_calibration.status=uncalibrated`, your verdict is advisory only; orchestrator degrades to `human_on_the_loop`. Confirm calibration status before treating verdict as authoritative.
+**Calibration gate** (Constitution §3.6): if `charter.autonomy.level=fully_autonomous_within_budget` AND `tooling.acceptance.judge_calibration.status=uncalibrated`, your verdict is advisory only; orchestrator degrades to `human_on_the_loop` and an advisory `pass` HALTs at `advisory_acceptance_pass_signoff` for human sign-off (it does NOT auto-ship). Confirm calibration status before treating verdict as authoritative.
 
 ### §2.6 Per-task lookup (when the role list doesn't cover what you need)
 
@@ -168,7 +207,7 @@ Read the following first (in order):
 1. aidazi/governance/constitution.md
 2. aidazi/governance/doc_governance.md
 3. aidazi/governance/context_briefing.md
-4. <adopter root>/AGENTS.md (or CLAUDE.md / .cursor/rules)
+4. <adopter root>/AGENTS.md (reached via the harness root file per §1.1 — Claude Code: a root CLAUDE.md importing @AGENTS.md; Codex: AGENTS.md directly)
 5. <adopter root>/docs/current/adoption-state.md
 6. aidazi/role-cards/<your-role>.md
 7. The per-role briefing list in context_briefing.md §2 for your role
@@ -270,7 +309,7 @@ Load `process/delivery-loop.md` when ANY of these is true for your session:
 
 - The adopter's charter exists at `<adopter>/charter.yaml` (or path declared in `adoption-state.md`).
 - The task involves authoring, editing, or reasoning about a `mission-charter.yaml`.
-- Your role is Acceptance Agent AND `charter.acceptance.enabled=true`.
+- Your role is Acceptance Agent AND `tooling.acceptance.mode ≠ off`.
 - The task involves resolving a MANDATORY_CHECKPOINT.
 - The task involves scope_envelope_check, F5 evidence pattern, or calibration.
 - A previous step surfaced a §1.7-D breach risk (charter editing MANDATORY_CHECKPOINTS).

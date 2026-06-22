@@ -19,8 +19,8 @@
     },
     "tier": {
       "type": "string",
-      "enum": ["tier1_smoke", "tier2_scenario", "tier3_target_set", "tier4_shadow"],
-      "description": "4-tier pyramid per modules/m-evaluation.md."
+      "enum": ["tier1_smoke", "tier2_scenario", "tier3_target_set", "tier4_shadow", "tier5_e2e_browser"],
+      "description": "4-tier pyramid per modules/m-evaluation.md, plus P-C tier5_e2e_browser — an M3-class browser/E2E case (the seam for a future M3 acceptance bad-case suite; v1 ships none, so M3 stays advisory)."
     },
     "input": {
       "type": "object",

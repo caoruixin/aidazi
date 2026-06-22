@@ -28,3 +28,9 @@ eval/runs/
 # Local override files
 *.local
 *.local.*
+
+# Local secrets / env — NEVER commit. `.env.example` (committed) ships NAMES only;
+# real provider keys go in `.env.local`, which run_loop.py loads on --allow-real.
+.env
+.env.local
+.env.*.local

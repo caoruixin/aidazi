@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/skill-binding.schema.json",
+  "title": "Skill binding entry (v2 — Facet B)",
+  "description": "A single role skill binding entry as it appears in charter tooling.<role>.skills[] (plan §4.1 Facet B + §5). Matches the catalog shape in skills/registry.yaml. HARD RULES (Constitution §1.7 + §3.4 invariant #6, process/role-skill-model.md §4): vendored + pinned, NO runtime fetch; the skill's tool_requirements MUST be a subset of the role tool whitelist; redistributable license only with upstream LICENSE retained; an Acceptance skill change invalidates §3.6 calibration. A bare string skill name is the backward-compatible legacy form; this object form is the explicit, provenance-bearing form.",
+  "type": "object",
+  "required": ["id"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Skill id; MUST match a key under skills/registry.yaml skills{}/authored{} (or a resolvable skills/ dir name)."
+    },
+    "source": {
+      "type": "string",
+      "enum": ["vendored", "authored", "local"],
+      "description": "vendored = copied + pinned from an upstream repo (skills/vendored/<id>/). authored = aidazi-authored exemplar. local = adopter-local. Runtime-fetched sources are FORBIDDEN (Constitution §1.7 new item)."
+    },
+    "repo": {
+      "type": "string",
+      "description": "Upstream repo slug for vendored skills (e.g. obra/superpowers). Required-by-convention when source=vendored; the catalog/lock carry the authoritative copy."
+    },
+    "pin": {
+      "type": "string",
+      "description": "Immutable upstream commit SHA the vendored copy was taken at. No runtime fetch — the pin documents provenance against skills/skills.lock tree_sha256."
+    },
+    "path": {
+      "type": "string",
+      "description": "Path within the upstream repo to the skill directory."
+    },
+    "license": {
+      "type": "string",
+      "description": "SPDX-ish license id. MUST be redistributable (e.g. MIT); copyleft/share-alike that would propagate to the redistributed copy is opt-in only (see skills/registry.yaml candidates)."
+    },
+    "provenance": {
+      "type": "string",
+      "enum": ["community", "authored", "vendor", "adopter"],
+      "description": "Trust class of the source. Third-party = an explicit trust decision recorded in the catalog."
+    },
+    "calibration_coupled": {
+      "type": "boolean",
+      "description": "If true, mounting/changing this skill invalidates the Acceptance judge's calibration (Constitution §3.6; role-skill-model.md §4 corollary). Set for the Acceptance default (advanced-evaluation)."
+    }
+  }
+}

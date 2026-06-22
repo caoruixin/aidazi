@@ -1,0 +1,19 @@
+# Provenance for vendored skill. normative source = upstream pin below.
+# To update: re-vendor at a new pin + re-vet (+ recalibrate if role=acceptance).
+id: brainstorming
+source: { repo: obra/superpowers, url: https://github.com/obra/superpowers, commit: 6fd4507659784c351abbd2bc264c7162cfd386dc, path: skills/brainstorming }
+license: MIT
+copyright: "Copyright (c) 2025 Jesse Vincent"
+retrieved_at: 2026-06-15T13:25:19Z
+role_default_for: research
+tree_sha256: cf2b812d8cd072ea0560731218642b45133ddc4682fb783a20f20e484a66bdb5
+files:
+  - { path: LICENSE, sha256: a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400 }
+  - { path: SKILL.md, sha256: bba47904a7f6bbee3bf8a107ebbe84e65d392be683bbb898ded736b29e415f90 }
+  - { path: scripts/frame-template.html, sha256: fb22ba9d47f3b83b56e0a95d52a3c2727db03b0d4365078d92c850293a62457b }
+  - { path: scripts/helper.js, sha256: e763d82f32b4ebb320be2f0d08449d3e5a0585778edf5c407c1fdab3f39976a5 }
+  - { path: scripts/server.cjs, sha256: ea81185f581897c67d4b417eeb9bc7a158c50e0932c73047054fe53efc2683ef }
+  - { path: scripts/start-server.sh, sha256: 3442a54b5ee5511637d27bf696e092b72f94c2324f40b5ba4410da4dd0c23bc8 }
+  - { path: scripts/stop-server.sh, sha256: f65b7634a27343eab2086bdb6c59ba78695685f471b5a577b08a8817f7c50600 }
+  - { path: spec-document-reviewer-prompt.md, sha256: 12cb5ed58aef41b8da6fbb505547c71ca3f5658c83b66ca6e556c936308b3189 }
+  - { path: visual-companion.md, sha256: a2bc6fc47d0df1df981d02f707a16225b147f462e7059175ad2bc5e6dd29fcae }

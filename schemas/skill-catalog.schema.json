@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/skill-catalog.schema.json",
+  "title": "Skill catalog (skills/registry.yaml)",
+  "description": "Formalizes the EXISTING shape of skills/registry.yaml (plan §4.1 Facet B / §6). Source-of-truth for WHICH skills are default-bound per role + their provenance; vendored content lives under skills/vendored/<id>/ and is pinned + integrity-locked by skills/skills.lock. Normative discipline is process/role-skill-model.md + process/role-configuration-contract.md. HARD: vendored + pinned, NO runtime fetch; tool_requirements ⊆ role whitelist; redistributable license + upstream LICENSE retained; Acceptance skill change ⇒ recalibrate (Constitution §3.6).",
+  "type": "object",
+  "required": ["catalog_version", "role_defaults", "skills"],
+  "additionalProperties": false,
+  "properties": {
+    "catalog_version": {"type": "integer", "minimum": 1},
+    "last_updated": {"type": "string", "format": "date"},
+    "role_defaults": {
+      "type": "object",
+      "description": "The 'default config': skill ids bound to each role unless the charter overrides. Keys are the 5 chain roles (registry uses code_reviewer).",
+      "additionalProperties": false,
+      "properties": {
+        "research": {"$ref": "#/$defs/skill_id_list"},
+        "deliver": {"$ref": "#/$defs/skill_id_list"},
+        "dev": {"$ref": "#/$defs/skill_id_list"},
+        "code_reviewer": {"$ref": "#/$defs/skill_id_list"},
+        "acceptance": {"$ref": "#/$defs/skill_id_list"}
+      }
+    },
+    "skills": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Vendored skills (committed under skills/vendored/, pinned in skills.lock).",
+      "additionalProperties": {"$ref": "#/$defs/skill_entry"}
+    },
+    "authored": {
+      "type": "object",
+      "description": "Authored (non-vendored) exemplars already in repo; normative source in templates/.",
+      "additionalProperties": {"$ref": "#/$defs/skill_entry"}
+    },
+    "candidates": {
+      "type": "object",
+      "description": "Evaluated, NOT vendored. Recorded for traceability + opt-in.",
+      "additionalProperties": {"$ref": "#/$defs/candidate_entry"}
+    }
+  },
+  "$defs": {
+    "skill_id_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1
+    },
+    "role_name": {
+      "type": "string",
+      "enum": ["research", "deliver", "dev", "code_reviewer", "acceptance", "engine/dev"]
+    },
+    "source_ref": {
+      "type": "object",
+      "description": "Upstream source pointer. repo=local for authored/in-repo skills.",
+      "additionalProperties": true,
+      "properties": {
+        "repo": {"type": "string"},
+        "url": {"type": "string"},
+        "commit": {"type": "string", "description": "Immutable pin (vendored skills)."},
+        "path": {"type": "string"},
+        "normative_source": {"type": "string", "description": "For authored skills: the templates/ or process/ file that is the single source of truth."}
+      }
+    },
+    "skill_entry": {
+      "type": "object",
+      "required": ["title", "source", "license", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "role_default_for": {"$ref": "#/$defs/role_name"},
+        "source": {"$ref": "#/$defs/source_ref"},
+        "license": {"type": "string", "description": "Redistributable license id (e.g. MIT) or 'aidazi' for authored."},
+        "provenance": {"type": "string", "enum": ["community", "authored", "vendor", "adopter"]},
+        "recognition": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "stars": {"type": "integer", "minimum": 0},
+            "maintained": {"type": "boolean"}
+          }
+        },
+        "tool_requirements": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Tools the skill needs. MUST be ⊆ the bound role's tool whitelist (role-skill-model.md §4 constraint #1). [] = read-only safe."
+        },
+        "harness_compat": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["claude_code", "codex", "headless", "aider"]}
+        },
+        "status": {"type": "string", "enum": ["active", "deprecated", "candidate"]},
+        "vendored": {"type": "boolean"},
+        "calibration_coupled": {
+          "type": "boolean",
+          "description": "§3.6: changing/updating this invalidates acceptance `calibrated`. Set true for advanced-evaluation."
+        }
+      }
+    },
+    "candidate_entry": {
+      "type": "object",
+      "required": ["title", "source", "not_vendored_reason"],
+      "additionalProperties": false,
+      "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "intended_role": {"type": "string"},
+        "source": {"$ref": "#/$defs/source_ref"},
+        "license": {"type": "string"},
+        "not_vendored_reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

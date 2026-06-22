@@ -70,7 +70,7 @@ PRE-FLIGHT (per role-cards/acceptance-agent.md §§2-4):
    - If your session shows chat-history backchannel from Deliver / Dev sessions, HALT.
 
 3. Calibration gate (Constitution §3.6) —
-   - charter.acceptance.judge_calibration.status: <calibrated | uncalibrated>.
+   - tooling.acceptance.judge_calibration.status: <calibrated | uncalibrated>.
    - If uncalibrated AND charter.autonomy.level=fully_autonomous_within_budget,
      verify the orchestrator degraded to human_on_the_loop automatically; your
      verdict is ADVISORY ONLY until calibrated.

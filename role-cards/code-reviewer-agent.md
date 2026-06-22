@@ -5,7 +5,7 @@ doc_category: live
 status: current
 implementation_status: implemented
 source_of_truth: this file
-last_reviewed: 2026-06-12
+last_reviewed: 2026-06-21
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
@@ -113,8 +113,10 @@ For each finding, append a body section per `schemas/review-verdict.schema.json`
 ### §5.2 Verdict decisions
 
 - **`pass`** — kernel + correctness lens raised no blocking issues. Non-blocking signals MAY be listed (P2 findings; future-improvement notes).
-- **`fix_required`** — one or more P0/P1 findings; Deliver must address before close.
+- **`fix_required`** — one or more **P0/P1** findings; Deliver must address before close. A verdict whose findings are **all P2** is NOT `fix_required` — emit `pass` and carry the P2 findings for the record.
 - **`out_of_scope_review`** — the diff is outside what your sprint-review-prompt asked you to review; you cannot meaningfully judge. Deliver re-scopes the review.
+
+**Severity → action (framework policy).** Only **P0/P1** are blocking: they set `decision: fix_required`, count toward `blocking_count`, and are the only findings the engine injects into the Dev auto-fix round. **P2 is strictly record-only:** list it in `findings` (it persists here in `docs/codex-findings.md`, in the audit ledger, and/or an improvement backlog), but it MUST NOT set `decision: fix_required`, MUST NOT raise `blocking_count`, and is never fixed or re-driven in the delivery loop — it does not block progress. Defense-in-depth: the engine fail-closes a mislabeled all-P2 `fix_required` to a clean pass and never injects a P2 into a fix brief (`process/delivery-loop.md` §4.4).
 
 `out_of_scope_review` is NOT a graceful escape for "I don't want to judge this." It is the honest answer when the review prompt's scope doesn't match the diff's scope. Use sparingly.
 
@@ -140,6 +142,7 @@ The two are different artifacts at different scales. The sprint-close header is 
 
 - Edit code, tests, configs, or any file outside `docs/codex-findings.md`.
 - Run scripts, the eval harness, or any network call.
+- Run the browser-E2E evidence run (P-C) — that is the orchestrator's out-of-band `e2e_evidence_pending` stage (`process/browser-e2e-acceptance.md`), not the Reviewer's job; you stay read-only/static and do not launch the app or drive a browser.
 - Spawn other agents (including Acceptance — Constitution §1.7-C lens applies, though weaker — Reviewer is not Acceptance's spawning peer; the rule is "don't spawn Acceptance from anywhere downstream of yourself").
 - Treat your verdict as the outcome gate — your verdict is code-side; Acceptance's verdict is outcome-side; they are independent.
 - Apply keyword matching as a passing condition — anchor phrases in closure_criterion are EVIDENCE you cite (Constitution §1.7-B; same rule that binds Acceptance).

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/quickfix-protected-surfaces.schema.json",
+  "title": "Quick-Fix protected-surface policy (BASELINE)",
+  "description": "Validates the canonical, framework-mandatory baseline (governance/quickfix-protected-surfaces.policy.yaml). It uses `mandatory_surfaces` and deliberately does NOT permit `additional_surfaces` (additionalProperties:false), so the baseline file cannot masquerade as an overlay. The adopter overlay is a SEPARATE document validated against schemas/quickfix-protected-surfaces.overlay.schema.json, which in turn forbids `mandatory_surfaces` — so an overlay can only EXTEND, never redefine or weaken (fail-closed: a mis-authored overlay is rejected, not silently ignored). Normative source: process/quickfix-lane.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "mandatory_surfaces"],
+  "properties": {
+    "version": { "const": 1 },
+    "mandatory_surfaces": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Framework-mandatory surfaces. Adopters may extend via an overlay; they may not remove or weaken any entry here.",
+      "items": { "$ref": "#/$defs/surface" }
+    },
+    "semantic_surfaces_layer_a": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Non-globbable surfaces named for the Layer-A protocol (human/agent judgment)."
+    }
+  },
+  "$defs": {
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "globs", "reason"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]{0,63}$" },
+        "globs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!~)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/*?-]+$",
+            "description": "Repo-relative POSIX glob, SAFE SUBSET only (letters, digits, '.', '_', '-', '/', '*'/'**'/'?'). Character classes, brace expansion, commas, and negation are disallowed (they can smuggle traversal/absolute). Leading '**/' matches any depth (gitignore-style; the guard implements the matcher — see process/quickfix-lane.md §8)."
+          }
+        },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -72,7 +72,7 @@ planned sequence.)
 
 (Per Constitution §3.6 + process/delivery-loop.md §4.2.7 acceptance.)
 
-- **When**: <milestone_close | release_cut | both> (per charter.acceptance.run_at)
+- **When**: <milestone_close | release_cut | both> (per tooling.acceptance.run_at)
 - **Calibration status**: <calibrated | uncalibrated | n/a (manual mode)>
 - **Spawn surface**: <human paste | orchestrator>
 - **Source closure_contract**: docs/research-briefs/<id>.md (signed YYYY-MM-DD)

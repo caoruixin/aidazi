@@ -1,0 +1,11 @@
+# INVALID — two type violations:
+#   1) scope_in is a string, but the schema requires an array of strings.
+#   2) layers[1] = "made_up_layer" is not in the schema enum (the Δ-9 fix-layer
+#      set). Both are wrong-type / out-of-enum rejections the schema layer emits.
+sprint_id: sprint-027
+scope_in: "a single deliverable that should have been a list"
+layers:
+  - infra
+  - made_up_layer
+exit_criteria:
+  - one observable criterion

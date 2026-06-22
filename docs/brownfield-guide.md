@@ -52,6 +52,8 @@ Before deciding anything, take stock. Do **not** edit anything in this phase.
 □ Does the project already have governance docs? (AGENTS.md, CLAUDE.md, role/agent docs?)
 □ Does it have an action-bank or backlog ledger? In what format?
 □ Does it have an eval framework? What CaseSpec shape?
+□ What's the current implementation stack? — language / framework / build + package manager / test / data deps / deploy-runtime.
+  Detect read-only from manifests + config (pyproject.toml, package.json, go.mod, lockfiles, Dockerfile, etc.); record names only, never a secret/env value. Don't over-infer production architecture from one file. (Captured in §4 as docs/current/implementation-stack.md; ONBOARDING Step 4a automates it.)
 □ Does it use any orchestrator/automation currently?
 □ What's the current human/agent split? Pure human-paste, or some automation?
 □ Where do semantic decisions currently live — LLM-owned, or hardcoded? (this predicts §1.7 friction)
@@ -70,7 +72,8 @@ For each area, choose REPLACE / KEEP / MERGE. The framework gives a recommendati
 | **Action bank / backlog** | MIGRATE to framework taxonomy / KEEP existing format | **KEEP your format** but add the Δ-12 sweep cadence + live/archive split. Reformatting a working backlog is pure cost. |
 | **Eval** | ADOPT M-Evaluation template / KEEP existing | **KEEP if mature**; add an adaptor to the framework's CaseSpec shape (`schemas/case-spec.schema.json`) for portability. Adopt the bad-case lifecycle (`process/badcase-lifecycle.md`) regardless — it's high value. |
 | **Δ-18 orchestrator** | ADOPT / OPT OUT | **OPT OUT** unless you have multi-sub-sprint cycles worth automating. Profile B/C stays human-paste. |
-| **Backing agents / role skills** | per role | Configure `charter.tooling.<role>.agent_kind` to whatever you already use; mount existing subagent/skill libraries as role skills (`process/role-skill-model.md`; `docs/industry-mapping.md` for the translation). |
+| **Backing agents / role skills** | per role | Configure each role's execution facet under `charter.tooling.<role>` (`harness`/`provider`/`model`, or legacy `agent_kind`) to whatever you already use; bind existing subagent/skill libraries as role skills (Facet B). See the three-facet Role Configuration Contract (`process/role-configuration-contract.md`; `docs/industry-mapping.md` for the translation). |
+| **Connectors (tools / MCP)** | default-deny | Nothing is auto-granted. The propose-only discovery scan (`engine-kit/connectors/discovery.py`) is **read-only** — no network, no secret reads — and only *suggests* candidates you approve by hand into `charter.tooling.<role>.connectors[]` (Facet C). |
 
 ## §4 RECONCILE (write it down)
 
@@ -81,6 +84,7 @@ Now you author the reconciliation artifact — this is the brownfield-specific d
 3. **Add @-includes** to your root `AGENTS.md` for the inherited governance chain.
 4. **Author `docs/research-briefs/`** as a new directory if you're enabling Acceptance (you need a closure_contract to judge against — see §5).
 5. **Document brownfield carve-outs** as `status: divergent` rows. A carve-out is not a failure; it's an honest record. The one thing you may NOT carve out is the §1.7 forbidden list (`governance/constitution.md` §1.8 — hard requirement, never `divergent`).
+6. **Author `docs/current/implementation-stack.md`** from `templates/implementation-stack-template.md` using the §2 read-only detection — present facts only, `CONFIRMED | DEFERRED | N/A` per item, the evidence file cited, names-not-values; `DEFERRED` rows point to Phase 3. **Detected values are recommendations, not conclusions: the human confirms or corrects each row before the snapshot is finalized** (recommend-then-confirm; don't over-infer production architecture from one file). This is the *adopter implementation stack* (the product's tech facts), distinct from the *agent execution stack* (`charter.tooling.<role>`) and from the domain contracts. `load_discipline: by-role`. (ONBOARDING Step 4a automates it.)
 
 The `adoption-state.md` is your living contract with the framework. At each milestone close you revisit it; at framework fold-back, your accumulated divergences become evidence (`process/fold-back-protocol.md`).
 
@@ -105,6 +109,9 @@ Once the team feels the value of the outcome gate, graduating to Profile B (full
 Confirm the adoption actually holds before declaring it done:
 
 ```
+□ If you generated a charter.yaml (Profile A/B), run
+  `python engine-kit/validators/charter_validator.py charter.yaml` — it must exit 0
+  (errors block; warnings allowed) before the adoption is done.
 □ Run one sprint under the new role chain (or your chosen subset).
 □ Confirm the 5-role boundary invariants hold (§3.4) — no role collapsed into another;
   in particular, Acceptance was spawned cleanly (not from Deliver/Dev).

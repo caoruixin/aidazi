@@ -1,0 +1,10 @@
+# INVALID — required field 'exit_criteria' is missing.
+# schemas/sprint_stanza.schema.json requires
+#   [sprint_id, scope_in, layers, exit_criteria]; dropping exit_criteria
+# is the classic F4 "fill it later" placeholder that this gate must catch
+# before dispatch.
+sprint_id: sprint-027
+scope_in:
+  - some deliverable
+layers:
+  - infra

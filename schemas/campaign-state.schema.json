@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "campaign-state.schema.json",
+  "title": "Campaign State",
+  "description": "P-B. Persisted, resumable state for the Campaign runner (design §5.4a) — the campaign analogue of the Driver's state.json (§4.5). Holds the cursor over the milestone backlog, per-unit status + audit linkage, cumulative countable spend, and the pause reason when halted at a human-authority gate.",
+  "type": "object",
+  "required": ["campaign_id", "status", "cursor", "spent", "units"],
+  "additionalProperties": false,
+  "properties": {
+    "campaign_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "status": {"type": "string", "enum": ["running", "paused", "done", "ended"], "description": "running = mid-flight; paused = halted at a human gate (see pause_reason); done = backlog exhausted + accepted; ended = aborted."},
+    "pause_reason": {"type": ["string", "null"], "description": "When paused: the driver/campaign checkpoint_id that caused the halt (the resume map key)."},
+    "pause_checkpoint": {"type": ["string", "null"], "description": "When paused: path to the checkpoint file the human resolves."},
+    "followup_baseline_seq": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Internal: the milestone's subsprint_sequence SNAPSHOT recorded at a deliver_followup_required pause, so resume advances ONLY to a NEWLY inserted follow-up (an id not in this snapshot, at cursor+1) — never to a pre-existing or appended-elsewhere sub-sprint."},
+    "cursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["milestone_index", "subsprint_index"],
+      "properties": {
+        "milestone_index": {"type": "integer", "minimum": 0},
+        "subsprint_index": {"type": "integer", "minimum": 0}
+      }
+    },
+    "spent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subsprints_run", "total_spawns", "wall_clock_minutes"],
+      "description": "Cumulative COUNTABLE spend (design §5.4a); checked between units against campaign.budget.",
+      "properties": {
+        "subsprints_run": {"type": "integer", "minimum": 0},
+        "total_spawns": {"type": "integer", "minimum": 0},
+        "wall_clock_minutes": {"type": "number", "minimum": 0}
+      }
+    },
+    "units": {
+      "type": "array",
+      "description": "One record per dispatched sub-sprint unit, in dispatch order — the campaign audit linkage to each Driver loop_id.",
+      "items": {
+        "type": "object",
+        "required": ["milestone_id", "subsprint_id", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "milestone_id": {"type": "string"},
+          "subsprint_id": {"type": "string"},
+          "status": {"type": "string", "enum": ["pending", "in_progress", "done", "halted", "failed"]},
+          "final_state": {"type": ["string", "null"], "description": "The Driver final_state the run returned (advance|done|halted|gate1_pending|...)."},
+          "loop_id": {"type": ["string", "null"], "description": "The Driver loop_id, for cross-referencing the per-sub-sprint audit ledger."},
+          "pause_reason": {"type": ["string", "null"], "description": "When this unit HALTED: the pause checkpoint_id, persisted INTO the record so a §3.5c STATUS_RUNNING crash-recovery REPLAY re-pauses from the recorded unit WITHOUT re-running it (no duplicate execution/Acceptance)."},
+          "checkpoint_path": {"type": ["string", "null"], "description": "When this unit HALTED: the checkpoint file path, persisted alongside pause_reason for the same §3.5c crash-recovery replay (the human resolves it on resume)."}
+        }
+      }
+    }
+  }
+}

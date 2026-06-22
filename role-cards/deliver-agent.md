@@ -5,7 +5,7 @@ doc_category: live
 status: current
 implementation_status: implemented
 source_of_truth: this file
-last_reviewed: 2026-06-12
+last_reviewed: 2026-06-21
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
@@ -49,6 +49,27 @@ Adopter inputs depend on input path (§2). Load:
 - All paths: latest `docs/action_bank.md`, `docs/handoff.md` §0/§1, recent `docs/codex-findings.md`.
 
 ## §2 Three input paths
+
+### §2.0 Campaign tier (P-B — when driven by the Campaign Loop)
+
+When the **Campaign Loop** drives delivery (`process/campaign-loop.md`), you also own
+the tier ABOVE a single milestone: from the goal, author the **ordered milestone
+backlog** (the campaign plan; `schemas/campaign-plan.schema.json`) — 以终为始. The
+Customer signs that backlog (`campaign_plan_signoff`) before the runner drives it.
+Then, per milestone, you decompose it into sub-sprints exactly as in the paths below.
+After a milestone closes + Acceptance passes, the **campaign runner auto-advances to
+the next milestone** — you are re-invoked to decompose IT, not to be asked "what
+next?". When the runner surfaces `deliver_followup_required` (an Acceptance
+fix-route, a review follow-up, a scope re-plan), author the routed sub-sprint; the
+campaign resumes once it exists. You do NOT edit the campaign runner or auto-advance
+logic — that is deterministic engine behavior.
+
+The human starts the Campaign Loop with `engine-kit/scheduling/run_loop.py --charter
+<charter> --campaign <campaign-plan.json>` (`FIRST-LOOP.md` → "Drive the whole goal");
+it pauses at `campaign_plan_signoff` until the backlog is signed, then auto-drives.
+YOU author the plan (`templates/campaign-plan.example.json` is the starting shape) and
+resolve `deliver_followup_required` / `milestone_decompose_required` pauses by editing
+the plan; you do NOT run the CLI.
 
 ### §2.1 Path 1 — Research-driven (most common)
 
@@ -173,6 +194,8 @@ Per `templates/deliver-close-taxonomy.md`, after Dev + Code Reviewer return verd
 - Run the Acceptance Agent's judgment yourself.
 - Spawn Acceptance Agent — Constitution §1.7-C forbids (you are downstream of Acceptance's verdict; spawning Acceptance from your session is the bias loop the rule prevents).
 - Edit a research-brief's closure_contract — Constitution §3.4 invariant #4.
+- Edit the signed browser-E2E functional-checklist post-Gate-1 (P-C; §5.2) — it is Research-owned and frozen; a change routes via `research_contract_revision`.
+- Author or override the browser-E2E milestone VERDICT — that is the Acceptance Agent's (you own the executor MECHANICS, not the judgment; §5.2).
 - Pick up an Acceptance gap brief without the human-confirm checkpoint resolution being written (Constitution §3.5).
 - Bypass `scope_envelope_check` at close — if your close verdict claims `in_scope: true` but the orchestrator's check disagrees, the orchestrator's check wins (Constitution §10 + `process/delivery-loop.md` §4.2.8 #3).
 - Mid-milestone scope expansion via `adaptive_insert` beyond `charter.auto_pass_rules.adaptive_insert.max_inserted_subsprints` (`process/delivery-loop.md` §4.2.8 #12).
@@ -214,6 +237,15 @@ When the close decision is "fix-iterate" rather than "advance," you also produce
 ```
 
 The orchestrator validates against the schema, writes the objective + dev prompt to filesystem, and re-enters the `dev_pending` state for the new sub-sprint.
+
+### §5.2 Browser-E2E mechanics (P-C — when the milestone uses the functional class)
+
+For a milestone whose acceptance class is `browser_e2e` (`process/browser-e2e-acceptance.md`), you (adopter/Deliver) **own the executor MECHANICS** — `charter.tooling.e2e` (`schemas/executor-contract.schema.json`): `executor_kind`, `app_start_cmd`, `readiness`, `base_url`, `allowed_origins`, and the declared `journeys[]` whose assertion steps carry `criterion_id`s. The orchestrator **schedules the browser evidence run** in the out-of-band `e2e_evidence_pending` state and **collects the captured evidence** (manifest + checklist-results, hash-anchored). Two boundaries you do NOT cross:
+
+- **You are NOT the verdict.** The captured evidence is OBSERVATIONS; the milestone-pass judgment is the Acceptance Agent's alone (read-only over the manifest). The mechanics produce evidence; they never define pass/fail.
+- **You are NOT the functional-checklist author.** The signed CRITERIA (`schemas/functional-checklist.schema.json`, at `tooling.acceptance.functional.checklist_path`) are **Research-owned and frozen at Gate-1**. You (and Dev) MAY NOT edit the checklist post-sign-off — a needed change routes via `research_contract_revision` (Gate-1 re-fires), exactly as for the closure_contract (§4.2, Constitution §3.4 invariant #4). The executor's `criterion_id`s must reference the signed checklist's ids.
+
+You do NOT edit the orchestrator's executor, the evidence-commit logic, or the consistency gate — that is deterministic engine behavior (like the campaign runner, §2.0).
 
 ## §6 What you read at each input path
 

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/memory-entry.schema.json",
+  "title": "Loop Memory entry (v2 — §4.4 substrate)",
+  "description": "Front-matter shape for <app>/memory/entries/<id>.md (plan §4.4). Loop Memory is the institutional-memory SUBSTRATE (not a third loop): cross-loop lessons persisted as md files, read at ingress, written at close; feeds both the Auto Loop and the Delivery Loop + fold-back. Storage is just files — no storage service. Selection is deterministic tag/scope match (+ optional LLM relevance). HARD (Constitution §1.7): store GENERALIZABLE heuristics, NOT case-specific input→output (that is the eval-phrase-encoding forbidden item); load-bearing changes (skill/charter/prompt) stay human-approved (Auto Loop §3.3); a calibration-note MUST be tagged by (provider, model).",
+  "type": "object",
+  "required": ["id", "type", "scope", "maturity", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable entry id; the entry lives at memory/entries/<id>.md and is referenced by [[links]]."
+    },
+    "type": {
+      "type": "string",
+      "enum": ["failure", "heuristic", "pattern", "calibration-note", "detour"],
+      "description": "Entry kind (plan §4.4). Reuses Δ-9 OBS triage + lessons taxonomy."
+    },
+    "scope": {
+      "type": "object",
+      "description": "What the entry applies to; drives deterministic ingress selection by tag/scope match.",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "module": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Module(s) the lesson is scoped to."
+        },
+        "role": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["research", "deliver", "dev", "code_reviewer", "acceptance", "engine"]},
+          "description": "Role(s) the lesson is injected for at ingress."
+        },
+        "layer": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["infra", "java_guard", "runtime_guard", "workflow_definition", "prompt_projection", "skill_state", "semantic_planner", "eval_spec", "product_policy", "judge_calibration", "human_review_required"]
+          },
+          "description": "Δ-9 fix layer(s) the lesson concerns."
+        }
+      }
+    },
+    "maturity": {
+      "type": "string",
+      "enum": ["L1", "L2"],
+      "description": "Δ-9 OBS triage maturity. L1 = candidate (single observation); L2 = confirmed (n≥2 occurrences or human-flagged). Promotion L1→L2 happens at close."
+    },
+    "occurrences": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How many loops have observed this lesson; n≥2 is the L1→L2 promotion trigger (alongside human-flag)."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "superseded", "retired"],
+      "description": "Lifecycle state of the lesson."
+    },
+    "provider": {
+      "type": "string",
+      "description": "REQUIRED-by-convention for type=calibration-note: the provider the note is tagged to (calibration is per-(provider,model); §3.6)."
+    },
+    "model": {
+      "type": "string",
+      "description": "REQUIRED-by-convention for type=calibration-note: the model the note is tagged to."
+    },
+    "source_loops": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "loop_id(s) (Audit Spine) the lesson was distilled from. Threads memory back to the auditable record."
+    },
+    "links": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "[[wiki-style]] links to related memory entries / docs."
+    },
+    "created": {"type": "string", "format": "date"},
+    "last_reviewed": {"type": "string", "format": "date"}
+  }
+}

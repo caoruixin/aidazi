@@ -1,0 +1,12 @@
+{
+  "title": "Sprint objective — M5-sprint-3",
+  "sprint_id": "M5-sprint-3",
+  "sprint_stanza": {
+    "sprint_id": "M5-sprint-3",
+    "scope_in": ["stanza_validator deterministic kernel"],
+    "layers": ["infra"],
+    "exit_criteria": ["validator exits 0 on a schema-valid stanza"],
+    "milestone_id": "M5",
+    "next_subsprint": null
+  }
+}

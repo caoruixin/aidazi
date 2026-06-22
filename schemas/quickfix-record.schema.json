@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/quickfix-record.schema.json",
+  "title": "Quick-Fix record (one append-only line)",
+  "description": "One entry in the append-only Quick-Fix record log (.orchestrator/quickfix/records.jsonl — JSON Lines, one object per line). This is an APPEND-ONLY PROTOCOL for observability/audit, NOT a tamper-proof ledger (no hash chain). A record MUST NOT be read as an activation credential for any later session — activation is always a fresh human launcher invocation (process/quickfix-lane.md). Normative source: process/quickfix-lane.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request_id", "harness", "outcome", "baseline_sha", "ts", "result"],
+  "properties": {
+    "request_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+    "harness": { "type": "string", "minLength": 1 },
+    "outcome": {
+      "type": "string",
+      "enum": ["completed", "escalated"],
+      "description": "completed = passed preliminary guard -> verification -> final guard and produced a result commit; escalated = stopped and handed off (investigation preserved before teardown)."
+    },
+    "baseline_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,40}$",
+      "description": "The worktree HEAD SHA captured at launch — the baseline the guard bound to."
+    },
+    "ts": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Injected timestamp (the launcher provides it; the core never reads the clock itself)."
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "type": "string",
+          "pattern": "^quickfix/[a-z0-9][a-z0-9._/-]*$",
+          "description": "completed: the quickfix/<request_id> branch carrying the result commit (must start with 'quickfix/' — the result is never on a shared branch). Never auto-applied to the adopter's current branch; the human decides whether to cherry-pick."
+        },
+        "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$", "description": "completed: the result commit SHA." },
+        "stat": { "type": "string", "description": "completed: `git show --stat` summary of the result commit." },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["argv", "exit_code", "ok"],
+          "properties": {
+            "argv": { "type": "array", "items": { "type": "string" } },
+            "exit_code": { "type": "integer" },
+            "ok": { "type": "boolean" }
+          },
+          "description": "completed: the targeted verification that ran between the preliminary and final guard."
+        },
+        "escalation_reason": {
+          "type": "string",
+          "description": "escalated: why the lane stopped (scope expansion / protected surface hit / verification failure / unprovable eligibility / uncertainty)."
+        },
+        "patch_hash": { "type": "string", "description": "escalated: hash of the preserved patch (so the saved investigation is identifiable)." },
+        "patch_path": { "type": "string", "description": "escalated: where the patch was saved BEFORE worktree teardown (outside the ephemeral worktree)." },
+        "diff_summary": { "type": "string", "description": "escalated: short stat/diff summary of the preserved work." },
+        "handoff_path": { "type": "string", "description": "escalated: the escalation handoff doc instructing the human to relaunch Full." }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["outcome"], "properties": { "outcome": { "const": "completed" } } },
+      "then": { "properties": { "result": {
+        "required": ["branch", "commit_sha", "stat", "verification"],
+        "properties": { "verification": { "required": ["ok"], "properties": { "ok": { "const": true } } } }
+      } } }
+    },
+    {
+      "if": { "required": ["outcome"], "properties": { "outcome": { "const": "escalated" } } },
+      "then": { "properties": { "result": {
+        "required": ["escalation_reason", "handoff_path", "patch_path", "patch_hash", "diff_summary"]
+      } } }
+    }
+  ]
+}

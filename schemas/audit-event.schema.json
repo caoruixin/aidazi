@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/audit-event.schema.json",
+  "title": "Audit Spine event (v2 — §4.5)",
+  "description": "One line of an append-only, hash-chained per-loop ledger at .orchestrator/audit/<loop_id>.jsonl (plan §4.5). MATCHES the event emitted by engine-kit/audit/audit_log.py make_event(): fields {loop_id, seq, ts, type, payload, prev_hash, hash}, in that body order. HASH CHAIN: hash = sha256( prev_hash + canonical_json(event_without_hash) ).hexdigest(), where canonical_json = json.dumps(obj, sort_keys=True, separators=(',', ':')); the first event's prev_hash is 64 zeros (GENESIS_PREV_HASH); seq starts at 0 and increases by 1. payload is a generic dict (the ledger stores whatever it is given); a per-spawn event carries the execution-context payload in $defs/spawn_payload (G3). This schema validates event STRUCTURE; chain integrity is verified by audit_log.verify_chain. Audit is runtime-owned (Constitution §1.4).",
+  "type": "object",
+  "required": ["loop_id", "seq", "ts", "type", "payload", "prev_hash", "hash"],
+  "additionalProperties": false,
+  "properties": {
+    "loop_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Threads charter→brief→checkpoint→spawn→trace→verdict→close (G6). The ledger file is named <loop_id>.jsonl."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic per-loop sequence; first event seq=0, each subsequent +1 (verify_events enforces this)."
+    },
+    "ts": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Event timestamp, injected by the caller (the pure hash path never reads the clock). Convention: ISO 8601. Stored verbatim as part of the hashed body."
+    },
+    "type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Event type, e.g. loop_init | charter_loaded | checkpoint | spawn | verdict | close. Free-form string (the ledger is a generic event log)."
+    },
+    "payload": {
+      "description": "Event payload. Generic — the ledger stores whatever dict it is given. For a per-spawn event this is the execution-context record ($defs/spawn_payload, plan §4.5 G3).",
+      "type": ["object", "array", "string", "number", "boolean", "null"]
+    },
+    "prev_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 hex (64 lowercase hex chars) of the previous event's hash; 64 zeros for the genesis event (GENESIS_PREV_HASH)."
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 hex over (prev_hash + canonical_json(event_without_hash)). Tampering any byte breaks the chain from this seq on."
+    }
+  },
+  "$defs": {
+    "spawn_payload": {
+      "type": "object",
+      "description": "Per-spawn execution-context payload (plan §4.5 G3; audit_log.make_spawn_payload). Extends the orchestrator's calls/ record so a loop can be reconstructed with full harness/model/skill/memory/cost context.",
+      "additionalProperties": false,
+      "required": ["role", "harness", "provider", "model"],
+      "properties": {
+        "role": {"type": "string"},
+        "harness": {"type": "string"},
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "skill_pins": {"type": "array", "items": {"type": "string"}},
+        "memory_injected": {"type": "array", "items": {"type": "string"}},
+        "input_hash": {"type": ["string", "null"]},
+        "verdict_ref": {"type": ["string", "null"]},
+        "prompt_ref": {"type": ["string", "null"], "description": "Run-dir-relative path to the as-dispatched prompt transcript (.orchestrator/audit/transcripts/<loop_id>/NNNN__<role>__prompt.md); always written. delivery-loop §4.2.10."},
+        "output_ref": {"type": ["string", "null"], "description": "Run-dir-relative path to the captured model-output transcript (…__output.{md,json}); null when the adapter produced no output (transport error). delivery-loop §4.2.10."},
+        "run_mode": {"type": ["string", "null"]},
+        "tokens": {"type": ["integer", "null"]},
+        "cost": {"type": ["number", "null"]}
+      }
+    }
+  }
+}

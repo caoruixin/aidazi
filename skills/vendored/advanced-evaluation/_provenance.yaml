@@ -1,0 +1,17 @@
+# Provenance for vendored skill. normative source = upstream pin below.
+# To update: re-vendor at a new pin + re-vet (+ recalibrate if role=acceptance).
+id: advanced-evaluation
+source: { repo: muratcankoylan/Agent-Skills-for-Context-Engineering, url: https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering, commit: 25e1fa79a33f0985793bcab3c64dde8d020c5132, path: skills/advanced-evaluation }
+license: MIT
+copyright: "Copyright (c) 2025 Context Engineering Agent Skills Contributors"
+retrieved_at: 2026-06-15T13:25:19Z
+role_default_for: acceptance
+tree_sha256: 1a135d5f7b7d3e8cc4b4d2ffec1bfc18e4a7a5f292b3b9116ddb4d0dbd5ffe66
+files:
+  - { path: LICENSE, sha256: 65bc33b0759a48b980962833b12bcb820404da9f5256bff39c00e89471bcf209 }
+  - { path: SKILL.md, sha256: acc980febddb330b655eadceca09c1a3491ac7d1ae8f64e0b6d0e9ad75705209 }
+  - { path: references/bias-mitigation.md, sha256: bf43f18e5cc20f803546fece9e90fe032a2d54f6d4280dfd5cd2af3b0707fc17 }
+  - { path: references/evaluation-pipeline.md, sha256: 72e95259a14db1da9ddb3b979c71e821e75aa80d729da956eaaedc94a8e9b3d2 }
+  - { path: references/implementation-patterns.md, sha256: 73711fad51abf1bcc20a12491968baea65d6e16fde1a397be4f0648bd44fbec4 }
+  - { path: references/metrics-guide.md, sha256: 3882bf84692a82f33e3a2ffecdc94b475a4bd84545b0015cf38810c734a7bef8 }
+  - { path: scripts/evaluation_example.py, sha256: 4965a42dfbf0ba54e184d654e3c6a781ebf3915b8da5e6f3ee1b5819a23125f1 }
