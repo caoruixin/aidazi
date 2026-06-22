@@ -11,12 +11,13 @@ minimal-greenfield/
 ├── AGENTS.md                              # consumer root: project id + @-include chain + ledger paths
 ├── CLAUDE.md                              # one line `@AGENTS.md` — routes Claude Code into AGENTS.md
 ├── docs/
-│   ├── current/                           # the three domain contracts + context guide + adoption state
+│   ├── current/                           # the three domain contracts + context guide + adoption state + impl-stack snapshot
 │   │   ├── domain_taxonomy.md
 │   │   ├── runtime_invariants.md
 │   │   ├── eval_acceptance_bars.md
 │   │   ├── agent_context_guide.md
-│   │   └── adoption-state.md
+│   │   ├── adoption-state.md
+│   │   └── implementation-stack.md         # present-tense product tech facts (Step 4a); NOT a domain contract
 │   ├── milestone_objective.md             # M1 north star (cites the closure_contract)
 │   ├── sprint_objective.md                # sub-sprint 1 scope
 │   ├── 10-handoff.md                      # §0 cold-start table + §1 narrative

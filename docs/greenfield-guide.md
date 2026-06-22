@@ -66,6 +66,7 @@ Walk `process/agent-creation-prerequisites.md` (Δ-16): verify the 7 categories 
 
 - The constitution stays @-included; you never edit it.
 - Author your three **domain contracts** from templates (`docs/domain-adaptation.md` walks these): `docs/current/domain_taxonomy.md`, `docs/current/runtime_invariants.md`, `docs/current/eval_acceptance_bars.md`.
+- Author the **implementation-stack snapshot** `docs/current/implementation-stack.md` from `templates/implementation-stack-template.md` — a present-tense record of the product's own language / framework / build / test / data deps / deploy-runtime. Greenfield has nothing to detect, so offer a track-informed *starting point* (humble, not a selection) and mark anything undecided `DEFERRED → Phase 3` (does not block). This is the *adopter implementation stack*, distinct from the *agent execution stack* (`charter.tooling.<role>`, STEP 7); it is **not** a domain contract and **not** architecture selection — Phase 3 (STEP 5) owns those decisions. `load_discipline: by-role`.
 - Author `docs/current/adoption-state.md` from `templates/adoption-state-template.md` — your per-Δ status + override registry.
 - Confirm the first `docs/research-briefs/<id>.md` carries its `closure_contract` and is `customer_signed: true`.
 
@@ -82,6 +83,8 @@ The funnel turns the signed brief into a buildable plan. **Progressive disclosur
 | **5 — Eval/Release/Feedback** | `docs/foundational/eval-design.md`: CaseSpec suite + judge rubric + (if Δ-18) charter + calibration set | M-Evaluation 4-component + 6-primitive DSL + Δ-18 charter | if reproducible failure → root-cause may push back to any earlier phase |
 
 **The closure_contract from Phase 1 is the Acceptance verdict source.** Everything downstream is judged against it.
+
+**Phase 3 reconciles the Step-4a implementation-stack snapshot.** Resolve every `DEFERRED → Phase 3` row from `docs/current/implementation-stack.md` in `technical-plan.md` here — Phase 3 is the canonical home for forward technical decisions, while the snapshot only records present facts. As decisions land, promote the snapshot's `DEFERRED` rows to `CONFIRMED`. (The snapshot never duplicates Phase 3; it feeds it the known-today baseline.)
 
 ### §5.3.1 Split or merge Phase 1 and Phase 2?
 

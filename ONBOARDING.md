@@ -114,6 +114,37 @@ And one governing interaction style:
 
 ---
 
+## The journey at a glance — the decisions you'll make
+
+Before the wizard drives you decision-by-decision, here is the whole route. The
+wizard runs **Step 0–9, including the Step 4a snapshot checkpoint** (11 entries
+below). This table is the **map only** — it does **not** restate the rules; each
+step section below is the source of truth. After this overview, execution still
+follows property 5: **one decision at a time**.
+
+| Step | What you decide | Recommended approach / default action | Deferrable? | Main output |
+|---|---|---|---|---|
+| 0 | (no decision) bootstrap the ledger + record | — (always first) | no | `adoption-state.md` + `onboarding-record.md` |
+| 1 | greenfield vs brownfield | agent auto-detects from repo signals; you confirm | no | adoption shape in the ledger |
+| 2 | (brownfield only) inventory the codebase | read-only scan; nothing decided yet | n/a | inventory in the record |
+| 3 | adoption track (Type A / B / C / A+B) + brownfield profile depth | recommend from signals (Δ-14); brownfield default = start at B/C | no | `track:` |
+| 4 | intent contract (goal / standard / proof_of_done) | draft with the `brainstorming` skill; human signs | no | first research brief |
+| **4a** | **adopter implementation-stack snapshot** (current tech facts) | **brownfield: read-only detect, then confirm; greenfield: track-informed starting point you confirm** | **yes — unknown items → `DEFERRED → Phase 3`** | **`docs/current/implementation-stack.md`** |
+| 5 | role config: 3 facets (execution = *agent execution stack*, capability, connector) | per-role defaults from `skills/registry.yaml`; connectors default-deny | partial | charter `tooling.*` |
+| 6 | generate the adopter artifacts | copy from `examples/minimal-greenfield/`; read-before-write | no | `AGENTS.md` / `CLAUDE.md` / `charter.yaml` / `docs/current/*` |
+| 7 | autonomy + checkpoint posture | default `human_in_the_loop`; the 9 MANDATORY_CHECKPOINTS always fire | no | charter `autonomy.*` |
+| 8 | validate — the green gate | run both validators to exit 0 | no | recorded green result |
+| 9 | first-loop hand-off | hand off to `FIRST-LOOP.md` (not the wizard) | no | the loops begin |
+
+> **Two distinct "stacks" — never conflate them.** Step 4a captures the **adopter
+> implementation stack** — the *product's own* language, framework, build/package
+> manager, test stack, data dependencies, deploy/runtime. Step 5 Facet A captures
+> the **agent execution stack** — the harness × provider × model that *runs each
+> role*. They live in different files (`docs/current/implementation-stack.md` vs
+> `charter.yaml`) and are never merged into one field.
+
+---
+
 ## Step 0 — Bootstrap the ledger and the audit record (always first)
 
 Before anything else:
@@ -229,6 +260,55 @@ triple `goal / standard / proof_of_done` (this maps onto the framework's
 
 ---
 
+## Step 4a — Capture the adopter implementation-stack snapshot (minimal; NOT the Phase-3 technical plan)
+
+Record the **adopter implementation stack** — the *product's own* engineering
+facts **as they are today**: language(s), framework(s), build / package manager,
+test stack, data dependencies, and deploy / runtime environment. This is a
+**present-tense snapshot of what is already true or known**, not architecture
+selection. Forward-looking technical decisions stay in the Phase-3 technical plan
+(`docs/foundational/technical-plan.md`, greenfield STEP 5) — Step 4a never
+pre-empts it, and Phase 3 remains the canonical home for those decisions.
+
+> **Distinct from Step 5 Facet A.** This captures the *adopter implementation
+> stack* (what the product is built with). Step 5 Facet A captures the *agent
+> execution stack* (which harness × provider × model runs each role). Different
+> concern, different file (`docs/current/implementation-stack.md` vs
+> `charter.yaml`); never merge the two.
+
+**Action — write `docs/current/implementation-stack.md`** from
+`templates/implementation-stack-template.md` (read-before-write + diff-confirm).
+Every item carries: the current fact/value · a status of `CONFIRMED | DEFERRED |
+N/A` · provenance/evidence · and, when `DEFERRED`, a pointer to Phase 3. Set the
+doc's `overall_status` to `confirmed | partial | deferred` to reflect how much is
+pinned. **No silent blank fields** — an unknown is an explicit `DEFERRED`, never
+an empty cell.
+
+- **Brownfield:** populate by **read-only, evidence-based** detection, then
+  recommend-then-confirm. Read manifests / lockfiles / config only — e.g.
+  `pyproject.toml` · `go.mod` · `Cargo.toml` · `package.json` (language +
+  framework); lockfiles (package manager); `pytest.ini` / jest config / `go test`
+  (test stack); `Dockerfile` / `docker-compose.yml` / `fly.toml` / `vercel.json`
+  / `Procfile` / k8s manifests (deploy / runtime). **Do not over-infer production
+  architecture from a single file** — cite the evidence file per item and let the
+  human confirm or correct. Record **names only** for data dependencies and
+  environment variables; **never read or record a secret, credential, or env-var
+  value.**
+- **Greenfield:** there is nothing to detect. Offer a **track-informed starting
+  point** (humble — a suggestion, not a selection) and let the human fill what is
+  already known. Anything not yet decided is `DEFERRED → Phase 3`; that does
+  **not** block onboarding.
+
+The snapshot is **`load_discipline: by-role`** (Dev + Deliver load it on demand)
+— it is **not** added to the always-load governance chain.
+
+> Properties: recommendation-driven (one snapshot, recommend-then-confirm),
+> non-destructive (read-only detection; names-not-values; read-before-write),
+> audited (the write is a record row), harness-agnostic (plain file reads, no
+> harness orchestration).
+
+---
+
 ## Step 5 — Role configuration: the three facets (recommend-then-confirm)
 
 Configure each of the 5 roles (Research / Deliver / Dev / Code Reviewer /
@@ -241,7 +321,10 @@ the recommended default and let the human confirm or override**.
 Recommended defaults follow the §4 capability table in the contract: Dev needs a
 **coding-agent** harness (it edits files); judgment roles (Acceptance, parts of
 Research/Deliver) suit `headless`/API models; native harnesses are provider-locked
-(claude_code↔anthropic, codex↔openai). Capability is validated in Step 8.
+(claude_code↔anthropic, codex↔openai). Capability is validated in Step 8. This is
+the **agent execution stack** — distinct from the **adopter implementation stack**
+captured in Step 4a (`docs/current/implementation-stack.md`); the two are never
+merged into one field.
 
 **Facet A preflight — confirm each bound harness/provider is reachable on THIS
 machine (recommend-then-confirm; gate before Step 8).** Step 8's capability gate
@@ -339,9 +422,11 @@ Generate / install:
    orchestrator may defer this — greenfield STEP 7 is optional.)
 3. **`docs/current/*`** — the three domain contracts plus state ledgers, per the
    worked example: `domain_taxonomy.md`, `runtime_invariants.md`,
-   `eval_acceptance_bars.md`, `agent_context_guide.md`, and the already-created
-   `adoption-state.md` + `onboarding-record.md`. (`docs/domain-adaptation.md`
-   walks the three contracts.)
+   `eval_acceptance_bars.md`, `agent_context_guide.md`, the already-created
+   `adoption-state.md` + `onboarding-record.md`, and `implementation-stack.md`
+   (created in Step 4a). (`docs/domain-adaptation.md` walks the three domain
+   contracts; the implementation-stack snapshot is separate — product facts, not
+   domain semantics.)
 4. **Copy `engine-kit/`** into the adopter repo (the copyable reference
    implementation — driver, adapters, validators, audit, connectors). It is
    non-normative: the spec wins on any conflict (`engine-kit/orchestrator/README.md`).

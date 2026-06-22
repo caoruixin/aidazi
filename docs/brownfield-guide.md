@@ -52,6 +52,8 @@ Before deciding anything, take stock. Do **not** edit anything in this phase.
 □ Does the project already have governance docs? (AGENTS.md, CLAUDE.md, role/agent docs?)
 □ Does it have an action-bank or backlog ledger? In what format?
 □ Does it have an eval framework? What CaseSpec shape?
+□ What's the current implementation stack? — language / framework / build + package manager / test / data deps / deploy-runtime.
+  Detect read-only from manifests + config (pyproject.toml, package.json, go.mod, lockfiles, Dockerfile, etc.); record names only, never a secret/env value. Don't over-infer production architecture from one file. (Captured in §4 as docs/current/implementation-stack.md; ONBOARDING Step 4a automates it.)
 □ Does it use any orchestrator/automation currently?
 □ What's the current human/agent split? Pure human-paste, or some automation?
 □ Where do semantic decisions currently live — LLM-owned, or hardcoded? (this predicts §1.7 friction)
@@ -82,6 +84,7 @@ Now you author the reconciliation artifact — this is the brownfield-specific d
 3. **Add @-includes** to your root `AGENTS.md` for the inherited governance chain.
 4. **Author `docs/research-briefs/`** as a new directory if you're enabling Acceptance (you need a closure_contract to judge against — see §5).
 5. **Document brownfield carve-outs** as `status: divergent` rows. A carve-out is not a failure; it's an honest record. The one thing you may NOT carve out is the §1.7 forbidden list (`governance/constitution.md` §1.8 — hard requirement, never `divergent`).
+6. **Author `docs/current/implementation-stack.md`** from `templates/implementation-stack-template.md` using the §2 read-only detection — present facts only, `CONFIRMED | DEFERRED | N/A` per item, the evidence file cited, names-not-values; `DEFERRED` rows point to Phase 3. **Detected values are recommendations, not conclusions: the human confirms or corrects each row before the snapshot is finalized** (recommend-then-confirm; don't over-infer production architecture from one file). This is the *adopter implementation stack* (the product's tech facts), distinct from the *agent execution stack* (`charter.tooling.<role>`) and from the domain contracts. `load_discipline: by-role`. (ONBOARDING Step 4a automates it.)
 
 The `adoption-state.md` is your living contract with the framework. At each milestone close you revisit it; at framework fold-back, your accumulated divergences become evidence (`process/fold-back-protocol.md`).
 
