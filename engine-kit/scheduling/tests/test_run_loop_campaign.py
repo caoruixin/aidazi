@@ -160,6 +160,11 @@ class TestCampaignEntry(unittest.TestCase):
             r1 = self._entry(plan, charter, home, adapters, clk, resume=True)
             self.assertEqual(r1["pause_reason"], "advisory_acceptance_pass_signoff")
             self.assertEqual(r1["milestone_index"], 0)
+            # scope-coverage wiring: m1 in-flight (not yet accepted) ⇒ 0/2 delivered.
+            cov1 = r1["scope_coverage"]
+            self.assertEqual((cov1["milestones_delivered"], cov1["milestones_total"]),
+                             (0, 2))
+            self.assertFalse(cov1["baseline_available"])
             self.assertEqual(len(os.listdir(units)), 1, "only m1 has run")
             m1_loop = _expected_loop_id("cliB", "m1", "sprint-001")
             self.assertIn("acceptance_start",
@@ -181,6 +186,11 @@ class TestCampaignEntry(unittest.TestCase):
             self.assertEqual(r3["status"], "done")
             self.assertEqual(r3["exit_code"], rl.CAMPAIGN_EXIT_DONE)
             self.assertEqual(r3["milestone_index"], 2)
+            # scope-coverage wiring: backlog exhausted ⇒ 2/2 delivered, nothing left.
+            cov3 = r3["scope_coverage"]
+            self.assertEqual(cov3["milestones_delivered"], 2)
+            self.assertEqual(cov3["pct_milestones_delivered"], 100)
+            self.assertEqual(cov3["remaining_milestones"], [])
 
     def test_decision_identity_binding_rejects_mismatch(self):
         # At the m1 Acceptance pause, a decision is REFUSED fail-closed unless EVERY
@@ -455,6 +465,63 @@ class TestCampaignMainCLI(unittest.TestCase):
                                 "--charter", _EXAMPLE_CHARTER])
             self.assertEqual(code, rl.CAMPAIGN_EXIT_INVALID)
             self.assertEqual(_parse_campaign_status(buf.getvalue())["status"], "invalid")
+
+
+class TestScopeCoverageWiring(unittest.TestCase):
+    """Phase-0 scope-coverage is a GUARDED, ADDITIVE reporting nicety: it must
+    never break a run, and the CAMPAIGN_STATUS= parse contract stays byte-stable."""
+
+    _STATUS_KEYS = {
+        "campaign_id", "status", "pause_reason", "pause_checkpoint",
+        "pause_milestone_id", "pause_subsprint_id", "pause_loop_id",
+        "milestone_index", "milestones_total", "subsprints_run",
+        "total_spawns", "exit_code"}
+
+    def _paused_result(self, d):
+        charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+        plan = _plan("cliCov", [{"id": "m1", "objective": "x",
+                                 "subsprint_sequence": ["sprint-001"]}])
+        return rl.run_campaign_entry(
+            plan, charter, clock=_clock(),
+            campaign_run_dir=os.path.join(d, "h"),
+            adapters=_acceptance_adapters(ACC_PASS))
+
+    def test_status_keyset_locked_and_scope_coverage_additive(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self._paused_result(d)
+            self.assertIsNotNone(r["scope_coverage"])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rl.print_campaign_result(r)
+            out = buf.getvalue()
+            # CAMPAIGN_STATUS= key set is locked (additive line must not leak in)
+            self.assertEqual(set(_parse_campaign_status(out)), self._STATUS_KEYS)
+            cov = [ln for ln in out.splitlines() if ln.startswith("SCOPE_COVERAGE=")]
+            self.assertEqual(len(cov), 1, "exactly one additive SCOPE_COVERAGE= line")
+            json.loads(cov[0][len("SCOPE_COVERAGE="):])  # valid JSON
+
+    def test_scope_report_failure_degrades_to_none_and_suppresses_line(self):
+        import scope_report
+        orig = scope_report.compute_coverage
+
+        def _boom(*a, **k):
+            raise RuntimeError("scope_report bug")
+
+        scope_report.compute_coverage = _boom
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                r = self._paused_result(d)
+                # the campaign run still completes; coverage degraded to None
+                self.assertEqual(r["status"], "paused")
+                self.assertIsNone(r["scope_coverage"])
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rl.print_campaign_result(r)
+                out = buf.getvalue()
+                _parse_campaign_status(out)            # CAMPAIGN_STATUS still emitted
+                self.assertNotIn("SCOPE_COVERAGE=", out)  # additive line suppressed
+        finally:
+            scope_report.compute_coverage = orig
 
 
 if __name__ == "__main__":

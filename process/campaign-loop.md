@@ -165,6 +165,29 @@ stays 9 (P-A).
   duplicate/cyclic/unknown deps).
 - `schemas/campaign-state.schema.json` — the persisted, resumable campaign state.
 
+### §5.1 Scope-coverage report (read-only; Phase 0)
+The runner surfaces only `milestone_index/milestones_total` at close — a progress
+fraction, not "signed backlog vs delivered". `engine-kit/orchestrator/scope_report.py`
+is a **pure, read-only** projection over the (plan, campaign-state[, baseline]) that
+answers, after any number of milestones: what is **delivered**, what is still
+**in_progress / not_started** (the *continue menu*), and — against an optional frozen
+baseline — what was **added mid-flight**. It touches no governed artifact, adds no
+checkpoint, and `run_campaign_entry` computes it guarded (a reporting bug can never
+break a run) and prints a parallel, additive `SCOPE_COVERAGE=` line (the
+`CAMPAIGN_STATUS=` contract stays byte-identical).
+
+Because the plan **mutates in place** (a `deliver_followup` insertion edits
+`subsprint_sequence` — §3.3), "what was added" is only exact against a snapshot frozen
+at sign-off. Freeze it **once**, right after `campaign_plan_signoff`:
+```
+scope_report.py --plan <plan.json> --freeze-baseline --campaign-home <home>
+scope_report.py --plan <plan.json> --campaign-home <home>          # later: the report
+```
+Without a baseline, delivered/pending/drift stay exact — only added/removed-milestone
+detection is unavailable, and the report says so rather than guessing. This is Phase 0
+of the scope-ledger gap (investigation 2026-06-22); a requirement-granular PRD ledger
+(`covers_req_ids`, Acceptance write-back, drift log) is a later, governance-gated phase.
+
 ## §6 Status + open work
 Implemented (Codex-reviewed): the runner (iterate / pause-detect / spend / audit /
 resume two-mechanisms / plan-signoff), the fail-closed inventory, the production

@@ -502,6 +502,18 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         _cp.STATUS_PAUSED: CAMPAIGN_EXIT_PAUSED,
         _cp.STATUS_ENDED: CAMPAIGN_EXIT_ENDED,
     }.get(st.status, CAMPAIGN_EXIT_ERROR)  # a returned 'running' is unreachable → error
+    # Phase-0 scope-coverage projection (signed backlog vs delivered): a READ-ONLY
+    # reporting nicety that must NEVER break the run — any failure degrades to None.
+    # scope_report is a sibling of campaign on sys.path (same lazy-import contract);
+    # a baseline, if the human froze one at sign-off, lives in the campaign home.
+    scope_coverage = None
+    try:
+        import scope_report as _scope
+        scope_coverage = _scope.summary_line(
+            _scope.compute_coverage(plan, st.to_dict(),
+                                    baseline=_scope.load_baseline(home)))
+    except Exception:
+        scope_coverage = None
     return {
         **base,
         "status": st.status,
@@ -515,6 +527,7 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         "subsprints_run": st.subsprints_run,
         "total_spawns": st.total_spawns,
         "exit_code": exit_code,
+        "scope_coverage": scope_coverage,
     }
 
 
@@ -558,6 +571,18 @@ def print_campaign_result(result: dict) -> None:
               f"{result.get('milestones_total')} complete")
         print(f"spent          : subsprints={result.get('subsprints_run')} "
               f"spawns={result.get('total_spawns')}")
+        cov = result.get("scope_coverage")
+        if cov:
+            remaining = cov.get("remaining_milestones") or []
+            print(f"scope coverage : {cov.get('milestones_delivered')}/"
+                  f"{cov.get('milestones_total')} milestones delivered "
+                  f"({cov.get('pct_milestones_delivered')}%)"
+                  + (f"  remaining={remaining}" if remaining else ""))
+            if not cov.get("baseline_available"):
+                print("               : baseline not frozen — added/removed delta off "
+                      "(scope_report.py --freeze-baseline at campaign start)")
+            elif cov.get("added_milestones"):
+                print(f"               : added mid-flight={cov.get('added_milestones')}")
     if status == "paused":
         print(f"paused at      : {result.get('pause_reason')}")
         if result.get("pause_milestone_id"):
@@ -572,6 +597,10 @@ def print_campaign_result(result: dict) -> None:
         "milestone_index", "milestones_total", "subsprints_run", "total_spawns",
         "exit_code")}
     print("CAMPAIGN_STATUS=" + json.dumps(machine, sort_keys=True))
+    # Parallel, ADDITIVE parse contract (the CAMPAIGN_STATUS= line above stays
+    # byte-identical) — emitted only when the scope-coverage projection succeeded.
+    if result.get("scope_coverage"):
+        print("SCOPE_COVERAGE=" + json.dumps(result["scope_coverage"], sort_keys=True))
 
 
 def run_loop(
