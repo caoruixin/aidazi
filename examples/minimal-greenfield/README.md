@@ -8,7 +8,7 @@ Copy this directory as the starting skeleton for a greenfield adoption (`docs/gr
 
 ```
 minimal-greenfield/
-├── AGENTS.md                              # consumer root: project id + @-include chain + ledger paths
+├── AGENTS.md                              # consumer root: project id + Control Plane entry + role/on-demand refs
 ├── CLAUDE.md                              # one line `@AGENTS.md` — routes Claude Code into AGENTS.md
 ├── docs/
 │   ├── current/                           # the three domain contracts + context guide + adoption state + impl-stack snapshot
@@ -29,13 +29,13 @@ minimal-greenfield/
 └── eval/bad_cases/_manifest.md            # the bad-case suite manifest
 ```
 
-## How Claude Code and Codex enter the same chain
+## How Claude Code and Codex enter the same entry
 
-Both harnesses reach the **one** governance chain in `AGENTS.md`, via the harness-specific root
+Both harnesses reach the **one** Control Plane entry in `AGENTS.md`, via the harness-specific root
 file each one auto-loads (normative source: `aidazi/governance/context_briefing.md` §1.1):
 
 - **Claude Code** auto-loads `CLAUDE.md`, not a bare `AGENTS.md`. The one-line `CLAUDE.md`
-  (`@AGENTS.md`) imports `AGENTS.md`, so the always-load chain is in context from turn one.
+  (`@AGENTS.md`) imports `AGENTS.md`, so the default Control Plane entry is in context from turn one.
 - **OpenAI Codex** auto-loads `AGENTS.md` directly — no `CLAUDE.md` needed.
 
 `CLAUDE.md` only *imports* `AGENTS.md`; it never re-copies the chain (dual entry points drift).
@@ -44,8 +44,8 @@ deterministic check is `python aidazi/engine-kit/validators/adopter_wiring_valid
 
 ## How to use it
 
-1. Read `AGENTS.md` first (same as any role session would).
-2. Read the three domain contracts in `docs/current/` — these are what make the framework about *your* domain.
+1. Read `AGENTS.md` first as the default Control Plane entry.
+2. Activate a role explicitly when you need Research / Deliver / Dev / Code Reviewer / Acceptance.
 3. Follow `aidazi/docs/greenfield-guide.md` STEP 1-6, substituting your domain for Acme's.
 
 This example is **read-only** after snapshot (per Δ-7); it's a reference, not a live project. Don't sync framework changes into it.

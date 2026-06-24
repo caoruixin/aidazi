@@ -100,6 +100,26 @@ class MinimalGreenfieldTests(unittest.TestCase):
         self.assertTrue(wiring)
         self.assertEqual(wiring[0].status, "ok")
 
+    def test_minimal_greenfield_control_plane_passes(self):
+        r = ads.validate_adoption(_MINIMAL_GREENFIELD)
+        control = [c for c in r.checks if c.label == "default Control Plane load graph"]
+        self.assertTrue(control)
+        self.assertEqual(control[0].status, "ok")
+
+
+class ControlPlaneStatusTests(_RootBuilder):
+    def test_missing_control_plane_block_is_required_error(self):
+        root = self._mk({
+            "AGENTS.md": "# my-app\nproject_name: my-app\n",
+            "CLAUDE.md": "@AGENTS.md\n",
+            "charter.yaml": "mission:\n  id: M1\n  goal: test\n",
+        })
+        r = ads.validate_adoption(root, harness="claude_code")
+        control = [c for c in r.checks if c.label == "default Control Plane load graph"]
+        self.assertTrue(control)
+        self.assertEqual(control[0].status, "error")
+        self.assertIn("control_plane_validator.py", control[0].detail)
+
 
 class SubmoduleLayoutTests(_RootBuilder):
     def test_aidazi_submodule_engine_kit_ok(self):

@@ -90,7 +90,7 @@ LLM 的判断与运行时的保证之间那条线是被显式划定的,而非听
 
 ### Greenfield(全新项目)—— 复制示例,替换领域
 
-1. **把 `examples/minimal-greenfield/` 复制为你的起始目录树**,编辑 `AGENTS.md` §1:`project_name`、`adopter_track`、`framework_version`。每个新角色会话都先读 `AGENTS.md`;它 `@`-include 进治理链与你的状态账本。
+1. **把 `examples/minimal-greenfield/` 复制为你的起始目录树**,编辑 `AGENTS.md` §1:`project_name`、`adopter_track`、`framework_version`。每个新会话都先读 `AGENTS.md`;默认是轻量 Control Plane 入口,显式角色会话再加载完整治理链与对应 role card。
 2. **以 Research 角色跑澄清(elicitation)**(`process/agent-design-elicitation.md`,Δ-15)→ 写一份像 `docs/research-briefs/RB-001-*.md` 的研究 brief。其核心是 **`closure_contract`**:一个*正向形态* + 一个*反模式* + 一组*锚定语句*(示例性语言,**而非**关键词匹配器)。Customer 签字——这就是 **Gate 1**。
 3. **撰写三份领域契约**,置于 `docs/current/` 下(它们是宪法的领域专属对应物,每次冷启动都会加载):
    - `domain_taxonomy.md` —— 实体、用例、词汇表。

@@ -4,7 +4,8 @@ The bundle is the cwd a Quick-Fix harness session is launched in (Commit 3). It 
 OUTSIDE the repo tree (a sibling) so the harness's cold-start directory walk never reaches
 the repo's root memory file. Its minimal memory file references ONLY local copies of the
 canonical anti-hardcode kernel + the lane spec + the request — so the session's cold-start
-context is those three, not the full governance chain.
+context is those three, not the adopter root Control Plane entry or role-session
+governance chain.
 
 Copy-at-launch (not @-import across dirs): the kernel and lane spec are COPIED fresh from
 their canonical sources each launch — a build artifact, never a maintained duplicate — so

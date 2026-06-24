@@ -343,7 +343,8 @@ an empty cell.
   **not** block onboarding.
 
 The snapshot is **`load_discipline: by-role`** (Dev + Deliver load it on demand)
-— it is **not** added to the always-load governance chain.
+— it is **not** added to the default Control Plane load graph or the role-session
+governance chain.
 
 > Properties: recommendation-driven (one snapshot, recommend-then-confirm),
 > non-destructive (read-only detection; names-not-values; read-before-write),
@@ -449,9 +450,9 @@ Generate / install:
    `framework_version`, `charter_path`) and §3 ledger paths.
    1a. **Root `CLAUDE.md` harness wiring** (normative: `governance/context_briefing.md`
        §1.1). Claude Code auto-loads `CLAUDE.md`, **not** a bare `AGENTS.md`, so a
-       Claude-Code session at a root that has only `AGENTS.md` starts with the always-load
-       governance chain silently absent (a Default-Full breach). Generate a **one-line root
-       `CLAUDE.md` containing exactly `@AGENTS.md`** so Claude Code imports the same chain
+       Claude-Code session at a root that has only `AGENTS.md` starts without the default
+       Control Plane entry. Generate a **one-line root
+       `CLAUDE.md` containing exactly `@AGENTS.md`** so Claude Code imports the same entry
        Codex auto-loads. Generate it **regardless of the primary harness** — Claude Code and
        Codex are used alternately, and one wiring serves both. Discipline: **read-before-write
        + diff-confirm** like every artifact; if a `CLAUDE.md` already exists (brownfield),
@@ -477,10 +478,12 @@ Generate / install:
 5. **Vendor the default skills** under `skills/vendored/<id>/` (each with its
    upstream `LICENSE` + provenance), bound per Step 5; pins recorded in
    `skills/skills.lock`.
-6. **Create `.orchestrator/` and the audit dir** — the loop registry +
-   `.orchestrator/audit/` for the hash-chained per-loop ledger (charter `audit.ledger_dir`,
-   default `.orchestrator/audit`). This is the **repo-side** registry (`loops.json`);
-   per-loop live state/audit/transcripts land under **`.runs/<loop_id>/`** (gitignored).
+6. **Create `.orchestrator/` with control + audit dirs** — `.orchestrator/control/`
+   for the lightweight default-session state index (`state.json`) and intent ledger
+   (`intents.jsonl`), plus `.orchestrator/audit/` for the hash-chained per-loop
+   ledger (charter `audit.ledger_dir`, default `.orchestrator/audit`). This is the
+   **repo-side** registry/control area (`loops.json` plus control state); per-loop
+   live state/audit/transcripts land under **`.runs/<loop_id>/`** (gitignored).
 7. **Ensure `.gitignore` covers loop + secret paths** — at minimum append (read-before-
    write + diff-confirm if `.gitignore` already exists):
    ```
@@ -555,7 +558,7 @@ until this is green.**
    sandbox). Warnings are allowed; **errors block.** Fix and re-run until exit 0.
 2. **`adopter_wiring_validator`** — confirm the Step 6.1a harness root-file wiring
    (`governance/context_briefing.md` §1.1) is actually in place, so a Claude-Code
-   cold-start gets the Default-Full chain:
+   cold-start gets the root Control Plane entry:
    ```bash
    python engine-kit/validators/adopter_wiring_validator.py . --harness claude_code
    ```
@@ -568,7 +571,16 @@ until this is green.**
    unspecified, or a Cursor target (a bare `AGENTS.md` is not Cursor wiring); WARN does not block.
    Omit `--harness` to validate against the charter's declared harness(es) instead; for a
    Codex-only adopter the bare `AGENTS.md` PASSes and no `CLAUDE.md` is required.
-3. **`adoption_status`** — run the adoption readiness report (configured vs missing;
+3. **`control_plane_validator`** — confirm the default session stays lightweight and
+   schema-backed:
+   ```bash
+   python engine-kit/validators/control_plane_validator.py .
+   ```
+   **PASS** ⇒ `AGENTS.md` has the required `control-plane-load` block and the default
+   load graph does not include role cards, action banks, handoffs, audit transcripts,
+   eval artifacts, archives, or broad globs. **FAIL** ⇒ fix `AGENTS.md` before using
+   natural-language default sessions.
+4. **`adoption_status`** — run the adoption readiness report (configured vs missing;
    never reads secret values — env-var **names** only):
    ```bash
    python engine-kit/validators/adoption_status.py . --write-readiness docs/current/adoption-readiness.md
@@ -578,15 +590,15 @@ until this is green.**
    `docs/current/adoption-readiness.md` (human snapshot; re-run anytime to refresh).
    Pair with `docs/current/adoption-config.md` (the configuration map from Step 0).
    Fix any `[ ]` / `[~]` / `[✗]` REQUIRED items and re-run until exit 0.
-4. **Structural checks** — confirm the generated tree exists and resolves:
+5. **Structural checks** — confirm the generated tree exists and resolves:
    `AGENTS.md`, `docs/current/*` (including `adoption-config.md` +
    `adoption-readiness.md`), the copied `engine-kit/`, vendored skills +
    `skills/skills.lock`, `.gitignore` covers `.runs/` + `.env.local`,
-   `.orchestrator/audit/`, and that the intent contract triple is present. Also
+   `.orchestrator/control/`, `.orchestrator/audit/`, and that the intent contract triple is present. Also
    confirm the **Step 5 Facet A preflight** ran: every bound `(harness, provider)`
    pair has a `reachable yes` row in the onboarding record, or an explicit
    human-recorded deferral in `adoption-state.md`.
-5. Record the green result (all validators + adoption_status exit codes + timestamp)
+6. Record the green result (all validators + adoption_status exit codes + timestamp)
    in the onboarding record. Mark the relevant `adoption-state.md` rows `at-spec`.
 
 > Properties: audited (the green gate is recorded), idempotent (re-running the

@@ -26,38 +26,41 @@ This is the cold-start reading discipline for every agent session in the framewo
 
 The `aidazi/` framework + an adopter repo together are large. An agent that loads docs in near-arbitrary order tends to anchor on whichever doc arrives first, which is often the wrong tier for the question being asked.
 
-This file does three things:
+This file does four things:
 
 1. Defines the **cold-start load order** that every session executes first (§1).
-2. Provides **per-role briefing lists** — what each of the 5 roles loads before doing its work (§2).
-3. Ships a reusable **Context Pack Prompt** (§3) that asks the agent to return explicit source-of-truth decisions, doc-status warnings, and known risks before it starts.
+2. Splits default **Control Plane Session** cold-start from explicit 5-role cold-start (§1.0 and §1.2).
+3. Provides **per-role briefing lists** — what each of the 5 roles loads before doing its work (§2).
+4. Ships a reusable **Context Pack Prompt** (§3) that asks the agent to return explicit source-of-truth decisions, doc-status warnings, and known risks before it starts.
 
 It also defines two pre-output verification checks: the **Research-Acceptance contract symmetry check** (§4) and the **adoption-state load order** (§5). And a pointer to the **Δ-18 trigger** (§6) — when to load the Delivery Loop spec.
 
-## §1 Cold-start load order (every session)
+## §1 Cold-start load order
 
-Before any work output, every agent session loads, in order:
+Before any work output, every agent session first identifies whether it is a default Control Plane Session or an explicitly activated role session.
 
-1. `aidazi/governance/constitution.md` (this is `always-load`).
-2. `aidazi/governance/doc_governance.md` (this is `always-load`).
-3. `aidazi/governance/context_briefing.md` (this file; `always-load`).
-4. The adopter's root governance entry — the `AGENTS.md` that names the project, instantiates the 5-role registry, and @-includes the constitution chain. **Which root file the harness auto-loads to reach that `AGENTS.md` is harness-specific — see §1.1.**
-5. The adopter's `docs/current/adoption-state.md` — read this BEFORE loading process docs so you know which Δs are at-spec vs divergent vs not-applicable in this adopter (§5).
-6. The role card for the role you're about to play (e.g., `aidazi/role-cards/dev-agent.md`).
-7. The per-role briefing list in §2 below.
+### §1.0 Default Control Plane Session (unless a role is explicit)
 
-Then begin work.
+If the human has not explicitly activated Research / Deliver / Dev / Code Reviewer / Acceptance, the session is the default **Control Plane Session**. It is the natural-language command surface: classify the human request, record a durable intent, read the small control state index, and dispatch/resume/prepare the proper role or runner path.
 
-**Why this order**:
-- Steps 1-3 give you the universal framework boundaries (Constitution + how to read docs + how to brief yourself).
-- Step 4 tells you which adopter you're in.
-- Step 5 tells you what's customized vs at-spec (so you don't apply a Δ that the adopter has documented as divergent).
-- Step 6 tells you what role you're playing — different roles read different things.
-- Step 7 narrows to the task-specific context.
+It is **not** a sixth role. It does not sign Research briefs, Deliver close verdicts, Dev work, Code Reviewer findings, or Acceptance verdicts.
+
+The default Control Plane Session loads only:
+
+1. The adopter root governance entry (`AGENTS.md`, reached through the harness root file per §1.1).
+2. The `control-plane-load` block in that `AGENTS.md`.
+3. `.orchestrator/control/state.json`, if present.
+4. Recent or summarized `.orchestrator/control/intents.jsonl`, if present.
+5. Open checkpoint refs named by the state index.
+6. `docs/current/adoption-state.md` and `docs/current/agent_context_guide.md` only as listed by the adopter root `AGENTS.md`.
+
+It loads `process/control-plane-routing.md` and the control-plane schemas on demand when it must classify, append, validate, or debug a route.
+
+It does **not** default-load role cards, full process docs, `docs/action_bank.md`, full handoff docs, archives, audit transcripts, eval artifacts, old research briefs, proposals, or broad globs.
 
 ### §1.1 Harness root-file wiring (normative)
 
-Cold-start step 4 assumes the adopter's `AGENTS.md` governance chain is in context from the
+Role-session cold-start step 4 and Control Plane Session cold-start step 1 assume the adopter's `AGENTS.md` control-plane entry is in context from the
 first turn. Whether that happens automatically depends on **which root file the coding harness
 auto-loads** — and harnesses differ. This subsection is the **single normative source** for
 adopter root-file wiring; the consumer template (`AGENTS.md` preamble), `ONBOARDING.md`, the
@@ -77,22 +80,43 @@ worked example (`examples/minimal-greenfield/`), and the deterministic check
 <adopter-root>/CLAUDE.md
     → @AGENTS.md
 <adopter-root>/AGENTS.md
-    → the existing canonical governance chain (this file's §1 + the AGENTS.md §2 @-includes)
+    → the existing canonical Control Plane entry + role/on-demand governance refs
 ```
 
 The `CLAUDE.md` carries the one-line import `@AGENTS.md` (it MAY also hold other human-authored
 notes). It **MUST NOT** re-copy the governance chain — a second full entry point is forbidden
-because the two copies drift. `AGENTS.md` stays the single source of the chain; `CLAUDE.md` only
+because the two copies drift. `AGENTS.md` stays the single source of the root entry; `CLAUDE.md` only
 routes Claude Code into it. The import must reference the **same-root** `AGENTS.md` by a clean
 relative path: no absolute path, no `..`, no subdirectory, no symlink redirect.
 
 Because Claude Code and Codex may be used **alternately** on the same adopter repo, the canonical
 greenfield scaffold ships **both** a root `AGENTS.md` and a root `CLAUDE.md` (`@AGENTS.md`); that
 single wiring satisfies both harnesses at once. A Claude-Code adopter whose root holds only a bare
-`AGENTS.md` (no `CLAUDE.md`) gets **none** of the always-load chain at cold-start — the
-Default-Full baseline is silently absent (this is the Default-Full breach R1 closes). Run
+`AGENTS.md` (no `CLAUDE.md`) gets **none** of the Control Plane entry at cold-start — the
+default routing baseline is silently absent. Run
 `adopter_wiring_validator.py` to catch it deterministically: at onboarding (Step 8) and after any
 scaffold.
+
+### §1.2 Role-session cold-start (explicit activation only)
+
+When a session is explicitly activated as one of the five roles, before any role work output it loads, in order:
+
+1. `aidazi/governance/constitution.md` (this is `always-load`).
+2. `aidazi/governance/doc_governance.md` (this is `always-load`).
+3. `aidazi/governance/context_briefing.md` (this file; `always-load`).
+4. The adopter's root entry — the `AGENTS.md` that names the project, instantiates the 5-role registry, defines the default Control Plane load block, and names the role/on-demand governance chain. **Which root file the harness auto-loads to reach that `AGENTS.md` is harness-specific — see §1.1.**
+5. The adopter's `docs/current/adoption-state.md` — read this BEFORE loading process docs so you know which Δs are at-spec vs divergent vs not-applicable in this adopter (§5).
+6. The role card for the role you're about to play (e.g., `aidazi/role-cards/dev-agent.md`).
+7. The per-role briefing list in §2 below.
+
+Then begin work.
+
+**Why this order**:
+- Steps 1-3 give you the universal framework boundaries (Constitution + how to read docs + how to brief yourself).
+- Step 4 tells you which adopter you're in.
+- Step 5 tells you what's customized vs at-spec (so you don't apply a Δ that the adopter has documented as divergent).
+- Step 6 tells you what role you're playing — different roles read different things.
+- Step 7 narrows to the task-specific context.
 
 ## §2 Per-role briefing lists
 

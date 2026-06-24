@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """adopter_wiring_validator — deterministic (no-LLM) check that an adopter repo's
 **harness root-file wiring** is in place, so a cold-start session actually loads the
-Default-Full governance chain.
+root AGENTS.md Control Plane entry.
 
 Normative source: ``governance/context_briefing.md`` §1.1. This module is the engine-kit
 *implementation* of that rule; if this file and §1.1 disagree, §1.1 wins.
@@ -9,18 +9,18 @@ Normative source: ``governance/context_briefing.md`` §1.1. This module is the e
 Why it exists
 -------------
 Claude Code auto-loads ``CLAUDE.md`` at a repo root, **not** a bare ``AGENTS.md``. The
-framework, however, ships its always-load governance chain as ``AGENTS.md`` (the consumer
+framework, however, ships its default Control Plane entry as ``AGENTS.md`` (the consumer
 template). So a Claude-Code adopter whose root holds only ``AGENTS.md`` starts every session
-with the constitution / doc-governance / context-briefing chain silently **absent** — a
-Default-Full breach that is worse than a hard error because nothing announces it. Codex
+with the framework's natural-language control surface silently **absent** — a
+default-routing breach that is worse than a hard error because nothing announces it. Codex
 (auto-loads ``AGENTS.md``) and Cursor (its own ``.cursor/rules``) do not share that exact gap.
 
 Canonical Claude Code wiring (fixed shape, §1.1)::
 
     <adopter-root>/CLAUDE.md   ->  @AGENTS.md          (one-line import; may carry other notes)
-    <adopter-root>/AGENTS.md   ->  the existing governance chain (unchanged)
+    <adopter-root>/AGENTS.md   ->  the existing Control Plane entry (unchanged)
 
-``CLAUDE.md`` only *imports* ``AGENTS.md``; it must NOT re-copy the chain (dual entry points
+``CLAUDE.md`` only *imports* ``AGENTS.md``; it must NOT re-copy the governance chain (dual entry points
 drift). The import must reference the **same-root** ``AGENTS.md`` by a clean relative path:
 no absolute path, no ``..``, no subdirectory, no symlink redirect.
 
@@ -480,7 +480,7 @@ def check_codex(root: str, report: Report) -> None:
     if not content.strip():
         report.error(
             "codex_missing_agents_md",
-            "root AGENTS.md is empty; Codex would auto-load an empty governance chain.",
+            "root AGENTS.md is empty; Codex would auto-load an empty Control Plane entry.",
             agents_md,
         )
     # PASS: a Codex target does NOT require CLAUDE.md.

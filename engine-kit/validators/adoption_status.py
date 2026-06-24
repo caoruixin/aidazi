@@ -8,7 +8,8 @@ Answers two human questions after (or during) the Onboarding Wizard:
 
 The tool scans the adopter tree + charter (never reads secret *values* — only env-var
 **names** from the charter and whether those names are set in the environment). It
-reuses ``charter_validator`` and ``adopter_wiring_validator`` where applicable.
+reuses ``charter_validator``, ``adopter_wiring_validator``, and
+``control_plane_validator`` where applicable.
 
 Normative companion: ``ONBOARDING.md`` Step 8 (green gate) + Step 8 readiness snapshot.
 
@@ -49,6 +50,11 @@ try:
     import charter_validator as cv  # noqa: E402
 except ImportError:  # pragma: no cover
     cv = None  # type: ignore
+
+try:
+    import control_plane_validator as cpv  # noqa: E402
+except ImportError:  # pragma: no cover
+    cpv = None  # type: ignore
 
 
 # --------------------------------------------------------------------------- #
@@ -389,6 +395,20 @@ def validate_adoption(
         n_err = len(wiring.errors)
         report.add("REQUIRED", "error", "harness root-file wiring",
                    f"{n_err} error(s) — run adopter_wiring_validator.py")
+
+    if cpv is not None:
+        control_plane = cpv.validate_root(root)
+        if control_plane.ok:
+            report.add("REQUIRED", "ok", "default Control Plane load graph")
+        else:
+            n_err = len(control_plane.errors)
+            report.add(
+                "REQUIRED", "error", "default Control Plane load graph",
+                f"{n_err} error(s) — run control_plane_validator.py",
+            )
+    else:
+        report.add("REQUIRED", "partial", "default Control Plane load graph",
+                   "control_plane_validator unavailable")
 
     readiness = os.path.join(root, "docs", "current", "adoption-readiness.md")
     if os.path.isfile(readiness):

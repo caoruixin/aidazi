@@ -585,6 +585,59 @@ class ResolverGraphAdopterRoot(unittest.TestCase):
             self.assertNotEqual(h1, h2,
                                 "an adopter cold-start edit must change the input hash")
 
+    def test_framework_role_session_governance_is_bound_explicitly(self):
+        import e2e_stage as es
+        with tempfile.TemporaryDirectory() as fw, tempfile.TemporaryDirectory() as d:
+            _prep(d)
+            for rel, body in (
+                ("AGENTS.md", "# framework control plane entry\n"),
+                ("schemas/acceptance-verdict.schema.json", "{}\n"),
+                ("role-cards/acceptance-agent.md", "# acceptance role\n"),
+                ("governance/constitution.md", "# constitution v1\n"),
+                ("governance/doc_governance.md", "# doc governance\n"),
+                ("governance/context_briefing.md", "# context briefing\n"),
+            ):
+                path = os.path.join(fw, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as fh:
+                    fh.write(body)
+
+            drv = D.Driver(
+                _browser_charter(),
+                d,
+                _acceptance_adapters(),
+                loop_id="loop-governance",
+                clock=_clock(),
+                verdict_schemas=D.load_verdict_schemas(),
+            )
+            drv.state = D.RunState(loop_id=drv.loop_id, subsprint_id="sprint-001")
+
+            orig = D._find_schemas_dir
+            D._find_schemas_dir = lambda start=D._ENGINE_KIT_DIR: os.path.join(
+                fw, "schemas")
+            try:
+                graph1, _missing = drv._acceptance_resolver_graph(
+                    "eval/runs/x/out.txt", None)
+                purposes = {g["purpose"] for g in graph1}
+                self.assertIn("framework_role_session_governance", purposes)
+                bound_paths = {g["path"] for g in graph1}
+                self.assertIn("governance/constitution.md", bound_paths)
+                self.assertIn("governance/doc_governance.md", bound_paths)
+                self.assertIn("governance/context_briefing.md", bound_paths)
+
+                h1 = es.acceptance_input_hash("PROMPT", graph1)
+                with open(os.path.join(fw, "governance", "constitution.md"), "w") as fh:
+                    fh.write("# constitution v2\n")
+                graph2, _ = drv._acceptance_resolver_graph(
+                    "eval/runs/x/out.txt", None)
+                h2 = es.acceptance_input_hash("PROMPT", graph2)
+            finally:
+                D._find_schemas_dir = orig
+            self.assertNotEqual(
+                h1, h2,
+                "a role-session governance edit must change the acceptance input hash",
+            )
+
 
 # A schema-VALID but browser-shaped verdict (acceptance_class browser_e2e + functional
 # refs, NO evidence_path) — proves a STATIC run rejects a class-mismatched verdict.

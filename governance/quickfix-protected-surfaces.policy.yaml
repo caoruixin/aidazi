@@ -37,7 +37,7 @@ mandatory_surfaces:
 
   - id: governance
     globs: ["**/governance/**"]
-    reason: "Constitution + the always-load governance chain."
+    reason: "Constitution + the explicit role-session governance chain."
 
   - id: checkpoints_routing_loop
     globs:

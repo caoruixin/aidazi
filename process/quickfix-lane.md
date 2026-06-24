@@ -53,12 +53,12 @@ It is **NOT**:
 - **NOT charter-activated.** It does not use the mission charter as its activation
   mechanism (there is no `charter.quickfix`). Activation is an action — see §2.
 
-## §2 Default Full · activation · no self-downgrade
+## §2 Default Control Plane · activation · no self-downgrade
 
-**Default is Full.** Absent an explicit human Quick-Fix activation, behavior is the
-unchanged full framework. The standard root memory file (`AGENTS.md`/`CLAUDE.md`/
-`.cursor/rules`) is **not** a router and must never be turned into one: it does not ask
-the agent to decide a mode.
+**Default is the Control Plane.** Absent an explicit human Quick-Fix activation, behavior is the
+unchanged framework default: the standard root memory file (`AGENTS.md`/`CLAUDE.md`/
+`.cursor/rules`) routes natural-language work through the Control Plane Session and the normal
+5-role / Delivery / Campaign paths. It must never self-downgrade into Quick-Fix.
 
 **Activation is a human ACTION, not a file field.** The lane is activated only when a
 human **explicitly runs the Quick-Fix launcher**, or **explicitly instructs the current
@@ -72,7 +72,7 @@ you're in here") is **never** an activation.
 lane on its own judgment that "this looks small."
 
 **No in-place degrade (constraint).** When a human asks for a Quick Fix from inside an
-existing (already-Full) session, that session's **only** permitted action is to invoke
+existing default or role session, that session's **only** permitted action is to invoke
 the launcher's `prepare` step to start a **new, isolated** Quick-Fix session — it must
 **not** degrade in place and perform the fix itself. The already-loaded cold-start
 context cannot be reclaimed, so the current session hands off and stops; the fix runs in
@@ -251,9 +251,10 @@ source (§4).
 ## §13 Relationship to the framework
 
 The Quick-Fix lane is additive and loop-independent. It changes **nothing** about the
-always-load governance chain, the consumer `AGENTS.md` template, the MANDATORY_CHECKPOINTS,
-the Delivery/Campaign Loop, the Driver, or Acceptance. A session that does not go through
-the Quick-Fix launcher is, byte-for-byte, a normal Full session.
+default Control Plane entry, the consumer `AGENTS.md` template, explicit role-session
+governance loading, the MANDATORY_CHECKPOINTS, the Delivery/Campaign Loop, the Driver,
+or Acceptance. A session that does not go through the Quick-Fix launcher follows the
+normal Control Plane / role-session path.
 
 ---
 

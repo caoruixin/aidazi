@@ -6,7 +6,7 @@ governance" mode:
   * cwd = the out-of-tree ephemeral BUNDLE. Claude Code auto-loads ``CLAUDE.md`` by walking
     UP from cwd to the filesystem root (plus ``~/.claude/CLAUDE.md``). The bundle ships its
     own minimal ``CLAUDE.md``; the adopter repo is NOT an ancestor of the bundle, so the
-    repo's governance chain is never on that walk.
+    repo's root entry / role-session governance context is never on that walk.
   * the worktree is granted with ``--add-dir <worktree>`` — which Claude Code treats as a
     FILE-ACCESS grant only and does NOT auto-load that directory's ``CLAUDE.md`` from
     (archive/2026-06-21-full-coldstart-baseline-evidence.md, verified against the Claude
@@ -14,9 +14,9 @@ governance" mode:
     repo's root memory file, that file is never cold-started.
 
 The result: the Quick-Fix session cold-starts the bundle's three local files only, never
-the adopter repo's always-load governance chain. ``~/.claude/CLAUDE.md`` (the user's own
-global) still loads — but that is orthogonal to the repo chain and would load in any
-session; the evidence records it honestly.
+the adopter repo's default Control Plane entry or role-session governance chain.
+``~/.claude/CLAUDE.md`` (the user's own global) still loads — but that is orthogonal to
+the repo chain and would load in any session; the evidence records it honestly.
 
 CLI form — verified against Claude Code 2.1.170 (``claude --help``):
     claude -p --output-format json --permission-mode acceptEdits \
@@ -68,7 +68,7 @@ class ClaudeCodeAdapter(QuickfixAdapter):
                 "--add-dir grants worktree FILE access without loading its CLAUDE.md"),
             notes=(
                 "~/.claude/CLAUDE.md (user global) still loads — orthogonal to the repo "
-                "governance chain, which is never an ancestor of the bundle."),
+                "root entry, which is never an ancestor of the bundle."),
         )
 
     def build_argv(self, spec: LaunchSpec, executable: str, *, prompt: str) -> List[str]:

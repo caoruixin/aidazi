@@ -94,9 +94,9 @@ Your track decides which Δ patterns are necessary now vs deferred (`process/pro
 
 ### Greenfield (new project) — copy the example, swap the domain
 
-1. **Copy `examples/minimal-greenfield/` as your starting tree** and edit `AGENTS.md` §1: `project_name`, `adopter_track`, `framework_version`. `AGENTS.md` is what every fresh role session reads first; it `@`-includes the governance chain and your state ledgers.
+1. **Copy `examples/minimal-greenfield/` as your starting tree** and edit `AGENTS.md` §1: `project_name`, `adopter_track`, `framework_version`. `AGENTS.md` is what every fresh session reads first: by default it is the lightweight Control Plane entry; explicit role sessions then load the full governance chain and their role card.
 2. **Run elicitation as the Research role** (`process/agent-design-elicitation.md`, Δ-15) → write a research brief like `docs/research-briefs/RB-001-*.md`. Its heart is the **`closure_contract`**: a *positive shape* + an *anti-pattern* + *anchor phrases* (example language, **not** keyword matchers). The Customer signs it — that's **Gate 1**.
-3. **Author the three domain contracts** under `docs/current/` (the domain-specific counterpart to the constitution, loaded at every cold-start):
+3. **Author the three domain contracts** under `docs/current/` (the domain-specific counterpart to the constitution, loaded by roles on demand through their briefing lists and prompt `load_list`s):
    - `domain_taxonomy.md` — entities, use-cases, vocabulary.
    - `runtime_invariants.md` — your Tier-0 hard rules (Acme's: eligibility is a tool call, never an LLM guess; no cross-customer PII; idempotent processing).
    - `eval_acceptance_bars.md` — KPI thresholds + safety floors (Acme's: ≥ 0.95 eligibility accuracy, ≤ 0.02 wrong-containment).

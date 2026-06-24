@@ -24,7 +24,7 @@ notes: >
 
 # Prompt artifact rules
 
-This doc codifies the **self-containment invariant** for prompt files the Deliver Agent produces for Dev / Code Reviewer / Acceptance sessions. The invariant exists so a fresh role session can be started by pasting (or orchestrator-spawning) a single prompt file into a new session, without that session having to read further repo docs (other than the always-load governance chain).
+This doc codifies the **self-containment invariant** for prompt files the Deliver Agent produces for Dev / Code Reviewer / Acceptance sessions. The invariant exists so a fresh explicit role session can be started by pasting (or orchestrator-spawning) a single prompt file into a new session, without that session having to read further repo docs beyond its role-session governance chain.
 
 This is the operationalization of Constitution §1.4-i (context-passing efficiency) and Δ-5.
 
@@ -36,7 +36,7 @@ A **prompt artifact** (one of: `compact/sprint-NNN-dev-prompt.md`, `compact/M<N>
 - Review prompt source-of-truth = `docs/milestone_objective.md` + per-sub-sprint objective archives + per-sub-sprint Dev handoffs.
 - Acceptance prompt source-of-truth = the closure_contract in `docs/research-briefs/<id>.md` + F5 evidence path.
 
-**Self-contained** means: a fresh role session, given ONLY this prompt file (plus the always-load governance chain auto-loaded per `governance/context_briefing.md` §1), has every piece of information it needs to:
+**Self-contained** means: a fresh explicit role session, given ONLY this prompt file (plus the role-session governance chain loaded per `governance/context_briefing.md` §1.2), has every piece of information it needs to:
 
 - Understand its role and the bounded scope of the session.
 - Execute the contract end-to-end (write code / run tests / author handoff for Dev; walk anti-hardcode kernel + verify scope discipline + produce `docs/codex-findings.md` for Code Reviewer; judge against closure_contract + produce JSON verdict for Acceptance).
@@ -66,7 +66,7 @@ If `self_contained: false`, the orchestrator preflight (`process/delivery-loop.m
 | 9-question anti-hardcode kernel (in Review prompt) | ✓ | |
 | Sub-sprint cumulative scope claim (in Review prompt) | ✓ | |
 | closure_contract (in Acceptance prompt) | ✓ (or referenced by path with the brief auto-loaded via `load_list`) | |
-| Governance chain (Constitution, doc_governance, context_briefing) | — | Via AGENTS.md (auto-loaded; always-load) |
+| Governance chain (Constitution, doc_governance, context_briefing) | — | Via explicit role-session cold-start (`context_briefing.md` §1.2) |
 | Per-sub-sprint Dev handoff (in Review prompt) | — | Path reference only (Dev produces these AFTER prompt is authored) |
 | Code anchors (specific file:line references) | — | Path reference (role reads them on demand during work) |
 | Research Agent proposals in `docs/proposals/` | — | Reference if needed; do NOT embed (proposal-tier; may be out of date relative to milestone decisions) |

@@ -59,10 +59,10 @@ You are the coding agent starting the FIRST DELIVERY LOOP for an aidazi-adopted
 project. The Onboarding Wizard is already complete and the charter validates GREEN.
 Working directory is THIS repo's root (the adopter repo). Do everything from here.
 
-1. COLD-START. Read AGENTS.md first (it @-includes the governance chain), then
-   docs/current/adoption-state.md, docs/current/runtime_invariants.md, and the
-   signed brief in docs/research-briefs/. Re-confirm the intent contract with me
-   before running anything.
+1. COLD-START. Read AGENTS.md first as the default Control Plane entry. Read
+   .orchestrator/control/state.json and .orchestrator/control/intents.jsonl if
+   present, then docs/current/adoption-state.md and docs/current/agent_context_guide.md.
+   Re-confirm the intent contract with me before running anything.
 
 2. SANITY. Re-validate the charter (use the project's Python env that has the deps):
    .venv/bin/python engine-kit/validators/charter_validator.py charter.yaml

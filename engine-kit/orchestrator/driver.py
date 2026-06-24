@@ -1505,7 +1505,7 @@ class Driver:
         parts = [
             f"You are activating as the Code Reviewer Agent for sub-sprint {sid}.\n",
             "Read-only judge: Read/Grep/Glob only — NO edits, NO network, NO git "
-            "push, NO agent spawn. Cold-start the always-load governance chain plus "
+            "push, NO agent spawn. Cold-start the explicit role-session governance chain plus "
             "role-cards/code-reviewer-agent.md, templates/anti-hardcode-review-"
             "kernel.md (the 9-question kernel) and schemas/review-verdict.schema.json"
             ".\n\n",
@@ -3278,7 +3278,7 @@ class Driver:
             f"`{scope}`.\n",
             "Read-only customer-perspective judge: Read/Grep/Glob only — NO edits, "
             "NO network, NO eval-harness run. Spawn surface: orchestrator (§1.7-C, "
-            "calibration-gated). Cold-start the always-load governance chain plus "
+            "calibration-gated). Cold-start the explicit role-session governance chain plus "
             "role-cards/acceptance-agent.md and "
             "schemas/acceptance-verdict.schema.json.\n\n",
             "## Customer need (signed intent contract)\n"
@@ -3617,7 +3617,7 @@ class Driver:
         # REAL AGENTS.md / docs/current ledgers, so an edit there could not invalidate
         # §3.5b reuse (Codex impl r2 BLOCKING-3). When ingress is off (repo_dir is None)
         # there is no adopter repo, so there is no adopter cold-start to bind here — the
-        # framework cold-start below still anchors the always-load governance chain.
+        # framework role-session entries below still anchor the governance chain.
         adopter_root = self.repo_dir
         if adopter_root:
             ag = os.path.join(adopter_root, "AGENTS.md")
@@ -3631,13 +3631,23 @@ class Driver:
                         entries.append({"path": os.path.join(cur, fn),
                                         "rel": f"docs/current/{fn}",
                                         "purpose": "adopter_ledger"})
-        # The framework cold-start root: AGENTS.md @-includes the always-load governance
-        # chain, so the transitive resolver reaches constitution / doc_governance /
-        # context_briefing (and whatever else they include) — an edit to any invalidates reuse.
+        # The framework role-session governance chain is explicit. The default Control
+        # Plane entry no longer @-includes these files, so do not rely on transitive
+        # AGENTS.md closure here; an edit to any role-session governance input must
+        # invalidate Acceptance reuse.
         fw_agents = os.path.join(repo_root, "AGENTS.md")
         if os.path.isfile(fw_agents):
             entries.append({"path": fw_agents, "rel": "AGENTS.md",
                             "purpose": "framework_cold_start"})
+        for rel in (
+            os.path.join("governance", "constitution.md"),
+            os.path.join("governance", "doc_governance.md"),
+            os.path.join("governance", "context_briefing.md"),
+        ):
+            path = os.path.join(repo_root, rel)
+            if os.path.isfile(path):
+                entries.append({"path": path, "rel": rel.replace(os.sep, "/"),
+                                "purpose": "framework_role_session_governance"})
         return e2e_stage.resolve_load_graph(entries, repo_root=repo_root)
 
     def _run_acceptance(self) -> None:

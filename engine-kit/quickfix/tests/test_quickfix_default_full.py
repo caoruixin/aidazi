@@ -1,10 +1,11 @@
-"""Quick-Fix Commit 1 Default-Full regression (load-graph equivalence).
+"""Quick-Fix default Control-Plane regression (load-graph equivalence).
 
-Proves the STANDARD startup path is unchanged by the Quick-Fix lane: the Full cold-start
-load graph is the @-include closure of the consumer AGENTS.md template, and that closure
-is still EXACTLY {AGENTS.md + the three always-load governance docs}. If the Quick-Fix
-work (or anything) injected an @-include or grew the cold-start chain, this fails. The
-lane spec itself is on-demand and must never appear in the closure.
+Proves the STANDARD default startup path is unchanged by the Quick-Fix lane: the default
+Control Plane cold-start graph is the @-include closure of the consumer AGENTS.md template,
+and that closure is still EXACTLY {AGENTS.md}. Full governance is role/on-demand, not a
+default control-plane @-include. If the Quick-Fix work (or anything) injected an @-include
+or grew the default startup chain, this fails. The lane spec itself is on-demand and must
+never appear in the closure.
 
 This is the deterministic load-graph snapshot the revised plan (refinement 7) requires —
 it checks the GRAPH, not content hashes, so it stays green when unrelated doc text
@@ -17,12 +18,7 @@ import unittest
 _THIS = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.abspath(os.path.join(_THIS, "..", "..", ".."))
 
-EXPECTED_COLDSTART_CLOSURE = {
-    "AGENTS.md",
-    "governance/constitution.md",
-    "governance/doc_governance.md",
-    "governance/context_briefing.md",
-}
+EXPECTED_COLDSTART_CLOSURE = {"AGENTS.md"}
 
 
 def _resolve(at_path):
@@ -59,7 +55,7 @@ def _closure(start_rel):
 
 
 class DefaultFullLoadGraph(unittest.TestCase):
-    def test_coldstart_closure_is_exactly_the_governance_chain(self):
+    def test_coldstart_closure_is_exactly_control_plane_root(self):
         self.assertEqual(_closure("AGENTS.md"), EXPECTED_COLDSTART_CLOSURE)
 
     def test_quickfix_lane_not_in_coldstart_closure(self):

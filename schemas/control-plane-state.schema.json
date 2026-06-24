@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/control-plane-state.schema.json",
+  "title": "Control-plane state index",
+  "description": "Tiny machine-owned index under .orchestrator/control/state.json. It lets a fresh default session route natural-language work without reading full role artifacts, archives, transcripts, or eval outputs.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "updated_at",
+    "active",
+    "open_checkpoints",
+    "latest_refs",
+    "next_recommended_action"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "control-plane-state.v1"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "active": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "campaign_id": { "type": ["string", "null"] },
+        "milestone_id": { "type": ["string", "null"] },
+        "subsprint_id": { "type": ["string", "null"] },
+        "phase": { "type": ["string", "null"] },
+        "run_id": { "type": ["string", "null"] }
+      }
+    },
+    "open_checkpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["checkpoint_id", "scope", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint_id": { "type": "string", "minLength": 1 },
+          "scope": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "latest_refs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "null"]
+      },
+      "description": "Pointer map only. The default session expands a ref only when routing requires it."
+    },
+    "blocked_reason": {
+      "type": ["string", "null"]
+    },
+    "next_recommended_action": {
+      "type": ["string", "null"]
+    }
+  }
+}

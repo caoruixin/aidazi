@@ -79,7 +79,8 @@ class HarnessCapability:
     """What a harness can (and cannot) do for the Quick-Fix lane.
 
     ``cold_start_isolation`` is the load-bearing one: the lane's whole premise is that a
-    Quick-Fix session does NOT cold-start the adopter repo's full governance chain. A
+    Quick-Fix session does NOT cold-start the adopter repo's root Control Plane entry or
+    role-session governance chain. A
     harness that cannot run with its cwd OUTSIDE the repo tree while still editing the
     ephemeral worktree (no alternate-cwd + no add-dir grant) cannot satisfy that — it must
     declare ``cold_start_isolation=False`` and the lane fails closed for it.
@@ -87,7 +88,7 @@ class HarnessCapability:
     headless: bool                 # a non-interactive / print mode exists
     alternate_cwd: bool            # can run with cwd != the edit target
     worktree_write_grant: bool     # can be granted write access to a specific dir
-    cold_start_isolation: bool     # can PROVE the repo governance chain is not auto-loaded
+    cold_start_isolation: bool     # can PROVE the repo root entry is not auto-loaded
     isolation_mechanism: str       # one-line description of HOW (for evidence)
     notes: str = ""
 
