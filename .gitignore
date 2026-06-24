@@ -25,6 +25,11 @@ venv/
 .orchestrator/
 eval/runs/
 
+# Loop run artifacts — default run dir <repo>/.runs/<loop_id> (state/audit/
+# transcripts/checkpoints). In-repo for discoverability, gitignored so a loop's own
+# writes never enter the delivered diff. --run-dir / --campaign-run-dir override.
+.runs/
+
 # Local override files
 *.local
 *.local.*
