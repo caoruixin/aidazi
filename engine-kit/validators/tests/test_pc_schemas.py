@@ -117,5 +117,76 @@ class AcceptanceVerdictBranches(unittest.TestCase):
         self.assertTrue(_errs(self.SCH, v))
 
 
+_ANNOTATION_KEYS = {"title", "description", "$comment", "examples"}
+
+
+def _has_annotation(node):
+    """True if any Draft-2020-12 annotation keyword survives anywhere in the schema."""
+    if isinstance(node, dict):
+        if _ANNOTATION_KEYS & node.keys():
+            return True
+        return any(_has_annotation(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_annotation(x) for x in node)
+    return False
+
+
+class ResearchBriefSchemaSlim(unittest.TestCase):
+    """WP-1a (context/token optimization): research-brief.schema.json was slimmed IN
+    PLACE — annotation keys (title/description/$comment/examples) stripped, ALL machine
+    keys preserved. Agent-only reader: no Python validator, not in any resolver graph →
+    audit-neutral. These guards prove the slim is COMPLETE and validation semantics are
+    UNCHANGED (the machine constraints still accept a well-formed brief and reject every
+    violation), so the technique is safe to reuse on coupled schemas (WP-1b)."""
+
+    SCH = "research-brief.schema.json"
+
+    def _ok(self):
+        return {
+            "brief_id": "RB-001",
+            "input_path": "path_1_customer_ask",
+            "customer_signed": True,
+            "closure_contract": {
+                "positive_shape": "Returns a grounded answer with citations.",
+                "anti_pattern": "Fabricates a refund amount not in the policy.",
+                "anchor_phrases": ["per your policy", "I can't verify that"],
+            },
+            "scope_in": ["refund eligibility Q&A"],
+            "scope_out": ["payment processing"],
+            "anti_goal": "Not building a general chatbot.",
+            "kpi": [{"name": "accuracy", "target": ">=0.9", "measurement": "bad-case suite"}],
+        }
+
+    def test_metaschema_valid(self):
+        Draft202012Validator.check_schema(_schema(self.SCH))
+
+    def test_no_annotation_keys_remain(self):
+        self.assertFalse(_has_annotation(_schema(self.SCH)),
+                         "slim incomplete: an annotation keyword survived")
+
+    def test_well_formed_brief_validates(self):
+        self.assertEqual(_errs(self.SCH, self._ok()), [])
+
+    def test_machine_constraints_still_reject_violations(self):
+        # Each case exercises a PRESERVED machine key — proving validation semantics are
+        # unchanged after stripping annotations.
+        miss = self._ok(); del miss["closure_contract"]                 # required
+        self.assertTrue(_errs(self.SCH, miss))
+        bad_enum = self._ok(); bad_enum["input_path"] = "path_3_nope"   # enum
+        self.assertTrue(_errs(self.SCH, bad_enum))
+        extra = self._ok(); extra["unexpected"] = 1                     # additionalProperties (top)
+        self.assertTrue(_errs(self.SCH, extra))
+        nested = self._ok(); nested["closure_contract"]["x"] = 1        # additionalProperties (nested)
+        self.assertTrue(_errs(self.SCH, nested))
+        anchors = self._ok(); anchors["closure_contract"]["anchor_phrases"] = []  # minItems
+        self.assertTrue(_errs(self.SCH, anchors))
+        scope = self._ok(); scope["scope_in"] = []                      # minItems
+        self.assertTrue(_errs(self.SCH, scope))
+        kpi = self._ok(); kpi["kpi"] = [{"name": "x"}]                  # nested required
+        self.assertTrue(_errs(self.SCH, kpi))
+        typ = self._ok(); typ["customer_signed"] = "yes"               # type
+        self.assertTrue(_errs(self.SCH, typ))
+
+
 if __name__ == "__main__":
     unittest.main()

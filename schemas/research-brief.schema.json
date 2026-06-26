@@ -1,8 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aidazi.framework/schemas/research-brief.schema.json",
-  "title": "Research brief",
-  "description": "Schema for docs/research-briefs/<id>.md. closure_contract is the load-bearing section; Acceptance Agent judges against it. customer_signed gates downstream work (Constitution §3.4 invariant #4 — Research-Acceptance contract symmetry).",
   "type": "object",
   "required": [
     "brief_id",
@@ -26,26 +24,22 @@
     },
     "related_proposals": {
       "type": "array",
-      "items": {"type": "string"},
-      "description": "Paths to docs/proposals/*.md that fed this brief (Path 1)."
+      "items": {"type": "string"}
     },
     "related_failure_briefs": {
       "type": "array",
-      "items": {"type": "string"},
-      "description": "Paths to docs/diagnostics/failure-briefs/*.md that matured into this brief (Path 2; n≥2)."
+      "items": {"type": "string"}
     },
     "related_r_items": {
       "type": "array",
       "items": {"type": "string"}
     },
     "customer_signed": {
-      "type": "boolean",
-      "description": "Gate 1 sign-off; Customer writes true after reading the brief. Downstream Deliver work cannot start while false."
+      "type": "boolean"
     },
     "sign_off_date": {
       "type": ["string", "null"],
-      "format": "date",
-      "description": "YYYY-MM-DD; filled by Customer at gate 1. Acceptance verifies this matches milestone start date (no mid-flight closure_contract edits)."
+      "format": "date"
     },
     "closure_contract": {
       "type": "object",
@@ -54,19 +48,16 @@
       "properties": {
         "positive_shape": {
           "type": "string",
-          "minLength": 1,
-          "description": "1-2 paragraphs in customer-perspective language (NOT implementation language) describing what good delivered behavior looks like. Constitution §1.7-B."
+          "minLength": 1
         },
         "anti_pattern": {
           "type": "string",
-          "minLength": 1,
-          "description": "1 paragraph in observable terms describing the failure shape this milestone targets. Acceptance MUST be able to spot it in delivered behavior."
+          "minLength": 1
         },
         "anchor_phrases": {
           "type": "array",
           "items": {"type": "string", "minLength": 1},
-          "minItems": 1,
-          "description": "Quoted exemplar phrases from the expected response. SUPPORTING evidence Acceptance cites, NOT regex matchers (Constitution §1.7-B). Verdict rule remains semantic match."
+          "minItems": 1
         }
       }
     },
@@ -78,13 +69,11 @@
     "scope_out": {
       "type": "array",
       "items": {"type": "string"},
-      "minItems": 1,
-      "description": "Explicit non-deliverables. Name adjacent-but-out-of-scope concerns to prevent scope creep."
+      "minItems": 1
     },
     "anti_goal": {
       "type": "string",
-      "minLength": 1,
-      "description": "1-3 sentences; what we are intentionally NOT trying to do."
+      "minLength": 1
     },
     "kpi": {
       "type": "array",
@@ -98,12 +87,10 @@
           "measurement": {"type": "string"}
         }
       },
-      "minItems": 1,
-      "description": "Measurable success criteria. Per-track variation: Type A typically accuracy/wrong-containment/escalation-correctness; Type B per-step verification pass rate; Type C demo-pass under LOCAL_ACCEPTANCE_CHECKLIST."
+      "minItems": 1
     },
     "risk_and_impact": {
-      "type": "string",
-      "description": "Optional but recommended; what could go wrong, load-bearing dependencies, user/business cost of failure."
+      "type": "string"
     }
   }
 }
