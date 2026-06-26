@@ -12,6 +12,8 @@ an LLM:
 * The root AGENTS.md does not directly @-include the full governance triple, which
   would defeat the lightweight default session.
 * Optional control-plane state / intent JSON records validate against their schemas.
+* Optional Control Plane roadmap state / mutation records validate against their
+  schemas.
 
 Normative source: ``process/control-plane-routing.md`` + ``AGENTS.md`` §3A.
 """
@@ -44,6 +46,8 @@ REQUIRED_ALLOW = {
     "AGENTS.md",
     ".orchestrator/control/state.json",
     ".orchestrator/control/intents.jsonl",
+    ".orchestrator/control/roadmap-state.json",
+    ".orchestrator/control/roadmap-mutations.jsonl",
     "docs/current/adoption-state.md",
     "docs/current/agent_context_guide.md",
 }
@@ -52,6 +56,8 @@ REQUIRED_ON_DEMAND = {
     "aidazi/process/control-plane-routing.md",
     "aidazi/schemas/control-plane-intent.schema.json",
     "aidazi/schemas/control-plane-state.schema.json",
+    "aidazi/schemas/roadmap-state.schema.json",
+    "aidazi/schemas/roadmap-mutation.schema.json",
 }
 
 REQUIRED_FORBID = {
@@ -69,6 +75,8 @@ REQUIRED_FORBID = {
 
 CONTROL_STATE_REL = ".orchestrator/control/state.json"
 CONTROL_INTENTS_REL = ".orchestrator/control/intents.jsonl"
+CONTROL_ROADMAP_STATE_REL = ".orchestrator/control/roadmap-state.json"
+CONTROL_ROADMAP_MUTATIONS_REL = ".orchestrator/control/roadmap-mutations.jsonl"
 
 FORBIDDEN_DEFAULT_PATTERNS = tuple(sorted(REQUIRED_FORBID | {
     "aidazi/process/delivery-loop.md",
@@ -333,6 +341,11 @@ def validate_json_obj(obj: Any, schema_name: str, *, path: str) -> Report:
     return report
 
 
+def _read_json_file(path: str) -> Any:
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def validate_state_file(path: str) -> Report:
     report = Report()
     try:
@@ -387,6 +400,37 @@ def validate_intent_file(path: str) -> Report:
     return report
 
 
+def validate_jsonl_file(path: str, schema_name: str, *, rule_prefix: str) -> Report:
+    report = Report()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = list(fh)
+    except OSError as exc:
+        report.error(f"{rule_prefix}_unreadable", f"could not read JSONL file: {exc}", path)
+        return report
+    for idx, raw in enumerate(lines, start=1):
+        if not raw.strip():
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            report.error(f"{rule_prefix}_unreadable", f"line {idx}: invalid JSON: {exc}", path)
+            continue
+        report.merge(validate_json_obj(obj, schema_name, path=f"{path}:{idx}"))
+    return report
+
+
+def validate_roadmap_state_file(path: str) -> Report:
+    report = Report()
+    try:
+        obj = _read_json_file(path)
+    except (OSError, json.JSONDecodeError) as exc:
+        report.error("control_plane_roadmap_state_unreadable", f"could not read roadmap state JSON: {exc}", path)
+        return report
+    report.merge(validate_json_obj(obj, "roadmap-state.schema.json", path=path))
+    return report
+
+
 def validate_root(root: str, *, state_path: Optional[str] = None,
                   intents_path: Optional[str] = None) -> Report:
     report = Report()
@@ -409,6 +453,16 @@ def validate_root(root: str, *, state_path: Optional[str] = None,
         report.merge(validate_state_file(state_path))
     if explicit_intents or os.path.exists(intents_path):
         report.merge(validate_intent_file(intents_path))
+    roadmap_path = os.path.join(root, CONTROL_ROADMAP_STATE_REL)
+    mutations_path = os.path.join(root, CONTROL_ROADMAP_MUTATIONS_REL)
+    if os.path.exists(roadmap_path):
+        report.merge(validate_roadmap_state_file(roadmap_path))
+    if os.path.exists(mutations_path):
+        report.merge(validate_jsonl_file(
+            mutations_path,
+            "roadmap-mutation.schema.json",
+            rule_prefix="control_plane_roadmap_mutation",
+        ))
     return report
 
 

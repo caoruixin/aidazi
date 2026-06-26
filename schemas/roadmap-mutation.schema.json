@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/roadmap-mutation.schema.json",
+  "title": "Control-plane roadmap mutation",
+  "description": "Append-only structured record for a human natural-language roadmap command. The Control Plane may write and apply these machine-owned roadmap mutations directly, while role-owned artifacts such as research briefs, Deliver verdicts, code, review findings, and Acceptance verdicts remain owned by their roles.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "mutation_id",
+    "recorded_at",
+    "requested_by",
+    "action",
+    "requires_next_gate"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "roadmap-mutation.v1"
+    },
+    "mutation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "requested_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role"],
+      "properties": {
+        "role": { "type": "string", "const": "Customer" },
+        "name": { "type": ["string", "null"] }
+      }
+    },
+    "delivery_mode": {
+      "type": ["string", "null"],
+      "enum": ["single_milestone", "campaign", null]
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "insert_milestone",
+        "move_milestone",
+        "mark_active",
+        "mark_closed",
+        "change_dependency",
+        "update_status"
+      ]
+    },
+    "target_milestone_id": {
+      "type": ["string", "null"]
+    },
+    "insert_before": {
+      "type": ["string", "null"]
+    },
+    "insert_after": {
+      "type": ["string", "null"]
+    },
+    "milestone": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "title": { "type": "string", "minLength": 1 },
+        "objective": { "type": "string", "minLength": 1 },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "planned",
+            "needs_research_gate1",
+            "signed_gate1",
+            "active",
+            "closed",
+            "deferred"
+          ]
+        }
+      }
+    },
+    "depends_on": {
+      "type": ["array", "null"],
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "requires_next_gate": {
+      "type": "string",
+      "enum": [
+        "research_gate1",
+        "deliver_decompose",
+        "charter_patch",
+        "campaign_resign",
+        "none"
+      ]
+    },
+    "notes": {
+      "type": ["string", "null"]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "action": { "const": "insert_milestone" } } },
+      "then": {
+        "required": ["milestone"],
+        "properties": {
+          "milestone": {
+            "type": "object",
+            "required": ["id", "title", "objective", "depends_on", "status"]
+          }
+        }
+      }
+    }
+  ]
+}

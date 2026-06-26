@@ -1,0 +1,44 @@
+{
+  "schema_version": "roadmap-state.v1",
+  "updated_at": "2026-06-24T00:00:00Z",
+  "delivery_mode": "single_milestone",
+  "autonomy_level": "human_on_the_loop",
+  "roadmap_title": "Demo Product Roadmap",
+  "campaign_id": null,
+  "source_refs": {
+    "generated_backlog": "docs/milestone-backlog.md",
+    "charter": "charter.yaml",
+    "campaign_plan": null,
+    "active_research_brief": "docs/research-briefs/RB-001-demo.md",
+    "active_milestone_objective": "docs/milestone_objective.md"
+  },
+  "active": {
+    "milestone_id": "M1-demo",
+    "subsprint_id": "sprint-001",
+    "phase": "delivery"
+  },
+  "milestones": [
+    {
+      "id": "M1-demo",
+      "title": "Demo milestone",
+      "objective": "Deliver the first end-to-end user-visible demo.",
+      "depends_on": [],
+      "status": "active",
+      "research_brief": "docs/research-briefs/RB-001-demo.md",
+      "signed_at": "2026-06-24",
+      "subsprint_sequence": ["sprint-001", "sprint-002"],
+      "notes": "charter.yaml is the active execution source in single_milestone mode."
+    },
+    {
+      "id": "M2-followup",
+      "title": "Follow-up milestone",
+      "objective": "Extend the demo after M1 closes.",
+      "depends_on": ["M1-demo"],
+      "status": "planned",
+      "research_brief": null,
+      "signed_at": null,
+      "subsprint_sequence": [],
+      "notes": null
+    }
+  ]
+}

@@ -29,6 +29,11 @@
         "campaign_id": { "type": ["string", "null"] },
         "milestone_id": { "type": ["string", "null"] },
         "subsprint_id": { "type": ["string", "null"] },
+        "delivery_mode": {
+          "type": ["string", "null"],
+          "enum": ["single_milestone", "campaign", null],
+          "description": "Execution topology. single_milestone means charter.yaml is the active executable source; campaign means campaign-plan.json is the executable multi-milestone queue."
+        },
         "phase": { "type": ["string", "null"] },
         "run_id": { "type": ["string", "null"] }
       }
@@ -51,7 +56,7 @@
       "additionalProperties": {
         "type": ["string", "null"]
       },
-      "description": "Pointer map only. The default session expands a ref only when routing requires it."
+      "description": "Pointer map only. The default session expands a ref only when routing requires it. Common keys include charter, roadmap_state, generated_backlog, campaign_plan, run_state, signed_brief, and milestone_objective."
     },
     "blocked_reason": {
       "type": ["string", "null"]

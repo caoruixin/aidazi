@@ -28,6 +28,12 @@ Dev, Code Reviewer, or Acceptance, and it is not a sixth role in the chain. It i
 the natural-language command surface in front of the 5-role chain and the
 Delivery/Campaign runner.
 
+The human-facing contract is natural language. Humans do not need to remember
+`run_loop.py` arguments, checkpoint file shapes, or whether a project is currently
+using the single-milestone Driver or the Campaign runner. The Control Plane
+records the human intent, chooses the correct framework path, and then dispatches
+or prepares the role/runner action.
+
 ## §1 Default responsibility
 
 When a human opens a fresh coding-agent session and does not explicitly activate
@@ -53,6 +59,8 @@ The default session reads only:
 - `.orchestrator/control/state.json`, if present;
 - recent or summarized `.orchestrator/control/intents.jsonl`, if present;
 - open checkpoint refs named by the state index;
+- `.orchestrator/control/roadmap-state.json`, if present;
+- recent `.orchestrator/control/roadmap-mutations.jsonl`, if present;
 - `charter.yaml` fields only when needed to route or resume a runner.
 
 It must not default-load role cards, full action banks, full handoffs, old
@@ -74,6 +82,47 @@ The classifier output must choose exactly one class:
 | `status_request` | Human asks where things stand. | Summarize state index, latest intent, open gates, and next action; do not load transcripts unless asked. |
 | `explicit_role_activation` | Human explicitly says to act as Research/Deliver/Dev/Reviewer/Acceptance or pastes a role prompt. | Load the relevant role card and switch to that role's cold-start path. |
 | `unclear` | The request cannot be routed safely. | Ask one concise clarifying question; append an `unclear` intent record. |
+
+## §3.1 Delivery topology
+
+Control Plane state may declare a delivery topology:
+
+| `delivery_mode` | Execution source | Default use |
+|---|---|---|
+| `single_milestone` | `charter.yaml` + current `docs/milestone_objective.md` | Default for `human_in_the_loop` and most `human_on_the_loop` adopters. |
+| `campaign` | `campaign-plan.json` | Explicit opt-in for multi-milestone automated delivery, especially under high autonomy. |
+
+`delivery_mode` is associated with, but separate from, `charter.autonomy.level`.
+Autonomy answers "how far may the system advance without a human"; topology
+answers "is the current executable unit one milestone or a whole milestone
+queue." A `human_on_the_loop` adopter may stay in `single_milestone` mode for a
+long time. `fully_autonomous_within_budget` deployments SHOULD normally use
+`campaign` mode so the program queue is explicit.
+
+In `single_milestone` mode, an absent or stale `campaign-plan.json` is not a
+delivery blocker. In `campaign` mode, `campaign-plan.json` is the executable
+queue and must validate against the Control Plane roadmap projection.
+
+## §3.2 Roadmap mutations
+
+Customer roadmap commands expressed in natural language (for example "insert a
+UI milestone before M3") are recorded as structured roadmap mutations in
+`.orchestrator/control/roadmap-mutations.jsonl` and applied to
+`.orchestrator/control/roadmap-state.json`.
+
+The Control Plane MAY write and apply these roadmap mutations directly because
+they are machine-owned routing state representing the Customer's command. This
+does not authorize the Control Plane to write role-owned artifacts:
+
+- Research briefs / `closure_contract` remain Research Agent output.
+- `docs/milestone_objective.md`, `docs/sprint_objective.md`, and compact prompts
+  remain Deliver Agent output.
+- Code, review findings, and Acceptance verdicts remain owned by their roles.
+
+`docs/milestone-backlog.md` is a generated human-readable projection of roadmap
+state for new adopters. It is not edited directly. In `single_milestone` mode it
+summarizes roadmap state plus active charter refs; in `campaign` mode it is
+generated from / validated against `campaign-plan.json`.
 
 ## §4 LLM classification with schema validation
 
@@ -111,6 +160,13 @@ refs and routing state, not large artifact bodies. It may point to the latest
 campaign state, run state, signed brief, checkpoint, or acceptance report, but
 the default session expands those refs only when the route requires it.
 
+The roadmap index lives beside it:
+
+`.orchestrator/control/roadmap-state.json`
+
+It validates against `schemas/roadmap-state.schema.json` and is the source for
+the generated `docs/milestone-backlog.md` view.
+
 ## §7 Boundary rules
 
 - The Control Plane Session never authors a signed Research brief.
@@ -121,6 +177,9 @@ the default session expands those refs only when the route requires it.
 - It never spawns Acceptance from Deliver/Dev context; Acceptance spawn
   isolation remains Constitution §1.7-C.
 - It never routes around MANDATORY_CHECKPOINTS.
+- It may write Control Plane-owned routing state and roadmap mutations that
+  directly encode a Customer command, but it may not disguise those writes as a
+  Research, Deliver, Dev, Review, or Acceptance artifact.
 
 ## §8 Validation
 
@@ -129,6 +188,10 @@ Framework validators cover:
 - default load block exists and contains only control-plane-safe refs;
 - broad globs and forbidden default-load paths are rejected;
 - intent records validate against the schema before append;
+- roadmap state and roadmap mutation records validate against their schemas;
+- generated `docs/milestone-backlog.md` is not an independent source of truth;
+- `campaign` mode requires roadmap/campaign-plan agreement, while
+  `single_milestone` mode treats campaign-plan drift as non-blocking advisory;
 - fresh-session routing can proceed from state + ledger without chat history;
 - role artifacts can only be produced by their role sessions.
 

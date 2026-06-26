@@ -52,6 +52,15 @@
       "type": ["string", "null"],
       "description": "Campaign, milestone, sub-sprint, checkpoint, or role scope affected by the request."
     },
+    "delivery_mode": {
+      "type": ["string", "null"],
+      "enum": ["single_milestone", "campaign", null],
+      "description": "Optional execution topology relevant to this intent. single_milestone uses charter.yaml as the active execution source; campaign uses campaign-plan.json."
+    },
+    "roadmap_mutation_ref": {
+      "type": ["string", "null"],
+      "description": "Optional pointer to a JSONL roadmap mutation record written by the Control Plane for Customer roadmap commands."
+    },
     "next_action": {
       "type": "string",
       "minLength": 1,

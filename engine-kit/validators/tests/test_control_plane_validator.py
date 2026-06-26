@@ -22,6 +22,8 @@ allow:
   - AGENTS.md
   - .orchestrator/control/state.json
   - .orchestrator/control/intents.jsonl
+  - .orchestrator/control/roadmap-state.json
+  - .orchestrator/control/roadmap-mutations.jsonl
   - .orchestrator/control/checkpoints-index.json
   - charter.yaml
   - docs/current/adoption-state.md
@@ -30,6 +32,8 @@ on_demand:
   - aidazi/process/control-plane-routing.md
   - aidazi/schemas/control-plane-intent.schema.json
   - aidazi/schemas/control-plane-state.schema.json
+  - aidazi/schemas/roadmap-state.schema.json
+  - aidazi/schemas/roadmap-mutation.schema.json
 forbid:
   - aidazi/role-cards/**
   - aidazi/process/delivery-loop.md
@@ -138,6 +142,7 @@ class SchemaTests(_RootBuilder):
                 "campaign_id": "C1",
                 "milestone_id": "M1",
                 "subsprint_id": "sprint-001",
+                "delivery_mode": "single_milestone",
                 "phase": "gate_pending",
                 "run_id": "run-1",
             },
@@ -166,6 +171,85 @@ class SchemaTests(_RootBuilder):
             intents_path=os.path.join(root, ".orchestrator/control/intents.jsonl"),
         )
         self.assertTrue(r.ok, msg=r.render())
+
+    def test_valid_roadmap_state_and_mutation_pass(self):
+        roadmap_state = {
+            "schema_version": "roadmap-state.v1",
+            "updated_at": "2026-06-25T00:00:00Z",
+            "delivery_mode": "single_milestone",
+            "autonomy_level": "human_on_the_loop",
+            "roadmap_title": "Demo Roadmap",
+            "campaign_id": None,
+            "source_refs": {
+                "generated_backlog": "docs/milestone-backlog.md",
+                "charter": "charter.yaml",
+                "campaign_plan": None,
+                "active_research_brief": "docs/research-briefs/RB-001.md",
+                "active_milestone_objective": "docs/milestone_objective.md",
+            },
+            "active": {
+                "milestone_id": "M1",
+                "subsprint_id": "sprint-001",
+                "phase": "delivery",
+            },
+            "milestones": [{
+                "id": "M1",
+                "title": "Milestone one",
+                "objective": "Deliver milestone one.",
+                "depends_on": [],
+                "status": "active",
+                "research_brief": "docs/research-briefs/RB-001.md",
+                "signed_at": "2026-06-25",
+                "subsprint_sequence": ["sprint-001"],
+                "notes": None,
+            }],
+        }
+        mutation = {
+            "schema_version": "roadmap-mutation.v1",
+            "mutation_id": "rm-1",
+            "recorded_at": "2026-06-25T00:00:00Z",
+            "requested_by": {"role": "Customer", "name": "Rex"},
+            "delivery_mode": "single_milestone",
+            "action": "insert_milestone",
+            "target_milestone_id": "M2",
+            "insert_before": None,
+            "insert_after": "M1",
+            "milestone": {
+                "id": "M2",
+                "title": "Milestone two",
+                "objective": "Follow-up milestone.",
+                "depends_on": ["M1"],
+                "status": "needs_research_gate1",
+            },
+            "depends_on": None,
+            "requires_next_gate": "research_gate1",
+            "notes": None,
+        }
+        root = self._mk({
+            "AGENTS.md": GOOD_BLOCK,
+            ".orchestrator/control/roadmap-state.json": json.dumps(roadmap_state),
+            ".orchestrator/control/roadmap-mutations.jsonl": json.dumps(mutation) + "\n",
+        })
+        r = cpv.validate_root(root)
+        self.assertTrue(r.ok, msg=r.render())
+
+    def test_invalid_roadmap_mutation_fails(self):
+        mutation = {
+            "schema_version": "roadmap-mutation.v1",
+            "mutation_id": "rm-1",
+            "recorded_at": "2026-06-25T00:00:00Z",
+            "requested_by": {"role": "Customer"},
+            "action": "insert_milestone",
+            "requires_next_gate": "research_gate1",
+            "milestone": None,
+        }
+        root = self._mk({
+            "AGENTS.md": GOOD_BLOCK,
+            ".orchestrator/control/roadmap-mutations.jsonl": json.dumps(mutation) + "\n",
+        })
+        r = cpv.validate_root(root)
+        self.assertFalse(r.ok)
+        self.assertIn("control_plane_schema_invalid", r.rules_fired)
 
     def test_existing_default_state_and_intents_are_validated(self):
         root = self._mk({
