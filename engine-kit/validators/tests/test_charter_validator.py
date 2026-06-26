@@ -221,24 +221,25 @@ class SemanticUnitTests(unittest.TestCase):
         self.assertEqual(report.errors, [])
         self.assertEqual(report.warnings, [])
 
-    def test_network_access_grant_warns_but_passes(self):
-        # An explicit Dev network grant WARNS (deliberate escalation) but never
-        # ERRORS — it is a legitimate, human-authored opt-in.
+    def test_network_access_grant_passes_cleanly(self):
+        # Network grants are shipped defaults for the five LLM roles; the runtime
+        # audits routed grants, while validation stays clean.
         charter = self._base()
         charter["tooling"]["dev"]["sandbox"] = "workspace_write"
         charter["tooling"]["dev"]["network_access"] = True
         report = cv.validate_charter(charter)
         self.assertTrue(report.ok, msg=report.render())
         self.assertEqual(report.errors, [])
-        self.assertIn("network_access_granted", report.rules_fired)
+        self.assertEqual(report.warnings, [], msg=report.render())
 
-    def test_network_access_on_read_only_role_warns_as_noop(self):
-        # review defaults read_only; granting network there is a no-op + a mistake.
+    def test_network_access_on_read_only_role_passes_cleanly(self):
+        # review defaults read_only; the adapter/sandbox decides whether the grant
+        # has an effect, so the validator does not treat the declaration as a bug.
         charter = self._base()
         charter["tooling"]["review"]["network_access"] = True
         report = cv.validate_charter(charter)
         self.assertTrue(report.ok, msg=report.render())
-        self.assertIn("network_on_read_only_role", report.rules_fired)
+        self.assertEqual(report.warnings, [], msg=report.render())
 
     def test_no_network_access_is_silent(self):
         charter = self._base()
@@ -556,6 +557,73 @@ class ReviewAcceptanceSharedModelTests(unittest.TestCase):
         report = cv.validate_charter(c)
         self.assertTrue(report.ok, msg=report.render())
         self.assertEqual(report.warnings, [], msg=report.render())
+
+
+class ProductionAgenticAcceptanceTests(unittest.TestCase):
+    @staticmethod
+    def _production_charter():
+        c = _facet_a_charter()
+        acc = c["tooling"]["acceptance"]
+        acc.pop("enabled", None)
+        acc.update({
+            "mode": "advisory",
+            "sandbox": "read_only",
+            "functional": {
+                "mode": "browser_e2e",
+                "interaction_mode": "hybrid",
+                "target_environment": "production",
+                "checklist_path": "docs/acceptance/checklist.json",
+                "browser": {
+                    "allowed_origins": ["https://app.example.com"],
+                    "allowed_actions": [
+                        "navigate", "click", "fill", "screenshot",
+                        "read_console", "read_network",
+                    ],
+                },
+                "production": {
+                    "side_effect_policy": "explicit_allow",
+                    "allowed_side_effects": ["acceptance_test_data"],
+                    "denied_side_effects": ["payment"],
+                },
+            },
+        })
+        c["tooling"]["e2e"] = {
+            "executor_kind": "playwright",
+            "target_environment": "production",
+            "readiness": {"url": "/", "timeout_seconds": 30},
+            "base_url": "https://app.example.com",
+            "allowed_origins": ["https://app.example.com"],
+            "journeys": [{"id": "baseline", "steps": [
+                {"action": "navigate", "url": "/"},
+            ]}],
+            "lifecycle_operations": [
+                {"id": "seed", "phase": "setup", "command": ["seed"],
+                 "environments": ["production"],
+                 "side_effect": "acceptance_test_data"},
+                {"id": "cleanup", "phase": "cleanup", "command": ["cleanup"],
+                 "environments": ["production"],
+                 "side_effect": "acceptance_test_data"},
+            ],
+        }
+        return c
+
+    def test_explicitly_authorized_production_hybrid_is_valid(self):
+        report = cv.validate_charter(self._production_charter())
+        self.assertTrue(report.ok, msg=report.render())
+
+    def test_production_setup_without_cleanup_fails(self):
+        c = self._production_charter()
+        c["tooling"]["e2e"]["lifecycle_operations"].pop()
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("production_cleanup_missing", report.rules_fired)
+
+    def test_hybrid_acceptance_cannot_write_repository(self):
+        c = self._production_charter()
+        c["tooling"]["acceptance"]["sandbox"] = "workspace_write"
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("acceptance_repository_write_forbidden", report.rules_fired)
 
 
 class SkillIntegrityTests(unittest.TestCase):

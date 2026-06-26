@@ -101,14 +101,13 @@ class Adapter(abc.ABC):
         :meth:`translate_connectors` to turn a grant into harness-native config;
         translation produces CONFIG, it does not connect (no secret values).
 
-        ``network_access`` is the role's EXPLICIT, opt-in network grant for a
-        write sandbox (default ``False`` — the framework invariant is that the Dev
-        sandbox has NO network; process/delivery-loop.md §4.2.7). It is keyword-only
-        and DEFAULTS OFF so every existing call is byte-identical. Only a
+        ``network_access`` is the role's explicit network grant. The adapter
+        method default remains ``False`` so direct legacy calls are fail-closed;
+        shipped charters pass the per-role value explicitly. Only a
         sandbox-enforcing CLI adapter (codex) acts on it — it un-blocks the
-        OS-sandbox network for ``workspace_write`` so a Dev can ``pip``/``npm``
-        install; HTTP/mock adapters ignore it. The DRIVER audits the grant as a
-        deliberate privilege escalation; the charter validator WARNS on it.
+        OS-sandbox network for ``workspace_write`` so a role can ``pip``/``npm``
+        install or otherwise reach the network when configured. HTTP/mock
+        adapters ignore it. The DRIVER audits routed grants.
         """
         raise NotImplementedError
 

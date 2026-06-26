@@ -48,7 +48,7 @@ After Step 8, run `python engine-kit/validators/adoption_status.py .` for a live
 
 | Config item | Location | Required? | Default | Onboarding step |
 |---|---|---|---|---|
-| Per-role harness / provider / model | `charter.yaml` `tooling.<role>` | yes | `skills/registry.yaml` | Step 5 Facet A |
+| Per-role harness / provider / model | `charter.yaml` `tooling.<role>` | yes | `engine-kit/validators/data/role-execution-defaults.yaml` | Step 5 Facet A |
 | Per-role skills | `charter.yaml` + `skills/vendored/` | yes | role_defaults | Step 5 Facet B |
 | Connectors (tools / MCP) | `charter.yaml` `tooling.<role>.connectors[]` | no | **default-deny (none)** | Step 5 Facet C |
 | API keys (**env-var NAME only**) | `.env.local` + charter `api_key_env` / `endpoint_env` | when headless | — | Step 5 preflight |
@@ -59,6 +59,7 @@ After Step 8, run `python engine-kit/validators/adoption_status.py .` for a live
 | Config item | Location | Required? | Default | Onboarding step |
 |---|---|---|---|---|
 | Autonomy level | `charter.yaml` `autonomy.level` | yes | `human_in_the_loop` | Step 7 |
+| Delivery mode | `.orchestrator/control/roadmap-state.json` `delivery_mode` | yes | `single_milestone` | Control Plane topology; Campaign is opt-in |
 | Approved scope | `charter.yaml` `autonomy.approved_scope` | yes | from brief | Step 7 |
 | Budget caps | `charter.yaml` `budget.*` | yes | conservative | Step 7 |
 | Loop Memory | `charter.yaml` `memory.enabled` / `memory.root` | no | **OFF** | Step 7 |
@@ -80,6 +81,7 @@ After Step 8, run `python engine-kit/validators/adoption_status.py .` for a live
 | Campaign home | `.runs/campaign-<id>/` | when using `--campaign` | same base | `--campaign-run-dir` overrides |
 | Loop registry (cross-loop) | `.orchestrator/loops.json` | auto | repo-side | **not** the run-dir `.orchestrator` |
 | Audit ledger dir (charter default) | `.orchestrator/audit/` | scaffold | charter `audit.ledger_dir` | repo-side placeholder |
+| Generated roadmap view | `docs/milestone-backlog.md` | generated from Control Plane roadmap state | n/a | do not hand-edit |
 | Loop Memory store | `<memory.root>/` | when enabled | `memory/` under charter dir | OFF by default |
 
 ## Git hygiene (Step 6)

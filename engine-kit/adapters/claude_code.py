@@ -38,6 +38,7 @@ import tempfile
 from typing import Any, Optional, Sequence
 
 from .base import Adapter, AdapterError
+from .monitor import run_with_monitor
 
 _ALLOW_ENV = "AIDAZI_ALLOW_REAL_ADAPTER"
 
@@ -60,6 +61,7 @@ class ClaudeCodeAdapter(Adapter):
         *,
         provider: str = "anthropic",
         model: str = "",
+        reasoning_effort: str = "",
         binary: str = "claude",
         allow_subprocess: bool = False,
         timeout_seconds: int = 600,
@@ -68,6 +70,7 @@ class ClaudeCodeAdapter(Adapter):
     ):
         super().__init__(provider=provider, model=model, **kwargs)
         self.binary = binary
+        self.reasoning_effort = reasoning_effort
         self.allow_subprocess = allow_subprocess
         self.timeout_seconds = timeout_seconds
         self.cwd = cwd
@@ -116,6 +119,8 @@ class ClaudeCodeAdapter(Adapter):
         argv = [self.binary, "-p", "--output-format", "json"]
         if self.model:
             argv += ["--model", self.model]
+        if self.reasoning_effort:
+            argv += ["--effort", self.reasoning_effort]
         if permission_mode:
             argv += ["--permission-mode", permission_mode]
         merged_tools = list(tools)
@@ -172,13 +177,15 @@ class ClaudeCodeAdapter(Adapter):
             permission_mode=permission_mode)
         try:
             try:
-                proc = subprocess.run(  # noqa: S603 - argv is a fixed CLI, no shell
+                proc = run_with_monitor(
                     argv,
                     input=prompt,  # prompt via STDIN, never argv (no dash-injection)
                     capture_output=True,
                     text=True,
                     timeout=self.timeout_seconds,
                     cwd=self.cwd,
+                    role=role,
+                    harness=self.harness,
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 raise AdapterError(

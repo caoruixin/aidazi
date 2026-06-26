@@ -321,6 +321,22 @@ class TestCleanup(unittest.TestCase):
         self.assertEqual(action, "kept")
         self.assertTrue(os.path.isdir(handle.work_dir))
 
+    def test_cleanup_is_idempotent_on_replay(self):
+        # Crash/replay safety: the campaign milestone_merge path can crash after
+        # the worktree remove but before the §3.5c durable barrier persists the
+        # advance, so cleanup() replays on an already-removed worktree. A second
+        # call must NOT raise — it prunes stale metadata and reports "removed".
+        handle = self._worktree("LC-IDEM", "loop/LC-IDEM")
+        first = cleanup(handle, cleanup_policy=CLEANUP_REMOVE_IF_MERGED,
+                        merged=True, changed=False)
+        self.assertEqual(first, "removed")
+        self.assertFalse(os.path.isdir(handle.work_dir))
+        # Replay: worktree already gone → still "removed", no GitOpError raised.
+        second = cleanup(handle, cleanup_policy=CLEANUP_REMOVE_IF_MERGED,
+                         merged=True, changed=False)
+        self.assertEqual(second, "removed")
+        self.assertFalse(os.path.isdir(handle.work_dir))
+
     def test_new_branch_is_kept_for_pr(self):
         handle = setup_context(
             STRATEGY_NEW_BRANCH, repo_dir=self.repo, loop_id="LC5",

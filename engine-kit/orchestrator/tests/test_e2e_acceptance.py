@@ -181,6 +181,96 @@ class HappyPath(unittest.TestCase):
             self.assertEqual(ev["payload"]["manifest_sha256"], final.e2e_manifest_hash)
 
 
+class HybridAcceptanceOwnedExecution(unittest.TestCase):
+    def _hybrid_charter(self, *, cleanup_exit=0):
+        charter = _browser_charter()
+        charter["tooling"]["acceptance"]["functional"].update({
+            "interaction_mode": "hybrid",
+            "target_environment": "local",
+            "browser": {
+                "allowed_origins": ["http://127.0.0.1"],
+                "allowed_actions": [
+                    "navigate", "click", "fill", "select", "upload",
+                    "download", "screenshot", "read_console", "read_network",
+                ],
+            },
+        })
+        charter["tooling"]["e2e"]["lifecycle_operations"] = [
+            {
+                "id": "seed-user", "phase": "setup",
+                "command": [sys.executable, "-c",
+                            "open(r'{store}.setup','w').write('ok')"],
+                "environments": ["local"], "side_effect": "test_data",
+            },
+            {
+                "id": "cleanup-user", "phase": "cleanup",
+                "command": [sys.executable, "-c",
+                            f"import sys; sys.exit({cleanup_exit})"],
+                "environments": ["local"], "side_effect": "test_data",
+                "failure_policy": "record",
+            },
+        ]
+        return charter
+
+    @staticmethod
+    def _hybrid_adapters(run_dir):
+        adapters = _acceptance_adapters({})
+        plan = {
+            "interaction_mode": "hybrid",
+            "setup_operations": ["seed-user"],
+            "journeys": [],
+            "cleanup_operations": ["cleanup-user"],
+            "rationale": "run signed journeys plus lifecycle preparation",
+        }
+        adapters["acceptance"] = MockAdapter(
+            {
+                ("acceptance", 0): plan,
+                ("acceptance",): _browser_judge(run_dir),
+            },
+            harness="claude_code", provider="anthropic",
+            model="claude-opus-4-8",
+        )
+        return adapters
+
+    def test_hybrid_acceptance_plans_setup_and_cleanup_then_judges(self):
+        with tempfile.TemporaryDirectory() as d:
+            _prep(d)
+            adapters = self._hybrid_adapters(d)
+            drv = _driver(
+                d, charter=self._hybrid_charter(), adapters=adapters)
+            final = drv.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, D.STATE_HALTED)
+            self.assertEqual(len(adapters["acceptance"].history), 2)
+            self.assertIn("advisory_acceptance_pass_signoff", _checkpoints(d))
+            base = os.path.join(d, ".orchestrator", "audit", "browser")
+            loop = os.listdir(base)[0]
+            rid = os.listdir(os.path.join(base, loop))[0]
+            evid = os.path.join(base, loop, rid)
+            for rel in (
+                "acceptance-execution-plan.json",
+                "lifecycle/setup-seed-user.log",
+                "lifecycle/cleanup-cleanup-user.log",
+                "cleanup-status.json",
+            ):
+                self.assertTrue(os.path.isfile(os.path.join(evid, rel)), rel)
+            with open(os.path.join(evid, "cleanup-status.json"),
+                      encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["status"], "clean")
+
+    def test_cleanup_failure_preserves_verdict_but_halts_shipping(self):
+        with tempfile.TemporaryDirectory() as d:
+            _prep(d)
+            adapters = self._hybrid_adapters(d)
+            drv = _driver(
+                d, charter=self._hybrid_charter(cleanup_exit=3),
+                adapters=adapters)
+            final = drv.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, D.STATE_HALTED)
+            self.assertIn("acceptance_cleanup_required", _checkpoints(d))
+            self.assertNotIn(
+                "advisory_acceptance_pass_signoff", _checkpoints(d))
+
+
 class CapturedDefectsNeverPass(unittest.TestCase):
     """§3.2: a captured product defect (the executor observed a critical fail) can NEVER
     become a milestone PASS — even when the judge naively returns pass, the driver's

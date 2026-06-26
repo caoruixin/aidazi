@@ -96,6 +96,19 @@ models:
     calibratable: true
     notes: "Kimi Code agentic CLI (Moonshot AI 'K2.7 Code'), a NATIVE file-editing coding-agent harness — suits Dev. Distinct from moonshot-kimi-128k (that profile is the headless OpenAI-compatible API for evidence-reading roles; THIS one drives the `kimi` CLI). Model alias `kimi-code/kimi-for-coding` per the kimi adapter's `kimi --help` verification (Kimi Code 0.16.0; engine-kit/adapters/kimi.py); confirm with your installed CLI. Cost may be subscription-billed (null). Tiers/context illustrative — adopter-tunable."
 
+  cursor-agent-dev:
+    provider: anysphere
+    model: cursor-agent
+    context_window: 256000
+    tool_use: true
+    structured_output_tier: medium
+    reasoning_tier: high
+    endpoint_kind: native
+    harness_compat: [cursor]
+    cost: { currency: USD, input_per_mtok: null, output_per_mtok: null }
+    calibratable: true
+    notes: "Cursor Agent CLI (`cursor-agent`, Anysphere) — a NATIVE file-editing coding-agent harness in headless `-p --output-format json` mode; suits Dev (engine-kit/adapters/cursor.py). NOT provider-locked: a Cursor account fronts multiple model providers (Anthropic/OpenAI/…) behind the Cursor backend, so `provider: anysphere` names the HARNESS VENDOR, not a single model provider — the charter validator deliberately does not pin cursor in _NATIVE_HARNESS_PROVIDER. `model: cursor-agent` is the harness-default placeholder; pin a concrete account model (e.g. `sonnet-4-thinking`, `gpt-5`) in the charter tooling.dev.model to override. Auth is separate from the Cursor IDE: run `cursor-agent login` (browser OAuth) or set CURSOR_API_KEY before any real run. Cost may be subscription-billed (null). Context/tiers illustrative — adopter-tunable; refresh against `cursor-agent --list-models`."
+
   # A sub-medium structured-output model — illustrative ONLY, so a verdict role
   # bound to it deterministically trips the structured-output floor in tests/demos.
   deepseek-weak-api:

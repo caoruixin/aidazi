@@ -45,6 +45,13 @@ When the human has not explicitly activated Research / Deliver / Dev / Code Revi
 
 The Control Plane Session is NOT a sixth role and does not sign role artifacts. It does not write Research briefs, Deliver close verdicts, code changes, Code Reviewer findings, or Acceptance verdicts unless the human explicitly activates that role in a fresh role session.
 
+The Control Plane MAY write machine-owned routing state and roadmap mutations that
+directly encode a Customer command. For new adopters, `docs/milestone-backlog.md`
+is a generated human-readable projection, not an independently edited source.
+Default `delivery_mode` is `single_milestone` (active execution source =
+`charter.yaml`); `campaign-plan.json` is authoritative only when the adopter
+explicitly opts into `delivery_mode: campaign`.
+
 Detailed routing rules live in `aidazi/process/control-plane-routing.md` and are loaded on demand.
 
 ```control-plane-load
@@ -52,6 +59,8 @@ allow:
   - AGENTS.md
   - .orchestrator/control/state.json
   - .orchestrator/control/intents.jsonl
+  - .orchestrator/control/roadmap-state.json
+  - .orchestrator/control/roadmap-mutations.jsonl
   - .orchestrator/control/checkpoints-index.json
   - charter.yaml
   - docs/current/adoption-state.md
@@ -60,6 +69,8 @@ on_demand:
   - aidazi/process/control-plane-routing.md
   - aidazi/schemas/control-plane-intent.schema.json
   - aidazi/schemas/control-plane-state.schema.json
+  - aidazi/schemas/roadmap-state.schema.json
+  - aidazi/schemas/roadmap-mutation.schema.json
 forbid:
   - aidazi/role-cards/**
   - aidazi/process/delivery-loop.md

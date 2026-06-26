@@ -168,16 +168,17 @@
             },
             "discovery": {"$ref": "#/$defs/discovery", "description": "v2 ADDITIVE (Facet C). OPTIONAL; default off."},
             "sandbox": {"type": "string", "enum": ["workspace_write", "read_only"], "default": "read_only", "description": "v2 ADDITIVE. Acceptance is a READ-ONLY judge; a CLI-backed harness (codex/claude_code) honors this. OPTIONAL."},
+            "network_access": {
+              "type": "boolean",
+              "default": false,
+              "description": "v2 ADDITIVE. Explicit per-role network grant. The shipped role defaults set this true for all five LLM roles; explicit false disables it. For codex, the OS-sandbox network toggle is effective only on a workspace_write sandbox; on read_only roles it is a declared grant but remains a sandbox no-op."
+            },
             "tools": {
               "type": "array",
               "items": {"type": "string", "enum": ["Read", "Grep", "Glob"]},
               "default": ["Read", "Grep", "Glob"]
             },
-            "skills": {
-              "type": "array",
-              "items": {"type": "string"},
-              "description": "OPTIONAL evidence-reading role skills only (process/role-skill-model.md §5). Calibration identity covers the skill set (Constitution §3.4 invariant #6 + §3.6): any change to this list invalidates judge_calibration.status."
-            },
+            "skills": {"$ref": "#/$defs/skills_config"},
             "subagent_fanout": {
               "type": "boolean",
               "description": "OPTIONAL. Fan-out is discouraged for Acceptance; if true, sub-agents are read-only evidence-gatherers (Constitution §3.4 invariant #6)."
@@ -189,15 +190,33 @@
                 "status": {"type": "string", "enum": ["calibrated", "uncalibrated"]},
                 "agreement_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.9},
                 "flip_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.1},
-                "labeled_set_path": {"type": "string"}
+                "labeled_set_path": {"type": "string"},
+                "record_path": {"type": "string", "description": "Calibration record bound to the effective judge identity. New adopters should provide this before declaring calibrated."}
               }
             },
             "functional": {
               "type": "object",
               "additionalProperties": false,
-              "description": "P-C. Browser-E2E functional acceptance. mode absent ⇒ static (today's behavior, byte-identical). browser_e2e engages the orchestrator-owned evidence executor between Code Review and milestone-close Acceptance; it REQUIRES tooling.e2e + a signed checklist_path, and acceptance.mode ≠ off (the driver hard-fails browser_e2e+mode:off at construction). M3 functional acceptance stays ADVISORY until an M3 calibration record is calibrated. archive/2026-06-20-pc-browser-e2e-design.md.",
+              "description": "Browser-functional Acceptance. hybrid is the default interaction posture for new adopters: deterministic signed journeys plus Acceptance-authored exploratory journeys. Repository access remains read-only while the application/environment may be operated according to the explicit policy, including production when selected.",
               "properties": {
                 "mode": {"type": "string", "enum": ["static", "browser_e2e"], "description": "static (M1; default) | browser_e2e (M3; runs the browser evidence gate). No schema default — absence ⇒ static at the driver."},
+                "interaction_mode": {
+                  "type": "string",
+                  "enum": ["deterministic", "agentic", "hybrid"],
+                  "default": "hybrid",
+                  "description": "deterministic=fixed journeys only; agentic=Acceptance-authored journeys; hybrid=both (recommended default)."
+                },
+                "target_environment": {
+                  "type": "string",
+                  "enum": ["local", "staging", "production"],
+                  "default": "local",
+                  "description": "Environment Acceptance is authorized to operate. production is permitted only with explicit origins and side-effect policy."
+                },
+                "browser": {"$ref": "#/$defs/acceptance_browser_policy"},
+                "environment": {"$ref": "#/$defs/acceptance_lifecycle_policy"},
+                "identity": {"$ref": "#/$defs/acceptance_lifecycle_policy"},
+                "data": {"$ref": "#/$defs/acceptance_lifecycle_policy"},
+                "production": {"$ref": "#/$defs/production_policy"},
                 "executor_contract": {"type": "string", "description": "OPTIONAL id/path label for the executor-contract MECHANICS; the live mechanics are tooling.e2e (schemas/executor-contract.schema.json)."},
                 "checklist_path": {"type": "string", "description": "Path to the signed functional-checklist (schemas/functional-checklist.schema.json) — Research-owned CRITERIA, frozen at Gate-1. Required when mode=browser_e2e."},
                 "judge_calibration_m3": {
@@ -206,7 +225,8 @@
                   "description": "M3 (browser-functional) calibration, SEPARATE from the M1 judge_calibration above. Absent ⇒ uncalibrated ⇒ M3 advisory (v1 ships no M3 record).",
                   "properties": {
                     "status": {"type": "string", "enum": ["calibrated", "uncalibrated"]},
-                    "record_id": {"type": "string", "description": "acceptance-calibration-record id (acceptance_class: browser_e2e)."}
+                    "record_id": {"type": "string", "description": "acceptance-calibration-record id (acceptance_class: browser_e2e)."},
+                    "record_path": {"type": "string", "description": "Path to the browser_e2e acceptance-calibration-record JSON."}
                   }
                 }
               }
@@ -343,21 +363,17 @@
           "type": "string",
           "description": "v2 ADDITIVE (Facet A). Capability-profile id validated against schemas/model-registry.schema.json (process/model-capability-registry.md). The capability gate checks the (harness, provider, model) triple against the role's requirements. OPTIONAL."
         },
+        "reasoning_effort": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "xhigh", "max"],
+          "description": "v2 ADDITIVE (Facet A). Per-spawn reasoning effort for the bound harness: Claude Code maps to --effort; Codex maps to -c model_reasoning_effort=<value>. OPTIONAL; absent ⇒ harness default."
+        },
         "timeout_seconds": {
           "type": "integer",
           "minimum": 1,
           "description": "v2 ADDITIVE (Facet A). Per-spawn wall-clock timeout (seconds) for this role's adapter subprocess/HTTP call, read by run_loop.build_adapters on real runs. OPTIONAL; absent ⇒ the adapter default (600s). A real Dev coding session typically needs more (e.g. 1800–3600)."
         },
-        "skills": {
-          "type": "array",
-          "items": {
-            "anyOf": [
-              {"type": "string", "description": "Legacy form: skill name or path (backward-compatible)."},
-              {"$ref": "#/$defs/skill_binding", "description": "v2 object form: explicit provenance (mirror of schemas/skill-binding.schema.json)."}
-            ]
-          },
-          "description": "OPTIONAL role skills mounted on this role (process/role-skill-model.md). Each skill MUST comply with the role's tool whitelist and sandbox (Constitution §3.4 invariant #6). Entries are EITHER a bare string (skill name/path; legacy, backward-compatible) OR the v2 object form (id/source/repo/pin/license/provenance) for explicit, pinned provenance."
-        },
+        "skills": {"$ref": "#/$defs/skills_config"},
         "subagent_fanout": {
           "type": "boolean",
           "description": "OPTIONAL. false forbids intra-role sub-agent fan-out for this role; true permits it (Constitution §3.4 invariant #6 constraints apply regardless). Omitted = backing agent's default behavior."
@@ -374,7 +390,7 @@
         "network_access": {
           "type": "boolean",
           "default": false,
-          "description": "v2 ADDITIVE. EXPLICIT, opt-in network grant for a WRITE sandbox. DEFAULT FALSE — the framework invariant is that the Dev sandbox has NO network (process/delivery-loop.md §4.2.7; role-skill-model.md). Set true ONLY when a Dev genuinely must reach the network to install dependencies (pip/npm); the codex adapter then emits `-c sandbox_workspace_write.network_access=true` to un-block the OS-sandbox network. Granting it is a DELIBERATE privilege escalation: the driver records a `sandbox_network_granted` audit event and the charter validator WARNS. Has effect only on a workspace_write role (a grant on a read_only role is a no-op + a validator WARNING). Acceptance is a read-only judge and structurally cannot declare it."
+          "description": "v2 ADDITIVE. Explicit per-role network grant. The shipped role defaults set this true for all five LLM roles; explicit false disables it. For codex, the OS-sandbox network toggle is effective only on a workspace_write sandbox; on read_only roles it is a declared grant but remains a sandbox no-op. The driver records a `sandbox_network_granted` audit event when the grant is present."
         }
       }
     },
@@ -444,6 +460,98 @@
         "license": {"type": "string"},
         "provenance": {"type": "string", "enum": ["community", "authored", "vendor", "adopter"]},
         "calibration_coupled": {"type": "boolean"}
+      }
+    },
+    "skills_config": {
+      "description": "Omit to inherit framework role_defaults. Legacy array form replaces defaults. Object form supports inherit/extend/replace/disable explicitly.",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {"type": "string"},
+              {"$ref": "#/$defs/skill_binding"}
+            ]
+          }
+        },
+        {
+          "type": "object",
+          "required": ["mode"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"type": "string", "enum": ["inherit", "extend", "replace", "disable"]},
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {"type": "string"},
+                  {"$ref": "#/$defs/skill_binding"}
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "acceptance_browser_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed_origins": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^https?://[^/]+$"}
+        },
+        "allowed_actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["navigate", "click", "fill", "select", "upload", "download", "screenshot", "read_console", "read_network"]
+          }
+        }
+      }
+    },
+    "acceptance_lifecycle_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/lifecycle_operation"}
+        }
+      }
+    },
+    "lifecycle_operation": {
+      "type": "object",
+      "required": ["id", "phase"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "phase": {"type": "string", "enum": ["setup", "cleanup"]},
+        "command": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "array", "items": {"type": "string"}, "minItems": 1}
+          ]
+        },
+        "browser_journey_id": {"type": "string"},
+        "environments": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["local", "staging", "production"]}
+        },
+        "side_effect": {"type": "string"}
+      }
+    },
+    "production_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "side_effect_policy": {
+          "type": "string",
+          "enum": ["explicit_allow", "allow_except_denied"],
+          "default": "explicit_allow"
+        },
+        "allowed_side_effects": {"type": "array", "items": {"type": "string"}},
+        "denied_side_effects": {"type": "array", "items": {"type": "string"}}
       }
     }
   }

@@ -314,7 +314,9 @@ def check_acceptance_consistency(verdict: dict, manifest: dict, checklist: dict,
 # =========================================================================== #
 def authority_fingerprint(charter: dict, *, active_class: str, calibration_status: str,
                           calibration_record_id: Optional[str],
-                          autonomy_level_declared: Optional[str]) -> str:
+                          autonomy_level_declared: Optional[str],
+                          effective_skill_set_hash: Optional[str] = None,
+                          effective_functional: Optional[dict] = None) -> str:
     """Canonical fingerprint over EVERYTHING that determines authority + judge identity
     (round-3 BLOCKING). ``autonomy_level_declared`` MUST be the CHARTER-DECLARED (PRE-degrade)
     level captured BEFORE _calibration_gate runs — the §3.6 degrade mutates the live
@@ -336,6 +338,8 @@ def authority_fingerprint(charter: dict, *, active_class: str, calibration_statu
             "capability_ref": acc.get("capability_ref"),
         },
         "skills": acc.get("skills"),
+        "effective_skill_set_hash": effective_skill_set_hash,
+        "effective_functional": effective_functional,
         "subagent_fanout": acc.get("subagent_fanout"),
     })
 
@@ -444,9 +448,23 @@ def build_runtime_contract(e2e_cfg: dict, *, port: int, store_path: str,
         c["app_start_cmd"] = [_sub_tokens(tok, subs) for tok in cmd]
     elif isinstance(cmd, str):
         c["app_start_cmd"] = _sub_tokens(cmd, subs)
-    host = urllib.parse.urlparse(c.get("base_url") or "http://127.0.0.1").hostname \
-        or "127.0.0.1"
-    c["base_url"] = f"http://{host}:{port}"
+    for op in c.get("lifecycle_operations") or []:
+        if not isinstance(op, dict):
+            continue
+        op_cmd = op.get("command")
+        if isinstance(op_cmd, list):
+            op["command"] = [_sub_tokens(tok, subs) for tok in op_cmd]
+        elif isinstance(op_cmd, str):
+            op["command"] = _sub_tokens(op_cmd, subs)
+    parsed = urllib.parse.urlparse(c.get("base_url") or "http://127.0.0.1")
+    host = parsed.hostname or "127.0.0.1"
+    if port:
+        scheme = parsed.scheme or "http"
+        c["base_url"] = f"{scheme}://{host}:{port}"
+    else:
+        # Staging/production contracts retain their explicit remote URL. They do
+        # not receive a framework-allocated local port.
+        c["base_url"] = c.get("base_url")
     c["store"] = store_path
     c["mode"] = mode
     return c

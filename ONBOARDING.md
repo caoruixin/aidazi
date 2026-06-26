@@ -632,13 +632,18 @@ The bootstrap is done. Hand off to the **standalone driver** — this is where
 - **Scheduling** (overnight Auto Loop / milestone Delivery Loop) is plain cron /
   CI — never a harness scheduler (plan §4.2). Wire it when you want unattended
   runs.
-- **Drive the whole goal** (continuous multi-milestone delivery, 以终为始): the
-  single-loop driver above runs ONE milestone and stops. Once the Deliver agent has
-  authored + the Customer has signed an ordered milestone backlog
+- **Drive the whole goal** (continuous multi-milestone delivery, 以终为始): default
+  human operation remains Control Plane-first and single-milestone unless the
+  adopter explicitly opts into Campaign mode. In the default topology,
+  `charter.yaml` is the active execution source and generated
+  `docs/milestone-backlog.md` is a status view. Once the Deliver agent has authored
+  + the Customer has signed an ordered campaign plan
   (`templates/campaign-plan.example.json`; `schemas/campaign-plan.schema.json`), the
-  **Campaign Loop** drives the ENTIRE backlog through the same driver, pausing only at
-  human gates: `engine-kit/scheduling/run_loop.py --charter charter.yaml --campaign
-  campaign-plan.json`. See `FIRST-LOOP.md` → "Drive the whole goal" + `process/campaign-loop.md`.
+  **Campaign Loop** can drive the ENTIRE backlog through the same driver, pausing
+  only at human gates. Humans normally ask the Control Plane to continue/resume;
+  `engine-kit/scheduling/run_loop.py --charter charter.yaml --campaign
+  campaign-plan.json` is the internal/automation interface. See `FIRST-LOOP.md` →
+  "Drive the whole goal" + `process/campaign-loop.md`.
 - **Quick-Fix lane** (loop-independent; **usable on Claude Code and Codex**). For small,
   non-behavioral fixes a human may use the **Quick-Fix lane** (`process/quickfix-lane.md`,
   `QUICK-FIX.md`) instead of a loop — a human-explicit, per-session lane that runs OUTSIDE

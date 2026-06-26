@@ -26,11 +26,18 @@ Then the session loads its role card from `aidazi/role-cards/`.
 
 When the human has not explicitly activated a role, the session classifies the natural-language request, records the interpreted intent, reads the small control state index, and dispatches or prepares the correct role/runner path. It is not a sixth role and does not sign role artifacts.
 
+Default delivery topology is `single_milestone`: `charter.yaml` is the active
+execution source and `docs/milestone-backlog.md`, if present, is generated from
+Control Plane roadmap state. `campaign-plan.json` is authoritative only after an
+explicit Campaign opt-in.
+
 ```control-plane-load
 allow:
   - AGENTS.md
   - .orchestrator/control/state.json
   - .orchestrator/control/intents.jsonl
+  - .orchestrator/control/roadmap-state.json
+  - .orchestrator/control/roadmap-mutations.jsonl
   - .orchestrator/control/checkpoints-index.json
   - charter.yaml
   - docs/current/adoption-state.md
@@ -39,6 +46,8 @@ on_demand:
   - aidazi/process/control-plane-routing.md
   - aidazi/schemas/control-plane-intent.schema.json
   - aidazi/schemas/control-plane-state.schema.json
+  - aidazi/schemas/roadmap-state.schema.json
+  - aidazi/schemas/roadmap-mutation.schema.json
 forbid:
   - aidazi/role-cards/**
   - aidazi/process/delivery-loop.md

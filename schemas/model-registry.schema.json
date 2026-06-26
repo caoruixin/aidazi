@@ -68,8 +68,8 @@
         },
         "harness_compat": {
           "type": "array",
-          "items": {"type": "string", "enum": ["claude_code", "codex", "kimi", "aider", "headless"]},
-          "description": "Harnesses that can drive this (provider, model). Coding-agent harnesses (claude_code/codex/kimi/aider) are required for file-editing roles; headless (OpenAI-compatible API) suits pure-API judgment/reasoning roles. Keep in sync with the validator's _NATIVE_HARNESS_PROVIDER / _CODING_AGENT_HARNESSES."
+          "items": {"type": "string", "enum": ["claude_code", "codex", "kimi", "aider", "cursor", "headless"]},
+          "description": "Harnesses that can drive this (provider, model). Coding-agent harnesses (claude_code/codex/kimi/aider/cursor) are required for file-editing roles; headless (OpenAI-compatible API) suits pure-API judgment/reasoning roles. Keep in sync with the validator's _NATIVE_HARNESS_PROVIDER / _CODING_AGENT_HARNESSES."
         },
         "cost": {
           "type": "object",

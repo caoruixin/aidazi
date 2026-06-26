@@ -29,6 +29,13 @@ goal into an **ordered milestone backlog** and drives the WHOLE backlog to
 completion — auto-advancing through sub-sprints and milestones, pausing only where
 human authority is required.
 
+For human-facing operation, Campaign is normally reached through the **Control
+Plane**, not by asking humans to remember CLI flags. The human says "continue",
+"what is next?", or "insert a milestone before M3"; the Control Plane records the
+intent and either resumes the current single-milestone Driver, prepares the next
+role path, or invokes the Campaign runner when the adopter has explicitly opted
+into `delivery_mode: campaign`.
+
 **Naming (Constitution §1.7-E / §3.7):** the Campaign Loop is a multi-milestone
 **extension of the Delivery Loop (Concept 2)** — the team delivering a goal. It is
 NOT the Auto Loop (Concept 1; a single agent self-improving). The implementing
@@ -158,12 +165,47 @@ enforced at the campaign tier (the runner), NOT folded into the charter validato
 (which validates charters, not campaign plans), so the charter checkpoint floor
 stays 9 (P-A).
 
+### §4.1 Milestone-tier git isolation + merge gate (campaign `--repo-dir`)
+
+When the campaign is driven with `--repo-dir <adopter-git-root>` AND the signed
+campaign plan declares `milestone_isolation`, the runner sets up git isolation **once
+per milestone** (NOT per sub-sprint):
+
+| `milestone_isolation.default_strategy` | Behavior |
+|---|---|
+| `current_branch` | No git mutation; sub-sprints run in-place (default; byte-identical to pre-feature). |
+| `new_branch` | `git switch -c <branch>` from `trunk_branch` at milestone start. |
+| `new_worktree` | `git worktree add -b <branch>` at milestone start; sub-sprints run in the worktree dir. |
+
+Branch names come from `branch_name_template` (default
+`milestone/{campaign_id}/{milestone_id}`). Each milestone may override via
+`milestones[].isolation_strategy: inherit|current_branch|new_branch|new_worktree`.
+
+At **milestone close** (Acceptance `done`), when the milestone used an isolated
+branch and `merge_prompt_at_close: true` (default), the campaign **pauses** at the
+campaign-tier gate `milestone_merge` — NOT a 10th MANDATORY_CHECKPOINT. The human
+authors a `campaign-decision.json` with `choice`:
+
+- `merge_now` — engine executes a protected local `git merge --no-ff` into
+  `trunk_branch` (aborts on conflict; never force).
+- `open_pr` / `keep_branch` — advance to the next milestone without merging.
+- `abort` — end the campaign.
+
+Constitution §1.7-D: isolation strategies in the signed plan are **pre-authorized**;
+merge still requires an explicit human `merge_now` decision.
+
 ## §5 Artifacts
 - `schemas/campaign-plan.schema.json` — the ordered milestone backlog (+ `depends_on`
-  / `module_locks` / `merge_policy` / `isolation_strategy` forward-compat seams for a
-  future parallel runner; sequential runner enforces topological order + rejects
-  duplicate/cyclic/unknown deps).
+  / `module_locks` / `milestone_isolation` / per-milestone `isolation_strategy` /
+  `trunk_branch`; `merge_policy` remains a forward-compat seam for a future parallel
+  runner).
 - `schemas/campaign-state.schema.json` — the persisted, resumable campaign state.
+
+`campaign-plan.json` is authoritative only in `delivery_mode: campaign`. In the
+default `single_milestone` topology, `charter.yaml` is the executable source for
+the active milestone, and `campaign-plan.json` may be absent or stale without
+blocking delivery. New adopters should treat `docs/milestone-backlog.md` as a
+generated human-readable projection, not a second hand-edited plan.
 
 ### §5.1 Scope-coverage report (read-only; Phase 0)
 The runner surfaces only `milestone_index/milestones_total` at close — a progress

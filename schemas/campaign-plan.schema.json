@@ -9,6 +9,7 @@
   "properties": {
     "campaign_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "description": "Path-safe id (no separators, no leading dot) — interpolated into the campaign audit ledger filename; the runner rejects an unsafe value fail-closed."},
     "goal": {"type": "string", "minLength": 1, "description": "The top-level user-facing goal (以终为始) the campaign decomposes into the milestone backlog."},
+    "delivery_mode": {"type": "string", "const": "campaign", "description": "Explicit topology marker. Campaign plans are executable only when the adopter has opted into delivery_mode=campaign; default human-facing delivery remains single_milestone through the Control Plane + charter.yaml."},
     "signed_by_human": {"type": "boolean", "default": false, "description": "P-B campaign-tier gate (campaign_plan_signoff): the Customer signs the milestone backlog before the runner drives it (design §5.1). The runner PAUSES at campaign_plan_signoff until this is true. Enforced by the campaign runner, not the charter validator."},
     "budget": {
       "type": "object",
@@ -20,8 +21,40 @@
         "max_wall_clock_minutes": {"type": "integer", "minimum": 1, "description": "Max cumulative wall-clock minutes (measured via the injected clock)."}
       }
     },
-    "merge_policy": {"type": "string", "description": "Forward-compat seam for a future PARALLEL runner; the sequential runner ignores it."},
-    "isolation_strategy": {"type": "string", "enum": ["shared", "worktree"], "default": "shared", "description": "Forward-compat seam; the sequential runner uses shared."},
+    "trunk_branch": {"type": "string", "default": "main", "description": "The branch milestone work merges INTO at the milestone_merge gate (default main)."},
+    "milestone_isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Campaign-tier git isolation at EACH milestone boundary (NOT per sub-sprint). Requires --repo-dir on run_loop. Constitution §1.7-D: strategies here are pre-authorized by the Customer-signed plan; the engine executes them but NEVER auto-merges without a human decision at milestone_merge.",
+      "properties": {
+        "default_strategy": {
+          "type": "string",
+          "enum": ["current_branch", "new_branch", "new_worktree"],
+          "default": "current_branch",
+          "description": "Isolation for every milestone unless a milestone overrides isolation_strategy."
+        },
+        "branch_name_template": {
+          "type": "string",
+          "default": "milestone/{campaign_id}/{milestone_id}",
+          "description": "Deterministic branch name for new_branch/new_worktree. Tokens: {campaign_id}, {milestone_id}."
+        },
+        "worktree_root": {"type": "string", "description": "Parent dir for new worktrees (new_worktree only). Defaults to <repo>-worktrees sibling."},
+        "merge_prompt_at_close": {"type": "boolean", "default": true, "description": "When true and the milestone used an isolated branch/worktree, PAUSE at milestone_merge before advancing to the next milestone."},
+        "cleanup_policy": {
+          "type": "string",
+          "enum": ["keep", "remove_if_merged", "remove_if_unchanged"],
+          "default": "keep",
+          "description": "Worktree disposition after a successful merge_now at milestone_merge."
+        }
+      }
+    },
+    "merge_policy": {"type": "string", "description": "Reserved for a future parallel runner; the sequential runner records but does not branch on it."},
+    "isolation_strategy": {
+      "type": "string",
+      "enum": ["inherit", "current_branch", "new_branch", "new_worktree", "shared", "worktree"],
+      "default": "inherit",
+      "description": "DEPRECATED top-level default — prefer milestone_isolation.default_strategy. Values shared/worktree are legacy aliases (shared→current_branch, worktree→new_worktree). Per-milestone override lives on each milestone."
+    },
     "milestones": {
       "type": "array",
       "minItems": 1,
@@ -36,7 +69,13 @@
           "functional_acceptance": {"type": "string", "enum": ["static", "browser_e2e"], "description": "P-C. Per-milestone acceptance class. NO schema default (absence stays distinguishable from explicit static). Precedence in campaign.derive_milestone_context: an explicit value (incl. 'static') OVERRIDES; absent ⇒ INHERITS charter tooling.acceptance.functional.mode; else static. browser_e2e fires the orchestrator-owned browser evidence gate at this milestone's close. The projected {mode, source} is recorded in derived-context.json. archive/2026-06-20-pc-browser-e2e-design.md §4.2."},
           "subsprint_sequence": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}, "description": "Ordered (path-safe) sub-sprint ids, UNIQUE within a milestone (the follow-up id-novelty check + per-unit loop_id require it). May be authored up front (Deliver) or filled by the per-milestone full_chain_guided decompose (delivery-loop §4.2.4-G)."},
           "depends_on": {"type": "array", "items": {"type": "string"}, "description": "Milestone ids that MUST complete before this one (deterministic topological order). Absent ⇒ linear backlog order. The sequential runner enforces order + lock non-overlap so a future parallel runner is sound."},
-          "module_locks": {"type": "array", "items": {"type": "string"}, "description": "Forward-compat: resource paths this milestone owns, for a future parallel runner's isolation. The sequential runner records but does not contend on them."}
+          "module_locks": {"type": "array", "items": {"type": "string"}, "description": "Forward-compat: resource paths this milestone owns, for a future parallel runner's isolation. The sequential runner records but does not contend on them."},
+          "isolation_strategy": {
+            "type": "string",
+            "enum": ["inherit", "current_branch", "new_branch", "new_worktree"],
+            "default": "inherit",
+            "description": "Override milestone_isolation.default_strategy for THIS milestone only. inherit = use the plan default."
+          }
         }
       }
     }

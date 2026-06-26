@@ -159,7 +159,7 @@ For implementing per sprint-NNN-dev-prompt.md.
 - The specific `compact/sprint-NNN-dev-prompt.md` — this is your self-contained job spec; it carries everything you need.
 - Adopter `docs/current/` runtime contracts + domain context (the prompt's `load_list` names these explicitly per §1.4-i of constitution).
 
-Sandbox: workspace-write; no network; no git push (per Constitution §3.3 Dev Agent row).
+Sandbox: workspace-write; network follows `charter.tooling.dev.network_access`; no git push (per Constitution §3.3 Dev Agent row).
 
 ### §2.4 Code Reviewer Agent
 
@@ -171,7 +171,7 @@ For producing `docs/codex-findings.md` verdict at sub-sprint close or §4.3 trig
 - Adopter inputs: dev diff; handoff.md (the sub-sprint's §1-§11); sprint_objective.md; the bad-case suite (`eval/bad_cases/`).
 - Adopter `docs/current/` runtime contracts (for the §1.3/§1.4 ownership lens).
 
-Tool whitelist: Read, Grep, Glob. No edits. No network. No git push (per Constitution §3.3 Code Reviewer row).
+Tool whitelist: Read, Grep, Glob. No edits. Network follows `charter.tooling.review.network_access`. No git push (per Constitution §3.3 Code Reviewer row).
 
 ### §2.5 Acceptance Agent
 
@@ -183,7 +183,7 @@ For producing `docs/acceptance-reports/<scope>-acceptance-report.md` at mileston
 - Adopter inputs: the research-brief's closure_contract (THE evaluation contract; §4 below has the symmetry check); dev evidence (bad-case suite results + execution trace artifacts produced by orchestrator F5 pattern per `process/delivery-loop.md` §4.2.6); Code Reviewer verdict (latest codex-findings.md).
 - (Optional) prior acceptance reports for residual risk lineage.
 
-Tool whitelist: Read, Grep, Glob. No edits. No network. No git push.
+Tool whitelist: Read, Grep, Glob. No edits. Network follows `charter.tooling.acceptance.network_access`. No git push.
 
 **Spawn isolation** (Constitution §1.7-C): your session was spawned from Customer paste OR orchestrator with calibration passed (per `process/delivery-loop.md` §4.2.4). If you find evidence you were spawned from a Deliver or Dev session, halt and surface §1.7-C breach.
 

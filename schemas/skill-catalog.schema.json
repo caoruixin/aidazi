@@ -85,7 +85,7 @@
         },
         "harness_compat": {
           "type": "array",
-          "items": {"type": "string", "enum": ["claude_code", "codex", "headless", "aider"]}
+          "items": {"type": "string", "enum": ["claude_code", "codex", "cursor", "headless", "aider"]}
         },
         "status": {"type": "string", "enum": ["active", "deprecated", "candidate"]},
         "vendored": {"type": "boolean"},

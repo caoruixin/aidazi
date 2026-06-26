@@ -66,7 +66,7 @@ class ClaudeGateTests(unittest.TestCase):
         self.assertEqual(ctx.exception.role, "dev")
 
     def test_gated_off_no_subprocess(self):
-        with mock.patch("adapters.claude_code.subprocess.run") as run_mock:
+        with mock.patch("adapters.claude_code.run_with_monitor") as run_mock:
             with self.assertRaises(AdapterError):
                 ClaudeCodeAdapter().spawn("dev", "p", ["Write"], _SCHEMA)
         run_mock.assert_not_called()
@@ -108,7 +108,7 @@ class ClaudeArgvTests(unittest.TestCase):
     """Pure, no-I/O checks on the assembled argv."""
 
     def test_argv_shape(self):
-        a = ClaudeCodeAdapter(model="claude-sonnet-4-6")
+        a = ClaudeCodeAdapter(model="claude-sonnet-4-6", reasoning_effort="high")
         argv = a._build_argv(["Read"], permission_mode="acceptEdits")
         self.assertEqual(argv[0], "claude")
         self.assertEqual(argv[1], "-p")
@@ -117,6 +117,7 @@ class ClaudeArgvTests(unittest.TestCase):
         self.assertIn("--output-format", argv)
         self.assertIn("json", argv)
         self.assertEqual(_arg_after(argv, "--model"), "claude-sonnet-4-6")
+        self.assertEqual(_arg_after(argv, "--effort"), "high")
         self.assertEqual(_arg_after(argv, "--permission-mode"), "acceptEdits")
         self.assertEqual(_arg_after(argv, "--allowed-tools"), "Read")
 
@@ -137,7 +138,7 @@ class ClaudeSpawnSandboxTests(unittest.TestCase):
             captured["kw"] = kw
             raise OSError("stop after capture")
 
-        with mock.patch("adapters.claude_code.subprocess.run",
+        with mock.patch("adapters.claude_code.run_with_monitor",
                         side_effect=_fake_run):
             with self.assertRaises(AdapterError):
                 a.spawn("dev", "p", [], _SCHEMA, sandbox="workspace_write")
@@ -160,7 +161,7 @@ class ClaudeSpawnSandboxTests(unittest.TestCase):
                 argv, 0, stdout='{"result": "ok"}', stderr="")
 
         dash_prompt = "--output-format evil\nrest of the dev prompt"
-        with mock.patch("adapters.claude_code.subprocess.run",
+        with mock.patch("adapters.claude_code.run_with_monitor",
                         side_effect=_fake_run):
             a.spawn("dev", dash_prompt, [], {}, sandbox="workspace_write")
         self.assertEqual(captured["kw"].get("input"), dash_prompt)
@@ -169,7 +170,7 @@ class ClaudeSpawnSandboxTests(unittest.TestCase):
 
     def test_spawn_fails_closed_before_subprocess_on_bad_sandbox(self):
         a = ClaudeCodeAdapter(model="m", allow_subprocess=True)  # gate OPEN
-        with mock.patch("adapters.claude_code.subprocess.run") as run_mock:
+        with mock.patch("adapters.claude_code.run_with_monitor") as run_mock:
             with self.assertRaises(AdapterError) as ctx:
                 a.spawn("dev", "p", [], _SCHEMA, sandbox="danger-full-access")
         run_mock.assert_not_called()
@@ -232,7 +233,7 @@ class ClaudeArtifactSpawnTests(unittest.TestCase):
         def _fake_run(argv, **kw):
             return subprocess.CompletedProcess(argv, 0, stdout=envelope, stderr="")
 
-        with mock.patch("adapters.claude_code.subprocess.run",
+        with mock.patch("adapters.claude_code.run_with_monitor",
                         side_effect=_fake_run):
             out = a.spawn("dev", "p", [], {}, sandbox="workspace_write")  # {} schema
         self.assertEqual(out, {"artifact": prose})

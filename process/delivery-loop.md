@@ -299,7 +299,8 @@ For Acceptance `fix_required` specifically: follows Constitution §3.5 shape; `d
                               │           • validate_stanza
                               │           • check_handoff (§0/§1/§2)
                               │           • check_trace (Δ-12 trace artifact)
-                              │           • [run_eval F5] (if eval.cmd present)
+                              │           • run charter.tooling.eval.cmd
+                              │             as a sub-sprint gate if present
                               ↓ gates pass
                        ┌──────────────────┐
                        │ review_pending   │ spawn run_review
@@ -363,8 +364,10 @@ For Acceptance `fix_required` specifically: follows Constitution §3.5 shape; `d
 
 **State invariants**:
 - Skipped-but-required gate = NOT passed. No silent skip; orchestrator emits `gate_hard_fail`.
+- `gate_pending` is a real deterministic sub-sprint gate: Dev must have produced a handoff artifact, and when `charter.tooling.eval.cmd` is configured the orchestrator runs it before Review. A non-zero exit / timeout emits the `gate_hard_fail` MANDATORY_CHECKPOINT and Review/Close do not run.
 - Charter can't widen scope mid-run; only `scope_deviation` checkpoint resolution can.
 - `close_pending`'s deterministic `scope_envelope_check` runs BEFORE LLM close verdict is trusted.
+- A clean re-review after an auto-fix round does NOT skip `close_pending`: Review pass is necessary but not sufficient; Deliver close still runs and is the only path that emits the clean `advance` decision.
 - Acceptance runs whenever `tooling.acceptance.mode ≠ off` (advisory runs even uncalibrated, after the §3.6 auto-degrade); a `pass` only auto-ships when authoritative (mode==auto AND calibrated for the active class AND fully_autonomous_within_budget), else it HALTs at `advisory_acceptance_pass_signoff` (Constitution §3.6 / §1.7-C).
 - All decisions checkpointed to `docs/checkpoints/` filesystem so human can audit.
 - Fix-round counter bounded by `charter.budget.max_fix_rounds_total`; exceeded → halt.
@@ -414,13 +417,24 @@ The check is intentionally STATIC and BOOLEAN. No LLM judgment.
 
 When Acceptance needs execution evidence, orchestrator runs the eval harness and feeds artifact paths to Acceptance.
 
+The same `charter.tooling.eval.cmd` is also used earlier at `gate_pending` as a sub-sprint deterministic gate when configured. The two runs are kept separate on disk:
+- sub-sprint gate evidence: `eval/runs/<sub-sprint-id>/subsprint_gate/`
+- Acceptance F5 evidence: `eval/runs/<sub-sprint-id>/acceptance/`
+
 ```
 charter.tooling.eval.cmd = "<shell-command>"
 charter.tooling.eval.timeout_seconds = <int>
 
+gate_pending state:
+  orchestrator → execute charter.tooling.eval.cmd
+              → capture stdout / stderr under eval/runs/<sub-sprint-id>/subsprint_gate/
+              → on failure:
+                  emit gate_hard_fail MANDATORY_CHECKPOINT;
+                  do NOT run Review or Deliver close
+
 acceptance_pending state:
   orchestrator → execute charter.tooling.eval.cmd
-              → capture stdout / stderr / artifacts under eval/runs/<run-id>/
+              → capture stdout / stderr / artifacts under eval/runs/<sub-sprint-id>/acceptance/
               → on success (exit 0 within timeout):
                   pass artifact paths to spawn run_acceptance as read-only context
               → on failure:
@@ -435,7 +449,7 @@ run_acceptance:
 
 **Why F5**:
 - Dev sandbox is workspace-write; orchestrator-run keeps bad-case suite outside Dev sandbox (no eval contamination).
-- Acceptance sandbox is read-only; Acceptance cannot run network/scripts. F5 lets Acceptance judge from real execution data WITHOUT giving Acceptance write access OR network OR the dev sandbox.
+- Acceptance sandbox is read-only; Acceptance cannot run scripts or mutate the repo. F5 lets Acceptance judge from real execution data WITHOUT giving Acceptance write access OR the dev sandbox.
 - Both sandboxes stay sealed; evidence flows through filesystem.
 
 **F5 forbidden patterns** (anti-patterns; §4.2.8):
@@ -448,7 +462,7 @@ Each spawn function has a published JSON-schema verdict shape so orchestrator pa
 
 | Function | Backing agent (per charter) | Tools | Verdict schema |
 |---|---|---|---|
-| `spawn_dev` | `charter.tooling.dev.agent_kind` | workspace-write; no network (default; opt-in via `tooling.dev.network_access: true` — deliberate, audited escalation for dep installs); no git push | (none — code edits + handoff file IS the artifact) |
+| `spawn_dev` | `charter.tooling.dev.agent_kind` | workspace-write; network follows `tooling.dev.network_access`; no git push | (none — code edits + handoff file IS the artifact) |
 | `spawn_deliver_close` | `charter.tooling.deliver.agent_kind` | default | `schemas/deliver-close-verdict.schema.json` |
 | `spawn_deliver_plan_fix` | `charter.tooling.deliver.agent_kind` | default | `schemas/deliver-plan-fix.schema.json` |
 | `spawn_research` | `charter.tooling.research.agent_kind` | default | `schemas/research-brief.schema.json` |
@@ -492,8 +506,8 @@ Each violation is a framework breach; orchestrator implementations MUST refuse /
 10. **Charter validator silently accepting an empty `route_options` list** — at least one option must be present.
 11. **Auto-promoting an OBS-item to an R-item without human review** (per Δ-9). Orchestrator may surface candidate; promotion is human.
 12. **Mid-milestone scope expansion via adaptive_insert beyond `max_inserted_subsprints`**. Bounded; over-limit = halt.
-13. **Mounting a role skill (or spawning an intra-role sub-agent) that exceeds the role's tool whitelist or sandbox** — e.g., a review/acceptance skill declaring tools beyond `[Read, Grep, Glob]`, or a Dev sub-agent with network access (Constitution §3.4 invariant #6; `process/role-skill-model.md` §4). Inheritance is transitive; the spawning role's session owns the breach.
-14. **Acceptance drives the browser itself** (P-C; `process/browser-e2e-acceptance.md` §4). The browser-E2E EVIDENCE run is orchestrator-executed in the out-of-band `e2e_evidence_pending` state; Acceptance stays read-only (`[Read, Grep, Glob]`, no network) and judges the COMMITTED, hash-anchored manifest. An Acceptance session that launches the app, drives a browser, or runs the executor is a sandbox breach (same shape as anti-pattern #5: judging from self-run execution rather than orchestrator-captured evidence) and forfeits the read-only-judge independence. The executor produces OBSERVATIONS only (`executor_status`); the verdict is Acceptance's alone.
+13. **Mounting a role skill (or spawning an intra-role sub-agent) that exceeds the role's tool whitelist or sandbox** — e.g., a review/acceptance skill declaring tools beyond `[Read, Grep, Glob]`, or a Dev sub-agent exceeding the role's network grant (Constitution §3.4 invariant #6; `process/role-skill-model.md` §4). Inheritance is transitive; the spawning role's session owns the breach.
+14. **Acceptance drives the browser itself** (P-C; `process/browser-e2e-acceptance.md` §4). The browser-E2E EVIDENCE run is orchestrator-executed in the out-of-band `e2e_evidence_pending` state; Acceptance stays read-only (`[Read, Grep, Glob]`) and judges the COMMITTED, hash-anchored manifest. An Acceptance session that launches the app, drives a browser, or runs the executor is a sandbox breach (same shape as anti-pattern #5: judging from self-run execution rather than orchestrator-captured evidence) and forfeits the read-only-judge independence. The executor produces OBSERVATIONS only (`executor_status`); the verdict is Acceptance's alone.
 
 #### §4.2.9 Filesystem layout for an orchestrator run
 
@@ -555,6 +569,7 @@ When `run_review` returns `fix_required` (carrying ≥1 blocking P0/P1 finding) 
 - If `fix_round > charter.auto_pass_rules.auto_fix_iteration.max_rounds` → halt; emit `gate_hard_fail`.
 - If any finding severity > `only_if_findings_severity_at_most` → halt; emit MANDATORY_CHECKPOINT.
 - Else spawn `spawn_deliver_plan_fix` with the **blocking (P0/P1) review findings** as input (P2 findings are NOT injected into the fix brief); produce new sub-sprint; re-enter `dev_pending`.
+- If the re-review returns a clean pass, the loop enters `close_pending` and runs `spawn_deliver_close`; only a clean Deliver close can emit `advance`. Auto-fix success never means Review can advance the loop by itself.
 
 The bound prevents infinite Dev ↔ Review ping-pong.
 
@@ -564,6 +579,7 @@ The bound prevents infinite Dev ↔ Review ping-pong.
 - Resume after restart: read `state.json`; re-enter from current state.
 - A spawn called twice with same input hash returns cached verdict (idempotency cache). Adopters MAY invalidate by deleting the corresponding `.orchestrator/calls/` file.
 - Matters most for `spawn_research` and `run_acceptance` (expensive).
+- Loop registry close is bookkeeping, not delivery authority: if a successful terminal loop reaches close and the registry row is missing, the orchestrator repairs the row and marks it done rather than failing the already-completed delivery chain.
 
 ## §5 Adopter bootstrap pointers
 

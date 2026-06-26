@@ -23,7 +23,8 @@ def _errs(name, obj):
 
 class NewSchemasLoad(unittest.TestCase):
     NEW = ["executor-contract.schema.json", "functional-checklist.schema.json",
-           "browser-evidence-manifest.schema.json", "acceptance-calibration-record.schema.json"]
+           "browser-evidence-manifest.schema.json", "acceptance-calibration-record.schema.json",
+           "acceptance-execution-plan.schema.json"]
 
     def test_all_new_schemas_are_valid_metaschema(self):
         for name in self.NEW:
@@ -35,9 +36,27 @@ class NewSchemasLoad(unittest.TestCase):
               "base_url": "http://127.0.0.1", "allowed_origins": ["http://127.0.0.1"],
               "journeys": [{"id": "j", "steps": [{"action": "navigate", "url": "/"}]}]}
         self.assertEqual(_errs("executor-contract.schema.json", ok), [])
-        # remote origin is rejected (local-only, fail-closed).
-        bad = {**ok, "allowed_origins": ["https://example.com"]}
+        # Production HTTPS origins are valid when explicit; non-HTTP origins are not.
+        production = {**ok, "app_start_cmd": None,
+                      "base_url": "https://app.example.com",
+                      "allowed_origins": ["https://app.example.com"],
+                      "target_environment": "production"}
+        production.pop("app_start_cmd")
+        self.assertEqual(_errs("executor-contract.schema.json", production), [])
+        bad = {**ok, "allowed_origins": ["ftp://example.com"]}
         self.assertTrue(_errs("executor-contract.schema.json", bad))
+
+    def test_acceptance_execution_plan_sample(self):
+        ok = {
+            "interaction_mode": "hybrid",
+            "setup_operations": ["seed-user"],
+            "journeys": [{"id": "explore", "steps": [
+                {"action": "navigate", "url": "/"},
+                {"action": "screenshot"}
+            ]}],
+            "cleanup_operations": ["delete-user"],
+        }
+        self.assertEqual(_errs("acceptance-execution-plan.schema.json", ok), [])
 
     def test_functional_checklist_sample(self):
         ok = {"checklist_id": "fc", "criteria": [{"criterion_id": "C1", "criterion": "x"}]}

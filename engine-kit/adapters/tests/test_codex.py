@@ -63,7 +63,7 @@ class CodexGateTests(unittest.TestCase):
     def test_gated_off_attempts_no_subprocess(self):
         """Prove ZERO I/O: subprocess.run must NOT be called when gated off."""
         adapter = CodexAdapter()
-        with mock.patch("adapters.codex.subprocess.run") as run_mock:
+        with mock.patch("adapters.codex.run_with_monitor") as run_mock:
             with self.assertRaises(AdapterError):
                 adapter.spawn("dev", "prompt", ["Read"], _SCHEMA)
         run_mock.assert_not_called()
@@ -113,7 +113,7 @@ class CodexArgvTests(unittest.TestCase):
     """Pure, no-I/O checks on the assembled argv (the documented CLI form)."""
 
     def test_argv_is_codex_exec_json(self):
-        adapter = CodexAdapter(model="o4-mini", cwd="/work")
+        adapter = CodexAdapter(model="o4-mini", cwd="/work", reasoning_effort="high")
         argv = adapter._build_argv(["Read", "Write"])
         # Documented non-interactive form: `codex exec --json ...`. The PROMPT is
         # passed on STDIN (subprocess input=), NEVER as a positional argv token.
@@ -122,6 +122,8 @@ class CodexArgvTests(unittest.TestCase):
         self.assertIn("--json", argv)
         self.assertIn("--model", argv)
         self.assertIn("o4-mini", argv)
+        self.assertIn("-c", argv)
+        self.assertIn("model_reasoning_effort=high", argv)
         self.assertIn("--sandbox", argv)
         self.assertIn("read-only", argv)
         self.assertIn("-C", argv)
@@ -143,6 +145,15 @@ class CodexArgvTests(unittest.TestCase):
         self.assertIn("--skip-git-repo-check", on)
         off = CodexAdapter(model="m")._build_argv([])
         self.assertNotIn("--skip-git-repo-check", off)
+
+    def test_read_only_disables_approval_prompts(self):
+        argv = CodexAdapter(model="m")._build_argv([], sandbox="read-only")
+        self.assertIn("-c", argv)
+        self.assertIn("approval_policy=never", argv)
+
+    def test_workspace_write_does_not_force_approval_policy(self):
+        argv = CodexAdapter(model="m")._build_argv([], sandbox="workspace-write")
+        self.assertNotIn("approval_policy=never", argv)
 
 
 def _arg_after(argv, flags):
@@ -195,14 +206,14 @@ class CodexConnectorsSandboxTests(unittest.TestCase):
             captured["argv"] = argv
             raise OSError("stop after capture")  # bail; we only want the argv
 
-        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             with self.assertRaises(AdapterError):
                 a.spawn("dev", "p", [], _SCHEMA, sandbox="workspace_write")
         self.assertIn("workspace-write", captured["argv"])
 
     def test_granted_connector_fails_closed_before_subprocess(self):
         a = CodexAdapter(model="m", allow_subprocess=True)  # gate OPEN
-        with mock.patch("adapters.codex.subprocess.run") as run_mock:
+        with mock.patch("adapters.codex.run_with_monitor") as run_mock:
             with self.assertRaises(AdapterError) as ctx:
                 a.spawn("dev", "p", [], _SCHEMA, connectors=_GRANT)
         # Fail-closed: it raised BEFORE any subprocess, and says so.
@@ -221,10 +232,10 @@ class CodexConnectorsSandboxTests(unittest.TestCase):
 
 
 class CodexNetworkAccessTests(unittest.TestCase):
-    """The opt-in network grant (tooling.<role>.network_access) maps to codex's
+    """The network grant (tooling.<role>.network_access) maps to codex's
     `-c sandbox_workspace_write.network_access=true` config override — ONLY for a
-    workspace-write sandbox, and ONLY when explicitly granted (default OFF, so the
-    Dev=no-network invariant holds unless an adopter opts in)."""
+    workspace-write sandbox, and ONLY when explicitly granted. The adapter method
+    default remains fail-closed; shipped role configs pass the charter value."""
 
     _NET_OVERRIDE = "sandbox_workspace_write.network_access=true"
 
@@ -260,7 +271,7 @@ class CodexNetworkAccessTests(unittest.TestCase):
         argv = CodexAdapter(model="m")._build_argv(
             [], sandbox="read-only", network_access=True)
         self.assertNotIn(self._NET_OVERRIDE, argv)
-        self.assertNotIn("-c", argv)
+        self.assertIn("approval_policy=never", argv)
 
     def test_spawn_threads_network_access_into_argv(self):
         a = CodexAdapter(model="m", allow_subprocess=True)
@@ -270,7 +281,7 @@ class CodexNetworkAccessTests(unittest.TestCase):
             captured["argv"] = argv
             raise OSError("stop after capture")  # bail; we only want the argv
 
-        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             with self.assertRaises(AdapterError):
                 a.spawn("dev", "p", [], _SCHEMA, sandbox="workspace_write",
                         network_access=True)
@@ -286,7 +297,7 @@ class CodexNetworkAccessTests(unittest.TestCase):
             captured["argv"] = argv
             raise OSError("stop after capture")
 
-        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             with self.assertRaises(AdapterError):
                 a.spawn("dev", "p", [], _SCHEMA, sandbox="workspace_write")
         self.assertNotIn(self._NET_OVERRIDE, captured["argv"])
@@ -355,7 +366,7 @@ class CodexOutputFilePrimaryTests(unittest.TestCase):
                 fh.write('{"status": "draft"}')
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             verdict = a.spawn("dev", "p", [], _SCHEMA)
         self.assertEqual(verdict, {"status": "draft"})
 
@@ -367,7 +378,7 @@ class CodexOutputFilePrimaryTests(unittest.TestCase):
             # Leave the `-o` file UNWRITTEN ⇒ spawn must fall back to stdout JSONL.
             return subprocess.CompletedProcess(argv, 0, stdout=jsonl, stderr="")
 
-        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             verdict = a.spawn("dev", "p", [], _SCHEMA)
         self.assertEqual(verdict, {"ok": True})
 
@@ -377,7 +388,7 @@ class CodexOutputFilePrimaryTests(unittest.TestCase):
         def _fake_run(argv, **kw):
             return subprocess.CompletedProcess(argv, 2, stdout="", stderr="boom")
 
-        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             with self.assertRaises(AdapterError) as ctx:
                 a.spawn("dev", "p", [], _SCHEMA)
         self.assertIn("exited 2", str(ctx.exception))
@@ -399,7 +410,7 @@ class RegistryTests(unittest.TestCase):
     def test_all_harnesses_present(self):
         self.assertEqual(
             set(ADAPTER_REGISTRY),
-            {"mock", "claude_code", "headless", "codex", "kimi"},
+            {"mock", "claude_code", "headless", "codex", "kimi", "cursor"},
         )
 
     def test_unknown_harness_still_raises_typed_error(self):
@@ -440,7 +451,7 @@ class CodexVerdictRobustnessTests(unittest.TestCase):
             captured["prompt"] = kw.get("input")  # prompt rides on STDIN now
             raise OSError("stop after capture")
 
-        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             with self.assertRaises(AdapterError):
                 a.spawn("review", "Review it.", [], {"type": "object"})
         self.assertIn("OUTPUT CONTRACT", captured["prompt"])
@@ -453,7 +464,7 @@ class CodexVerdictRobustnessTests(unittest.TestCase):
             captured["prompt"] = kw.get("input")  # prompt rides on STDIN now
             raise OSError("stop")
 
-        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             with self.assertRaises(AdapterError):
                 a.spawn("dev", "Do it.", [], {})  # empty schema → no contract
         self.assertNotIn("OUTPUT CONTRACT", captured["prompt"])
@@ -470,7 +481,7 @@ class CodexVerdictRobustnessTests(unittest.TestCase):
         def _fake_run(argv, **kw):
             return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
-        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             out = a.spawn("dev", "Do it.", [], {})  # empty schema → artifact
         self.assertEqual(
             out, {"artifact": "Implemented the module; handoff written to docs/handoff.md."})
@@ -525,7 +536,7 @@ class CodexFailClosedTests(unittest.TestCase):
         def _fake_run(argv, **kw):
             return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
-        with mock.patch("adapters.codex.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             with self.assertRaises(AdapterError):
                 a.spawn("review", "Review it.", [], self._STRICT)
 

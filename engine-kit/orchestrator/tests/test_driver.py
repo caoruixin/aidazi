@@ -45,6 +45,8 @@ import memory_store as ms  # noqa: E402  (driver put engine-kit/memory on sys.pa
 CHARTER_PATH = os.path.join(_ORCH_DIR, "examples", "p2-charter.yaml")
 _FIXTURES_DIR = os.path.join(_TESTS_DIR, "fixtures")
 _FAKE_EVAL = os.path.join(_FIXTURES_DIR, "fake_eval.py")
+_FAKE_EVAL_ACCEPTANCE_FAIL = os.path.join(
+    _FIXTURES_DIR, "fake_eval_acceptance_fail.py")
 
 
 def _clock():
@@ -109,6 +111,44 @@ class TestCleanTransitions(unittest.TestCase):
             self.assertTrue(os.path.isfile(drv_.state_path))
             reloaded = drv_._load_state()
             self.assertEqual(reloaded.state, STATE_ADVANCE)
+
+
+class TestSubSprintGate(unittest.TestCase):
+    def test_eval_cmd_runs_before_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            events = audit.read_events(drv_.audit_ledger)
+            types = [e["type"] for e in events]
+            self.assertIn("subsprint_gate_run", types)
+            gate_idx = types.index("subsprint_gate_run")
+            review_idx = next(i for i, e in enumerate(events)
+                              if e["type"] == "spawn"
+                              and e["payload"]["role"] == "review")
+            self.assertLess(gate_idx, review_idx)
+            gate = next(e for e in events if e["type"] == "subsprint_gate_run")
+            self.assertTrue(gate["payload"]["ok"])
+            self.assertTrue(
+                gate["payload"]["evidence_path"].startswith(
+                    "eval/runs/sprint-001/subsprint_gate/"))
+
+    def test_eval_cmd_failure_blocks_review_and_close(self):
+        fail_cmd = (f'FAKE_EVAL_EXIT=4 "{_sys.executable}" "{_FAKE_EVAL}"')
+        charter = load_charter(CHARTER_PATH)
+        charter["tooling"]["eval"] = {"cmd": fail_cmd, "timeout_seconds": 30}
+        adapters = _adapters()
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=charter, adapters=adapters)
+            with self.assertRaises(GateHardFail) as ctx:
+                drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(ctx.exception.state, STATE_GATE_PENDING)
+            self.assertIn("sub-sprint gate", ctx.exception.reason)
+            self.assertEqual(len(adapters["review"].history), 0)
+            self.assertEqual(len(adapters["deliver"].history), 0)
+            events = audit.read_events(drv_.audit_ledger)
+            gate = next(e for e in events if e["type"] == "subsprint_gate_run")
+            self.assertFalse(gate["payload"]["ok"])
 
 
 class TestInvalidVerdictHardFails(unittest.TestCase):
@@ -184,9 +224,9 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(route_for_role(charter, "dev").harness, "claude_code")
 
     def test_network_access_routing_is_fail_closed(self):
-        # The opt-in network grant parses ONLY a literal boolean `true`; anything
-        # else (false / absent / a non-bool typo) is default-deny — it never
-        # silently over-grants network to a write sandbox.
+        # The network grant parses ONLY a literal boolean `true`; anything else
+        # (false / absent / a non-bool typo) is default-deny — it never silently
+        # over-grants network to a write sandbox.
         def _na(val):
             ch = {"tooling": {"dev": {"harness": "codex", "network_access": val}}}
             return route_for_role(ch, "dev").network_access
@@ -412,7 +452,7 @@ _EVAL_CMD = f'"{_sys.executable}" "{_FAKE_EVAL}"'
 
 # A schema-valid acceptance evidence path (matches ^eval/runs/.+). In a real run
 # the driver computes this; the mock verdict must cite the SAME shape.
-_EVID = "eval/runs/sprint-001/stdout.txt"
+_EVID = "eval/runs/sprint-001/acceptance/stdout.txt"
 
 ACC_PASS = {
     "milestone_verdict": "pass",
@@ -493,6 +533,7 @@ def _acceptance_charter(*, level="human_on_the_loop",
         },
         "harness": "claude_code", "provider": "anthropic",
         "model": "claude-opus-4-8",
+        "network_access": True,
         "tools": ["Read", "Grep", "Glob"],
         "judge_calibration": {"status": calibration},
     }
@@ -520,8 +561,7 @@ class TestAcceptanceDisabledIsIdentical(unittest.TestCase):
             self.assertNotIn(STATE_ACCEPTANCE_PENDING, final.history)
             types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
             self.assertNotIn("acceptance_start", types)
-            # No eval/ run dir created when acceptance is disabled.
-            self.assertFalse(os.path.isdir(os.path.join(d, "eval")))
+            self.assertNotIn("acceptance_eval_run", types)
 
     def test_acceptance_enabled_false_ends_in_advance(self):
         with tempfile.TemporaryDirectory() as d:
@@ -781,7 +821,8 @@ class TestAcceptanceF5Evidence(unittest.TestCase):
             drv_.run(subsprint_id="sprint-001")
 
             # 1. The DRIVER ran the eval cmd + captured an artifact under eval/runs.
-            evidence_dir = os.path.join(d, "eval", "runs", "sprint-001")
+            evidence_dir = os.path.join(d, "eval", "runs", "sprint-001",
+                                        "acceptance")
             self.assertTrue(os.path.isdir(evidence_dir))
             self.assertTrue(os.path.isfile(os.path.join(evidence_dir,
                                                          "evidence.json")))
@@ -797,17 +838,21 @@ class TestAcceptanceF5Evidence(unittest.TestCase):
             # 3. Acceptance received the artifact PATH (read-only), NOT raw code:
             #    its prompt names the eval/runs path and forbids running the harness.
             self.assertEqual(len(acc_adapter.history), 1)
+            self.assertTrue(acc_adapter.history[0]["network_access"])
             spawn_ev = next(e for e in events if e["type"] == "acceptance_spawn")
             self.assertTrue(
                 spawn_ev["payload"]["evidence_path"].startswith("eval/runs/"))
             # §1.7-C: the spawn surface is the orchestrator, gated by calibration.
             self.assertEqual(spawn_ev["payload"]["spawn_surface"], "orchestrator")
+            grant_roles = [e["payload"]["role"] for e in events
+                           if e["type"] == "sandbox_network_granted"]
+            self.assertIn("acceptance", grant_roles)
 
     def test_eval_nonzero_exit_is_gate_hard_fail(self):
         # The fake eval honors FAKE_EVAL_EXIT to simulate an eval-harness failure.
         # Per §4.2.6 a non-zero eval exit → gate_hard_fail (human resolves), NOT a
         # permissive pass. We set the env var via the eval.cmd itself (offline).
-        fail_cmd = (f'FAKE_EVAL_EXIT=3 "{_sys.executable}" "{_FAKE_EVAL}"')
+        fail_cmd = f'"{_sys.executable}" "{_FAKE_EVAL_ACCEPTANCE_FAIL}"'
         with tempfile.TemporaryDirectory() as d:
             charter = _acceptance_charter(eval_cmd=fail_cmd)
             drv_ = _driver(d, charter=charter,
@@ -817,6 +862,8 @@ class TestAcceptanceF5Evidence(unittest.TestCase):
             self.assertIn("eval", ctx.exception.reason.lower())
             # Acceptance was NOT spawned (no evidence to judge).
             types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("subsprint_gate_run", types)
+            self.assertIn("acceptance_eval_run", types)
             self.assertNotIn("acceptance_spawn", types)
 
 
@@ -971,10 +1018,13 @@ class TestLoopControllerAutoFixContinue(unittest.TestCase):
             # the original + the auto-fix re-run), and the loop advanced.
             self.assertEqual(final.history.count("dev_pending"), 2)
             self.assertEqual(final.history.count("review_pending"), 2)
+            self.assertEqual(final.history.count("close_pending"), 1)
+            self.assertEqual(len(adapters["deliver"].history), 1)
             self.assertEqual(final.state, STATE_ADVANCE)
             types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
             self.assertIn("auto_fix_round_spawned", types)
             self.assertIn("controller_decision", types)
+            self.assertIn("advance", types)
             self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
 
     def test_fix_round_dev_prompt_carries_review_findings(self):
@@ -1371,29 +1421,30 @@ class TestConnectorPassThrough(unittest.TestCase):
         for role in ("dev", "review", "deliver"):
             self.assertEqual(adapters[role].history[0]["connectors"], [])
 
-    def test_network_access_grant_threads_and_audits(self):
-        # An EXPLICIT dev network grant is threaded to the adapter AND recorded on
-        # the audit spine as a deliberate `sandbox_network_granted` escalation.
+    def test_network_access_grants_thread_and_audit(self):
+        # The example charter explicitly grants network to the three spawned roles;
+        # each grant is threaded to the adapter and recorded on the audit spine.
         charter = load_charter(CHARTER_PATH)
-        charter["tooling"]["dev"]["network_access"] = True
         with tempfile.TemporaryDirectory() as d:
             adapters = _adapters()
             drv_ = _driver(d, charter=charter, adapters=adapters)
             drv_.run(subsprint_id="sprint-001")
             events = audit.read_events(drv_.audit_ledger)
-        self.assertTrue(adapters["dev"].history[0]["network_access"])
+        for role in ("dev", "review", "deliver"):
+            self.assertTrue(adapters[role].history[0]["network_access"])
         grants = [e for e in events if e["type"] == "sandbox_network_granted"]
-        self.assertEqual(len(grants), 1)
-        self.assertEqual(grants[0]["payload"]["role"], "dev")
-        # The reviewer never gets the grant (default-deny) — no flag, no event.
-        self.assertFalse(adapters["review"].history[0]["network_access"])
+        self.assertEqual([g["payload"]["role"] for g in grants],
+                         ["dev", "review", "deliver"])
 
-    def test_no_network_grant_is_default_and_silent(self):
-        # The unmodified example charter grants no network → every adapter sees
-        # False and NO sandbox_network_granted event is emitted (byte-identical).
+    def test_explicit_network_false_suppresses_grant_and_audit(self):
+        # Explicit false keeps the old no-network path: adapters see False and no
+        # sandbox_network_granted event is emitted.
+        charter = load_charter(CHARTER_PATH)
+        for role in ("dev", "review", "deliver"):
+            charter["tooling"][role]["network_access"] = False
         with tempfile.TemporaryDirectory() as d:
             adapters = _adapters()
-            drv_ = _driver(d, adapters=adapters)
+            drv_ = _driver(d, charter=charter, adapters=adapters)
             drv_.run(subsprint_id="sprint-001")
             events = audit.read_events(drv_.audit_ledger)
         for role in ("dev", "review", "deliver"):
@@ -1466,6 +1517,26 @@ class TestLoopIngressWiring(unittest.TestCase):
         close = self._events(drv_, "loop_close")
         self.assertEqual(len(close), 1)
         self.assertEqual(close[0]["payload"]["cleanup_action"], "noop")
+
+    def test_missing_registry_record_at_close_is_repaired(self):
+        run_dir = os.path.join(self.tmp, "run-missing-reg")
+        drv_ = Driver(load_charter(CHARTER_PATH), run_dir, _adapters(),
+                      loop_id="loop-ing-missing", clock=_clock(), repo_dir=self.repo)
+        original_handle_close = drv_._handle_close
+
+        def _handle_close_and_drop_registry(close_verdict):
+            original_handle_close(close_verdict)
+            os.remove(self._registry().path)
+
+        drv_._handle_close = _handle_close_and_drop_registry
+        final = drv_.run(subsprint_id="sprint-001")
+        self.assertEqual(final.state, STATE_ADVANCE)
+        rec = self._registry().get("loop-ing-missing")
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.status, "done")
+        types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+        self.assertIn("loop_registry_repaired", types)
+        self.assertIn("loop_close", types)
 
     def test_new_branch_strategy_switches_and_keeps_branch(self):
         run_dir = os.path.join(self.tmp, "run2")

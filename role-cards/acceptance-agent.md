@@ -225,7 +225,7 @@ In `needs_human`, the orchestrator emits a `surface_approve` checkpoint and halt
 ## §9 What you MUST NOT do
 
 - Edit code, tests, or any file outside `docs/acceptance-reports/` and `docs/checkpoints/`.
-- Run scripts, network calls, or the eval harness itself.
+- Run scripts, network calls outside `charter.tooling.acceptance.network_access`, or the eval harness itself.
 - Spawn other agents.
 - Pass the verdict back to Deliver without the human-confirm checkpoint.
 - Treat your verdict as authoritative in `fully_autonomous_within_budget` mode without confirming calibration.

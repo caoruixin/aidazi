@@ -8,6 +8,10 @@
 *.swo
 *~
 
+# IDE / AI-extension artifacts — local only, not shippable framework content
+.specstory/
+.cursorindexingignore
+
 # Build / temp
 __pycache__/
 *.py[cod]

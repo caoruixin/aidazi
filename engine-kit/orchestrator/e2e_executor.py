@@ -53,6 +53,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Optional
@@ -148,6 +149,68 @@ class BrowserExecutor(abc.ABC):
           - NEVER emit a milestone verdict (only per-criterion observations).
         """
         raise NotImplementedError
+
+
+def _lifecycle_operations(contract: dict, phase: str) -> list[dict]:
+    selected = set(contract.get(
+        "selected_setup_operations" if phase == "setup"
+        else "selected_cleanup_operations") or [])
+    return [
+        op for op in (contract.get("lifecycle_operations") or [])
+        if isinstance(op, dict) and op.get("phase") == phase
+        and op.get("id") in selected
+    ]
+
+
+def _run_lifecycle(contract: dict, phase: str, evidence_dir: str, env: dict,
+                   written: list[str]) -> list[dict]:
+    """Run only Acceptance-selected, charter-authorized lifecycle operations."""
+    failures: list[dict] = []
+    for op in _lifecycle_operations(contract, phase):
+        op_id = str(op.get("id"))
+        rel = f"lifecycle/{phase}-{LocalHttpExecutor._safe(op_id)}.log"
+        path = os.path.join(evidence_dir, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        cmd = op.get("command")
+        if not cmd:
+            result = subprocess.CompletedProcess([], 0, "", "")
+        else:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    shell=isinstance(cmd, str),
+                    cwd=contract.get("cwd") or None,
+                    env={**os.environ, **(env or {})},
+                    capture_output=True,
+                    text=True,
+                    timeout=float((contract.get("timeouts") or {}).get(
+                        "lifecycle_seconds", 120)),
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                result = subprocess.CompletedProcess(
+                    cmd, 127, "", f"{type(exc).__name__}: {exc}")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"operation={op_id} phase={phase}\n")
+            fh.write(f"returncode={result.returncode}\n")
+            fh.write("stdout:\n" + (result.stdout or "") + "\n")
+            fh.write("stderr:\n" + (result.stderr or "") + "\n")
+        if rel not in written:
+            written.append(rel)
+        if result.returncode != 0:
+            failure = {
+                "operation_id": op_id,
+                "phase": phase,
+                "returncode": result.returncode,
+                "failure_policy": op.get("failure_policy", "halt"),
+                "evidence_ref": rel,
+            }
+            failures.append(failure)
+            # Setup failures can invalidate the whole run. Cleanup failures are
+            # preserved as evidence and surfaced by the driver after judgment.
+            if phase == "setup" and op.get("failure_policy", "halt") == "halt":
+                raise ExecutorRuntimeError(
+                    f"Acceptance setup operation {op_id!r} failed; see {rel}")
+    return failures
 
 
 # ===========================================================================
@@ -260,6 +323,10 @@ class LocalHttpExecutor(BrowserExecutor):
         # Resolved-contract artifact (written up front so even an early runtime failure
         # leaves a record of WHAT we were asked to run).
         self._write_json(evidence_dir, "executor-config.json", contract, written)
+        if contract.get("acceptance_execution_plan") is not None:
+            self._write_json(
+                evidence_dir, "acceptance-execution-plan.json",
+                contract["acceptance_execution_plan"], written)
 
         # Per-run network/console/state capture sinks (accumulated, flushed at the end).
         network_log: list = []
@@ -270,13 +337,22 @@ class LocalHttpExecutor(BrowserExecutor):
         proc, start_log_rel, host, port = self._start_app(
             contract, evidence_dir, env, written)
         stop_log_rel = "app-stop.log"
+        cleanup_failures: list[dict] = []
         try:
             self._await_readiness(contract, host, port, proc, evidence_dir,
                                   start_log_rel)
+            _run_lifecycle(contract, "setup", evidence_dir, env, written)
             criteria = self._run_journeys(
                 contract, checklist, evidence_dir, base_url, allowed_origins,
                 host, port, network_log, written)
         finally:
+            cleanup_failures = _run_lifecycle(
+                contract, "cleanup", evidence_dir, env, written)
+            self._write_json(
+                evidence_dir, "cleanup-status.json",
+                {"failures": cleanup_failures,
+                 "status": "failed" if cleanup_failures else "clean"},
+                written)
             # Always attempt a clean shutdown + capture the stop log, even on a
             # runtime error mid-journey (so the failure still has app-stop evidence).
             self._stop_app(proc, evidence_dir, stop_log_rel, written)
@@ -837,17 +913,7 @@ class LocalHttpExecutor(BrowserExecutor):
 # PlaywrightExecutor — GATED real-browser runner (never exercised in offline CI).
 # ===========================================================================
 class PlaywrightExecutor(BrowserExecutor):
-    """Real-browser executor (pixels, real console/network). GATED OFF by default.
-
-    The POINT of this class in v1 is the GATE + the interface conformance, not a working
-    playwright driver — real-browser wiring is an adopter concern (§7, §10: no real
-    browser in offline CI). It raises ``ExecutorUnavailable`` UNLESS BOTH hold:
-      - ``os.environ["AIDAZI_E2E_PLAYWRIGHT"] == "1"`` (explicit opt-in), AND
-      - ``import playwright`` succeeds (the runtime is actually installed).
-    When enabled, the driving body is a clearly-marked minimal stub that still raises
-    ``ExecutorUnavailable`` (an adopter replaces it with real Playwright capture that
-    produces the SAME ``ExecutorResult`` shape — observations only, never a verdict).
-    """
+    """Real browser runner for local, staging, and explicitly allowed production."""
 
     kind = "playwright"
 
@@ -861,16 +927,277 @@ class PlaywrightExecutor(BrowserExecutor):
                 "PlaywrightExecutor is gated off (set AIDAZI_E2E_PLAYWRIGHT=1 to enable "
                 "the real-browser path; it is never run in offline CI)")
         try:
-            import playwright  # noqa: F401  (presence check only)
+            from playwright.sync_api import sync_playwright
         except Exception as exc:  # pragma: no cover - exercised only when enabled
             raise ExecutorUnavailable(
                 f"playwright runtime not importable: {exc}") from exc
-        # --- below here is NEVER exercised in offline CI ----------------------- #
-        # Adopter wiring goes here: launch a real browser, drive `contract['journeys']`,
-        # capture real screenshots/console/network into `evidence_dir`, and return an
-        # ExecutorResult with per-criterion observations (NEVER a milestone verdict).
-        raise ExecutorUnavailable(  # pragma: no cover
-            "PlaywrightExecutor real-browser driving is an adopter-supplied stub in v1")
+        os.makedirs(evidence_dir, exist_ok=True)
+        os.makedirs(os.path.join(evidence_dir, "screenshots"), exist_ok=True)
+        os.makedirs(os.path.join(evidence_dir, "downloads"), exist_ok=True)
+        helper = LocalHttpExecutor()
+        written: list[str] = []
+        helper._write_json(evidence_dir, "executor-config.json", contract, written)
+        if contract.get("acceptance_execution_plan") is not None:
+            helper._write_json(
+                evidence_dir, "acceptance-execution-plan.json",
+                contract["acceptance_execution_plan"], written)
+
+        proc = None
+        start_log_rel = "app-start.log"
+        stop_log_rel = "app-stop.log"
+        base_url = str(contract.get("base_url") or "")
+        allowed_origins = list(contract.get("allowed_origins") or [])
+        network_log: list[dict] = []
+        console_log: list[dict] = []
+        cleanup_failures: list[dict] = []
+        criteria = self._criterion_map(checklist)
+
+        try:
+            if contract.get("app_start_cmd"):
+                proc, start_log_rel, host, port = helper._start_app(
+                    contract, evidence_dir, env, written)
+                helper._await_readiness(
+                    contract, host, port, proc, evidence_dir, start_log_rel)
+            else:
+                with open(os.path.join(evidence_dir, start_log_rel),
+                          "w", encoding="utf-8") as fh:
+                    fh.write("external environment; no app_start_cmd\n")
+                written.append(start_log_rel)
+                self._await_remote_readiness(contract)
+
+            _run_lifecycle(contract, "setup", evidence_dir, env, written)
+            with sync_playwright() as pw:
+                browser_cfg = contract.get("browser") or {}
+                browser_name = str(browser_cfg.get("browser") or "chromium")
+                browser_type = getattr(pw, browser_name, None)
+                if browser_type is None:
+                    raise ExecutorRuntimeError(
+                        f"unsupported Playwright browser {browser_name!r}")
+                launch_kwargs = {
+                    "headless": browser_cfg.get("headless", True),
+                }
+                if browser_cfg.get("channel"):
+                    launch_kwargs["channel"] = browser_cfg["channel"]
+                if browser_cfg.get("executable_path"):
+                    launch_kwargs["executable_path"] = browser_cfg["executable_path"]
+                browser = browser_type.launch(**launch_kwargs)
+                context = browser.new_context(
+                    accept_downloads=True,
+                    storage_state=browser_cfg.get("storage_state"),
+                )
+                page = context.new_page()
+                page.on("console", lambda msg: console_log.append({
+                    "level": msg.type, "text": msg.text}))
+                page.on("response", lambda response: network_log.append({
+                    "url": response.url, "method": response.request.method,
+                    "status": response.status}))
+                self._run_playwright_journeys(
+                    page, context, contract, criteria, evidence_dir, base_url,
+                    allowed_origins, network_log, console_log, written)
+                context.close()
+                browser.close()
+        except ExecutorRuntimeError:
+            raise
+        except Exception as exc:  # pragma: no cover - real-browser fault
+            raise ExecutorRuntimeError(
+                f"Playwright browser execution failed: {type(exc).__name__}: {exc}") from exc
+        finally:
+            cleanup_failures = _run_lifecycle(
+                contract, "cleanup", evidence_dir, env, written)
+            helper._write_json(
+                evidence_dir, "cleanup-status.json",
+                {"failures": cleanup_failures,
+                 "status": "failed" if cleanup_failures else "clean"},
+                written)
+            if proc is not None:
+                helper._stop_app(proc, evidence_dir, stop_log_rel, written)
+            else:
+                with open(os.path.join(evidence_dir, stop_log_rel),
+                          "w", encoding="utf-8") as fh:
+                    fh.write("external environment; no process stopped\n")
+                if stop_log_rel not in written:
+                    written.append(stop_log_rel)
+            helper._write_json(evidence_dir, "console.json", console_log, written)
+            helper._write_json(evidence_dir, "network.json", network_log, written)
+            helper._write_json(
+                evidence_dir, "backend-state-refs.json", {}, written)
+
+        return ExecutorResult(
+            exit_code=0,
+            criteria=list(criteria.values()),
+            artifacts=sorted(set(written)),
+            app_start_log=start_log_rel,
+            app_stop_log=stop_log_rel,
+            notes=f"playwright executor over {base_url!r}",
+        )
+
+    @staticmethod
+    def _criterion_map(checklist: dict) -> dict[str, CriterionResult]:
+        return {
+            str(row["criterion_id"]): CriterionResult(
+                criterion_id=str(row["criterion_id"]),
+                criterion=str(row.get("criterion") or ""),
+                action_performed="",
+                observed_result="not exercised",
+            )
+            for row in checklist.get("criteria", [])
+        }
+
+    @staticmethod
+    def _await_remote_readiness(contract: dict) -> None:
+        readiness = contract.get("readiness") or {}
+        target = urllib.parse.urljoin(
+            str(contract.get("base_url") or ""),
+            str(readiness.get("url") or "/"))
+        timeout = float(readiness.get("timeout_seconds", 30))
+        interval = float(readiness.get("interval_seconds", 1))
+        deadline = time.monotonic() + timeout
+        last = "no response"
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(target, timeout=min(10, timeout)) as resp:
+                    if 200 <= resp.status < 400:
+                        return
+                    last = f"HTTP {resp.status}"
+            except Exception as exc:  # noqa: BLE001 - retry until deadline
+                last = f"{type(exc).__name__}: {exc}"
+            time.sleep(interval)
+        raise ExecutorRuntimeError(
+            f"remote readiness timed out for {target!r}: {last}")
+
+    @staticmethod
+    def _absolute_url(base_url: str, url: str, allowed_origins: list[str]) -> str:
+        absolute = urllib.parse.urljoin(base_url.rstrip("/") + "/", url)
+        parsed = urllib.parse.urlparse(absolute)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if origin not in allowed_origins:
+            raise ExecutorRuntimeError(
+                f"navigation origin {origin!r} is outside allowed_origins")
+        return absolute
+
+    def _run_playwright_journeys(
+            self, page, context, contract: dict,
+            criteria: dict[str, CriterionResult], evidence_dir: str,
+            base_url: str, allowed_origins: list[str], network_log: list,
+            console_log: list, written: list[str]) -> None:
+        helper = LocalHttpExecutor()
+        step_index = 0
+        for journey in contract.get("journeys", []):
+            for step in journey.get("steps", []):
+                step_index += 1
+                action = str(step.get("action") or "")
+                cid = step.get("criterion_id")
+                result = criteria.get(str(cid)) if cid is not None else None
+                label = helper._safe(
+                    step.get("id") or f"{journey.get('id', 'journey')}-{step_index}")
+                snap_rel = f"screenshots/{label}.png"
+                try:
+                    observed = self._run_playwright_step(
+                        page, context, step, base_url, allowed_origins,
+                        network_log, console_log, evidence_dir, written)
+                    page.screenshot(
+                        path=os.path.join(evidence_dir, snap_rel), full_page=True)
+                    if snap_rel not in written:
+                        written.append(snap_rel)
+                    if result is not None:
+                        helper._record(
+                            result, "pass", action=action, observed=observed,
+                            refs=[snap_rel])
+                except AssertionError as exc:
+                    try:
+                        page.screenshot(
+                            path=os.path.join(evidence_dir, snap_rel), full_page=True)
+                        if snap_rel not in written:
+                            written.append(snap_rel)
+                    except Exception:
+                        snap_rel = ""
+                    if result is None:
+                        raise ExecutorRuntimeError(
+                            f"exploratory step {label!r} failed: {exc}") from exc
+                    helper._record(
+                        result, "fail", action=action, observed=str(exc),
+                        refs=[snap_rel] if snap_rel else [])
+                except ExecutorRuntimeError:
+                    raise
+                except Exception as exc:
+                    raise ExecutorRuntimeError(
+                        f"blocking Playwright step {label!r} failed: "
+                        f"{type(exc).__name__}: {exc}") from exc
+
+    def _run_playwright_step(
+            self, page, context, step: dict, base_url: str,
+            allowed_origins: list[str], network_log: list, console_log: list,
+            evidence_dir: str, written: list[str]) -> str:
+        action = str(step.get("action") or "")
+        selector = step.get("selector")
+        if action == "navigate":
+            target = self._absolute_url(base_url, str(step.get("url") or "/"),
+                                        allowed_origins)
+            response = page.goto(target, wait_until="networkidle")
+            if response is not None and response.status >= 400:
+                raise AssertionError(f"navigate returned HTTP {response.status}")
+            return f"navigated to {target}"
+        if action == "fill":
+            page.locator(selector).fill(str(step.get("value") or ""))
+            return f"filled {selector}"
+        if action == "click":
+            page.locator(selector).click()
+            return f"clicked {selector}"
+        if action == "select":
+            values = step.get("values") or step.get("value")
+            page.locator(selector).select_option(values)
+            return f"selected {values!r} in {selector}"
+        if action == "upload":
+            values = step.get("values") or [step.get("value")]
+            page.locator(selector).set_input_files(values)
+            return f"uploaded {len(values)} file(s)"
+        if action == "download":
+            with page.expect_download() as info:
+                page.locator(selector).click()
+            download = info.value
+            rel = f"downloads/{LocalHttpExecutor._safe(download.suggested_filename)}"
+            download.save_as(os.path.join(evidence_dir, rel))
+            if rel not in written:
+                written.append(rel)
+            return f"downloaded {rel}"
+        if action == "screenshot":
+            return "screenshot captured"
+        if action == "assert_text":
+            actual = (page.locator(selector).inner_text()
+                      if selector else page.locator("body").inner_text())
+            expected = str(step.get("text") or "")
+            if expected not in actual:
+                raise AssertionError(f"text {expected!r} not observed")
+            return f"observed text {expected!r}"
+        if action == "assert_selector":
+            if page.locator(selector).count() < 1:
+                raise AssertionError(f"selector {selector!r} not found")
+            return f"observed selector {selector!r}"
+        if action == "assert_no_console_error":
+            errors = [m for m in console_log if m.get("level") == "error"]
+            if errors:
+                raise AssertionError(f"console errors observed: {errors[:3]}")
+            return "no console errors observed"
+        if action == "assert_request_ok":
+            needle = str(step.get("url") or "")
+            matches = [r for r in network_log if needle in r.get("url", "")]
+            if not matches or any(int(r.get("status", 599)) >= 400 for r in matches):
+                raise AssertionError(f"no successful request matching {needle!r}")
+            return f"request matching {needle!r} succeeded"
+        if action == "assert_state":
+            state_url = self._absolute_url(
+                base_url, str(step.get("url") or "/__state"), allowed_origins)
+            response = context.request.get(state_url)
+            if not response.ok:
+                raise AssertionError(f"state endpoint returned HTTP {response.status}")
+            state = response.json()
+            key = str(step.get("key") or "")
+            if state.get(key) != step.get("expected"):
+                raise AssertionError(
+                    f"state[{key!r}]={state.get(key)!r}, expected "
+                    f"{step.get('expected')!r}")
+            return f"state {key!r} matched"
+        raise ExecutorRuntimeError(f"unknown Playwright action {action!r}")
 
 
 # ===========================================================================

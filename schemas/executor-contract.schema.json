@@ -4,11 +4,16 @@
   "title": "Browser-E2E executor contract (P-C — executor MECHANICS)",
   "description": "The HOW of a browser-E2E evidence run: app start / readiness / shutdown, base URL, allowed LOCAL origins, and the declared user journeys. Owned by Deliver/adopter, MUTABLE — these MECHANICS PRODUCE evidence; they NEVER define pass/fail (the signed functional-checklist criteria do, and Acceptance judges). v1 is local/demo oriented: no auth, no remote deploy, no cloud browser. The DRIVER injects per-run values at the e2e gate: it substitutes the literal tokens {port}/{store}/{mode} in app_start_cmd, sets the concrete base_url (host from the static base_url + the allocated port), and provides PORT/STORE/MODE to the child env — so the static charter form stays portless/templated and the runtime form is concrete. This contract is the shape of charter.tooling.e2e (the charter validator cross-checks it; the driver re-validates the runtime form).",
   "type": "object",
-  "required": ["executor_kind", "app_start_cmd", "readiness", "base_url", "allowed_origins", "journeys"],
+  "required": ["executor_kind", "readiness", "base_url", "allowed_origins", "journeys"],
   "additionalProperties": false,
   "properties": {
     "executor_contract_id": {"type": "string", "description": "Stable id; part of the M3 calibration identity (a change invalidates the M3 record)."},
     "executor_kind": {"type": "string", "enum": ["local_http", "playwright"], "description": "local_http = deterministic offline stdlib executor (CI). playwright = real browser, opt-in + env-gated (AIDAZI_E2E_PLAYWRIGHT=1); never run in offline CI."},
+    "target_environment": {
+      "type": "string",
+      "enum": ["local", "staging", "production"],
+      "default": "local"
+    },
     "app_start_cmd": {
       "description": "Command that starts the app under test. Array (argv) preferred; a string is wrapped as a single-element argv. The driver substitutes the literal tokens {port}, {store}, {mode} at runtime; a real app uses whatever flags it needs (the tokens are optional).",
       "oneOf": [
@@ -25,21 +30,56 @@
         "interval_seconds": {"type": "number", "minimum": 0}
       }
     },
-    "base_url": {"type": "string", "pattern": "^https?://(127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0)(:\\d+)?(/.*)?$", "description": "Local base URL only (v1). Portless in the static charter (the driver injects the allocated port at runtime). MUST sit under an allowed_origins entry."},
+    "base_url": {"type": "string", "pattern": "^https?://[^\\s]+$", "description": "Application URL. Local, staging, and production are supported; its origin MUST be explicitly listed in allowed_origins."},
     "shutdown": {
       "type": "object", "additionalProperties": false,
       "properties": {"cmd": {"type": "string"}, "process_owned": {"type": "boolean", "description": "true ⇒ the orchestrator terminates the process it started (the default behavior)."}}
     },
-    "fixture_setup_cmd": {"type": "string", "description": "Optional one-time setup (seed a store, reset state)."},
-    "allowed_origins": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^https?://(127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0)(:\\d+)?$"}, "description": "LOCAL origins the executor may navigate. The validator + executor refuse any non-local or out-of-list ABSOLUTE origin (relative URLs inherit base_url's origin). Fail-closed."},
+    "fixture_setup_cmd": {"type": "string", "description": "Legacy optional setup command."},
+    "allowed_origins": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^https?://[^/]+$"}, "description": "Explicit origins Acceptance may navigate, including production origins when authorized."},
+    "lifecycle_operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "phase"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "phase": {"type": "string", "enum": ["setup", "cleanup"]},
+          "command": {
+            "oneOf": [
+              {"type": "string", "minLength": 1},
+              {"type": "array", "items": {"type": "string"}, "minItems": 1}
+            ]
+          },
+          "environments": {"type": "array", "items": {"type": "string", "enum": ["local", "staging", "production"]}},
+          "side_effect": {"type": "string"},
+          "failure_policy": {"type": "string", "enum": ["halt", "record"], "default": "halt"}
+        }
+      }
+    },
+    "selected_setup_operations": {"type": "array", "items": {"type": "string"}},
+    "selected_cleanup_operations": {"type": "array", "items": {"type": "string"}},
+    "acceptance_execution_plan": {"type": "object"},
     "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Extra env for the app process. Put env-var NAMES the adopter sets out-of-band; do NOT inline secret values."},
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "browser": {"type": "string", "enum": ["chromium", "firefox", "webkit"], "default": "chromium"},
+        "headless": {"type": "boolean", "default": true},
+        "storage_state": {"type": "string", "description": "Optional Playwright storage-state file path; secrets remain out of the charter."},
+        "channel": {"type": "string", "description": "Optional installed browser channel, e.g. chrome."},
+        "executable_path": {"type": "string", "description": "Optional installed browser executable used instead of a downloaded Playwright browser."}
+      }
+    },
     "store": {"type": "string", "description": "Backend store path the app persists to (carried to the child via STORE env). The driver sets a per-run temp path."},
     "mode": {"type": "string", "description": "App-mode selector carried to the child via MODE env (a fixture/demo convenience; real apps omit it)."},
     "cwd": {"type": "string", "description": "Optional working directory for the app process (e.g. so a module is importable)."},
     "port": {"type": "integer", "minimum": 1, "maximum": 65535, "description": "Optional explicit port when base_url has none; usually the driver allocates a free port and writes it into base_url."},
     "console": {"type": "object", "additionalProperties": false, "properties": {"url": {"type": "string"}}, "description": "Console sink endpoint (default /__console)."},
     "state": {"type": "object", "additionalProperties": false, "properties": {"url": {"type": "string"}}, "description": "Backend-state endpoint (default /__state)."},
-    "timeouts": {"type": "object", "additionalProperties": false, "properties": {"total_seconds": {"type": "integer", "minimum": 1}, "step_seconds": {"type": "integer", "minimum": 1}}},
+    "timeouts": {"type": "object", "additionalProperties": false, "properties": {"total_seconds": {"type": "integer", "minimum": 1}, "step_seconds": {"type": "integer", "minimum": 1}, "lifecycle_seconds": {"type": "integer", "minimum": 1}}},
     "evidence_retention_path": {"type": "string", "description": "Optional override of the evidence root; default .orchestrator/audit/browser."},
     "journeys": {
       "type": "array", "minItems": 1,
@@ -56,18 +96,20 @@
     "step": {
       "type": "object", "additionalProperties": false, "required": ["action"],
       "properties": {
-        "action": {"type": "string", "enum": ["navigate", "fill", "click", "assert_text", "assert_selector", "assert_state", "assert_no_console_error", "assert_request_ok"]},
+        "action": {"type": "string", "enum": ["navigate", "fill", "click", "select", "upload", "download", "screenshot", "assert_text", "assert_selector", "assert_state", "assert_no_console_error", "assert_request_ok"]},
         "id": {"type": "string", "description": "Optional step label (names the screenshot snapshot)."},
         "url": {"type": "string", "description": "navigate target; or for assert_request_ok the URL substring to match in the captured network log."},
         "submit_url": {"type": "string", "description": "click: the form POST target."},
         "form": {"type": "object", "additionalProperties": {"type": "string"}, "description": "click: form fields to POST."},
         "selector": {"type": "string", "description": "#id or bare tag."},
         "value": {"type": "string", "description": "fill: the value to set."},
+        "values": {"type": "array", "items": {"type": "string"}, "description": "select/upload values."},
         "text": {"type": "string", "description": "assert_text: expected substring."},
         "expected": {"description": "assert_state: expected value (any JSON type)."},
         "key": {"type": "string", "description": "assert_state: backend-state key."},
         "criterion_id": {"type": "string", "description": "Links an assertion step to a functional-checklist criterion_id (so its per-criterion executor_status is produced). MUST exist in the signed checklist (the executor fail-closes on a mismatch)."},
-        "critical": {"type": "boolean", "default": false, "description": "true ⇒ a CAPTURED failure on this step is a critical veto (a milestone pass becomes needs_human, §3.2). A blocking RUNTIME failure (step cannot execute) → gate_hard_fail regardless of this flag."}
+        "critical": {"type": "boolean", "default": false, "description": "true ⇒ a CAPTURED failure on this step is a critical veto (a milestone pass becomes needs_human, §3.2). A blocking RUNTIME failure (step cannot execute) → gate_hard_fail regardless of this flag."},
+        "side_effect": {"type": "string", "description": "Named production side effect governed by the Acceptance production policy."}
       }
     }
   }

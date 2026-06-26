@@ -73,7 +73,7 @@ Cold-start (in order):
   7. <adopter>/docs/current/adoption-state.md
   8. <adopter>/docs/current/runtime_invariants.md
 
-Tools: Read, Grep, Glob only. NO edits. NO network. NO git push.
+Tools: Read, Grep, Glob only. NO edits. Network access follows `tooling.review.network_access`. NO git push.
 NO spawn of other agents.
 
 Trigger: <subsprint_close | section_4_3_trigger | milestone_close>

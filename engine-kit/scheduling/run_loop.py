@@ -264,6 +264,8 @@ def build_adapters(charter: dict, *, allow_real: bool = False,
                 base_url=base_url,
                 api_key_env=tooling.get("api_key_env", ""),
             )
+            if r.reasoning_effort:
+                kwargs["reasoning_effort"] = r.reasoning_effort
             # Per-spawn timeout is configurable per role (charter
             # tooling.<role>.timeout_seconds); absent ⇒ the adapter's own default
             # (600s). A real Dev coding session typically needs more than that. A
@@ -445,9 +447,17 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
                                unit.get("subsprint_id"))
         # else: checkpoint_path is None → a genuinely checkpoint-less pause (no unit,
         # e.g. campaign_budget_exhausted) → campaign_id + pause_reason + checkpoint:null.
-        # Pass through ONLY the runner's decision fields (choice for a dispatch gate;
-        # confirm/route for acceptance_fix_required; note for the audit).
-        out = {k: decision[k] for k in ("choice", "confirm", "route", "note")
+        # Pass through the runner's decision fields: choice for a dispatch gate;
+        # confirm/route for acceptance_fix_required; note for the audit; AND the
+        # acceptance_cleanup_required residue-waiver fields (residue/rationale/evidence/
+        # waiver/waiver_id) — WITHOUT these last five, a complete waiver authored in
+        # campaign-decision.json would be stripped here and never reach
+        # campaign.interpret_dispatch / residue_waiver, making accept_residue_and_ship
+        # dead on the real CLI (Codex blocking 1). The schema scopes the waiver fields to
+        # the cleanup gate, and the runtime ignores them on every other gate.
+        out = {k: decision[k]
+               for k in ("choice", "confirm", "route", "note",
+                         "residue", "rationale", "evidence", "waiver", "waiver_id")
                if k in decision}
         return out or None
     return resolve

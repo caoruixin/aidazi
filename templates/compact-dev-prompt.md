@@ -13,8 +13,9 @@ notes: >
   Template for compact/sprint-NNN-dev-prompt.md. The Deliver Agent authors a
   per-sprint instance; the Dev Agent consumes it as a self-contained job spec.
   Required front-matter: context_budget with self_contained: true
-  (Constitution §1.4-i). Sandbox: workspace_write; no network; no git push;
-  no holdout read (process/delivery-loop.md §4.2.8 #4).
+  (Constitution §1.4-i). Sandbox: workspace_write; network follows
+  charter.tooling.dev.network_access; no git push; no holdout read
+  (process/delivery-loop.md §4.2.8 #4).
 ---
 
 # Compact Dev prompt — instance template
@@ -74,7 +75,7 @@ Cold-start read (in order):
   5. <adopter>/AGENTS.md
   6. <adopter>/docs/current/adoption-state.md
 
-Sandbox: workspace-write. No network (default — deps must be pre-provisioned; an explicit, audited `tooling.dev.network_access: true` is the only opt-in for in-sandbox installs). No git push. No read of shadow holdout.
+Sandbox: workspace-write. Network access follows `tooling.dev.network_access`. No git push. No read of shadow holdout.
 ```
 
 ### §2 Sub-sprint contract
@@ -138,7 +139,7 @@ Before declaring done:
   [ ] Handoff §1-§11 written; §12 left blank for Deliver+Customer.
   [ ] No edits to forbidden paths (research-briefs, eval/bad_cases,
       codex-findings, anything in case_specs_shadow).
-  [ ] No git push, no network calls, no other-agent spawns.
+  [ ] No git push, no network calls outside the charter's `tooling.dev.network_access` grant, no other-agent spawns.
   [ ] Constitution §1.7 audit on your edits (§4 above).
   [ ] Scope check: every file touched is in modules_in_scope AND not in
       explicitly_out_of_scope.

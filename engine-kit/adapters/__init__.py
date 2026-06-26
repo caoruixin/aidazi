@@ -12,6 +12,7 @@ from .claude_code import ClaudeCodeAdapter
 from .headless import HeadlessAdapter
 from .codex import CodexAdapter
 from .kimi import KimiAdapter
+from .cursor import CursorAdapter
 
 #: harness id → adapter class, for charter-driven routing in the driver.
 ADAPTER_REGISTRY = {
@@ -20,6 +21,7 @@ ADAPTER_REGISTRY = {
     "headless": HeadlessAdapter,
     "codex": CodexAdapter,
     "kimi": KimiAdapter,
+    "cursor": CursorAdapter,
 }
 
 
@@ -51,6 +53,7 @@ __all__ = [
     "HeadlessAdapter",
     "CodexAdapter",
     "KimiAdapter",
+    "CursorAdapter",
     "ADAPTER_REGISTRY",
     "resolve_adapter_class",
 ]

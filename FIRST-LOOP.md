@@ -157,6 +157,11 @@ intent-contract re-confirm; only steps 4–5 change to manual role hand-offs.
 
 ## Drive the whole goal — continuous multi-milestone delivery (以终为始)
 
+Most humans should reach this through the default **Control Plane** session:
+ask "what is next?", "continue", or "run the campaign", and let Control Plane
+choose the proper runner/resume action. The CLI below is the internal execution
+surface and CI/automation interface; it is not the normal human memory contract.
+
 The plain `run_loop.py` above drives **one milestone** and returns — by design it
 stops at the milestone boundary so *you* decide what's next. To make the team work
 **backward from the end goal** and drive the WHOLE backlog (one milestone after
@@ -190,6 +195,11 @@ another, pausing only at human-authority gates), use the **Campaign Loop**
    (`schemas/campaign-decision.schema.json`, identity-bound to the exact pause) —
    then re-run with `--resume` (add `--decision <file>` for a sign-off/route gate).
    Resume never re-runs a finished milestone or re-counts its Acceptance.
+
+If the adopter has not explicitly opted into Campaign mode, stay in the default
+single-milestone topology: Control Plane uses `charter.yaml` as the active
+execution source, and any generated `docs/milestone-backlog.md` is a status view,
+not the executable queue.
 
 **Tier-1 boundary (deferred).** The runner drives a *pre-decomposed* backlog: it
 does **not** yet auto-decompose an empty milestone (it pauses at
