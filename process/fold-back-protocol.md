@@ -45,6 +45,7 @@ Sub-sprint not continuous. Lessons accumulate; review batches them.
 - Framework cuts versioned releases (`v4.0.0` → `v4.0.1` → `v4.1.0` → `v5.0.0` per Constitution §9).
 - Adopters consume on their own cadence (no auto-update).
 - When an adopter consumes a new framework version, they update `docs/current/adoption-state.md` to reflect any newly at-spec / partial / divergent Δs.
+- **Copy/vendored adopters** re-run `engine-kit/tools/vendor-framework.sh` and diff-merge into `<adopter>/aidazi/`; check `aidazi/.aidazi-version` for the source commit.
 
 NO automatic submodule update. NO continuous integration of framework changes into adopter repos. Each direction crosses a deliberate human boundary.
 
