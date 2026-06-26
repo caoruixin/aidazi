@@ -79,6 +79,14 @@ SPAWN_PAYLOAD_FIELDS: tuple[str, ...] = (
     "run_mode",
     "tokens",
     "cost",
+    # WP-0 (context/token-optimization measurement baseline) — observation-only
+    # per-spawn volume fields. APPEND-ONLY: never remove or reorder a property while
+    # ledgers carrying it exist — the audit-event $defs/spawn_payload is
+    # additionalProperties:false, so dropping a field would orphan historical
+    # payloads (deprecate, don't delete). All three are nullable for back-compat.
+    "prompt_bytes",      # len(as-dispatched prompt, utf-8 bytes)
+    "memory_bytes",      # bytes of the Loop-Memory lessons block injected for the role
+    "fix_round",         # fix-round index at dispatch (the fix-round cost multiplier)
 )
 
 
@@ -135,6 +143,9 @@ def make_spawn_payload(
     run_mode: Optional[str] = None,
     tokens: Optional[int] = None,
     cost: Optional[float] = None,
+    prompt_bytes: Optional[int] = None,
+    memory_bytes: Optional[int] = None,
+    fix_round: Optional[int] = None,
 ) -> dict:
     """Convenience constructor for the per-spawn execution-context payload
     (plan §4.5 G3). Returns a plain dict; the ledger stores it verbatim.
@@ -145,7 +156,14 @@ def make_spawn_payload(
     every prompt and every output auditable from the ledger — not just a hash —
     while ``input_hash`` stays the tamper-evidence anchor over the prompt bytes.
     Both default to None so a caller that does not materialize transcripts (or an
-    older ledger) is byte-identical to before."""
+    older ledger) is byte-identical to before.
+
+    ``prompt_bytes`` / ``memory_bytes`` / ``fix_round`` are WP-0 observation-only
+    measurement fields (the context/token-optimization baseline). All default to
+    None so an older callsite need not pass them and an existing on-disk ledger
+    (written without these keys) still verifies unchanged; they record the
+    as-dispatched prompt size, the injected Loop-Memory lessons-block size, and the
+    fix-round index, so per-spawn token volume becomes auditable."""
     return {
         "role": role,
         "harness": harness,
@@ -160,6 +178,9 @@ def make_spawn_payload(
         "run_mode": run_mode,
         "tokens": tokens,
         "cost": cost,
+        "prompt_bytes": prompt_bytes,
+        "memory_bytes": memory_bytes,
+        "fix_round": fix_round,
     }
 
 

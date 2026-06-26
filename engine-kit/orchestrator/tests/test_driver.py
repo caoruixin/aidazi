@@ -267,6 +267,33 @@ class TestAuditLedger(unittest.TestCase):
             self.assertEqual(types.count("spawn"), 3)
             self.assertIn("advance", types)
 
+    def test_wp0_measurement_fields_recorded_on_every_spawn(self):
+        """WP-0 (observation-only): every spawn event carries prompt_bytes / memory_bytes
+        / fix_round, and prompt_bytes EQUALS the byte size of the verbatim as-dispatched
+        prompt transcript it references — proving the measurement is wired to the real
+        dispatched bytes, not a stale/duplicated value. The chain still verifies."""
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.fix_round, 0)
+            spawns = [e for e in audit.read_events(drv_.audit_ledger)
+                      if e["type"] == "spawn"]
+            self.assertEqual(len(spawns), 3)  # dev, review, deliver
+            for ev in spawns:
+                p = ev["payload"]
+                self.assertEqual(p["fix_round"], 0)
+                self.assertIsInstance(p["prompt_bytes"], int)
+                self.assertGreater(p["prompt_bytes"], 0)
+                # memory is OFF in this driver → no lessons block injected.
+                self.assertEqual(p["memory_bytes"], 0)
+                self.assertEqual(p["memory_injected"], [])
+                # prompt_bytes == bytes of the verbatim prompt transcript (driver
+                # writes the as-dispatched prompt byte-for-byte, _write_transcript).
+                with open(os.path.join(drv_.run_dir, p["prompt_ref"]), "rb") as fh:
+                    self.assertEqual(len(fh.read()), p["prompt_bytes"])
+            # Forward-only fields do not break the hash chain.
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
     def test_loop_id_threads_every_event(self):
         with tempfile.TemporaryDirectory() as d:
             drv_ = _driver(d, loop_id="loop-thread-xyz")
@@ -1316,6 +1343,46 @@ class TestLoopMemoryIngressAndClose(unittest.TestCase):
                              and e["payload"]["role"] == "dev")
             self.assertIn("prefer-explicit-eligibility-branches",
                           dev_spawn["payload"]["memory_injected"])
+            # WP-0: memory_bytes is the ACTUAL injected lessons-block size (faithful to
+            # the dispatched prompt), not a recompute — > 0 here and equal to the block.
+            self.assertEqual(dev_spawn["payload"]["memory_bytes"],
+                             len(drv_._lessons_block("dev").encode("utf-8")))
+            self.assertGreater(dev_spawn["payload"]["memory_bytes"], 0)
+
+    def test_wp0_memory_bytes_faithful_to_injected_block_not_recomputed(self):
+        """WP-0 regression (Codex r2 BLOCKING): the spawn audit derives memory_bytes /
+        memory_injected from the lessons block the caller ACTUALLY prepended, not a
+        recomputed "would-inject" estimate. A spawn that injects NO block
+        (lessons_block=None — the Acceptance execution-plan shape) records 0 / [] EVEN
+        WHEN role-scoped memory exists; a spawn that injects the block records its real
+        bytes + ids."""
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            self._seed_memory(mem)  # a "dev"-scoped lesson now exists in the store
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-mem-wp0", clock=_clock(), memory_root=mem)
+            drv_.run(subsprint_id="sprint-001")  # initializes state + adapters
+            block = drv_._lessons_block("dev")
+            self.assertTrue(block.strip(), "precondition: dev memory block is non-empty")
+
+            def _last_spawn_payload():
+                return [e for e in audit.read_events(drv_.audit_ledger)
+                        if e["type"] == "spawn"][-1]["payload"]
+
+            # (A) No block injected (the Acceptance-plan shape) → faithful 0 / [],
+            # despite dev-scoped memory being present.
+            drv_._spawn("dev", "PLAN PROMPT (no lessons block)", schema_key=None,
+                        lessons_block=None)
+            a = _last_spawn_payload()
+            self.assertEqual(a["memory_bytes"], 0)
+            self.assertEqual(a["memory_injected"], [])
+
+            # (B) The block IS injected → memory_bytes = its real size; ids recorded.
+            drv_._spawn("dev", block + "BODY", schema_key=None, lessons_block=block)
+            b = _last_spawn_payload()
+            self.assertEqual(b["memory_bytes"], len(block.encode("utf-8")))
+            self.assertIn("prefer-explicit-eligibility-branches", b["memory_injected"])
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
 
     def test_close_records_observation_and_matures_l1_to_l2(self):
         # On a fix_required finding, the driver records a generalizable lesson;

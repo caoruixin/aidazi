@@ -61,7 +61,10 @@
         "output_ref": {"type": ["string", "null"], "description": "Run-dir-relative path to the captured model-output transcript (…__output.{md,json}); null when the adapter produced no output (transport error). delivery-loop §4.2.10."},
         "run_mode": {"type": ["string", "null"]},
         "tokens": {"type": ["integer", "null"]},
-        "cost": {"type": ["number", "null"]}
+        "cost": {"type": ["number", "null"]},
+        "prompt_bytes": {"type": ["integer", "null"], "description": "WP-0 measurement (observation-only): byte length of the as-dispatched prompt. Nullable/back-compatible — absent on pre-WP-0 ledgers."},
+        "memory_bytes": {"type": ["integer", "null"], "description": "WP-0 measurement (observation-only): byte length of the Loop-Memory lessons block injected for the role (the byte companion to memory_injected)."},
+        "fix_round": {"type": ["integer", "null"], "description": "WP-0 measurement (observation-only): the fix-round index at dispatch (the fix-round cost multiplier)."}
       }
     }
   }

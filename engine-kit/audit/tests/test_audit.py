@@ -344,5 +344,53 @@ class SpawnPayloadSchemaContractTests(unittest.TestCase):
         jsonschema.validate(payload, self._spawn_schema())  # raises on mismatch
 
 
+class Wp0MeasurementFieldTests(unittest.TestCase):
+    """WP-0 (context/token-optimization baseline): make_spawn_payload carries the
+    observation-only per-spawn volume fields prompt_bytes / memory_bytes / fix_round,
+    they are declared in SPAWN_PAYLOAD_FIELDS + the schema (additionalProperties:false),
+    and they default to None so an older callsite need not pass them and an existing
+    on-disk ledger (written without these keys) still verifies."""
+
+    _NEW = ("prompt_bytes", "memory_bytes", "fix_round")
+
+    def _spawn_schema(self):
+        repo = os.path.dirname(os.path.dirname(_PKG_DIR))  # engine-kit/audit -> repo
+        with open(os.path.join(repo, "schemas", "audit-event.schema.json"),
+                  encoding="utf-8") as fh:
+            return json.load(fh)["$defs"]["spawn_payload"]
+
+    def test_new_fields_default_none_backward_compatible(self):
+        p = al.make_spawn_payload(role="dev", harness="x", provider="y", model="z")
+        for f in self._NEW:
+            self.assertIn(f, p)
+            self.assertIsNone(p[f], f"{f} must default to None (back-compatible)")
+
+    def test_new_fields_roundtrip(self):
+        p = al.make_spawn_payload(
+            role="acceptance", harness="codex", provider="openai", model="gpt-5.5",
+            prompt_bytes=12345, memory_bytes=678, fix_round=2)
+        self.assertEqual(p["prompt_bytes"], 12345)
+        self.assertEqual(p["memory_bytes"], 678)
+        self.assertEqual(p["fix_round"], 2)
+
+    def test_new_fields_declared_in_fields_and_schema(self):
+        declared = set(self._spawn_schema()["properties"])
+        for f in self._NEW:
+            self.assertIn(f, al.SPAWN_PAYLOAD_FIELDS,
+                          f"{f} missing from SPAWN_PAYLOAD_FIELDS")
+            self.assertIn(f, declared,
+                          f"{f} emitted by code but missing from the schema")
+
+    def test_measurement_payload_validates_against_schema(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest("jsonschema not installed")
+        payload = al.make_spawn_payload(
+            role="dev", harness="claude_code", provider="anthropic", model="m",
+            input_hash="sha256:abc", prompt_bytes=27000, memory_bytes=320, fix_round=0)
+        jsonschema.validate(payload, self._spawn_schema())  # raises on mismatch
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

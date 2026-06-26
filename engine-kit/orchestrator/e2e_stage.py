@@ -358,10 +358,11 @@ def resolve_load_graph(entries: list, *, repo_root: Optional[str] = None,
     the judge loads (governance chain, conditional process docs, role card, schema, adopter
     ledgers reached via AGENTS.md, …) invalidates §3.5b reuse. An ``inline`` entry hashes a
     dict directly (e.g. tooling.e2e, not a file). Returns ``(graph, missing)`` — ``graph`` =
-    sorted ``[{path, sha256, purpose}]``; ``missing`` = MANDATORY roots whose file is
+    sorted ``[{path, purpose, bytes, sha256}]`` (``bytes`` is a WP-0 observation-only size
+    field, EXCLUDED from acceptance_input_hash); ``missing`` = MANDATORY roots whose file is
     absent/unreadable (the driver gate_hard_fails). Bounded by ``max_files`` (include backstop);
     symlinks are skipped (containment)."""
-    by_real: dict = {}                      # realpath (or inline:key) -> {path, sha256, purpose}
+    by_real: dict = {}                      # realpath (or inline:key) -> {path, purpose, bytes, sha256}
     missing: list = []
     frontier: list = []                     # (abspath, display_rel, purpose)
     bases = tuple(b for b in (repo_root, os.path.dirname(repo_root) if repo_root else None) if b)
@@ -389,6 +390,12 @@ def resolve_load_graph(entries: list, *, repo_root: Optional[str] = None,
         except OSError:
             continue
         by_real[rp] = {"path": disp, "purpose": purpose,
+                       # WP-0 measurement (observation-only): the file's byte size, so
+                       # the load_sizer can sum cold-start volume WITHOUT a spawn. It is
+                       # content-redundant (sha256 already commits to the content) and is
+                       # EXCLUDED from acceptance_input_hash, so the §3.5b reuse
+                       # fingerprint is byte-identical to its pre-measurement value.
+                       "bytes": len(data),
                        "sha256": hashlib.sha256(data).hexdigest()}
         try:
             text = data.decode("utf-8")
@@ -409,9 +416,18 @@ def resolve_load_graph(entries: list, *, repo_root: Optional[str] = None,
 
 def acceptance_input_hash(projected_prompt: str, resolver_graph: list) -> str:
     """rev6/rev7: bind the verdict to the FULL criteria/prompt context — the resolved
-    prompt PLUS the content hash of every path the judge loads (resolver graph)."""
+    prompt PLUS the content hash of every path the judge loads (resolver graph).
+
+    WP-0: the reuse fingerprint binds each graph entry's CONTENT IDENTITY only — the
+    observational ``bytes`` field (added to resolve_load_graph for the measurement
+    baseline) is content-redundant (``sha256`` already commits to the file content) and
+    is dropped before hashing, so this hash is BYTE-IDENTICAL to its pre-measurement
+    value (old §3.5b reuse records still match; only ``bytes`` is excluded — every other
+    key is preserved, so any future graph shape stays bound)."""
+    graph_identity = [{k: v for k, v in g.items() if k != "bytes"}
+                      for g in resolver_graph]
     return sha256_obj({"projected_acceptance_prompt": projected_prompt,
-                       "resolver_graph": resolver_graph})
+                       "resolver_graph": graph_identity})
 
 
 # =========================================================================== #

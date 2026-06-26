@@ -835,10 +835,17 @@ class Driver:
             )
 
     # ----- the spawn boundary (driver → adapter → schema-valid verdict) ----- #
-    def _spawn(self, role: str, prompt: str, schema_key: Optional[str]) -> dict:
+    def _spawn(self, role: str, prompt: str, schema_key: Optional[str],
+               *, lessons_block: Optional[str] = None) -> dict:
         """Select the role's adapter, spawn, and (if a verdict schema applies)
         validate the result. An AdapterError OR a schema-invalid verdict becomes
-        a gate_hard_fail (delivery-loop §4.2.7) — never a permissive default."""
+        a gate_hard_fail (delivery-loop §4.2.7) — never a permissive default.
+
+        ``lessons_block`` (WP-0, observation-only) is the exact Loop-Memory lessons
+        block the caller prepended to ``prompt``; pass None when none was injected
+        (e.g. the Acceptance execution-plan spawn). The spawn audit records
+        memory_injected + memory_bytes from THIS, so they are faithful to the
+        dispatched prompt rather than a recomputed "would-inject" estimate."""
         assert self.state is not None
         adapter = self.adapters.get(role)
         if adapter is None:
@@ -849,9 +856,22 @@ class Driver:
         prompt = prompt + effective_roles.skill_prompt_block(effective)
         input_hash = "sha256:" + hashlib.sha256(
             (role + "\x00" + prompt).encode("utf-8")).hexdigest()[:16]
-        # P3 INTEGRATION 2: which Loop-Memory entries the ingress block injected
-        # (recorded on the spawn event, Audit Spine §4.5 G3). [] when memory off.
-        injected = self._injected_ids(role)
+        # P3 INTEGRATION 2 + WP-0 measurement (observation-only — does NOT alter the
+        # dispatched prompt): record the Loop-Memory channel ACTUALLY injected into
+        # `prompt`, so memory_injected (which ids) and memory_bytes (their size) are
+        # faithful to the dispatched transcript (Audit Spine §4.5 G3), not a recomputed
+        # "would-inject" estimate. `lessons_block` is the exact block the caller
+        # prepended (None when the caller injected none — e.g. the Acceptance
+        # execution-plan spawn — for which both are empty); when a block was injected,
+        # its ids come from the same deterministic scope select. The cold-start volume
+        # (the agent's own mid-session reads) is sized statically by load_sizer.py.
+        if lessons_block is None:
+            injected, memory_bytes = [], 0
+        else:
+            injected = self._injected_ids(role)
+            memory_bytes = len(lessons_block.encode("utf-8"))
+        prompt_bytes = len(prompt.encode("utf-8"))
+        fix_round = self.state.fix_round
 
         # A network grant is explicit role configuration. Record it on the Audit
         # Spine BEFORE the spawn so it is never silent, even if the spawn then
@@ -898,6 +918,8 @@ class Driver:
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
+                prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
+                fix_round=fix_round,
                 verdict_ref="adapter_error", prompt_ref=prompt_ref,
                 output_ref=None))  # no output produced — the adapter raised
             raise self._gate_hard_fail(
@@ -918,6 +940,8 @@ class Driver:
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
+                prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
+                fix_round=fix_round,
                 verdict_ref="invalid" if err else "valid",
                 prompt_ref=prompt_ref, output_ref=output_ref))
             if err is not None:
@@ -931,6 +955,8 @@ class Driver:
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
+                prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
+                fix_round=fix_round,
                 verdict_ref="artifact",
                 prompt_ref=prompt_ref, output_ref=output_ref))
         self.state.last_verdict = verdict
@@ -1828,10 +1854,11 @@ class Driver:
         resolved = self._resolve_dev_spec()
         if resolved is _DEV_SPEC_HALT:
             return  # checkpoint written + STATE_HALTED set; the drive loop stops
+        lessons = self._lessons_block("dev")
         if resolved is not None:
-            prompt = self._lessons_block("dev") + resolved
+            prompt = lessons + resolved
         else:
-            prompt = (self._lessons_block("dev")
+            prompt = (lessons
                       + f"Implement sub-sprint {self.state.subsprint_id}; "
                         f"write the handoff.")
         # On an auto-fix round the Reviewer's specific findings are appended as a
@@ -1842,6 +1869,7 @@ class Driver:
         verdict = self._spawn(
             "dev", prompt,
             schema_key=None,  # spawn_dev's artifact IS the code+handoff, no verdict schema
+            lessons_block=lessons,
         )
         # Capture the Dev change-summary transcript ref so the projected Review prompt
         # can cite it by a CONCRETE path (not just "the working-tree diff").
@@ -1861,21 +1889,25 @@ class Driver:
         resolved = self._resolve_review_spec()
         if resolved is _REVIEW_SPEC_HALT:
             return None  # checkpoint written + STATE_HALTED set; the drive loop stops
+        lessons = self._lessons_block("review")
         if resolved is not None:
-            prompt = self._lessons_block("review") + resolved
+            prompt = lessons + resolved
         else:
-            prompt = (self._lessons_block("review")
+            prompt = (lessons
                       + f"Review sub-sprint {self.state.subsprint_id}. "
                         f"Emit a review-verdict.")
-        verdict = self._spawn("review", prompt, schema_key="review")
+        verdict = self._spawn("review", prompt, schema_key="review",
+                              lessons_block=lessons)
         self.state.history.append(STATE_REVIEW_PENDING)
         return verdict
 
     def _step_close(self) -> dict:
-        prompt = (self._lessons_block("deliver")
+        lessons = self._lessons_block("deliver")
+        prompt = (lessons
                   + f"Close sub-sprint {self.state.subsprint_id}. "
                     f"Emit a deliver-close-verdict.")
-        verdict = self._spawn("deliver", prompt, schema_key="close")
+        verdict = self._spawn("deliver", prompt, schema_key="close",
+                              lessons_block=lessons)
         self.state.history.append(STATE_CLOSE_PENDING)
         return verdict
 
@@ -1932,7 +1964,8 @@ class Driver:
                         {"reason": "brief signed upfront "
                                    "(intent_contract.confirmed_by_human)"})
             return
-        prompt = (self._lessons_block("research")
+        lessons = self._lessons_block("research")
+        prompt = (lessons
                   + f"Draft the milestone brief for mission "
                     f"{(self.charter.get('mission') or {}).get('id')}: state the "
                     f"intent contract (problem, in/out of scope, closure contract) "
@@ -1940,7 +1973,7 @@ class Driver:
                     f"the stated intent — scope widening needs the Gate-1 human "
                     f"checkpoint.")
         # ARTIFACT spawn (a brief is a doc, NOT a verdict) → schema_key=None.
-        self._spawn("research", prompt, schema_key=None)
+        self._spawn("research", prompt, schema_key=None, lessons_block=lessons)
         # The drafted brief is an artifact under the run dir; we persist a stable
         # reference (deterministic — no clock/uuid; the loop_id + subsprint anchor
         # it) so resume + Gate-1 context point at the same draft.
@@ -2092,13 +2125,15 @@ class Driver:
                          "subsprint_sequence": list(supplied)})
             return
 
-        prompt = (self._lessons_block("deliver")
+        lessons = self._lessons_block("deliver")
+        prompt = (lessons
                   + f"Decompose the SIGNED milestone brief "
                     f"(`{self.state.brief_draft_ref}`) into an ordered list of "
                     f"sub-sprints. Emit a deliver-plan-verdict: each sub_sprint "
                     f"declares id, objective, scope_in, scope_out, modules, layers, "
                     f"exit_criteria. Stay within the human-signed approved scope.")
-        verdict = self._spawn("deliver", prompt, schema_key="deliver_plan")
+        verdict = self._spawn("deliver", prompt, schema_key="deliver_plan",
+                              lessons_block=lessons)
         sub_sprints = list(verdict.get("sub_sprints") or [])
         seq = [str(s.get("id")) for s in sub_sprints if isinstance(s, dict)]
         self.state.planned_sequence = seq
@@ -3196,6 +3231,9 @@ class Driver:
             raise self._gate_hard_fail(
                 "hybrid/agentic Acceptance requires acceptance-execution-plan schema",
                 STATE_E2E_PENDING)
+        # This spawn prepends NO Loop-Memory lessons block, so lessons_block stays None
+        # → the audit records memory_injected=[] / memory_bytes=0, faithful to the
+        # dispatched prompt (WP-0). Changing what this prompt carries is out of scope.
         plan = self._spawn(
             "acceptance",
             self._acceptance_plan_prompt(checklist, e2e, interaction_mode),
@@ -3723,6 +3761,12 @@ class Driver:
                 "evidence_path": evidence_path,
                 "calibration_status": calibration_status,
                 "run_mode": self.autonomy.get("level", "human_in_the_loop"),
+                # WP-0 measurement (observation-only): the as-dispatched Acceptance
+                # prompt size + fix-round index, parallel to the uniform _spawn fields
+                # so the heaviest role is not blind to the baseline. Acceptance injects
+                # no Loop-Memory lessons block, so there is no memory_bytes here.
+                "prompt_bytes": len(prompt.encode("utf-8")),
+                "fix_round": self.state.fix_round,
                 "input_hash": input_hash,
                 "prompt_ref": prompt_ref,
                 "output_ref": output_ref,
