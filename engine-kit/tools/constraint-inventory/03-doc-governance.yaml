@@ -1,0 +1,250 @@
+# Constraint inventory — governance/doc_governance.md (frontmatter/lifecycle/authoring rules)
+# + the per-role doc-authoring boundaries (research brief, acceptance report, handoff, codex-findings).
+- id: doc-s1-frontmatter-block-required
+  anchor: 'governance/doc_governance.md §1'
+  statement: Every governed doc MUST carry a YAML front-matter block at the very top of the file.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s1-frontmatter-field-set
+  anchor: 'governance/doc_governance.md §1'
+  statement: Front-matter MUST declare title, doc_tier, doc_category, status, implementation_status, source_of_truth, last_reviewed, review_cadence, supersedes, superseded_by, load_discipline, size_target, and split_trigger.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s1-newdoc-frontmatter-dayone
+  anchor: 'governance/doc_governance.md §1'
+  statement: New docs MUST include front-matter from day one; only legacy docs may be marked in follow-up PRs.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s2-1-doctier-allowed-and-placement
+  anchor: 'governance/doc_governance.md §2.1'
+  statement: doc_tier MUST be one of the enumerated framework/adopter tier values, and the doc MUST live in that tier's designated directory.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s2-2-status-allowed
+  anchor: 'governance/doc_governance.md §2.2'
+  statement: status MUST be one of current, proposal, partial, deferred, diagnostic, archived, or superseded.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s2-3-implstatus-allowed
+  anchor: 'governance/doc_governance.md §2.3'
+  statement: implementation_status MUST be one of implemented, partial, not_started, historical, or unknown.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s3-load-discipline-declared
+  anchor: 'governance/doc_governance.md §3'
+  statement: Each governed doc MUST declare exactly one load_discipline value of always-load, on-demand, or by-role.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s3-always-load-governance-only
+  anchor: 'governance/doc_governance.md §3'
+  statement: always-load MUST be reserved for governance-tier docs; other docs MUST NOT be marked always-load.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s3-always-load-promotion-via-foldback
+  anchor: 'governance/doc_governance.md §3'
+  statement: Promoting an on-demand doc to always-load MUST go through a fold-back proposal with a bloat-cost evaluation.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s4-closure-contract-section-required
+  anchor: 'governance/doc_governance.md §4'
+  statement: Every docs/research-briefs/<id>.md MUST contain a closure_contract load-bearing body section.
+  roles: [research]
+  condition: always
+  current_enforcement: 'schema:research-brief.schema.json'
+- id: doc-s4-closure-contract-shape
+  anchor: 'governance/doc_governance.md §4'
+  statement: The closure_contract MUST contain Positive shape, Anti-pattern, and at least one Anchor phrase.
+  roles: [research]
+  condition: always
+  current_enforcement: 'schema:research-brief.schema.json'
+- id: doc-s4-anchor-phrases-not-regex
+  anchor: 'governance/doc_governance.md §4'
+  statement: Anchor phrases MUST be treated as supporting evidence only and MUST NOT be used as regex/literal matchers.
+  roles: [research, acceptance]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s4-closure-contract-immutable
+  anchor: 'governance/doc_governance.md §4'
+  statement: The closure_contract MUST NOT change between gate-1 sign-off and the milestone's Acceptance run without Customer re-sign-off.
+  roles: [research, acceptance, deliver]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'Constitution §3.4 invariant #4; acceptance_input_hash content-hashes verdict inputs (reuse-binding) but does not enforce contract immutability since gate-1 or require re-sign-off (judgment).'
+- id: doc-s5-doccategory-allowed
+  anchor: 'governance/doc_governance.md §5'
+  statement: doc_category MUST be either live or intermediate.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s5-live-kept-current
+  anchor: 'governance/doc_governance.md §5'
+  statement: A live doc MUST be kept current and MUST carry last_reviewed, review_cadence, and source_of_truth.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s5-intermediate-frozen
+  anchor: 'governance/doc_governance.md §5'
+  statement: An intermediate doc is frozen at creation; edits MUST be limited to typos/broken-link fixes, semantic edits are forbidden, and a change of meaning MUST be filed as a new doc referencing the old one.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s6-cellsize-target-declared
+  anchor: 'governance/doc_governance.md §6'
+  statement: Table-cell docs such as handoff §0 declare a cell_size_target front-matter field (default 500 chars) as a soft cold-start-readability signal.
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s6-cellsize-override-rationale
+  anchor: 'governance/doc_governance.md §6'
+  statement: Raising cell_size_target above the default MUST record the rationale in docs/current/adoption-state.md.
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s7-1-code-ahead-update-doc
+  anchor: 'governance/doc_governance.md §7.1'
+  statement: When delivered reviewed code diverges from a doc, confirm the code is intentional and update the doc to reflect delivered behavior, preferring the lowest-tier doc that captures the change.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s7-1-no-silent-foundational-rewrite
+  anchor: 'governance/doc_governance.md §7.1'
+  statement: A materially-misleading foundational spec MUST be marked with implementation_status plus a notes pointer to the reconciliation file, and MUST NOT be silently rewritten sprint-by-sprint.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s7-1-no-rollback-to-stale-doc
+  anchor: 'governance/doc_governance.md §7.1'
+  statement: Code MUST NOT be rolled back to match a stale doc unless the code is independently wrong.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s7-2-docs-ahead-keep-and-mark
+  anchor: 'governance/doc_governance.md §7.2'
+  statement: When a doc describes not-yet-shipped behavior, keep the doc and mark it status proposal|partial|deferred with implementation_status not_started|partial.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s7-2-superseded-not-deleted
+  anchor: 'governance/doc_governance.md §7.2'
+  statement: When a different approach ships, set superseded_by and add the replacement; the original MUST NOT be deleted.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s7-3-true-conflict-reconciliation-note
+  anchor: 'governance/doc_governance.md §7.3'
+  statement: A conflict between two comparable-tier governed docs MUST be handled as a governance task by opening a docs/current/ reconciliation note naming both docs, the disagreement, and the proposed resolution.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s7-3-conflict-mark-source-or-both-partial
+  anchor: 'governance/doc_governance.md §7.3'
+  statement: On conflict resolution, mark the non-authoritative doc with superseded_by or a notes pointer; if unresolvable without a code/product decision, mark both docs partial and capture the open question.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s7-4-no-silent-stale-ref-delete
+  anchor: 'governance/doc_governance.md §7.4'
+  statement: A stale reference MUST NOT be silently deleted; it MUST be fixed (moved target update link; deleted target inline summary plus sprint-archive pointer; code target link a stable dir/file not a line) or annotated.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s7-5-proposals-visible-and-explicit
+  anchor: 'governance/doc_governance.md §7.5'
+  statement: Forward-looking proposal docs MUST live alongside foundational docs (not hidden in archives), and their status MUST make the forward-looking nature explicit.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s7-5-superseded-proposal-stays-in-tree
+  anchor: 'governance/doc_governance.md §7.5'
+  statement: A superseded proposal MUST stay in the tree with status superseded and superseded_by pointing at the replacement.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s8-foundational-not-patched-per-sprint
+  anchor: 'governance/doc_governance.md §8'
+  statement: Framework-side foundational docs MUST NOT be patched every sprint; they are folded forward only at fold-back sub-sprint cadence.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s8-foldback-procedure
+  anchor: 'governance/doc_governance.md §8'
+  statement: At fold-back, read the relevant reconciliation notes, sprint archives, lessons, and code, update the foundational doc, bump last_reviewed, and set folded-in redundant reconciliation notes to status archived.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s8-sprint-archives-immutable
+  anchor: 'governance/doc_governance.md §8'
+  statement: Sprint archives MUST NEVER be edited during fold-back; they remain the immutable record of what each sprint delivered.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s9-archive-ordering
+  anchor: 'governance/doc_governance.md §9'
+  statement: When archiving a live file at sprint close, commit the current working-tree state first, then git mv the file to its archive path, then add the replacement live file.
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s9-rejected-lessons-path
+  anchor: 'governance/doc_governance.md §9'
+  statement: Lessons rejected at fold-back MUST be archived to archive/rejected-lessons/<date>-<topic>.md.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s11-edit-at-foldback-cadence
+  anchor: 'governance/doc_governance.md §11'
+  statement: Edits to governance/doc_governance.md MUST land only at fold-back sub-sprint cadence.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s11-editing-discipline-checklist
+  anchor: 'governance/doc_governance.md §11'
+  statement: Edits to this governance doc MUST satisfy the editing-discipline checklist — timelessness, principle-vs-current-state, necessity, durable-shift-vs-reaction.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-s11-adopters-must-not-edit
+  anchor: 'governance/doc_governance.md §11'
+  statement: Adopters MUST NOT edit governance/doc_governance.md; per-project overrides go in docs/current/adoption-state.md divergence rows.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: doc-role-research-authors-closure-brief
+  anchor: 'governance/doc_governance.md §4'
+  statement: The Research role authors docs/research-briefs/<id>.md, carrying the closure_contract plus scope IN/OUT, anti-goal, and KPI.
+  roles: [research]
+  condition: always
+  current_enforcement: 'schema:research-brief.schema.json'
+- id: doc-role-acceptance-authors-report
+  anchor: 'role-cards/acceptance-agent.md §intro'
+  statement: The Acceptance role authors the acceptance verdict JSON and docs/acceptance-reports/<scope>-acceptance-report.md, with no write access outside its report path.
+  roles: [acceptance]
+  condition: always
+  current_enforcement: 'role-card:role-cards/acceptance-agent.md'
+  notes: 'acceptance-verdict.schema.json validates the verdict JSON, not the report-file authorship or the no-write-outside-report-path boundary (role-card discipline).'
+- id: doc-role-deliver-authors-handoff-0-and-12
+  anchor: 'role-cards/deliver-agent.md §4.1'
+  statement: The Deliver role authors the handoff §0 cold-start scaffold and writes the §12 close verdict (Deliver + Customer co-sign).
+  roles: [deliver]
+  condition: always
+  current_enforcement: 'role-card:role-cards/deliver-agent.md'
+- id: doc-role-dev-authors-handoff-1-to-11
+  anchor: 'role-cards/dev-agent.md §5'
+  statement: The Dev role is sole author of handoff §1-§11, MUST NOT write §12, and does not author §0.
+  roles: [dev]
+  condition: always
+  current_enforcement: 'role-card:role-cards/dev-agent.md'
+- id: doc-role-reviewer-appends-codex-findings
+  anchor: 'role-cards/code-reviewer-agent.md §5'
+  statement: The Code Reviewer writes/appends docs/codex-findings.md (single append-only file) and MUST NOT edit any file outside it.
+  roles: [review]
+  condition: always
+  current_enforcement: 'role-card:role-cards/code-reviewer-agent.md'

@@ -1,0 +1,279 @@
+# Constraint inventory — governance/context_briefing.md (session-discipline / cold-start /
+# harness-wiring §1.0-§1.2, divergence §5, conditional loads §6, pre-output checklist §7).
+- id: cb-1.0-classify-session-kind-first
+  anchor: 'governance/context_briefing.md §1.0'
+  statement: Before any work output a session MUST first determine whether it is the default Control Plane Session or an explicitly activated role session.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: cb-1.0-default-to-control-plane
+  anchor: 'governance/context_briefing.md §1.0'
+  statement: If the human has not explicitly activated a role, the session MUST operate as the default Control Plane Session — classify the request, record a durable intent, read the control state index, and dispatch/resume/prepare a role or runner.
+  roles: [control-plane]
+  condition: no_explicit_role
+  current_enforcement: none-judgment
+  notes: 'validate_intent_file checks the recorded-intent FILE shape only; it does not enforce that a no-role session actually operates as the Control Plane (classify/dispatch) — that behavior is judgment.'
+- id: cb-1.0-control-plane-must-not-sign
+  anchor: 'governance/context_briefing.md §1.0'
+  statement: The Control Plane Session MUST NOT act as a sixth role and MUST NOT sign Research briefs, Deliver close verdicts, Dev work, Code Reviewer findings, or Acceptance verdicts.
+  roles: [control-plane]
+  condition: always
+  current_enforcement: none-judgment
+- id: cb-1.0-control-plane-load-only-minimal
+  anchor: 'governance/context_briefing.md §1.0'
+  statement: The Control Plane Session MUST load only the six declared items (AGENTS.md, its control-plane-load block, control state.json if present, recent intents.jsonl if present, open checkpoint refs, and adoption-state + agent_context_guide only as listed by AGENTS.md).
+  roles: [control-plane]
+  condition: always
+  current_enforcement: 'validator:validate_load_block'
+- id: cb-1.0-control-plane-routing-docs-on-demand
+  anchor: 'governance/context_briefing.md §1.0'
+  statement: The Control Plane Session MUST defer loading control-plane-routing.md and the control-plane schemas until it actually has to classify, append, validate, or debug a route.
+  roles: [control-plane]
+  condition: route_classify_or_validate
+  current_enforcement: none-judgment
+- id: cb-1.0-control-plane-no-default-broad-load
+  anchor: 'governance/context_briefing.md §1.0'
+  statement: The Control Plane Session MUST NOT default-load role cards, full process docs, action_bank.md, full handoff docs, archives, audit transcripts, eval artifacts, old research briefs, proposals, or broad globs.
+  roles: [control-plane]
+  condition: always
+  current_enforcement: 'validator:validate_load_block'
+- id: cb-1.1-agents-entry-loaded-turn-one
+  anchor: 'governance/context_briefing.md §1.1'
+  statement: The adopter's AGENTS.md control-plane entry MUST be in context from the first turn.
+  roles: [all]
+  condition: always
+  current_enforcement: 'validator:validate_root'
+- id: cb-1.1-single-normative-source
+  anchor: 'governance/context_briefing.md §1.1'
+  statement: §1.1 is the single normative source for adopter root-file wiring; the AGENTS.md preamble, ONBOARDING.md, the minimal-greenfield example, and the wiring validator MUST defer here and MUST NOT introduce a divergent wiring rule.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: cb-1.1-claude-md-imports-agents-md
+  anchor: 'governance/context_briefing.md §1.1'
+  statement: On the Claude Code harness the adopter root MUST contain a CLAUDE.md carrying the one-line import @AGENTS.md (a bare AGENTS.md is not auto-loaded by Claude Code).
+  roles: [all]
+  condition: harness_claude_code
+  current_enforcement: 'validator:check_claude_code'
+- id: cb-1.1-claude-md-no-recopy-chain
+  anchor: 'governance/context_briefing.md §1.1'
+  statement: The CLAUDE.md MUST NOT re-copy the governance chain — a second full entry point is forbidden; AGENTS.md stays the single source and CLAUDE.md only routes into it.
+  roles: [all]
+  condition: harness_claude_code
+  current_enforcement: 'validator:_re_copies_chain'
+- id: cb-1.1-import-clean-relative-path
+  anchor: 'governance/context_briefing.md §1.1'
+  statement: The @AGENTS.md import MUST reference the same-root AGENTS.md by a clean relative path — no absolute path, no parent segment, no subdirectory, no symlink redirect.
+  roles: [all]
+  condition: harness_claude_code
+  current_enforcement: 'validator:_classify_target'
+- id: cb-1.1-codex-root-agents-md
+  anchor: 'governance/context_briefing.md §1.1'
+  statement: On the OpenAI Codex harness the adopter root MUST provide the root AGENTS.md; no CLAUDE.md is required.
+  roles: [all]
+  condition: harness_codex
+  current_enforcement: 'validator:check_codex'
+- id: cb-1.1-cursor-rules-entry
+  anchor: 'governance/context_briefing.md §1.1'
+  statement: On the Cursor harness the adopter MUST provide a real Cursor rules entry; a bare AGENTS.md does not count as Cursor wiring.
+  roles: [all]
+  condition: harness_cursor
+  current_enforcement: none-judgment
+  notes: 'check_cursor only emits a non-blocking WARN and does not validate Cursor wiring this round.'
+- id: cb-1.1-headless-no-rootfile-requirement
+  anchor: 'governance/context_briefing.md §1.1'
+  statement: On a headless/API-backed harness there is no repo-root file requirement; governance is driven programmatically and a kernel MUST NOT invent a root-file rule here.
+  roles: [all]
+  condition: harness_headless
+  current_enforcement: none-judgment
+- id: cb-1.1-scaffold-ships-both-rootfiles
+  anchor: 'governance/context_briefing.md §1.1'
+  statement: The canonical greenfield scaffold MUST ship both a root AGENTS.md and a root CLAUDE.md so Claude Code and Codex are both wired.
+  roles: [all]
+  condition: greenfield_scaffold
+  current_enforcement: 'validator:validate_root'
+- id: cb-1.1-run-wiring-validator-onboarding-and-scaffold
+  anchor: 'governance/context_briefing.md §1.1'
+  statement: adopter_wiring_validator.py MUST be run to catch missing root-file wiring deterministically — at onboarding Step 8 and after any scaffold.
+  roles: [control-plane]
+  condition: onboarding_or_post_scaffold
+  current_enforcement: none-judgment
+  notes: 'a MUST-be-run obligation is a process instruction no code enforces (a validator cannot enforce its own invocation).'
+- id: cb-1.2-role-coldstart-load-order
+  anchor: 'governance/context_briefing.md §1.2'
+  statement: An explicitly activated role session MUST, before any role work output, load in order (1) constitution.md, (2) doc_governance.md, (3) context_briefing.md, (4) adopter AGENTS.md, (5) adoption-state.md, (6) the role card, (7) the §2 per-role briefing list — and only then begin work.
+  roles: [research, deliver, dev, review, acceptance]
+  condition: explicit_role_activation
+  current_enforcement: none-judgment
+- id: cb-3-context-pack-before-plan-or-code
+  anchor: 'governance/context_briefing.md §3'
+  statement: When briefing an agent on a non-trivial task the context-pack step MUST precede any plan or code, and the agent MUST answer the context-pack questions before producing any plan or diff.
+  roles: [all]
+  condition: non_trivial_task_briefing
+  current_enforcement: none-judgment
+- id: cb-3-halt-on-1.7-breach-before-plan
+  anchor: 'governance/context_briefing.md §3'
+  statement: If the context pack surfaces a Constitution §1.7 breach, the agent MUST halt and surface the breach before proposing a plan.
+  roles: [all]
+  condition: breach_1.7_surfaced
+  current_enforcement: none-judgment
+- id: cb-3-use-role-card-context-pack-when-present
+  anchor: 'governance/context_briefing.md §3'
+  statement: For a role that has its own activation prompt, the agent MUST use the role card's version of the context pack when present.
+  roles: [research, deliver, dev, review, acceptance]
+  condition: role_card_has_context_pack
+  current_enforcement: 'role-card:role-cards/dev-agent.md'
+- id: cb-4-research-positive-shape-customer-language
+  anchor: 'governance/context_briefing.md §4'
+  statement: Before finalizing a closure_contract the Research Agent MUST state the positive shape in customer-perspective language, not implementation language.
+  roles: [research]
+  condition: authoring_closure_contract
+  current_enforcement: none-judgment
+- id: cb-4-research-anti-pattern-observable
+  anchor: 'governance/context_briefing.md §4'
+  statement: Before finalizing a closure_contract the Research Agent MUST name the anti-pattern in observable terms the Acceptance Agent could spot in delivered behavior.
+  roles: [research]
+  condition: authoring_closure_contract
+  current_enforcement: none-judgment
+- id: cb-4-research-anchors-exemplar-not-regex
+  anchor: 'governance/context_briefing.md §4'
+  statement: Before finalizing a closure_contract the Research Agent MUST keep anchor phrases exemplar and NOT regex/keyword matchers (Constitution §1.7-B).
+  roles: [research]
+  condition: authoring_closure_contract
+  current_enforcement: none-judgment
+- id: cb-4-research-peer-verdict-defensible
+  anchor: 'governance/context_briefing.md §4'
+  statement: Before finalizing a closure_contract the Research Agent MUST verify a peer Acceptance Agent could return a defensible verdict from only the closure_contract plus delivered evidence; if not, expand it.
+  roles: [research]
+  condition: authoring_closure_contract
+  current_enforcement: none-judgment
+- id: cb-4-acceptance-no-silent-contract-widening
+  anchor: 'governance/context_briefing.md §4'
+  statement: Before evaluating, the Acceptance Agent MUST judge only criteria the closure_contract covers; an uncovered criterion MUST be routed via suggested_route research_contract_revision, never widened silently.
+  roles: [acceptance]
+  condition: acceptance_mode_on
+  current_enforcement: none-judgment
+  notes: 'the schema only provides research_contract_revision as a suggested_route enum value; it does not enforce that Acceptance routes an uncovered criterion there rather than widening silently — that is judgment.'
+- id: cb-4-acceptance-contract-is-gate1-signed-version
+  anchor: 'governance/context_briefing.md §4'
+  statement: Before evaluating, the Acceptance Agent MUST confirm the closure_contract it reads is the version Customer signed at gate 1, not an edit slipped in mid-milestone.
+  roles: [acceptance]
+  condition: acceptance_mode_on
+  current_enforcement: none-judgment
+  notes: 'acceptance_input_hash hashes whatever contract is wired in; it neither compares against the gate-1-signed version nor detects a mid-milestone edit (agent action/judgment).'
+- id: cb-4-acceptance-halt-if-contract-changed
+  anchor: 'governance/context_briefing.md §4'
+  statement: If the closure_contract changed between sign-off and now, the Acceptance Agent MUST halt — Customer re-sign-off is required and gate 1 re-fires.
+  roles: [acceptance]
+  condition: acceptance_mode_on
+  current_enforcement: none-judgment
+- id: cb-5-adoption-state-before-process-docs
+  anchor: 'governance/context_briefing.md §5'
+  statement: docs/current/adoption-state.md MUST be loaded before any process doc, so framework defaults are never applied where the adopter documented an override.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: cb-5-apply-per-adoption-status
+  anchor: 'governance/context_briefing.md §5'
+  statement: For each delta the agent MUST act per its adoption-state status — at-spec apply default; partial apply but verify and ask before assuming; divergent apply the adopter override not the default; not-applicable skip; superseded-by-framework check the migration guide.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'adoption-state.schema.json validates the file structure (status enum) only; applying default/partial/divergent/skip per status is agent runtime behavior.'
+- id: cb-5-divergent-vs-1.7-halt
+  anchor: 'governance/context_briefing.md §5'
+  statement: If an adoption-state row is status:divergent against Constitution §1.7, the agent MUST halt, surface the contradiction, and MUST NOT apply the divergence.
+  roles: [all]
+  condition: adoption_state_divergent_vs_1.7
+  current_enforcement: none-judgment
+- id: cb-6-load-delivery-loop-charter-exists
+  anchor: 'governance/context_briefing.md §6'
+  statement: A session MUST load process/delivery-loop.md when the adopter charter exists at the declared charter.yaml path.
+  roles: [all]
+  condition: charter_yaml_exists
+  current_enforcement: none-judgment
+  notes: 'the §6 trigger is a doc-LOAD instruction (agent must load delivery-loop.md); charter_validator validates the charter, it does not enforce that the session loaded the doc.'
+- id: cb-6-load-delivery-loop-charter-authoring
+  anchor: 'governance/context_briefing.md §6'
+  statement: A session MUST load process/delivery-loop.md when the task involves authoring, editing, or reasoning about a mission-charter.yaml.
+  roles: [all]
+  condition: charter_authoring
+  current_enforcement: none-judgment
+  notes: 'doc-LOAD instruction; the schema validates charter content, not that the session loaded delivery-loop.md.'
+- id: cb-6-load-delivery-loop-acceptance-mode-on
+  anchor: 'governance/context_briefing.md §6'
+  statement: An Acceptance Agent session MUST load process/delivery-loop.md whenever tooling.acceptance.mode != off.
+  roles: [acceptance]
+  condition: acceptance_mode_on
+  current_enforcement: none-judgment
+  notes: 'doc-LOAD instruction; acceptance_mode resolves the mode, it does not enforce the doc-load (Acceptance verdict-affecting reads are separately backstopped by acceptance_input_hash).'
+- id: cb-6-load-delivery-loop-mandatory-checkpoint
+  anchor: 'governance/context_briefing.md §6'
+  statement: A session MUST load process/delivery-loop.md when the task involves resolving a MANDATORY_CHECKPOINT.
+  roles: [all]
+  condition: mandatory_checkpoint
+  current_enforcement: none-judgment
+  notes: 'doc-LOAD instruction; _gate_hard_fail runs the checkpoint machinery, it does not enforce that the agent loaded delivery-loop.md.'
+- id: cb-6-load-delivery-loop-scope-f5-calibration
+  anchor: 'governance/context_briefing.md §6'
+  statement: A session MUST load process/delivery-loop.md when the task involves scope_envelope_check, the F5 evidence pattern, or calibration.
+  roles: [all]
+  condition: scope_or_f5_or_calibration
+  current_enforcement: none-judgment
+  notes: 'doc-LOAD instruction; the downstream scope/F5/calibration gates run regardless, but the doc-load itself is judgment.'
+- id: cb-6-load-delivery-loop-1.7d-breach-risk
+  anchor: 'governance/context_briefing.md §6'
+  statement: A session MUST load process/delivery-loop.md when a previous step surfaced a §1.7-D breach risk.
+  roles: [all]
+  condition: breach_risk_1.7d
+  current_enforcement: none-judgment
+- id: cb-6-no-orchestrator-without-trigger
+  anchor: 'governance/context_briefing.md §6'
+  statement: If none of the §6 triggers holds, the session is pure human-paste mode — the 5-role chain still applies but the orchestrator MUST NOT be assumed or invoked.
+  roles: [all]
+  condition: no_delivery_loop_trigger
+  current_enforcement: none-judgment
+- id: cb-7-1-forbidden-list-check
+  anchor: 'governance/context_briefing.md §7'
+  statement: Before emitting, every session MUST run the Constitution §1.7 forbidden-list check.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: cb-7-2-role-boundary-check
+  anchor: 'governance/context_briefing.md §7'
+  statement: Before emitting, a session MUST verify it is producing only what its role authorizes (Dev does not author scope; Deliver does not write feature code; Acceptance does not widen the contract).
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'charter_validator validates the per-role charter config (tool whitelists/network); it does not enforce the pre-output authorship-boundary self-check, which is judgment.'
+- id: cb-7-3-self-containment-check
+  anchor: 'governance/context_briefing.md §7'
+  statement: Before emitting a compact prompt, the author MUST ensure it carries context_budget front-matter with self_contained true.
+  roles: [deliver]
+  condition: authoring_compact_prompt
+  current_enforcement: none-judgment
+- id: cb-7-4-closure-contract-shape-check
+  anchor: 'governance/context_briefing.md §7'
+  statement: Before emitting a closure_contract/closure_criterion, the author MUST ensure positive shape + anti-pattern + anchor phrases are all present.
+  roles: [research]
+  condition: authoring_closure_contract
+  current_enforcement: 'schema:research-brief.schema.json'
+- id: cb-7-5-schema-validation-check
+  anchor: 'governance/context_briefing.md §7'
+  statement: Before emitting an output that has a JSON schema (review/acceptance/deliver-close verdict), the session MUST pass that schema.
+  roles: [review, acceptance, deliver]
+  condition: output_has_schema
+  current_enforcement: 'driver:_spawn'
+  notes: 'the spawn boundary validates the verdict (validate_verdict) and gate_hard_fails an invalid one, so a non-schema-passing output is rejected at _spawn.'
+- id: cb-7-6-adopter-override-check
+  anchor: 'governance/context_briefing.md §7'
+  statement: Before emitting, a session MUST verify its output respects adoption-state.md divergent rows.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: cb-7-halt-on-any-no
+  anchor: 'governance/context_briefing.md §7'
+  statement: A no to any §7 checklist item is a halt signal — the session MUST surface the issue and MUST NOT emit the work product.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment

@@ -1,0 +1,24 @@
+# Source-hash binding for the constraint inventory (WP-EQ).
+# kernel_equivalence.py recomputes each sha256; a mismatch => inventory stale.
+version: 1
+sources:
+- path: governance/constitution.md
+  sha256: 3065cbca2bbc5b762dab76405e1b9638bd3f41bcebba41ac1c0d06474dbd5f1c
+- path: governance/doc_governance.md
+  sha256: e2dcdc7984ea3ecbf8eec4ca19969ed54ba30cbc59061b3e74963f98eed48444
+- path: governance/context_briefing.md
+  sha256: af32a98cc7525d254733c98b757a770079455546c1399f9a9b5fe9cb089a8464
+- path: process/delivery-loop.md
+  sha256: b1d25ba98c783cae57e9f2c60071829db499a22db656ec40d8d29265162a2dee
+- path: process/role-skill-model.md
+  sha256: 33e903c8b9e1ce3fcb2f1ea98b912d02b3a4372443b6efbae0edd25ed630354e
+- path: role-cards/research-agent.md
+  sha256: bc3af202dd689d54c39d70794b335811a12a8043fb01b8b85dc01a2acb08b695
+- path: role-cards/deliver-agent.md
+  sha256: 34ee206adc2ffd1de9616ef4e4dc7f53f239b92a90dcb2c08a87958f5616d83f
+- path: role-cards/dev-agent.md
+  sha256: 89fc01f980413df8198fd2758d6d68a903cb7d1ab8e37aa366d2b25fe6e2c9a5
+- path: role-cards/code-reviewer-agent.md
+  sha256: 238997ce98cc42e5e330f434c688af06b93c060b3fb38b1aec14c19909896c06
+- path: role-cards/acceptance-agent.md
+  sha256: 2374b47999329cec1eee00c5e9921da34e15e4c938ad0d236354028a78fdae0e
