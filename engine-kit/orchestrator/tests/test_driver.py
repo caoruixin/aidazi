@@ -294,6 +294,28 @@ class TestAuditLedger(unittest.TestCase):
             # Forward-only fields do not break the hash chain.
             self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
 
+    def test_wp7_load_graph_hash_recorded_on_every_spawn(self):
+        """WP-7 (observation-only): every spawn event carries a non-null cold-start
+        load_graph_hash ('sha256:<16hex>'); it is role-specific (dev / review / deliver
+        load distinct cold-start sets → distinct fingerprints), deterministic across the
+        run, and the forward-only field does not break the hash chain."""
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            spawns = [e for e in audit.read_events(drv_.audit_ledger)
+                      if e["type"] == "spawn"]
+            self.assertEqual(len(spawns), 3)  # dev, review, deliver
+            by_role = {}
+            for ev in spawns:
+                lgh = ev["payload"]["load_graph_hash"]
+                self.assertIsInstance(lgh, str)         # non-null (real framework_root)
+                self.assertTrue(lgh.startswith("sha256:"), lgh)
+                self.assertEqual(len(lgh), len("sha256:") + 16)
+                by_role[ev["payload"]["role"]] = lgh
+            # dev / review / deliver each load a different role card + briefing set.
+            self.assertEqual(len(set(by_role.values())), 3, by_role)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
     def test_loop_id_threads_every_event(self):
         with tempfile.TemporaryDirectory() as d:
             drv_ = _driver(d, loop_id="loop-thread-xyz")
@@ -2715,6 +2737,49 @@ class TestAcceptanceTranscripts(unittest.TestCase):
             self.assertTrue(os.path.isfile(out_path))
             with open(out_path, encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh), ACC_PASS)
+
+    def test_wp7_load_graph_hash_recorded_on_acceptance_spawn(self):
+        # WP-7 (observation-only): the heaviest role records the cold-start fingerprint too,
+        # on the same acceptance_spawn event as the WP-0 prompt_bytes/fix_round fields. This
+        # is AUDIT-ONLY and does NOT touch acceptance_input_hash (the §3.5b reuse hash).
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=_acceptance_charter(),
+                           adapters=_acceptance_adapters(ACC_PASS))
+            drv_.run(subsprint_id="sprint-001")
+            spawns = [e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                      if e["type"] == "acceptance_spawn"]
+            self.assertEqual(len(spawns), 1)
+            lgh = spawns[0]["load_graph_hash"]
+            self.assertIsInstance(lgh, str)
+            self.assertTrue(lgh.startswith("sha256:"), lgh)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_wp7_cold_start_hash_is_best_effort_degrades_to_none(self):
+        # WP-7 invariant 6: the driver's cold-start fingerprint must NEVER block a spawn.
+        # Any sizing problem — a non-empty `missing` (unreadable/absent mandatory file), a
+        # raised exception, or no framework_root — degrades to None (the field is nullable),
+        # not a misleading partial fingerprint and not an exception into the spawn path.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            orig = drv.load_sizer.cold_start_load_graph_hash
+            try:
+                # (a) non-empty missing -> None (never a partial hash).
+                drv.load_sizer.cold_start_load_graph_hash = (
+                    lambda *a, **k: ("sha256:partial00000000", [{"rel": "governance/x.md"}]))
+                self.assertIsNone(drv_._cold_start_load_graph_hash("dev", False))
+                # (b) a raised OSError/KeyError/ValueError -> None (best-effort).
+                def _boom(*a, **k):
+                    raise OSError("simulated read failure")
+                drv.load_sizer.cold_start_load_graph_hash = _boom
+                self.assertIsNone(drv_._cold_start_load_graph_hash("dev", False))
+            finally:
+                drv.load_sizer.cold_start_load_graph_hash = orig
+            # (c) no framework_root -> None (no governance tree to fingerprint).
+            saved_root, drv_.framework_root = drv_.framework_root, None
+            try:
+                self.assertIsNone(drv_._cold_start_load_graph_hash("dev", False))
+            finally:
+                drv_.framework_root = saved_root
 
     def test_acceptance_adapter_error_records_prompt_ref_null_output(self):
         with tempfile.TemporaryDirectory() as d:

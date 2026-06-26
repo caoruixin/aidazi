@@ -132,6 +132,12 @@ import e2e_stage  # noqa: E402
 import e2e_executor  # noqa: E402
 import effective_role_config as effective_roles  # noqa: E402
 
+# WP-7 (context/token-optimization) — the read-only cold-start load-graph sizer owns the
+# canonical per-role cold-start set (context_briefing §1.2/§2). The driver reuses its
+# cold_start_load_graph_hash to fingerprint the governance/kernel VERSION each spawn loaded
+# (audit-only; never alters dispatched context). Sibling under orchestrator/ (on sys.path).
+import load_sizer  # noqa: E402
+
 # P3 INTEGRATION 2 — Loop Memory (engine-kit/memory/memory_store.py) is OPTIONAL.
 # It is imported lazily/guarded so the driver has NO hard dependency on it: a
 # Driver built without a memory_root never touches the store (behaviour is then
@@ -835,6 +841,29 @@ class Driver:
             )
 
     # ----- the spawn boundary (driver → adapter → schema-valid verdict) ----- #
+    def _cold_start_load_graph_hash(self, role: str,
+                                    skills_active: bool) -> Optional[str]:
+        """WP-7 (observation-only): the ``load_graph_hash`` for ``role``'s cold-start
+        governance/kernel set, resolved against the FRAMEWORK root (where governance/,
+        role-cards/, process/ live — the same root ``_acceptance_resolver_graph`` derives).
+        ``skills_active`` (the role's effective skills are non-empty) folds in the
+        CONDITIONAL ``process/role-skill-model.md`` so a change to a conditionally-loaded
+        constraint source is still fingerprinted.
+
+        BEST-EFFORT + AUDIT-ONLY: a sizing problem must NEVER block a spawn, so any failure
+        — no framework root, an unknown role, an unreadable/missing MANDATORY cold-start
+        file — degrades to None (the ledger field is nullable). A missing file is already a
+        drift signal surfaced elsewhere; here it simply yields no fingerprint rather than a
+        misleading partial one. This is NOT the Acceptance §3.5b reuse hash (design §E)."""
+        if not self.framework_root:
+            return None
+        try:
+            h, missing = load_sizer.cold_start_load_graph_hash(
+                role, repo_root=self.framework_root, skills_active=skills_active)
+        except (KeyError, OSError, ValueError):
+            return None
+        return None if missing else h
+
     def _spawn(self, role: str, prompt: str, schema_key: Optional[str],
                *, lessons_block: Optional[str] = None) -> dict:
         """Select the role's adapter, spawn, and (if a verdict schema applies)
@@ -872,6 +901,13 @@ class Driver:
             memory_bytes = len(lessons_block.encode("utf-8"))
         prompt_bytes = len(prompt.encode("utf-8"))
         fix_round = self.state.fix_round
+        # WP-7 (observation-only): fingerprint the role's cold-start governance/kernel load
+        # set (the agent's own mid-session reads — invisible to the prompt-only input_hash),
+        # so a kernel/governance swap on an otherwise audit-NEUTRAL Dev/Review/Close/Research
+        # spawn is recorded on the Audit Spine. CONDITIONAL role-skill-model.md is folded in
+        # when the role's effective skills are active. Best-effort (None on any read problem);
+        # AUDIT-ONLY — not the Acceptance §3.5b reuse hash.
+        load_graph_hash = self._cold_start_load_graph_hash(role, bool(effective.skills))
 
         # A network grant is explicit role configuration. Record it on the Audit
         # Spine BEFORE the spawn so it is never silent, even if the spawn then
@@ -919,7 +955,7 @@ class Driver:
                 memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
                 prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
-                fix_round=fix_round,
+                fix_round=fix_round, load_graph_hash=load_graph_hash,
                 verdict_ref="adapter_error", prompt_ref=prompt_ref,
                 output_ref=None))  # no output produced — the adapter raised
             raise self._gate_hard_fail(
@@ -941,7 +977,7 @@ class Driver:
                 memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
                 prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
-                fix_round=fix_round,
+                fix_round=fix_round, load_graph_hash=load_graph_hash,
                 verdict_ref="invalid" if err else "valid",
                 prompt_ref=prompt_ref, output_ref=output_ref))
             if err is not None:
@@ -956,7 +992,7 @@ class Driver:
                 memory_injected=injected,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
                 prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
-                fix_round=fix_round,
+                fix_round=fix_round, load_graph_hash=load_graph_hash,
                 verdict_ref="artifact",
                 prompt_ref=prompt_ref, output_ref=output_ref))
         self.state.last_verdict = verdict
@@ -3738,6 +3774,14 @@ class Driver:
         routing = route_for_role(self.charter, "acceptance")
         input_hash = "sha256:" + hashlib.sha256(
             ("acceptance\x00" + prompt).encode("utf-8")).hexdigest()[:16]
+        # WP-7 (observation-only): the same cold-start governance/kernel fingerprint the
+        # uniform _spawn boundary records, so the heaviest role's governance version is
+        # ledger-recorded too. CONDITIONAL role-skill-model.md folds in when Acceptance
+        # skills are active. AUDIT-ONLY — this does NOT feed acceptance_input_hash (the
+        # §3.5b reuse hash, computed separately over prompt + resolver graph); it never
+        # substitutes for resolver binding on a verdict-affecting input (design §E).
+        load_graph_hash = self._cold_start_load_graph_hash(
+            "acceptance", bool(self._effective_role("acceptance").skills))
         self.state.spawn_count += 1
         # PERSIST the bumped spawn_count NOW (see _spawn): a resume after a mid-spawn
         # halt must not rewind it and clobber a referenced transcript.
@@ -3767,6 +3811,8 @@ class Driver:
                 # no Loop-Memory lessons block, so there is no memory_bytes here.
                 "prompt_bytes": len(prompt.encode("utf-8")),
                 "fix_round": self.state.fix_round,
+                # WP-7 (observation-only): cold-start governance/kernel fingerprint.
+                "load_graph_hash": load_graph_hash,
                 "input_hash": input_hash,
                 "prompt_ref": prompt_ref,
                 "output_ref": output_ref,

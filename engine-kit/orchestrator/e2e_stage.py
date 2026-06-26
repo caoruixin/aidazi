@@ -364,7 +364,7 @@ def resolve_load_graph(entries: list, *, repo_root: Optional[str] = None,
     symlinks are skipped (containment)."""
     by_real: dict = {}                      # realpath (or inline:key) -> {path, purpose, bytes, sha256}
     missing: list = []
-    frontier: list = []                     # (abspath, display_rel, purpose)
+    frontier: list = []                     # (abspath, display_rel, purpose, mandatory)
     bases = tuple(b for b in (repo_root, os.path.dirname(repo_root) if repo_root else None) if b)
 
     for e in entries:
@@ -375,19 +375,30 @@ def resolve_load_graph(entries: list, *, repo_root: Optional[str] = None,
             continue
         p = e.get("path")
         if p and os.path.isfile(p) and not os.path.islink(p):
-            frontier.append((p, e.get("rel", p), e.get("purpose", "")))
+            frontier.append((p, e.get("rel", p), e.get("purpose", ""),
+                             bool(e.get("mandatory"))))
         elif e.get("mandatory"):
             missing.append(e)
 
     while frontier and len(by_real) < max_files:
-        path, disp, purpose = frontier.pop()
+        path, disp, purpose, mandatory = frontier.pop()
         rp = os.path.realpath(path)
         if rp in by_real:
-            continue
+            continue                        # content already resolved (dedup) — not missing
         try:
             with open(path, "rb") as fh:
                 data = fh.read()
         except OSError:
+            # A MANDATORY root that EXISTS (passed isfile) but cannot be READ (permission,
+            # race) must NOT be silently dropped: a partial graph that the caller treats as
+            # complete (empty `missing`) would yield a misleading cold-start load_graph_hash
+            # (WP-7 invariant 6) or an Acceptance reuse hash over partial criteria. Report it
+            # as missing (fail-closed) — honoring this function's own contract ("`missing` =
+            # MANDATORY roots whose file is absent/UNREADABLE"). An @-include (mandatory
+            # False) carries no such contract and stays best-effort.
+            if mandatory:
+                missing.append({"path": disp, "rel": disp, "purpose": purpose,
+                                "mandatory": True})
             continue
         by_real[rp] = {"path": disp, "purpose": purpose,
                        # WP-0 measurement (observation-only): the file's byte size, so
@@ -409,7 +420,7 @@ def resolve_load_graph(entries: list, *, repo_root: Optional[str] = None,
                 if (os.path.isfile(cand) and not os.path.islink(cand)
                         and os.path.realpath(cand) not in by_real):
                     rel = os.path.relpath(cand, repo_root) if repo_root else inc
-                    frontier.append((cand, rel.replace(os.sep, "/"), "include"))
+                    frontier.append((cand, rel.replace(os.sep, "/"), "include", False))
                     break
     return sorted(by_real.values(), key=lambda g: (g["purpose"], g["path"])), missing
 

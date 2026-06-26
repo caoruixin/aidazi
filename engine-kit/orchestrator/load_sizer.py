@@ -43,6 +43,7 @@ dispatched context). CLI::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -129,6 +130,17 @@ ROLE_COLD_START: dict = {
     ],
 }
 
+#: CONDITIONAL hard-constraint source (NOT in the skills-off baseline above). All five
+#: role cards mandate loading ``process/role-skill-model.md`` when the role's skills are
+#: active (acceptance-agent.md:253, dev-agent.md:156, research-agent.md:181,
+#: deliver-agent.md:271, code-reviewer-agent.md:185); its §4 declares non-overridable
+#: boundary constraints. Appended to a role's cold-start set ONLY when skills are active
+#: (``role_cold_start_roots(..., skills_active=True)``) — so a change to it is recorded in
+#: the WP-7 load_graph_hash exactly when it is a load-bearing input. The role cards' "or
+#: you intend to fan out" clause is a RUNTIME agent decision, not config-derivable, so the
+#: static fingerprint keys on the config-determinable signal (effective skills non-empty).
+ROLE_SKILL_MODEL: tuple = ("process/role-skill-model.md", "briefing")
+
 #: ADOPTER-STATIC (§1.2 steps 4-5): fixed paths in the ADOPTER repo. Sized only when an
 #: ``adopter_root`` is supplied (an adopter varies per deployment); otherwise declared
 #: not-measured. AGENTS.md transitively @-includes the framework governance chain in a
@@ -195,20 +207,62 @@ def size_load_set(roots: list, *, repo_root: str) -> dict:
     }
 
 
+def role_cold_start_roots(role: str, *, skills_active: bool = False) -> list:
+    """The FRAMEWORK-STATIC cold-start roots for ``role`` as ``(rel, purpose)`` pairs:
+    the governance trio (§1.2 steps 1-3) + role card (step 6) + per-role §2 briefing list.
+    When ``skills_active`` (the role's effective skill set is non-empty) the CONDITIONAL
+    constraint source ``process/role-skill-model.md`` (§4 boundary constraints) is appended.
+
+    SINGLE SOURCE OF TRUTH for both the WP-0 sizer and the WP-7 ``load_graph_hash`` — so a
+    future cold-start swap (e.g. WP-2's constitution-core) is edited in ONE place and BOTH
+    the byte baseline and the audit fingerprint track it together (no drift)."""
+    if role not in ROLE_COLD_START:
+        raise KeyError(f"unknown role {role!r}; known: {', '.join(ROLES)}")
+    roots = list(GOVERNANCE_TRIO) + list(ROLE_COLD_START[role])
+    if skills_active and ROLE_SKILL_MODEL not in roots:
+        roots.append(ROLE_SKILL_MODEL)
+    return roots
+
+
+def cold_start_load_graph_hash(role: str, *, repo_root: str = REPO_ROOT_DEFAULT,
+                               skills_active: bool = False) -> tuple:
+    """WP-7: a content fingerprint of ``role``'s framework-static cold-start governance/
+    kernel set. Resolves the cold-start roots (``role_cold_start_roots``) via the SAME
+    ``resolve_load_graph`` machinery as the sizer and hashes each file's CONTENT IDENTITY
+    (path / purpose / sha256), EXCLUDING the observational ``bytes`` field — so the hash
+    changes iff a cold-start doc's CONTENT changes (e.g. a kernel swap). This makes an
+    otherwise audit-NEUTRAL Dev/Review/Close/Research spawn's governance version
+    ledger-recordable (their per-spawn ``input_hash`` is prompt-only).
+
+    Returns ``(load_graph_hash, missing)`` where ``load_graph_hash`` is
+    ``"sha256:" + sha256(...)[:16]`` (the same shape as the per-spawn ``input_hash`` it
+    sits beside) and ``missing`` is the list of absent MANDATORY cold-start roots (drift).
+
+    AUDIT-ONLY: this is NOT the Acceptance §3.5b reuse hash. Acceptance reuse is governed
+    by ``acceptance_input_hash`` + the resolver graph; ``load_graph_hash`` NEVER substitutes
+    for resolver binding on any verdict-affecting input (design spec §E LOAD-CLOSURE)."""
+    roots = role_cold_start_roots(role, skills_active=skills_active)
+    res = size_load_set(roots, repo_root=repo_root)
+    identity = [{k: v for k, v in g.items() if k != "bytes"} for g in res["files"]]
+    basis = json.dumps({"role": role, "cold_start_graph": identity},
+                       sort_keys=True, separators=(",", ":"))
+    h = "sha256:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+    return h, res["missing"]
+
+
 def size_role(role: str, *, repo_root: str = REPO_ROOT_DEFAULT,
-              adopter_root: str = None) -> dict:
+              adopter_root: str = None, skills_active: bool = False) -> dict:
     """Cold-start size for ``role``. ALWAYS sizes the FRAMEWORK-static set (governance
     trio §1.2 1-3 + role card §1.2 step 6 + per-role briefing §2). When ``adopter_root``
     is given, ALSO sizes the ADOPTER-static set (§1.2 steps 4-5). The RUN-DYNAMIC members
     (§2, no fixed path) are enumerated in ``dynamic_unsized`` — declared, never dropped.
-    Read-only.
+    ``skills_active`` additionally counts the CONDITIONAL ``role-skill-model.md`` (default
+    False keeps the skills-off baseline byte-identical). Read-only.
 
     Returns ``{role, files, by_purpose, framework_bytes, adopter_bytes, total_bytes,
     est_tokens, missing, dynamic_unsized}``. ``adopter_bytes`` is None when no
     ``adopter_root`` was supplied (= adopter-static not measured, not zero)."""
-    if role not in ROLE_COLD_START:
-        raise KeyError(f"unknown role {role!r}; known: {', '.join(ROLES)}")
-    fw = size_load_set(list(GOVERNANCE_TRIO) + list(ROLE_COLD_START[role]),
+    fw = size_load_set(role_cold_start_roots(role, skills_active=skills_active),
                        repo_root=repo_root)
     out = {
         "role": role,

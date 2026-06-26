@@ -392,5 +392,61 @@ class Wp0MeasurementFieldTests(unittest.TestCase):
         jsonschema.validate(payload, self._spawn_schema())  # raises on mismatch
 
 
+class Wp7LoadGraphHashFieldTests(unittest.TestCase):
+    """WP-7 (context/token-optimization): make_spawn_payload carries the observation-only
+    cold-start fingerprint ``load_graph_hash``; it is declared in SPAWN_PAYLOAD_FIELDS + the
+    schema (additionalProperties:false), defaults to None so an older callsite need not pass
+    it, and a PRE-WP-7 on-disk ledger (no such key at all) still verifies."""
+
+    def _spawn_schema(self):
+        repo = os.path.dirname(os.path.dirname(_PKG_DIR))  # engine-kit/audit -> repo
+        with open(os.path.join(repo, "schemas", "audit-event.schema.json"),
+                  encoding="utf-8") as fh:
+            return json.load(fh)["$defs"]["spawn_payload"]
+
+    def test_defaults_none_backward_compatible(self):
+        p = al.make_spawn_payload(role="dev", harness="x", provider="y", model="z")
+        self.assertIn("load_graph_hash", p)
+        self.assertIsNone(p["load_graph_hash"],
+                          "load_graph_hash must default to None (back-compatible)")
+
+    def test_roundtrip(self):
+        p = al.make_spawn_payload(
+            role="review", harness="codex", provider="openai", model="gpt-5.5",
+            load_graph_hash="sha256:0123456789abcdef")
+        self.assertEqual(p["load_graph_hash"], "sha256:0123456789abcdef")
+
+    def test_declared_in_fields_and_schema(self):
+        declared = set(self._spawn_schema()["properties"])
+        self.assertIn("load_graph_hash", al.SPAWN_PAYLOAD_FIELDS,
+                      "load_graph_hash missing from SPAWN_PAYLOAD_FIELDS")
+        self.assertIn("load_graph_hash", declared,
+                      "load_graph_hash emitted by code but missing from the schema")
+
+    def test_payload_validates_against_schema(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest("jsonschema not installed")
+        payload = al.make_spawn_payload(
+            role="dev", harness="claude_code", provider="anthropic", model="m",
+            input_hash="sha256:abc", load_graph_hash="sha256:feedface00c0ffee")
+        jsonschema.validate(payload, self._spawn_schema())  # raises on mismatch
+
+    def test_pre_wp7_ledger_without_field_still_verifies(self):
+        # An OLD ledger never carried load_graph_hash. Simulate one (payload key ABSENT,
+        # not just None) and confirm the hash chain still verifies — forward-only /
+        # deprecate-don't-delete: a payload without the key is byte-identical to its
+        # pre-WP-7 state, so verify_chain (which recomputes over recorded bytes only) passes.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, f"{LOOP_ID}.jsonl")
+            legacy = {"role": "dev", "harness": "claude_code", "provider": "anthropic",
+                      "model": "m", "input_hash": "sha256:old"}  # no load_graph_hash key
+            self.assertNotIn("load_graph_hash", legacy)
+            al.append_event(LOOP_ID, "spawn", legacy,
+                            ts="2026-06-15T10:00:00Z", path=path)
+            self.assertTrue(al.verify_chain(path).ok)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

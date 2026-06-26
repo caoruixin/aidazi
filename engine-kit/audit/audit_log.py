@@ -87,6 +87,13 @@ SPAWN_PAYLOAD_FIELDS: tuple[str, ...] = (
     "prompt_bytes",      # len(as-dispatched prompt, utf-8 bytes)
     "memory_bytes",      # bytes of the Loop-Memory lessons block injected for the role
     "fix_round",         # fix-round index at dispatch (the fix-round cost multiplier)
+    # WP-7 (context/token-optimization) — per-spawn cold-start fingerprint. Same
+    # APPEND-ONLY / nullable / deprecate-don't-delete rule as the WP-0 fields above.
+    "load_graph_hash",   # content fingerprint of the role's cold-start governance/kernel
+                         # load set (load_sizer.cold_start_load_graph_hash). AUDIT-ONLY —
+                         # records which governance/kernel VERSION an otherwise audit-neutral
+                         # (prompt-only input_hash) Dev/Review/Close/Research spawn loaded;
+                         # NOT the Acceptance §3.5b reuse hash (design spec §E).
 )
 
 
@@ -146,6 +153,7 @@ def make_spawn_payload(
     prompt_bytes: Optional[int] = None,
     memory_bytes: Optional[int] = None,
     fix_round: Optional[int] = None,
+    load_graph_hash: Optional[str] = None,
 ) -> dict:
     """Convenience constructor for the per-spawn execution-context payload
     (plan §4.5 G3). Returns a plain dict; the ledger stores it verbatim.
@@ -163,7 +171,12 @@ def make_spawn_payload(
     None so an older callsite need not pass them and an existing on-disk ledger
     (written without these keys) still verifies unchanged; they record the
     as-dispatched prompt size, the injected Loop-Memory lessons-block size, and the
-    fix-round index, so per-spawn token volume becomes auditable."""
+    fix-round index, so per-spawn token volume becomes auditable.
+
+    ``load_graph_hash`` (WP-7) is the same kind of nullable, forward-only field: a
+    content fingerprint of the role's cold-start governance/kernel load set, so which
+    governance VERSION a spawn loaded is ledger-recorded even for the roles whose
+    ``input_hash`` is prompt-only. AUDIT-ONLY — not the Acceptance reuse hash."""
     return {
         "role": role,
         "harness": harness,
@@ -181,6 +194,7 @@ def make_spawn_payload(
         "prompt_bytes": prompt_bytes,
         "memory_bytes": memory_bytes,
         "fix_round": fix_round,
+        "load_graph_hash": load_graph_hash,
     }
 
 

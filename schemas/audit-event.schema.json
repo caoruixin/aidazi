@@ -64,7 +64,8 @@
         "cost": {"type": ["number", "null"]},
         "prompt_bytes": {"type": ["integer", "null"], "description": "WP-0 measurement (observation-only): byte length of the as-dispatched prompt. Nullable/back-compatible — absent on pre-WP-0 ledgers."},
         "memory_bytes": {"type": ["integer", "null"], "description": "WP-0 measurement (observation-only): byte length of the Loop-Memory lessons block injected for the role (the byte companion to memory_injected)."},
-        "fix_round": {"type": ["integer", "null"], "description": "WP-0 measurement (observation-only): the fix-round index at dispatch (the fix-round cost multiplier)."}
+        "fix_round": {"type": ["integer", "null"], "description": "WP-0 measurement (observation-only): the fix-round index at dispatch (the fix-round cost multiplier)."},
+        "load_graph_hash": {"type": ["string", "null"], "description": "WP-7 (observation-only): 'sha256:<16hex>' content fingerprint of the role's cold-start governance/kernel load set (load_sizer.cold_start_load_graph_hash) — records which governance VERSION an otherwise prompt-only-input_hash spawn loaded. Nullable/back-compatible — absent on pre-WP-7 ledgers. AUDIT-ONLY, not the Acceptance §3.5b reuse hash."}
       }
     }
   }
