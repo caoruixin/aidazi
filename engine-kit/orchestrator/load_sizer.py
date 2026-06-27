@@ -76,7 +76,11 @@ BYTES_PER_TOKEN_EST = 4
 #: §1.2 steps 1-3 — the universal role-session cold-start floor (every explicit
 #: role re-pays this on every fresh subprocess).
 GOVERNANCE_TRIO: list = [
-    ("governance/constitution.md", "governance"),
+    # WP-2: cold-start step 1 loads the always-load constitution-CORE kernel (a complete,
+    # machine-checked projection); the verbose canonical governance/constitution.md is loaded
+    # on-demand, so it is NOT part of the per-spawn cold-start floor. The WP-7 load_graph_hash
+    # fingerprints this set, so it tracks the kernel the agent actually reads.
+    ("governance/constitution-core.md", "governance"),
     ("governance/doc_governance.md", "governance"),
     ("governance/context_briefing.md", "governance"),
 ]

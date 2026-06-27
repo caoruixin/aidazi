@@ -3999,6 +3999,13 @@ class Driver:
             entries.append({"path": fw_agents, "rel": "AGENTS.md",
                             "purpose": "framework_cold_start"})
         for rel in (
+            # WP-2: the judge cold-starts the constitution-CORE projection (context_briefing
+            # §1.2 step 1). Bind it. KEEP constitution.md bound too: the kernel's triggers let
+            # the judge load the canonical ON-DEMAND (term / divergence / rule-conflict /
+            # exception), so an edit to it can still affect a verdict — binding both is
+            # fail-closed (an edit to either re-spawns). (The full Acceptance LOAD-CLOSURE —
+            # proving no OTHER unbound on-demand read — is WP-4.)
+            os.path.join("governance", "constitution-core.md"),
             os.path.join("governance", "constitution.md"),
             os.path.join("governance", "doc_governance.md"),
             os.path.join("governance", "context_briefing.md"),

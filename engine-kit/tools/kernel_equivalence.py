@@ -121,7 +121,9 @@ def _load_inventory(inv_dir: Path):
     out = []
     for path in sorted(glob.glob(str(inv_dir / INVENTORY_GLOB))):
         name = os.path.basename(path)
-        if name == MANIFEST_NAME:
+        # `_`-prefixed files are META, not inventory rows: _sources.yaml (source-hash
+        # manifest) and _kernel_coverage.yaml (WP-2 kernel-coverage map).
+        if name == MANIFEST_NAME or name.startswith("_"):
             continue
         with open(path, encoding="utf-8") as fh:
             rows = yaml.safe_load(fh)
@@ -337,6 +339,113 @@ def check(repo_root=REPO_ROOT_DEFAULT) -> dict:
     return {"ok": not errors, "errors": errors, "warnings": warnings, "stats": stats}
 
 
+KERNEL_COVERAGE_NAME = "_kernel_coverage.yaml"
+
+
+def _normalize_for_match(text: str) -> str:
+    """Collapse whitespace + strip markdown emphasis (`` ` `` and ``*``) so a coverage phrase
+    matches the kernel regardless of line-wrapping or `code`/**bold** decoration."""
+    return re.sub(r"\s+", " ", re.sub(r"[`*]", "", text)).strip()
+
+
+def check_kernel_coverage(repo_root=REPO_ROOT_DEFAULT) -> dict:
+    """WP-2: prove the constitution-core KERNEL carries every constitution inventory row.
+
+    The coverage map (``_kernel_coverage.yaml``) binds each constitution-sourced row id to a
+    constraint-essence phrase the kernel MUST contain. This asserts (per the WP-EQ design's
+    ``coverage_status: kernel-clause`` rule):
+      (a) COMPLETENESS — every inventory row (from the map's ``source_files``) is mapped;
+      (b) NO-DANGLING  — every map entry names a real inventory row;
+      (c) RESOLUTION   — EVERY phrase of a row is present in the kernel's NORMATIVE BODY.
+    A row's value may be a single phrase OR a LIST of phrases; with a list, EVERY phrase must
+    resolve — so a multi-subpart constraint (e.g. dev = workspace_write + network-boundary +
+    no-push) cannot pass on one fragment while a mandatory subpart is dropped. Matching is over the
+    kernel BODY only — the YAML front-matter and the trailing non-normative sections (the
+    "Deferred …" list + the inherited-gaps section) are stripped — so a phrase must resolve inside
+    an actual clause, not metadata/pointer prose. Returns ``{ok, errors, kernel, stats}``; ``ok`` is
+    False (clear error) when the kernel draft is absent — safe to run before the kernel is wired."""
+    repo_root = Path(repo_root)
+    inv_dir = repo_root / "engine-kit" / "tools" / "constraint-inventory"
+    cov_path = inv_dir / KERNEL_COVERAGE_NAME
+    if yaml is None:
+        return {"ok": False, "errors": ["PyYAML is required but not installed"], "stats": {}}
+    if not cov_path.is_file():
+        return {"ok": False, "errors": [f"kernel-coverage map not found: {cov_path}"], "stats": {}}
+    cov = yaml.safe_load(cov_path.read_text(encoding="utf-8")) or {}
+    kernel_rel = cov.get("kernel")
+    source_files = set(cov.get("source_files") or [])
+    cmap = cov.get("rows") or {}
+    if not kernel_rel or not source_files or not isinstance(cmap, dict):
+        return {"ok": False, "stats": {},
+                "errors": ["coverage map must define 'kernel', 'source_files', and 'rows'"]}
+    kernel_path = repo_root / kernel_rel
+    if not kernel_path.is_file():
+        return {"ok": False, "kernel": kernel_rel, "stats": {},
+                "errors": [f"kernel not found: {kernel_rel} (draft not present — nothing to check)"]}
+    # Match over the NORMATIVE BODY only: drop the YAML front-matter (first '---' … '---') and the
+    # trailing non-normative sections (from the "## Deferred to the canonical" heading on), so a
+    # phrase cannot resolve against metadata / the deferred list / the gaps section.
+    body = kernel_path.read_text(encoding="utf-8")
+    if body.startswith("---"):
+        fm_end = body.find("\n---", 3)
+        if fm_end != -1:
+            body = body[fm_end + 4:]
+    cut = body.find("## Deferred to the canonical")
+    if cut != -1:
+        body = body[:cut]
+    kernel_norm = _normalize_for_match(body)
+
+    # The inventory row ids in the constitution source files the kernel replaces.
+    inv_ids = set()
+    for name, rows in _load_inventory(inv_dir):
+        if name in source_files and isinstance(rows, list):
+            for r in rows:
+                if isinstance(r, dict) and isinstance(r.get("id"), str):
+                    inv_ids.add(r["id"])
+
+    errors: list[str] = []
+    uncovered = sorted(i for i in inv_ids if i not in cmap)            # (a)
+    for i in uncovered:
+        errors.append(f"uncovered constraint (no kernel-coverage entry): {i}")
+    dangling = sorted(i for i in cmap if i not in inv_ids)             # (b)
+    for i in dangling:
+        errors.append(f"coverage map references unknown inventory id: {i}")
+    missing_phrase = []                                                # (c)
+    for rid in sorted(set(cmap) & inv_ids):
+        raw = cmap[rid]
+        phrases = raw if isinstance(raw, list) else [raw]
+        norm = [(p, _normalize_for_match(str(p))) for p in phrases]
+        if not norm or any(not n for _, n in norm):
+            errors.append(f"empty coverage phrase for {rid}")
+            missing_phrase.append(rid)
+            continue
+        absent = [orig for orig, n in norm if n not in kernel_norm]   # EVERY phrase must resolve
+        if absent:
+            errors.append(f"kernel missing clause for {rid} (subpart not carried): {absent!r}")
+            missing_phrase.append(rid)
+
+    total = len(inv_ids)
+    covered = total - len(uncovered) - len(missing_phrase)
+    stats = {
+        "total": total, "covered": covered,
+        "coverage_pct": round(100.0 * covered / total, 1) if total else 0.0,
+        "uncovered_rows": uncovered, "missing_phrase": sorted(missing_phrase),
+        "dangling": dangling,
+    }
+    return {"ok": not errors, "errors": errors, "kernel": kernel_rel, "stats": stats}
+
+
+def _print_kernel_coverage(result: dict) -> None:
+    stats = result.get("stats", {})
+    print(f"kernel_coverage ({result.get('kernel', '?')}): "
+          f"{'OK' if result['ok'] else 'NOT OK'}")
+    if stats:
+        print(f"  constitution rows : {stats.get('total')}")
+        print(f"  covered           : {stats.get('covered')} ({stats.get('coverage_pct')}%)")
+    for e in result.get("errors", []):
+        print(f"    - {e}")
+
+
 def _print_human(result: dict) -> None:
     stats = result.get("stats", {})
     print(f"kernel_equivalence: {'OK' if result['ok'] else 'NOT OK'}")
@@ -366,7 +475,29 @@ def main(argv=None) -> int:
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--repo-root", default=str(REPO_ROOT_DEFAULT),
                         help="repo root (parent of engine-kit)")
+    parser.add_argument("--kernel-coverage", action="store_true",
+                        help="WP-2: report constitution-core kernel coverage vs the inventory "
+                             "(does NOT run the main inventory gate)")
     args = parser.parse_args(argv)
+    if args.kernel_coverage:
+        # The kernel is a projection of the inventory, which is bound to the canonical source
+        # hashes. A coverage pass is only meaningful if the inventory gate (source-hash freshness,
+        # well-formedness, row floors) ALSO passes — a stale canonical means a stale kernel. So
+        # --kernel-coverage runs BOTH and fails if either fails (Codex WP-2 fidelity gate).
+        base = check(repo_root=args.repo_root)
+        cov = check_kernel_coverage(repo_root=args.repo_root)
+        merged = {
+            "ok": base["ok"] and cov["ok"],
+            "kernel": cov.get("kernel"),
+            "errors": (["[inventory/source-hash gate] " + e for e in base["errors"]]
+                       + cov.get("errors", [])),
+            "stats": cov.get("stats", {}),
+        }
+        if args.json:
+            print(json.dumps(merged, indent=2, ensure_ascii=False, sort_keys=True))
+        else:
+            _print_kernel_coverage(merged)
+        return 0 if merged["ok"] else 1
     result = check(repo_root=args.repo_root)
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))

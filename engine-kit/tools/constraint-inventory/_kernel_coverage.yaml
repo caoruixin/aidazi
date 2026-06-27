@@ -1,0 +1,199 @@
+# WP-2 kernel-coverage map (build-time only; NOT agent-loaded — the `_` prefix excludes it
+# from the inventory row glob, like _sources.yaml).
+#
+# Binds each constitution-sourced inventory row (01-constitution-core.yaml +
+# 02-constitution-roles.yaml) to the CONSTRAINT-ESSENCE phrase(s) governance/constitution-core.md
+# MUST contain. A row value is a single phrase OR a LIST; with a list EVERY phrase must resolve, so
+# a COMPOUND constraint requires a phrase for EACH mandatory subpart and cannot pass while any
+# subpart is dropped (Codex WP-2 fidelity gate R2/R3 — non-vacuous). Matching is over the kernel's
+# normative body only (front-matter + trailing Deferred/gaps sections stripped), whitespace-
+# normalized, markdown-stripped. Proves: (a) completeness — every row mapped; (b) no-dangling;
+# (c) resolution — every phrase present.
+kernel: governance/constitution-core.md
+source_files:
+  - 01-constitution-core.yaml
+  - 02-constitution-roles.yaml
+rows:
+  # --- §1.3 / §1.4 / §1.4-i ---
+  con-1.3-soft-decisions-not-runtime:
+    - "MUST NOT be moved to runtime guards"
+    - "TRACK-DEPENDENT"
+  con-1.4-kernel-invariants-not-llm:
+    - "MUST NOT be delegated to the LLM"
+    - "PII+safety floor"
+    - "trace+eval contract"
+  con-1.4i-sufficient-and-efficient:
+    - "carries enough context to act"
+    - "carries no more context than necessary"
+  con-1.4i-context-budget-frontmatter:
+    - "MUST declare a context_budget front-matter block"
+    - "target_tokens, load_list, do_not_load, and self_contained:true"
+  con-1.4i-self-contained-preflight-gate:
+    - "self_contained:false (or absent) MUST be rejected at orchestrator preflight"
+    - "or by the human reviewer in manual mode"
+    - "it MUST NOT run"
+  # --- §1.5 / §1.6 ---
+  con-1.5-no-hardcode-semantic-fix: "keyword/regex/if-else/enum expansion UNLESS a Tier-0 invariant is broken"
+  con-1.5-route-fix-through-triage:
+    - "routed through post-deployment-iteration triage"
+    - "classified to exactly one named fix-layer BEFORE a fix is built"
+  con-1.6-eval-evidence-not-authority:
+    - "MUST NOT be treated as acceptance authority"
+    - "improves generalizable customer problem-solving"
+    - "regresses none of safety, grounding, wrong-containment, or architecture health"
+  con-1.6-shadow-holdout-regression-is-failure: "shadow/holdout regression MUST be treated as a\n  FAILURE, not a success"
+  # --- §1.7 core (5) + A–E ---
+  con-1.7-core-no-eval-phrase-hardcode: "Encoding raw eval phrases into code or into the prompt"
+  con-1.7-core-no-uc-hardrule-for-soft: "Adding UC-specific hard rules for soft semantic decisions"
+  con-1.7-core-no-widen-eval-for-bot-mistake: "Widening the eval spec to accept a genuine bot mistake"
+  con-1.7-core-no-overfit-visible-eval: "Optimizing the visible eval set at the cost of shadow/generalization"
+  con-1.7-core-no-prompt-ifelse-dump: "Using the prompt as an if-else rule dump"
+  con-1.7a-single-abstraction-layer: "choose exactly ONE abstraction layer per agent"
+  con-1.7b-closure-criterion-judgment-paragraph:
+    - "closure_criterion and a Research closure_contract"
+    - "human-judgment paragraph"
+    - "positive_shape, anti_pattern, anchor_phrases"
+    - "MUST NOT be a keyword/regex matcher"
+    - "NEVER a passing condition"
+  con-1.7c-acceptance-spawn-isolation:
+    - "MUST NOT be spawned by the Research, Deliver, or Dev role"
+    - "a verdict from such a spawn is invalid"
+    - "must be re-spawned from a proper surface"
+  con-1.7c-advisory-pass-halts-for-signoff:
+    - "it MUST NOT auto-ship or route work"
+    - "HALTs at advisory_acceptance_pass_signoff"
+    - "for per-instance Customer sign-off"
+  con-1.7c-authoritative-autoship-conditions:
+    - "may auto-ship ONLY under the Customer's charter pre-authorization"
+    - "tooling.acceptance.mode: auto"
+    - "calibrated for the active class"
+    - "autonomy.level: fully_autonomous_within_budget"
+  con-1.7c-fixrequired-human-confirm-not-skipped:
+    - "routing MUST NOT skip the human-confirm checkpoint"
+    - "Acceptance\n    writes the checkpoint"
+    - "Customer writes the decision before Deliver"
+  con-1.7d-no-bypass-mandatory-checkpoints:
+    - "MUST NOT remove, empty, disable, or override any of\n  the 9 default MANDATORY_CHECKPOINT definitions"
+    - "omitted, emptied, disabled, or\n  overridden"
+  con-1.7d-validator-rejects-and-refuses-boot:
+    - "validator MUST reject any such bypass shape"
+    - "refuse to\n  boot"
+  con-1.7e-no-loop-conflation-in-docs: "MUST name each loop distinctly on first reference"
+  con-1.8-may-not-subtract-forbidden-list:
+    - "MAY NOT subtract from the framework §1.7 forbidden list"
+    - "MUST NOT carry status:divergent"
+  # --- §3.2 / §3.3 ---
+  con-3.2-gate1-blocks-downstream: "No downstream work may proceed until the Customer signs the Research brief"
+  con-3.2-gate2-ship-authority:
+    - "ship/no-ship decision on the Acceptance verdict is the Customer's"
+    - "an agent MUST NOT ship without that authority"
+  con-3.3-dev-sandbox-workspace-write-no-push:
+    - "workspace_write sandbox"
+    - "network per charter.tooling.dev.network_access"
+    - "MUST NOT git push"
+  con-3.3-dev-no-scope-authority: "implements only and has NO scope"
+  con-3.3-review-read-only-whitelist:
+    - "read-only via the mechanical tool whitelist Read/Grep/Glob"
+    - "no edits, no git push"
+  con-3.3-review-findings-header: "decision + blocking_count +\n  summary + signed sub-sprint scope_claim"
+  con-3.3-acceptance-read-only-calibration-gated: "runs read-only by tool whitelist, calibration-gated per §3.6"
+  con-3.3-acceptance-agent-distinct: "agent_kind MUST be distinct from Dev/Reviewer/Research"
+  con-3.3-research-closure-contract-3-part:
+    - "closure_contract with positive_shape + anti_pattern + anchor_phrases"
+    - "not a keyword match"
+  # --- §3.4 #1–#6 ---
+  con-3.4-no-self-grading:
+    - "FRESH agent session with self-contained prompt artifacts"
+    - "NEVER chat history"
+  con-3.4-acceptance-spawn-isolation:
+    - "MUST NOT be spawned by Research/Deliver/Dev"
+    - "a NON-AUTHORITATIVE\n   Acceptance verdict HALTs for sign-off unless authoritative"
+    - "ALL THREE of tooling.acceptance.mode: auto"
+    - "judge calibrated for the\n   active class"
+    - "autonomy.level: fully_autonomous_within_budget"
+  con-3.4-reviewer-not-acceptance:
+    - "is the code well-built"
+    - "did we\n   build the right thing vs the closure_contract"
+    - "both gates run and neither\n   substitutes for the other"
+  con-3.4-research-acceptance-contract-symmetry:
+    - "MUST NOT change the closure_contract after milestone start"
+    - "without Customer\n   re-sign-off"
+    - "MUST NOT evaluate against criteria the closure_contract does not"
+    - "research_contract_revision"
+  con-3.4-deliver-no-code:
+    - "does NOT write/edit feature or test code"
+    - "does NOT run\n   acceptance"
+    - "it plans, orchestrates, and closes only"
+  con-3.4-skill-subagent-inherits-boundary:
+    - "skills/sub-agents inherit its tool whitelist + sandbox + invariants"
+    - "MUST NOT perform another role's gate function"
+    - "draft input only"
+    - "SOLE author and signer"
+    - "changing mounted skills invalidates\n   calibration"
+  # --- §3.5 / §3.6 ---
+  con-3.5-acceptance-fixrequired-human-confirm:
+    - "MUST write a human-confirm checkpoint file"
+    - "until the human writes confirm:yes + a route"
+  con-3.5-human-confirm-required-true: "human_confirm_required MUST be true and route_options\n  MUST be a non-empty list"
+  con-3.6-calibration-required-for-authoritative:
+    - "MUST NOT be authoritative"
+    - "agreement_rate >= 0.9 AND\n  flip_rate <= 0.1"
+    - "for\n  the active class under fully_autonomous_within_budget"
+  con-3.6-uncalibrated-auto-degrade:
+    - "auto-degrade autonomy to\n  human_on_the_loop (mandatory, never silent)"
+    - "still run advisory"
+    - "HALTing at\n  advisory_acceptance_pass_signoff"
+  con-3.6-calibration-invalidated-on-swap:
+    - "Switching the Acceptance agent_kind, model, or mounted skills invalidates calibration"
+    - "requires a re-run"
+  # --- §7.0 / §7.1 ---
+  con-7.0-forbidden-list-nonoverridable: "is non-overridable; violations are framework\n  breaches"
+  con-7.0-role-boundaries-nonoverridable:
+    - "FIVE role-boundary invariants"
+    - "are non-overridable hard requirements"
+  con-7.0-9-checkpoints-nonoverridable:
+    - "9 default MANDATORY_CHECKPOINT definitions"
+    - "the charter MAY add but MAY\n  NOT remove any"
+    - "each\n  fires when its trigger condition holds"
+  con-7.0-calibration-nonoverridable: "calibration is required and\n  uncalibrated auto-degrade is mandatory"
+  con-7.0-hard-reqs-not-divergent: "are framework breaches, NOT eligible for status:divergent"
+  con-7.1-suggested-defaults-overridable-with-rationale:
+    - "MAY be overridden ONLY with\n  a documented rationale + a status:divergent row"
+    - "size/split thresholds, fold-back cadence, calibration thresholds"
+    - "context_budget token values, autonomy-level naming"
+  # --- §10 anti-patterns ---
+  con-10-acceptance-spawn-from-deliver-dev:
+    - "Spawning the Acceptance Agent from a Deliver or Dev session"
+    - "the verdict is invalid"
+  con-10-fixrequired-route-without-checkpoint: "without a written human-confirm checkpoint decision"
+  con-10-unattended-autoship-uncalibrated:
+    - "Unattended auto-iterate/auto-ship on an uncalibrated Acceptance verdict"
+    - "advisory-with-sign-off\n  under human_on_the_loop is explicitly permitted"
+  con-10-bypass-scope-envelope: "Bypassing scope_envelope_check on close"
+  con-10-dev-shadow-eval-access:
+    - "read access to case_specs_shadow/"
+    - "or any holdout eval set"
+    - "eval\n  contamination"
+  con-10-acceptance-code-inspection-verdict: "pass/fail from code inspection instead of execution evidence"
+  con-10-conflate-auto-delivery-loop: "Conflating the Auto Loop with the Delivery Loop in adopter docs"
+  # --- §2 / §5 / §6 / §8 / §9 ---
+  con-2-doc-frontmatter-required:
+    - "tier, load_discipline,\n  source-of-truth, lifecycle category, and (where relevant) size_target"
+    - "always-load is permitted for the\n  governance tier ONLY"
+  con-5-handoff-section12-close-authority:
+    - "Handoff §12 (close verdict) is authored by Deliver+Customer only"
+    - "Dev Agent fills §1–§11 and\n  MUST NOT write §12"
+  con-5-badcase-closure-criterion-human-authored: "bad-case closure_criterion MUST be human-authored"
+  con-6-prompt-self-contained-frontmatter:
+    - "every compact\n  prompt MUST declare context_budget with self_contained:true"
+    - "or be\n  rejected at orchestrator preflight"
+  con-8-governance-edit-four-checks:
+    - "timelessness,\n  principle-vs-current-state, necessity, and durable-shift-vs-reaction"
+    - "the content goes to lessons/ or process/ instead"
+  con-8-governance-edits-foldback-only:
+    - "land ONLY at fold-back sub-sprint cadence"
+    - "planning-time scope authorization does NOT authorize"
+  con-9-no-auto-update-update-adoption-state:
+    - "on their own cadence (no auto-update)"
+    - "MUST update\n  docs/current/adoption-state.md"
+  con-9-semver-discipline: "patch = no Δ-shape change; minor = backwards-compatible additions; major = removals / role-chain / breaking front-matter changes"

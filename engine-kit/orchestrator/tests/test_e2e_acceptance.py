@@ -683,6 +683,7 @@ class ResolverGraphAdopterRoot(unittest.TestCase):
                 ("AGENTS.md", "# framework control plane entry\n"),
                 ("schemas/compact/acceptance-verdict.compact.schema.json", "{}\n"),
                 ("role-cards/acceptance-agent.md", "# acceptance role\n"),
+                ("governance/constitution-core.md", "# constitution-core kernel v1\n"),
                 ("governance/constitution.md", "# constitution v1\n"),
                 ("governance/doc_governance.md", "# doc governance\n"),
                 ("governance/context_briefing.md", "# context briefing\n"),
@@ -711,6 +712,9 @@ class ResolverGraphAdopterRoot(unittest.TestCase):
                 purposes = {g["purpose"] for g in graph1}
                 self.assertIn("framework_role_session_governance", purposes)
                 bound_paths = {g["path"] for g in graph1}
+                # WP-2: the cold-start constitution-CORE projection is bound, AND the canonical
+                # constitution.md stays bound (on-demand canonical — fail-closed).
+                self.assertIn("governance/constitution-core.md", bound_paths)
                 self.assertIn("governance/constitution.md", bound_paths)
                 self.assertIn("governance/doc_governance.md", bound_paths)
                 self.assertIn("governance/context_briefing.md", bound_paths)

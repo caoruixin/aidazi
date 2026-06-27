@@ -7,7 +7,7 @@ sources:
 - path: governance/doc_governance.md
   sha256: e2dcdc7984ea3ecbf8eec4ca19969ed54ba30cbc59061b3e74963f98eed48444
 - path: governance/context_briefing.md
-  sha256: 02012616e147ed19762b875aba78d45d7a074e413e83e3318e07db1872383b8d
+  sha256: ccf34a319061f36163e70f3a7fa7d766edeadc2546171a8929a12a3e8943604d
 - path: process/delivery-loop.md
   sha256: b1d25ba98c783cae57e9f2c60071829db499a22db656ec40d8d29265162a2dee
 - path: process/role-skill-model.md

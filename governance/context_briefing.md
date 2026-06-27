@@ -101,7 +101,7 @@ scaffold.
 
 When a session is explicitly activated as one of the five roles, before any role work output it loads, in order:
 
-1. `aidazi/governance/constitution.md` (this is `always-load`).
+1. `aidazi/governance/constitution-core.md` (this is `always-load`) — the proactive HARD-constraint kernel: a machine-checked, complete projection of the canonical constitution. Load the full `aidazi/governance/constitution.md` ON-DEMAND per the triggers in constitution-core (a term you lack an operational definition for, a divergence/override question, a rule conflict, an exception/edge case, or a governance-editing question) — do not self-infer before loading.
 2. `aidazi/governance/doc_governance.md` (this is `always-load`).
 3. `aidazi/governance/context_briefing.md` (this file; `always-load`).
 4. The adopter's root entry — the `AGENTS.md` that names the project, instantiates the 5-role registry, defines the default Control Plane load block, and names the role/on-demand governance chain. **Which root file the harness auto-loads to reach that `AGENTS.md` is harness-specific — see §1.1.**
@@ -228,7 +228,7 @@ Task: <one-paragraph description of what we want to do>
 Role you are playing: <Research | Deliver | Dev | Code Reviewer | Acceptance>
 
 Read the following first (in order):
-1. aidazi/governance/constitution.md
+1. aidazi/governance/constitution-core.md (the always-load constraint kernel; load the full aidazi/governance/constitution.md on-demand per its triggers)
 2. aidazi/governance/doc_governance.md
 3. aidazi/governance/context_briefing.md
 4. <adopter root>/AGENTS.md (reached via the harness root file per §1.1 — Claude Code: a root CLAUDE.md importing @AGENTS.md; Codex: AGENTS.md directly)

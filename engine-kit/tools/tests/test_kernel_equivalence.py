@@ -299,5 +299,120 @@ class AnchorShapeTests(_RepoBuilderMixin):
         self.assertEqual(result["errors"], [], msg=str(result["errors"]))
 
 
+@unittest.skipIf(yaml is None, "PyYAML not installed")
+class KernelCoverageTests(_RepoBuilderMixin):
+    """WP-2: check_kernel_coverage proves the constitution-core kernel carries every constitution
+    inventory row — completeness (a), no-dangling (b), resolution (c)."""
+
+    def _cov_repo(self, kernel_text, cov_rows, source_rows, *, write_kernel=True):
+        inv_files = {
+            "01-src.yaml": source_rows,
+            "_kernel_coverage.yaml": {
+                "kernel": "governance/constitution-core.md",
+                "source_files": ["01-src.yaml"],
+                "rows": cov_rows,
+            },
+        }
+        extra = ({"governance/constitution-core.md": kernel_text.encode("utf-8")}
+                 if write_kernel else None)
+        return self._make_repo(inv_files=inv_files, extra_files=extra)
+
+    def test_real_kernel_coverage_is_100pct(self):
+        # The real constitution-core draft carries all 65 constitution rows.
+        result = ke.check_kernel_coverage()
+        self.assertTrue(result["ok"], msg=str(result.get("errors")))
+        self.assertEqual(result["stats"]["coverage_pct"], 100.0)
+        self.assertEqual(result["stats"]["total"], 65)
+
+    def test_complete_map_passes(self):
+        root = self._cov_repo(
+            "Clause A forbids hardcode. Clause B requires a fresh session.",
+            {"r-a": "forbids hardcode", "r-b": "requires a fresh session"},
+            [_good_row("r-a"), _good_row("r-b")])
+        result = ke.check_kernel_coverage(repo_root=root)
+        self.assertTrue(result["ok"], msg=str(result["errors"]))
+        self.assertEqual(result["stats"]["covered"], 2)
+
+    def test_missing_phrase_in_kernel_is_caught(self):
+        root = self._cov_repo(
+            "Clause A forbids hardcode.",   # B's phrase is NOT in the kernel
+            {"r-a": "forbids hardcode", "r-b": "requires a fresh session"},
+            [_good_row("r-a"), _good_row("r-b")])
+        result = ke.check_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertIn("r-b", result["stats"]["missing_phrase"])
+
+    def test_uncovered_inventory_row_is_caught(self):
+        root = self._cov_repo(
+            "Clause A forbids hardcode. Clause B requires a fresh session.",
+            {"r-a": "forbids hardcode"},    # r-b exists in inventory but is unmapped
+            [_good_row("r-a"), _good_row("r-b")])
+        result = ke.check_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertIn("r-b", result["stats"]["uncovered_rows"])
+
+    def test_dangling_map_id_is_caught(self):
+        root = self._cov_repo(
+            "Clause A forbids hardcode.",
+            {"r-a": "forbids hardcode", "r-ghost": "x"},   # ghost not in inventory
+            [_good_row("r-a")])
+        result = ke.check_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertIn("r-ghost", result["stats"]["dangling"])
+
+    def test_normalization_ignores_wrap_and_markdown(self):
+        # The phrase matches across a line-wrap AND through `code`/**bold** decoration.
+        root = self._cov_repo(
+            "the agent carries `no more`\n  **context** than necessary, always.",
+            {"r-a": "no more context than necessary"},
+            [_good_row("r-a")])
+        result = ke.check_kernel_coverage(repo_root=root)
+        self.assertTrue(result["ok"], msg=str(result["errors"]))
+
+    def test_absent_kernel_reports_clearly(self):
+        root = self._cov_repo("unused", {"r-a": "x"}, [_good_row("r-a")],
+                              write_kernel=False)
+        result = ke.check_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("not found" in e for e in result["errors"]))
+
+    def test_multi_phrase_requires_every_subpart(self):
+        # A LIST value requires ALL phrases — a multi-subpart constraint cannot pass on one
+        # fragment while a mandatory subpart is dropped (Codex WP-2 B5). Here the network
+        # boundary is missing from the kernel, so the row fails.
+        subparts = ["workspace_write sandbox", "MUST NOT git push",
+                    "network per charter.tooling.dev.network_access"]
+        root = self._cov_repo(
+            "Dev runs in a workspace_write sandbox; MUST NOT git push.",
+            {"r-dev": subparts}, [_good_row("r-dev")])
+        result = ke.check_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertIn("r-dev", result["stats"]["missing_phrase"])
+        # With every subpart present, it passes.
+        root2 = self._cov_repo(
+            "Dev runs in a workspace_write sandbox with network per "
+            "charter.tooling.dev.network_access; MUST NOT git push.",
+            {"r-dev": subparts}, [_good_row("r-dev")])
+        self.assertTrue(ke.check_kernel_coverage(repo_root=root2)["ok"])
+
+    def test_front_matter_and_deferred_sections_excluded(self):
+        # A phrase present ONLY in the YAML front-matter or the trailing "Deferred …" section
+        # does NOT resolve — matching is over the normative clause body only.
+        kernel = (
+            "---\ntitle: x\nmarker_in_frontmatter here\n---\n\n"
+            "## §1 body\n- the real clause text here.\n\n"
+            "## Deferred to the canonical\n- marker_only_in_deferred appears here.\n")
+        root = self._cov_repo(
+            kernel,
+            {"r-fm": "marker_in_frontmatter", "r-real": "the real clause text",
+             "r-def": "marker_only_in_deferred"},
+            [_good_row("r-fm"), _good_row("r-real"), _good_row("r-def")])
+        result = ke.check_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertIn("r-fm", result["stats"]["missing_phrase"])   # front-matter excluded
+        self.assertIn("r-def", result["stats"]["missing_phrase"])  # deferred tail excluded
+        self.assertNotIn("r-real", result["stats"]["missing_phrase"])  # body resolves
+
+
 if __name__ == "__main__":
     unittest.main()

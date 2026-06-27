@@ -258,7 +258,7 @@ class ColdStartLoadGraphHashTests(unittest.TestCase):
     def test_roots_skills_off_excludes_role_skill_model(self):
         roots = ls.role_cold_start_roots("dev")
         self.assertNotIn(ls.ROLE_SKILL_MODEL, roots)
-        self.assertIn(("governance/constitution.md", "governance"), roots)
+        self.assertIn(("governance/constitution-core.md", "governance"), roots)  # WP-2: kernel at cold-start
         self.assertIn(("role-cards/dev-agent.md", "role_card"), roots)
 
     def test_roots_skills_on_appends_role_skill_model_once(self):
@@ -299,7 +299,7 @@ class ColdStartLoadGraphHashTests(unittest.TestCase):
         # the driver records None instead of a misleading hash over an incomplete set.
         with tempfile.TemporaryDirectory() as root:
             self._stub(root, "dev")
-            locked = os.path.realpath(os.path.join(root, "governance/constitution.md"))
+            locked = os.path.realpath(os.path.join(root, "governance/constitution-core.md"))
             real_open = open
             def fake_open(p, *a, **k):
                 if os.path.realpath(str(p)) == locked:
@@ -308,14 +308,14 @@ class ColdStartLoadGraphHashTests(unittest.TestCase):
             with mock.patch("builtins.open", side_effect=fake_open):
                 _h, missing = ls.cold_start_load_graph_hash("dev", repo_root=root)
             # size_load_set maps missing entries to their rel STRINGS.
-            self.assertIn("governance/constitution.md", missing)
+            self.assertIn("governance/constitution-core.md", missing)
 
     # --- THE WP-7 acceptance criterion: hash changes when a cold-start doc changes - #
     def test_hash_changes_when_a_cold_start_doc_changes(self):
         with tempfile.TemporaryDirectory() as root:
             self._stub(root, "dev")
             h1, _ = ls.cold_start_load_graph_hash("dev", repo_root=root)
-            _write(root, "governance/constitution.md", b"MUTATED kernel content\n")
+            _write(root, "governance/constitution-core.md", b"MUTATED kernel content\n")
             h2, _ = ls.cold_start_load_graph_hash("dev", repo_root=root)
             self.assertNotEqual(h1, h2)
 
