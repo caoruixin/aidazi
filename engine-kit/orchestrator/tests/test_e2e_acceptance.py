@@ -681,7 +681,7 @@ class ResolverGraphAdopterRoot(unittest.TestCase):
             _prep(d)
             for rel, body in (
                 ("AGENTS.md", "# framework control plane entry\n"),
-                ("schemas/acceptance-verdict.schema.json", "{}\n"),
+                ("schemas/compact/acceptance-verdict.compact.schema.json", "{}\n"),
                 ("role-cards/acceptance-agent.md", "# acceptance role\n"),
                 ("governance/constitution.md", "# constitution v1\n"),
                 ("governance/doc_governance.md", "# doc governance\n"),
@@ -727,6 +727,56 @@ class ResolverGraphAdopterRoot(unittest.TestCase):
                 h1, h2,
                 "a role-session governance edit must change the acceptance input hash",
             )
+
+    def test_acceptance_binds_compact_verdict_projection_not_canonical(self):
+        # WP-1b (§E LOAD-CLOSURE): the Acceptance judge READS the compact verdict projection
+        # (the agent-facing loaders point there), so the §3.5b resolver binds
+        # schemas/compact/acceptance-verdict.compact.schema.json — NOT the verbose canonical
+        # (which is the Python validator's input, not an agent input). An edit to the bound
+        # projection must change the acceptance input hash (fail-closed re-spawn).
+        import e2e_stage as es
+        with tempfile.TemporaryDirectory() as fw, tempfile.TemporaryDirectory() as d:
+            _prep(d)
+            for rel, body in (
+                ("AGENTS.md", "# fw control plane\n"),
+                ("schemas/compact/acceptance-verdict.compact.schema.json",
+                 '{"x-canonical-sha256":"v1"}\n'),
+                ("schemas/acceptance-verdict.schema.json",
+                 "# verbose canonical (validator only)\n"),
+                ("role-cards/acceptance-agent.md", "# acceptance role\n"),
+                ("governance/constitution.md", "# constitution\n"),
+                ("governance/doc_governance.md", "# doc governance\n"),
+                ("governance/context_briefing.md", "# context briefing\n"),
+            ):
+                path = os.path.join(fw, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as fh:
+                    fh.write(body)
+
+            drv = D.Driver(_browser_charter(), d, _acceptance_adapters(),
+                           loop_id="loop-compact-verdict", clock=_clock(),
+                           verdict_schemas=D.load_verdict_schemas())
+            drv.state = D.RunState(loop_id=drv.loop_id, subsprint_id="sprint-001")
+
+            orig = D._find_schemas_dir
+            D._find_schemas_dir = lambda start=D._ENGINE_KIT_DIR: os.path.join(fw, "schemas")
+            try:
+                graph1, _ = drv._acceptance_resolver_graph("eval/runs/x/out.txt", None)
+                bound = {g["path"] for g in graph1}
+                self.assertIn("schemas/compact/acceptance-verdict.compact.schema.json", bound)
+                self.assertNotIn("schemas/acceptance-verdict.schema.json", bound)  # canonical NOT bound
+                self.assertIn("verdict_schema", {g["purpose"] for g in graph1})
+                h1 = es.acceptance_input_hash("PROMPT", graph1)
+                with open(os.path.join(fw, "schemas", "compact",
+                                       "acceptance-verdict.compact.schema.json"), "w") as fh:
+                    fh.write('{"x-canonical-sha256":"v2"}\n')   # the agent-read input changed
+                graph2, _ = drv._acceptance_resolver_graph("eval/runs/x/out.txt", None)
+                h2 = es.acceptance_input_hash("PROMPT", graph2)
+            finally:
+                D._find_schemas_dir = orig
+            self.assertNotEqual(
+                h1, h2,
+                "editing the bound compact verdict projection must change the input hash")
 
 
 # A schema-VALID but browser-shaped verdict (acceptance_class browser_e2e + functional

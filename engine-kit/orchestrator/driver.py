@@ -1689,7 +1689,8 @@ class Driver:
             "spawn. Network access follows `tooling.review.network_access`. "
             "Cold-start the explicit role-session governance chain plus "
             "role-cards/code-reviewer-agent.md, templates/anti-hardcode-review-"
-            "kernel.md (the 9-question kernel) and schemas/review-verdict.schema.json"
+            "kernel.md (the 9-question kernel) and "
+            "schemas/compact/review-verdict.compact.schema.json"
             ".\n\n",
             "## Sub-sprint under review\n",
             f"Objective: {spec.get('objective', '')}\n",
@@ -1735,7 +1736,8 @@ class Driver:
             "counted in blocking_count. Only P0/P1 block close or drive a fix round; "
             "P2 is never fixed or re-driven in this loop.\n"
             "- blocking_count = count of P0 + P1 findings (P2 excluded).\n\n",
-            "## Output — emit a review-verdict (schemas/review-verdict.schema.json)\n"
+            "## Output — emit a review-verdict "
+            "(schemas/compact/review-verdict.compact.schema.json)\n"
             "Return ONE JSON object and nothing else:\n"
             "  decision: \"pass\" | \"fix_required\" | \"out_of_scope_review\" "
             "(never invent another value)\n"
@@ -3611,7 +3613,7 @@ class Driver:
             "`tooling.acceptance.network_access`. Spawn surface: orchestrator (§1.7-C, "
             "calibration-gated). Cold-start the explicit role-session governance chain plus "
             "role-cards/acceptance-agent.md and "
-            "schemas/acceptance-verdict.schema.json.\n\n",
+            "schemas/compact/acceptance-verdict.compact.schema.json.\n\n",
             "## Customer need (signed intent contract)\n"
             f"Goal (customer terms): {ic.get('goal','')}\n"
             f"Standard (the bar for 'good'): {ic.get('standard','')}\n"
@@ -3635,7 +3637,7 @@ class Driver:
             "has ALREADY degraded authority (§3.6) and your verdict is ADVISORY "
             "ONLY until calibrated — do not self-escalate.\n\n",
             "## Output — emit an acceptance-verdict "
-            "(schemas/acceptance-verdict.schema.json)\n"
+            "(schemas/compact/acceptance-verdict.compact.schema.json)\n"
             "Return ONE JSON object and nothing else:\n"
             "  milestone_verdict: \"pass\" | \"fix_required\" | \"needs_human\"\n"
             + closure_ref_line +
@@ -3947,8 +3949,16 @@ class Driver:
                 entries.append({"path": ap, "rel": rel.replace(os.sep, "/"),
                                 "purpose": "review_context"})
         if base:
-            entries.append({"path": os.path.join(base, "acceptance-verdict.schema.json"),
-                            "rel": "schemas/acceptance-verdict.schema.json",
+            # WP-1b: the Acceptance judge READS the compact projection (the agent-facing
+            # loaders — context_briefing §2, the compact-acceptance-prompt load_list, and the
+            # projected prompt above — all point here), so the §3.5b resolver binds the
+            # COMPACT file (LOAD-CLOSURE: bind what the judge actually loads). The verbose
+            # canonical stays the driver's validator input (load_verdict_schemas) and is NOT
+            # an agent input → not bound. The lockstep gate keeps compact ≡ canonical, so a
+            # canonical edit regenerates the compact and re-invalidates reuse transitively.
+            entries.append({"path": os.path.join(
+                                base, "compact", "acceptance-verdict.compact.schema.json"),
+                            "rel": "schemas/compact/acceptance-verdict.compact.schema.json",
                             "purpose": "verdict_schema"})
         entries.append({"path": os.path.join(repo_root, "role-cards",
                                              "acceptance-agent.md"),

@@ -117,6 +117,59 @@ class AcceptanceVerdictBranches(unittest.TestCase):
         self.assertTrue(_errs(self.SCH, v))
 
 
+class CompactProjectionEquivalence(unittest.TestCase):
+    """WP-1b (context/token optimization): each agent-loaded compact projection
+    (schemas/compact/<name>.compact.schema.json) validates a corpus of probe instances
+    IDENTICALLY to its canonical schema — the behavioural proof that stripping the
+    annotation keywords changed NO assertion (the agent reads the smaller projection; the
+    Python validator keeps loading the verbose canonical)."""
+
+    def _compact(self, name):
+        with open(os.path.join(_SCHEMAS, "compact", f"{name}.compact.schema.json"),
+                  encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def _assert_parity(self, name, instances):
+        cv = Draft202012Validator(_schema(f"{name}.schema.json"))
+        pv = Draft202012Validator(self._compact(name))
+        for inst in instances:
+            canon_errs = sorted(e.message for e in cv.iter_errors(inst))
+            compact_errs = sorted(e.message for e in pv.iter_errors(inst))
+            self.assertEqual(canon_errs, compact_errs,
+                             f"{name}: validation diverged for instance {inst!r}")
+
+    def test_review_verdict_parity(self):
+        self._assert_parity("review-verdict", [
+            {},
+            {"decision": "pass", "blocking_count": 0, "summary": "ok", "findings": []},
+            {"decision": "not-a-decision", "blocking_count": 0, "summary": "x",
+             "findings": []},
+            {"blocking_count": -1},
+        ])
+
+    def test_acceptance_verdict_parity(self):
+        valid_static = {"milestone_verdict": "pass", "suggested_route": "n/a",
+                        "cases": [{"case_id": "c", "criterion": "x",
+                                   "evidence_path": "eval/runs/s/stdout.txt",
+                                   "verdict": "pass", "rationale": "r"}]}
+        code_path = json.loads(json.dumps(valid_static))
+        code_path["cases"][0]["evidence_path"] = "src/x.py"      # non-eval path → rejected
+        fix_required = {"milestone_verdict": "fix_required",
+                        "suggested_route": "deliver_fix_iteration",
+                        "cases": [{"case_id": "c", "criterion": "x",
+                                   "evidence_path": "eval/runs/s/o", "verdict": "fail",
+                                   "rationale": "r"}]}
+        self._assert_parity("acceptance-verdict",
+                            [{}, valid_static, code_path, fix_required])
+
+    def test_mission_charter_parity(self):
+        self._assert_parity("mission-charter", [
+            {},
+            {"schema_version": "1.0"},
+            {"mission": {}, "autonomy": {"level": "not-a-level"}},
+        ])
+
+
 _ANNOTATION_KEYS = {"title", "description", "$comment", "examples"}
 
 

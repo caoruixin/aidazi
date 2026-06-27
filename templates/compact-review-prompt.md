@@ -37,7 +37,7 @@ context_budget:
     - aidazi/governance/context_briefing.md
     - aidazi/role-cards/code-reviewer-agent.md
     - aidazi/templates/anti-hardcode-review-kernel.md      # 9-question kernel
-    - aidazi/schemas/review-verdict.schema.json
+    - aidazi/schemas/compact/review-verdict.compact.schema.json   # agent loads the compact projection (verbose canonical = validator's)
     - <adopter>/AGENTS.md
     - <adopter>/docs/current/adoption-state.md
     - <adopter>/docs/current/runtime_invariants.md         # Tier-0 list

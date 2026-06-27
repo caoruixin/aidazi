@@ -46,7 +46,7 @@ context_budget:
   load_list:
     - aidazi/governance/constitution.md
     - aidazi/templates/anti-hardcode-review-kernel.md
-    - aidazi/schemas/review-verdict.schema.json
+    - aidazi/schemas/compact/review-verdict.compact.schema.json   # agent loads the compact projection (verbose canonical = validator's)
     - <adopter>/docs/sprint_objective.md          # sub-sprint contract
     - <adopter>/docs/codex-findings.md            # prior verdict being contested
     - <adopter>/charter.yaml                       # approved_scope

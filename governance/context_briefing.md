@@ -167,7 +167,7 @@ For producing `docs/codex-findings.md` verdict at sub-sprint close or §4.3 trig
 
 - `aidazi/role-cards/code-reviewer-agent.md` — your activation prompt.
 - `aidazi/templates/anti-hardcode-review-kernel.md` — 9-question kernel; the canonical lens.
-- `aidazi/schemas/review-verdict.schema.json` — output schema.
+- `aidazi/schemas/compact/review-verdict.compact.schema.json` — output schema.
 - Adopter inputs: dev diff; handoff.md (the sub-sprint's §1-§11); sprint_objective.md; the bad-case suite (`eval/bad_cases/`).
 - Adopter `docs/current/` runtime contracts (for the §1.3/§1.4 ownership lens).
 
@@ -179,7 +179,7 @@ For producing `docs/acceptance-reports/<scope>-acceptance-report.md` at mileston
 
 - `aidazi/role-cards/acceptance-agent.md` — your activation prompt.
 - `aidazi/templates/compact-acceptance-prompt.md` — output template + judging discipline.
-- `aidazi/schemas/acceptance-verdict.schema.json` — output schema.
+- `aidazi/schemas/compact/acceptance-verdict.compact.schema.json` — output schema.
 - Adopter inputs: the research-brief's closure_contract (THE evaluation contract; §4 below has the symmetry check); dev evidence (bad-case suite results + execution trace artifacts produced by orchestrator F5 pattern per `process/delivery-loop.md` §4.2.6); Code Reviewer verdict (latest codex-findings.md).
 - (Optional) prior acceptance reports for residual risk lineage.
 
@@ -204,7 +204,7 @@ If your task pulls you into territory the role list doesn't cover, route via the
 | Profile A/B/C/hybrid decision | `process/profile-aware-maturity.md` (Δ-14) + adopter charter |
 | Agent design (greenfield) | `process/agent-design-elicitation.md` (Δ-15) + `process/agent-creation-prerequisites.md` (Δ-16) |
 | Common pitfalls (mid-flight detour spotting) | `process/common-detours-and-warnings-type<A\|B\|C>.md` (Δ-17) |
-| Δ-18 Delivery Loop / orchestrator | `process/delivery-loop.md` (Δ-18) + `templates/mission-charter.yaml` + `schemas/mission-charter.schema.json` (see §6 below) |
+| Δ-18 Delivery Loop / orchestrator | `process/delivery-loop.md` (Δ-18) + `templates/mission-charter.yaml` + `schemas/compact/mission-charter.compact.schema.json` (see §6 below) |
 | Self-governance / bloat metrics | `process/self-governance.md` |
 | Fold-back / lessons | `process/fold-back-protocol.md` + `templates/lessons-learned-template.md` |
 | Directory taxonomy (where does X go?) | `docs/directory-taxonomy.md` |

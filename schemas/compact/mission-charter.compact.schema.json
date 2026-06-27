@@ -1,0 +1,971 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/compact/mission-charter.compact.schema.json",
+  "type": "object",
+  "required": [
+    "mission",
+    "autonomy",
+    "budget",
+    "tooling"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "mission": {
+      "type": "object",
+      "required": [
+        "id",
+        "goal"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "autonomy": {
+      "type": "object",
+      "required": [
+        "level",
+        "approved_scope",
+        "auto_pass_rules"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": [
+            "human_in_the_loop",
+            "human_on_the_loop",
+            "fully_autonomous_within_budget"
+          ]
+        },
+        "approved_scope": {
+          "type": "object",
+          "required": [
+            "subsprint_sequence",
+            "layers_allowed",
+            "modules_in_scope"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "subsprint_sequence": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "layers_allowed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "modules_in_scope": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "explicitly_out_of_scope": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            }
+          }
+        },
+        "auto_pass_rules": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "clean_pass_auto_advance": {
+              "type": "boolean"
+            },
+            "auto_fix_iteration": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "max_rounds": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "only_if_findings_severity_at_most": {
+                  "type": "string",
+                  "enum": [
+                    "P0",
+                    "P1",
+                    "P2"
+                  ]
+                }
+              }
+            },
+            "adaptive_insert": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "max_inserted_subsprints": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "required": [
+        "max_fix_rounds_total",
+        "max_wall_clock_minutes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "max_api_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_fix_rounds_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_wall_clock_minutes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "tooling": {
+      "type": "object",
+      "required": [
+        "research",
+        "deliver",
+        "dev",
+        "review",
+        "eval",
+        "acceptance"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "research": {
+          "$ref": "#/$defs/agent_tooling"
+        },
+        "deliver": {
+          "$ref": "#/$defs/agent_tooling"
+        },
+        "dev": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/agent_tooling"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "sandbox": {
+                  "type": "string",
+                  "enum": [
+                    "workspace_write",
+                    "read_only"
+                  ],
+                  "default": "workspace_write"
+                },
+                "tools": {
+                  "$ref": "#/$defs/tools_allow"
+                }
+              }
+            }
+          ]
+        },
+        "review": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/agent_tooling"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "tools": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "Read",
+                          "Grep",
+                          "Glob"
+                        ]
+                      },
+                      "default": [
+                        "Read",
+                        "Grep",
+                        "Glob"
+                      ]
+                    },
+                    {
+                      "$ref": "#/$defs/tools_allow"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "eval": {
+          "type": "object",
+          "required": [
+            "cmd",
+            "timeout_seconds"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "cmd": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "e2e": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "acceptance": {
+          "type": "object",
+          "required": [
+            "on_fix_required"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "off",
+                "advisory",
+                "auto"
+              ]
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "agent_kind": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "harness": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "api_key_env": {
+              "type": "string"
+            },
+            "endpoint_env": {
+              "type": "string"
+            },
+            "capability_ref": {
+              "type": "string"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "connectors": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/connector_binding"
+              }
+            },
+            "discovery": {
+              "$ref": "#/$defs/discovery"
+            },
+            "sandbox": {
+              "type": "string",
+              "enum": [
+                "workspace_write",
+                "read_only"
+              ],
+              "default": "read_only"
+            },
+            "network_access": {
+              "type": "boolean",
+              "default": false
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "Read",
+                  "Grep",
+                  "Glob"
+                ]
+              },
+              "default": [
+                "Read",
+                "Grep",
+                "Glob"
+              ]
+            },
+            "skills": {
+              "$ref": "#/$defs/skills_config"
+            },
+            "subagent_fanout": {
+              "type": "boolean"
+            },
+            "judge_calibration": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "calibrated",
+                    "uncalibrated"
+                  ]
+                },
+                "agreement_threshold": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.9
+                },
+                "flip_threshold": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.1
+                },
+                "labeled_set_path": {
+                  "type": "string"
+                },
+                "record_path": {
+                  "type": "string"
+                }
+              }
+            },
+            "functional": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "static",
+                    "browser_e2e"
+                  ]
+                },
+                "interaction_mode": {
+                  "type": "string",
+                  "enum": [
+                    "deterministic",
+                    "agentic",
+                    "hybrid"
+                  ],
+                  "default": "hybrid"
+                },
+                "target_environment": {
+                  "type": "string",
+                  "enum": [
+                    "local",
+                    "staging",
+                    "production"
+                  ],
+                  "default": "local"
+                },
+                "browser": {
+                  "$ref": "#/$defs/acceptance_browser_policy"
+                },
+                "environment": {
+                  "$ref": "#/$defs/acceptance_lifecycle_policy"
+                },
+                "identity": {
+                  "$ref": "#/$defs/acceptance_lifecycle_policy"
+                },
+                "data": {
+                  "$ref": "#/$defs/acceptance_lifecycle_policy"
+                },
+                "production": {
+                  "$ref": "#/$defs/production_policy"
+                },
+                "executor_contract": {
+                  "type": "string"
+                },
+                "checklist_path": {
+                  "type": "string"
+                },
+                "judge_calibration_m3": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "calibrated",
+                        "uncalibrated"
+                      ]
+                    },
+                    "record_id": {
+                      "type": "string"
+                    },
+                    "record_path": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "run_at": {
+              "type": "string",
+              "enum": [
+                "milestone_close",
+                "release_cut",
+                "both"
+              ]
+            },
+            "on_fix_required": {
+              "type": "object",
+              "required": [
+                "human_confirm_required",
+                "route_options"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "human_confirm_required": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "route_options": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "deliver_fix_iteration",
+                      "re_acceptance_after_evidence",
+                      "research_contract_revision"
+                    ]
+                  },
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "profile_type_a": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "profile_type_b": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "profile_type_c": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "mandatory_checkpoints_added": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prompt_on_new_loop": {
+          "type": "boolean",
+          "default": true
+        },
+        "default_strategy": {
+          "type": "string",
+          "enum": [
+            "current_branch",
+            "new_branch",
+            "new_worktree"
+          ],
+          "default": "current_branch"
+        },
+        "worktree_root": {
+          "type": "string"
+        },
+        "cleanup_policy": {
+          "type": "string",
+          "enum": [
+            "keep",
+            "remove_if_merged",
+            "remove_if_unchanged"
+          ]
+        },
+        "force_isolation_when": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "loop_active_on_branch",
+              "dirty_tree"
+            ]
+          }
+        }
+      }
+    },
+    "intent_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "goal": {
+          "type": "string"
+        },
+        "standard": {
+          "type": "string"
+        },
+        "proof_of_done": {
+          "type": "string"
+        },
+        "confirmed_by_human": {
+          "type": "boolean"
+        },
+        "confirmed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ledger_dir": {
+          "type": "string",
+          "default": ".orchestrator/audit"
+        },
+        "hash_chain": {
+          "type": "boolean",
+          "default": true
+        },
+        "capture_execution_context": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "default": "memory"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "agent_tooling": {
+      "type": "object",
+      "required": [
+        "agent_kind"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "agent_kind": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "api_key_env": {
+          "type": "string"
+        },
+        "endpoint_env": {
+          "type": "string"
+        },
+        "capability_ref": {
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "skills": {
+          "$ref": "#/$defs/skills_config"
+        },
+        "subagent_fanout": {
+          "type": "boolean"
+        },
+        "connectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/connector_binding"
+          }
+        },
+        "discovery": {
+          "$ref": "#/$defs/discovery"
+        },
+        "network_access": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "connector_binding": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "server",
+        "scopes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "mcp",
+            "http_api",
+            "cli"
+          ]
+        },
+        "server": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "network"
+            ]
+          },
+          "minItems": 1
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          }
+        },
+        "provenance": {
+          "type": "string",
+          "enum": [
+            "first_party",
+            "community",
+            "vendor",
+            "adopter"
+          ]
+        }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "propose_only"
+          ],
+          "default": "off"
+        }
+      }
+    },
+    "tools_allow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "skill_binding": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "vendored",
+            "authored",
+            "local"
+          ]
+        },
+        "repo": {
+          "type": "string"
+        },
+        "pin": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "string",
+          "enum": [
+            "community",
+            "authored",
+            "vendor",
+            "adopter"
+          ]
+        },
+        "calibration_coupled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "skills_config": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/skill_binding"
+              }
+            ]
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "inherit",
+                "extend",
+                "replace",
+                "disable"
+              ]
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "$ref": "#/$defs/skill_binding"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "acceptance_browser_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed_origins": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https?://[^/]+$"
+          }
+        },
+        "allowed_actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "navigate",
+              "click",
+              "fill",
+              "select",
+              "upload",
+              "download",
+              "screenshot",
+              "read_console",
+              "read_network"
+            ]
+          }
+        }
+      }
+    },
+    "acceptance_lifecycle_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/lifecycle_operation"
+          }
+        }
+      }
+    },
+    "lifecycle_operation": {
+      "type": "object",
+      "required": [
+        "id",
+        "phase"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "setup",
+            "cleanup"
+          ]
+        },
+        "command": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ]
+        },
+        "browser_journey_id": {
+          "type": "string"
+        },
+        "environments": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "local",
+              "staging",
+              "production"
+            ]
+          }
+        },
+        "side_effect": {
+          "type": "string"
+        }
+      }
+    },
+    "production_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "side_effect_policy": {
+          "type": "string",
+          "enum": [
+            "explicit_allow",
+            "allow_except_denied"
+          ],
+          "default": "explicit_allow"
+        },
+        "allowed_side_effects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "denied_side_effects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "x-canonical-source": "mission-charter.schema.json",
+  "x-canonical-sha256": "cdb52d61fb230ce3cf0ab26af2d189a5459cbfa6c857994ea8df103d4cae7e52"
+}

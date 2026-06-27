@@ -36,7 +36,7 @@ context_budget:
     - aidazi/governance/doc_governance.md
     - aidazi/governance/context_briefing.md
     - aidazi/role-cards/acceptance-agent.md
-    - aidazi/schemas/acceptance-verdict.schema.json
+    - aidazi/schemas/compact/acceptance-verdict.compact.schema.json   # agent loads the compact projection (verbose canonical = validator's)
     - <adopter>/AGENTS.md
     - <adopter>/docs/current/adoption-state.md
     - <adopter>/docs/research-briefs/<id>.md     # the closure_contract source

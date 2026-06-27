@@ -38,7 +38,7 @@ When invoked:
 2. Load `<adopter>/AGENTS.md` and `<adopter>/docs/current/adoption-state.md`.
 3. Load this role card.
 4. Load `aidazi/templates/anti-hardcode-review-kernel.md` — the canonical 9-question kernel.
-5. Load `aidazi/schemas/review-verdict.schema.json` — output validation schema.
+5. Load `aidazi/schemas/compact/review-verdict.compact.schema.json` — output schema (compact projection; the verbose canonical `schemas/review-verdict.schema.json` stays the Python validator's source of truth — identical assertions).
 6. Load the specific `compact/sprint-NNN-review-prompt.md` (Deliver authored this for you; it carries the dev diff path + the sprint scope + the bad-case suite reference).
 7. Load adopter's `docs/current/runtime_invariants.md` — for the §1.3/§1.4 ownership lens applied to this adopter.
 8. Load the sprint's `sprint_objective.md` (for the in-scope-vs-out-of-scope determination).

@@ -2832,7 +2832,9 @@ class ReviewSpecResolutionTests(unittest.TestCase):
         self.assertIn("UC-1 tests pass", out)                       # exit criteria
         self.assertIn("anti-hardcode", out.lower())                 # kernel
         self.assertIn("blocking_count", out)                        # severity rules
-        self.assertIn("review-verdict.schema.json", out)            # verdict schema
+        # WP-1b: the agent-facing prompt names the COMPACT projection (not the canonical).
+        self.assertIn("compact/review-verdict.compact.schema.json", out)
+        self.assertNotIn("schemas/review-verdict.schema.json", out)  # canonical not dispatched
 
     def test_live_projects_from_subsprint_spec(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2947,7 +2949,9 @@ class AcceptanceSpecResolutionTests(unittest.TestCase):
             self.assertIn("All bad-cases pass under F5 eval", out)         # proof_of_done
             self.assertIn(_EVID, out)                                       # evidence ref
             self.assertIn("Calibration status: calibrated", out)           # reported
-            self.assertIn("acceptance-verdict.schema.json", out)           # schema
+            # WP-1b: the agent-facing prompt names the COMPACT projection (not canonical).
+            self.assertIn("compact/acceptance-verdict.compact.schema.json", out)
+            self.assertNotIn("schemas/acceptance-verdict.schema.json", out)  # canonical not dispatched
 
     def test_live_unsigned_contract_halts(self):
         with tempfile.TemporaryDirectory() as d:

@@ -115,12 +115,16 @@ ROLE_COLD_START: dict = {
     "review": [  # §2.4
         ("role-cards/code-reviewer-agent.md", "role_card"),
         ("templates/anti-hardcode-review-kernel.md", "briefing"),
-        ("schemas/review-verdict.schema.json", "briefing"),
+        # WP-1b: the agent cold-starts the COMPACT verdict projection (the verbose canonical
+        # schemas/review-verdict.schema.json stays the Python validator's input, not loaded).
+        ("schemas/compact/review-verdict.compact.schema.json", "briefing"),
     ],
     "acceptance": [  # §2.5 (role card mandates process/delivery-loop.md, acceptance-agent.md:40)
         ("role-cards/acceptance-agent.md", "role_card"),
         ("templates/compact-acceptance-prompt.md", "briefing"),
-        ("schemas/acceptance-verdict.schema.json", "briefing"),
+        # WP-1b: the agent cold-starts the COMPACT verdict projection (the verbose canonical
+        # schemas/acceptance-verdict.schema.json stays the validator's + resolver-bound here).
+        ("schemas/compact/acceptance-verdict.compact.schema.json", "briefing"),
         # delivery-loop.md is loaded by every orchestrator-driven Acceptance session
         # (acceptance-agent.md:40 + context_briefing.md §6) → part of the baseline.
         # process/role-skill-model.md is FEATURE-GATED (loaded only when
