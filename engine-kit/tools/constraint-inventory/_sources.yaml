@@ -3,7 +3,7 @@
 version: 1
 sources:
 - path: governance/constitution.md
-  sha256: d9b30ea42746b104d9d23346af223fe71433b877a64051ef9a08749a182b04e2
+  sha256: 7325b81e440215298079cad3baa49538d8a792033aa8b7c5c7ed6752b91362e3
 - path: governance/doc_governance.md
   sha256: 0df5b552f21f2b5474c5daec0bc579a9c97e895b5b7a4672e60b04e5502b65cb
 - path: governance/context_briefing.md

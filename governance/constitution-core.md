@@ -17,8 +17,8 @@ source_of_truth: >
   projection stale (re-derive + re-review).
 supersedes: []
 superseded_by: null
-size_target: 18KB
-status: DRAFT — WP-2, pending human review; NOT yet wired into cold-start, NOT committed.
+size_target: 22KB
+status: current — always-load at role-session cold-start step 1 (replaces constitution.md; full canonical on-demand). Codex-APPROVED; 65/65 machine-proven; Acceptance resolver-bound (fail-closed).
 notes: >
   Compressed expression, never deferred constraint (context/token-optimization §A).
 ---

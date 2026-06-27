@@ -2,8 +2,8 @@
 title: Follow-up — framework-wide "always-load → kernel-trio" doc reconciliation (deferred from WP-3)
 doc_tier: archive
 doc_category: intermediate
-status: proposal
-implementation_status: not_started
+status: implemented
+implementation_status: implemented
 source_of_truth: this file
 last_reviewed: 2026-06-27
 review_cadence: ad hoc
@@ -67,3 +67,34 @@ baseline 6/6, 1063 tests green, −818 tok/spawn realized). These residuals are 
 documentation breadth (WP-2 + general docs) that the kernel principle merely makes visible; folding
 them into WP-3 would violate the one-attributable-variable discipline and override the explicit
 "don't touch constitution-core" scope. Captured here as the next increment.
+
+## Closure (2026-06-27)
+DONE as one attributable increment (docs + a regression gate). The framework-wide sweep reconciled
+the always-load → kernel-trio model across CURRENT / load-bearing / adopter-facing docs:
+`governance/constitution.md` (front-matter notes + body §1/§2/§3 prose), `governance/constitution-core.md`
+front-matter (status/size_target), `README.md` + `README.zh-CN.md` (incl. the governance repo-tree),
+`docs/adoption-overview.md`, `docs/greenfield-guide.md`, `docs/brownfield-guide.md`,
+`process/doc-responsibility-matrix.md`, `process/prompt-artifact-rules.md`,
+`templates/adoption-config-template.md`, `examples/minimal-greenfield/docs/current/agent_context_guide.md`.
+`engine-kit/tools/constraint-inventory/_sources.yaml` refreshed (constitution.md sha256;
+`--kernel-coverage` 65/65 + `--authoring-kernel-coverage` 41/41 unchanged). New repo-wide gate
+`engine-kit/orchestrator/tests/test_alwaysload_doc_reconciliation.py` covers the THREE structural
+forms the framework actually uses: Rule A (always-load/@-include assertion + canonical), Rule B
+(obsolete-chain enumeration — both canonicals, no kernel, load context), Rule C (the `governance/*`
+glob called the role-session/cold-start chain). Carve-outs = on-demand/§-citation/archive+compact/
+kernel self-projection. A single-canonical bare "cold-start" cross-reference is intentionally NOT
+flagged (false-positive cost); the executable cold-start regions (role-card step-1, context_briefing
+§1.2/§3, AGENTS.md §2) are positively asserted to name the kernel trio by
+`test_coldstart_consistency.py`. Codex xhigh: R1 REVISE (found `prompt-artifact-rules.md:69` chain
+row + the Rule-B gap) → R2 REVISE (found `AGENTS.md:154` `governance/*` glob + the Rule-C gap) →
+both fixed + fixtured. Archive records describing the OLD state were intentionally left as history.
+
+### Deferred (tracked; NOT in this increment — one-attributable-variable + anti-whack-a-mole)
+- `engine-kit/orchestrator/load_sizer.py` ~line 159 — stale CODE COMMENT: "AGENTS.md transitively
+  @-includes the framework governance chain". Engine behavior is already kernel-trio; this is a
+  comment-only cleanup that also needs confirming what `resolve_load_graph` actually follows. Defer
+  to a later code-comment pass (a different surface than this doc sweep; the `.md` gate does not scan
+  code comments). Flagged by Codex as a follow-up, not a blocker.
+- zh/en translation drift on adopter DOMAIN-CONTRACT load discipline (e.g. `README.zh-CN.md` ~95
+  "每次冷启动都会加载" vs the EN "loaded by roles on demand") — a different bug class (not the
+  canonical always-load model); reconcile in a separate i18n pass.

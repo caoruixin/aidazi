@@ -42,7 +42,7 @@ Field 8 is NEW in v4 (csagent drift evidence: handoff §0 cells grew to multi-th
 
 | Doc tier | Owner | Load discipline | Review cadence | Notes |
 |---|---|---|---|---|
-| `governance/` | Framework maintainer | always-load | fold-back sub-sprint | Constitution + doc_governance + context_briefing |
+| `governance/` | Framework maintainer | always-load (kernels) + on-demand (canonical) | fold-back sub-sprint | always-load: constitution-core + authoring-kernel + context_briefing; full canonical (constitution + doc_governance) on-demand |
 | `process/` | Framework maintainer | on-demand | fold-back sub-sprint | One file per Δ + promoted-from-csagent |
 | `role-cards/` | Framework maintainer | by-role | fold-back sub-sprint | 5 agent role cards |
 | `templates/` | Framework maintainer | by-role | fold-back sub-sprint | Adopter copies + instantiates |

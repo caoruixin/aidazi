@@ -66,7 +66,7 @@ If `self_contained: false`, the orchestrator preflight (`process/delivery-loop.m
 | 9-question anti-hardcode kernel (in Review prompt) | ✓ | |
 | Sub-sprint cumulative scope claim (in Review prompt) | ✓ | |
 | closure_contract (in Acceptance prompt) | ✓ (or referenced by path with the brief auto-loaded via `load_list`) | |
-| Governance chain (Constitution, doc_governance, context_briefing) | — | Via explicit role-session cold-start (`context_briefing.md` §1.2) |
+| Governance kernel trio (constitution-core, authoring-kernel, context_briefing; full constitution / doc_governance on-demand) | — | Via explicit role-session cold-start (`context_briefing.md` §1.2) |
 | Per-sub-sprint Dev handoff (in Review prompt) | — | Path reference only (Dev produces these AFTER prompt is authored) |
 | Code anchors (specific file:line references) | — | Path reference (role reads them on demand during work) |
 | Research Agent proposals in `docs/proposals/` | — | Reference if needed; do NOT embed (proposal-tier; may be out of date relative to milestone decisions) |

@@ -19,18 +19,18 @@ notes: >
   framework anatomy, LLM-vs-Runtime
   ownership, forbidden list (incl. v4 additions §1.7-A/B/C/D/E), iteration rule,
   evaluation rule, 5-role registry, role boundary invariants, and the
-  hard-requirements-vs-suggested-defaults split. Inherited verbatim by every
-  adopter via @-include from AGENTS.md; not edited per project. Per-project
+  hard-requirements-vs-suggested-defaults split. Vendored into every adopter's
+  repo and inherited verbatim; not edited per project. Per-project
   specialization happens in domain context docs and adoption-state.md, not here.
 ---
 
 # aidazi Constitution
 
-This document is the always-loaded Layer-A core of the aidazi framework.
+This document is the canonical Layer-A core of the aidazi framework — the SOLE normative source. It loads on-demand; its always-load `governance/constitution-core.md` kernel carries the proactive HARD constraints every role holds at cold-start.
 
 It defines the universal LLM-vs-Runtime ownership boundary, the forbidden list, the iteration rule, the evaluation rule, the 5-role chain registry, the role boundary invariants, and the split between hard requirements and suggested defaults.
 
-**Editing discipline**: the Constitution is inherited by every adopter via @-include from AGENTS.md. Adopters do not edit it. Per-project specialization happens in `docs/current/` domain context docs and in `docs/current/adoption-state.md`. Framework-level revisions happen at fold-back sub-sprint cadence (per `process/fold-back-protocol.md` §8.2) — never inside an adopter's repo.
+**Editing discipline**: the Constitution is vendored into every adopter's repo and inherited verbatim (the `constitution-core.md` kernel projects it at cold-start; this full file loads on-demand). Adopters do not edit it. Per-project specialization happens in `docs/current/` domain context docs and in `docs/current/adoption-state.md`. Framework-level revisions happen at fold-back sub-sprint cadence (per `process/fold-back-protocol.md` §8.2) — never inside an adopter's repo.
 
 Cross-references below point at peer docs within the framework. Source-of-truth conventions live in `governance/doc_governance.md`. Cold-start reading discipline lives in `governance/context_briefing.md`. The Δ-18 Delivery Loop pattern is named here and specified in `process/delivery-loop.md`. The Two Loops distinction (Auto Loop vs Delivery Loop) is summarized in §3.7 here and explained for adopters in `docs/two-loops-explainer.md`.
 
@@ -41,7 +41,7 @@ The aidazi framework is described by three orthogonal dimensions and the applica
 ### §1.1 Three orthogonal dimensions
 
 - **Dimension 1 — Layer**:
-  - **A Constitution** — this file; timeless ownership + forbidden list. Always loaded.
+  - **A Constitution** — this file; timeless ownership + forbidden list. On-demand canonical; its `constitution-core.md` kernel is the always-load projection at cold-start.
   - **B Process** — on-demand role docs; how the 5 roles do their work; one doc per process under `process/`.
   - **C State ledgers** — live ledgers in the adopter repo: `action_bank.md`, `handoff.md` §0/§1/§2, `adoption-state.md`.
   - **D Prompt artifacts** — `compact/*-dev-prompt.md`, `compact/*-review-prompt.md`, `compact/*-acceptance-prompt.md`, etc. Per-Δ-5 + Δ-9 prompt-artifact rules: each artifact is self-contained.
@@ -229,7 +229,7 @@ Every doc in the framework + adopter repo carries front-matter declaring its tie
 
 The five tiers (per `governance/doc_governance.md`):
 
-- **governance** — Layer A always-loaded (this file, doc_governance, context_briefing).
+- **governance** — Layer A. Always-load = the projection kernels (`constitution-core.md`, `authoring-kernel.md`) + `context_briefing.md`; the full canonical (this file, `doc_governance.md`) load on-demand.
 - **process** — Layer B on-demand by role; `process/*.md`.
 - **role-card** — activation prompts for each role; `role-cards/*.md`.
 - **template** — `templates/*.md`; consumer copies and instantiates.
@@ -237,7 +237,7 @@ The five tiers (per `governance/doc_governance.md`):
 
 Load discipline values (front-matter `load_discipline:` field):
 
-- `always-load` — every cold-start session loads this; for governance tier only.
+- `always-load` — every cold-start session loads this; reserved for the governance-tier kernels (`constitution-core.md` + `authoring-kernel.md`) + `context_briefing.md`; the full canonical governance docs load on-demand.
 - `on-demand` — load when the role's session needs it.
 - `by-role` — role-card style; load when adopting that role.
 
@@ -247,7 +247,7 @@ For full schema rules + decision rules + lifecycle (Δ-4 live vs intermediate) +
 
 ## §3 5-role chain (universal; T0)
 
-This is the canonical 5-role registry. Every adopter inherits this chain via @-include from AGENTS.md. Per-project specialization (which backing coding-agent each role uses; whether the orchestrator drives them or human pastes activations; how often Acceptance runs) happens at the charter level (`templates/mission-charter.yaml`).
+This is the canonical 5-role registry. Every adopter inherits this chain by vendoring the framework (it is not redefined per project). Per-project specialization (which backing coding-agent each role uses; whether the orchestrator drives them or human pastes activations; how often Acceptance runs) happens at the charter level (`templates/mission-charter.yaml`).
 
 The Customer is a sixth participant — human, not an agent. The "5-role chain" name refers to the 5 agent roles below; Customer sits on top + bottom.
 

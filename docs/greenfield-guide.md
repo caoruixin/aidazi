@@ -78,7 +78,7 @@ Walk `process/agent-creation-prerequisites.md` (Δ-16): verify the 7 categories 
 
 ## STEP 4 — Instantiate the framework
 
-- The constitution stays @-included; you never edit it.
+- The constitution stays vendored and on-demand (its always-load `constitution-core.md` kernel projects it at cold-start); you never edit it.
 - Author your three **domain contracts** from templates (`docs/domain-adaptation.md` walks these): `docs/current/domain_taxonomy.md`, `docs/current/runtime_invariants.md`, `docs/current/eval_acceptance_bars.md`.
 - Author the **implementation-stack snapshot** `docs/current/implementation-stack.md` from `templates/implementation-stack-template.md` — a present-tense record of the product's own language / framework / build / test / data deps / deploy-runtime. Greenfield has nothing to detect, so offer a track-informed *starting point* (humble, not a selection) and mark anything undecided `DEFERRED → Phase 3` (does not block). This is the *adopter implementation stack*, distinct from the *agent execution stack* (`charter.tooling.<role>`, STEP 7); it is **not** a domain contract and **not** architecture selection — Phase 3 (STEP 5) owns those decisions. `load_discipline: by-role`.
 - Author `docs/current/adoption-state.md` from `templates/adoption-state-template.md` — your per-Δ status + override registry.

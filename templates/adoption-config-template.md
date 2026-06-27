@@ -69,7 +69,7 @@ After Step 8, run `python engine-kit/validators/adoption_status.py .` for a live
 
 | Config item | Location | Required? | Default | Onboarding step |
 |---|---|---|---|---|
-| Governance chain entry | `AGENTS.md` (@-includes) | yes | consumer template | Step 6 |
+| Governance chain entry | `AGENTS.md` (Control Plane entry) | yes | consumer template | Step 6 |
 | Claude Code import | `CLAUDE.md` → `@AGENTS.md` | yes (if using Claude Code) | one line | Step 6 |
 | Cursor wiring | `.cursor/rules` | when Cursor is primary | adopter-owned | Step 6 |
 

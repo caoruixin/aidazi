@@ -151,7 +151,7 @@ A fresh person joining this project reads:
 
 Every default Control Plane Session loads §2 + §3A + the minimal §3 entries above. Every role session loads §2 + §3 plus the relevant role card and per-role briefing list. The specific compact prompt (Dev / Review / Acceptance) carries the per-session `load_list` enumerating additional files; this AGENTS.md establishes the baseline without turning the default session into a role.
 
-The framework-side governance chain (`aidazi/governance/*`) remains the required role-session chain, but it is not part of the default Control Plane load graph. The adopter-side files referenced in the `control-plane-load` block are the default Control Plane load graph; larger `docs/current/*` files are role/on-demand context unless explicitly listed.
+The framework-side governance kernels (`aidazi/governance/constitution-core.md` + `authoring-kernel.md` + `context_briefing.md`, per §2) are the always-load role-session chain — the full canonical `constitution.md` / `doc_governance.md` load on-demand — but they are not part of the default Control Plane load graph. The adopter-side files referenced in the `control-plane-load` block are the default Control Plane load graph; larger `docs/current/*` files are role/on-demand context unless explicitly listed.
 
 ---
 
