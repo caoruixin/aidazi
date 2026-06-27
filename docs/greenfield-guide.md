@@ -56,7 +56,7 @@ git submodule add <aidazi-url> aidazi
 cp aidazi/AGENTS.md ./AGENTS.md
 ```
 
-Edit your root `AGENTS.md` (§1 project identification + §3 ledger paths). It defines the lightweight default Control Plane entry and names the role/on-demand governance chain (`aidazi/governance/constitution.md` + `doc_governance.md` + `context_briefing.md`). Set `adopter_track` and `framework_version`.
+Edit your root `AGENTS.md` (§1 project identification + §3 ledger paths). It defines the lightweight default Control Plane entry and names the role/on-demand governance chain — the always-load kernel trio `aidazi/governance/constitution-core.md` + `authoring-kernel.md` + `context_briefing.md`, with the full canonical `constitution.md` / `doc_governance.md` loaded on-demand. Set `adopter_track` and `framework_version`.
 
 A working filled-in example of everything STEP 1-6 produces lives at `aidazi/examples/minimal-greenfield/` — copy from it rather than authoring blank. It also ships a recorded, byte-reproducible offline run proving the standalone driver drives a full sub-sprint end-to-end: `examples/minimal-greenfield/docs/recorded-run.md`.
 

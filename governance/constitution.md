@@ -9,11 +9,14 @@ last_reviewed: 2026-06-07
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
-load_discipline: always-load
+load_discipline: on-demand
 size_target: 60KB
 split_trigger: if any single section grows past 8KB, move detail to a process/ Layer-B doc and leave a one-line stub here
 notes: >
-  Layer-A always-loaded constitution. Defines: framework anatomy, LLM-vs-Runtime
+  Layer-A constitution (canonical; loaded on-demand — the always-load
+  governance/constitution-core.md kernel projects its proactive HARD constraints at role-session
+  cold-start, and this full doc loads on-demand per the constitution-core triggers). Defines:
+  framework anatomy, LLM-vs-Runtime
   ownership, forbidden list (incl. v4 additions §1.7-A/B/C/D/E), iteration rule,
   evaluation rule, 5-role registry, role boundary invariants, and the
   hard-requirements-vs-suggested-defaults split. Inherited verbatim by every

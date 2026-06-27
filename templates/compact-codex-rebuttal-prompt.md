@@ -44,7 +44,7 @@ title: Codex rebuttal — <sprint-id> finding-<id>
 context_budget:
   target_tokens: 6000
   load_list:
-    - aidazi/governance/constitution.md
+    - aidazi/governance/constitution-core.md   # always-load kernel; full constitution.md on-demand
     - aidazi/templates/anti-hardcode-review-kernel.md
     - aidazi/schemas/compact/review-verdict.compact.schema.json   # agent loads the compact projection (verbose canonical = validator's)
     - <adopter>/docs/sprint_objective.md          # sub-sprint contract

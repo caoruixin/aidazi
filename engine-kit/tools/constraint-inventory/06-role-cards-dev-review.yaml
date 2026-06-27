@@ -114,7 +114,7 @@
   current_enforcement: none-judgment
 - id: rc-dev-coldstart-governance-chain
   anchor: 'role-cards/dev-agent.md §2'
-  statement: Before acting Dev MUST load the always-load governance chain, adopter AGENTS.md + adoption-state, this role card, prompt-artifact-rules, context-passing-efficiency, and the specific dev prompt.
+  statement: Before acting Dev MUST load the always-load kernel chain (constitution-core.md, authoring-kernel.md, context_briefing.md; full constitution.md / doc_governance.md on-demand), adopter AGENTS.md + adoption-state, this role card, prompt-artifact-rules, context-passing-efficiency, and the specific dev prompt.
   roles: [dev]
   condition: always
   current_enforcement: none-judgment
@@ -387,7 +387,7 @@
   current_enforcement: none-judgment
 - id: rc-rev-coldstart-load-chain
   anchor: 'role-cards/code-reviewer-agent.md §1'
-  statement: Before reviewing, Code Reviewer MUST load the always-load governance chain, adopter AGENTS.md + adoption-state, this role card, the anti-hardcode-review-kernel, review-verdict.schema.json, the sprint review prompt, runtime_invariants, and sprint_objective.
+  statement: Before reviewing, Code Reviewer MUST load the always-load kernel chain (constitution-core.md, authoring-kernel.md, context_briefing.md; full constitution.md / doc_governance.md on-demand), adopter AGENTS.md + adoption-state, this role card, the anti-hardcode-review-kernel, review-verdict.schema.json, the sprint review prompt, runtime_invariants, and sprint_objective.
   roles: [review]
   condition: always
   current_enforcement: none-judgment

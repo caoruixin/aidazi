@@ -3,22 +3,22 @@
 version: 1
 sources:
 - path: governance/constitution.md
-  sha256: 3065cbca2bbc5b762dab76405e1b9638bd3f41bcebba41ac1c0d06474dbd5f1c
+  sha256: d9b30ea42746b104d9d23346af223fe71433b877a64051ef9a08749a182b04e2
 - path: governance/doc_governance.md
-  sha256: e2dcdc7984ea3ecbf8eec4ca19969ed54ba30cbc59061b3e74963f98eed48444
+  sha256: 0df5b552f21f2b5474c5daec0bc579a9c97e895b5b7a4672e60b04e5502b65cb
 - path: governance/context_briefing.md
-  sha256: ccf34a319061f36163e70f3a7fa7d766edeadc2546171a8929a12a3e8943604d
+  sha256: 40a84a82eb6d0657b2cc3c2f5c5b5f71ea2d7d910b05b3309cd99f1b0680cbd3
 - path: process/delivery-loop.md
   sha256: b1d25ba98c783cae57e9f2c60071829db499a22db656ec40d8d29265162a2dee
 - path: process/role-skill-model.md
   sha256: 33e903c8b9e1ce3fcb2f1ea98b912d02b3a4372443b6efbae0edd25ed630354e
 - path: role-cards/research-agent.md
-  sha256: bc3af202dd689d54c39d70794b335811a12a8043fb01b8b85dc01a2acb08b695
+  sha256: 4b2f210283ba6c25abd6a6abf2a29d7ce41af9a2eab6d3c6143bd097430eb65a
 - path: role-cards/deliver-agent.md
-  sha256: 34ee206adc2ffd1de9616ef4e4dc7f53f239b92a90dcb2c08a87958f5616d83f
+  sha256: 401cc5dd2cabb59ca9aeefe02a42f8cb0c983ffc1d3185eb4a1136f943883400
 - path: role-cards/dev-agent.md
-  sha256: 89fc01f980413df8198fd2758d6d68a903cb7d1ab8e37aa366d2b25fe6e2c9a5
+  sha256: 8abf572ff8965fdebf0051e16a5c2201a749b160f6a656eb89c566e3c5389499
 - path: role-cards/code-reviewer-agent.md
-  sha256: a283c78c863586e0adcbec012fa8c6c2082cdb449f439030dbbf3513d883874c
+  sha256: 293a094e032c40f5fe9dd88cde9b203f1126f7a7aab59babd6120de0447fc551
 - path: role-cards/acceptance-agent.md
-  sha256: 2374b47999329cec1eee00c5e9921da34e15e4c938ad0d236354028a78fdae0e
+  sha256: d7b74fd695d25024db43929181e2cd023ccba727eba8ed25e5ee2837f979572e

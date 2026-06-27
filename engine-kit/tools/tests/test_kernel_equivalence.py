@@ -414,5 +414,51 @@ class KernelCoverageTests(_RepoBuilderMixin):
         self.assertNotIn("r-real", result["stats"]["missing_phrase"])  # body resolves
 
 
+@unittest.skipIf(yaml is None, "PyYAML not installed")
+class AuthoringKernelCoverageTests(_RepoBuilderMixin):
+    """WP-3: check_authoring_kernel_coverage proves the authoring-kernel carries every
+    doc-governance inventory row (03-doc-governance.yaml); and the merged --authoring-kernel-
+    coverage CLI fails closed when the inventory/source-hash gate fails (a stale canonical
+    governance/doc_governance.md ⇒ stale kernel). The generic completeness / no-dangling /
+    resolution / normalization / multi-phrase logic is shared with KernelCoverageTests via
+    ``_kernel_coverage_for`` and is not re-asserted here."""
+
+    def test_real_authoring_kernel_coverage_is_100pct(self):
+        # The real authoring-kernel draft carries all 41 doc-governance rows, non-vacuously
+        # (compound rows list a phrase per mandatory subpart — see _authoring_kernel_coverage.yaml).
+        result = ke.check_authoring_kernel_coverage()
+        self.assertTrue(result["ok"], msg=str(result.get("errors")))
+        self.assertEqual(result["stats"]["coverage_pct"], 100.0)
+        self.assertEqual(result["stats"]["total"], 41)
+        self.assertEqual(result["stats"]["missing_phrase"], [])
+        self.assertEqual(result["stats"]["uncovered_rows"], [])
+        self.assertEqual(result["stats"]["dangling"], [])
+
+    def test_merged_authoring_coverage_on_real_tree_passes(self):
+        merged = ke._merged_coverage(str(ke.REPO_ROOT_DEFAULT),
+                                     ke.check_authoring_kernel_coverage)
+        self.assertTrue(merged["ok"], msg=str(merged.get("errors")))
+
+    def test_merged_fails_closed_when_source_hash_gate_fails(self):
+        # The merged CLI ANDs the inventory/source-hash gate with coverage: a stale canonical
+        # (check() not ok) fails the kernel even if every phrase still resolves — a changed
+        # canonical means re-review + regenerate, never silent reuse (Codex fidelity gate).
+        orig_check = ke.check
+        ke.check = lambda repo_root=None: {
+            "ok": False,
+            "errors": ["source governance/doc_governance.md changed (inventory stale) — "
+                       "re-review + regenerate affected kernel"],
+            "warnings": [], "stats": {},
+        }
+        try:
+            merged = ke._merged_coverage(str(ke.REPO_ROOT_DEFAULT),
+                                         ke.check_authoring_kernel_coverage)
+        finally:
+            ke.check = orig_check
+        self.assertFalse(merged["ok"])
+        self.assertTrue(any(e.startswith("[inventory/source-hash gate]")
+                            for e in merged["errors"]), msg=str(merged["errors"]))
+
+
 if __name__ == "__main__":
     unittest.main()

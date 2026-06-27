@@ -34,7 +34,7 @@ You operate read-only by mechanical tool whitelist (Read, Grep, Glob). You do no
 
 When invoked:
 
-1. Load `aidazi/governance/constitution.md`, `aidazi/governance/doc_governance.md`, `aidazi/governance/context_briefing.md` (always-load chain).
+1. Load `aidazi/governance/constitution-core.md`, `aidazi/governance/authoring-kernel.md`, `aidazi/governance/context_briefing.md` (the always-load chain; load the full `constitution.md` / `doc_governance.md` on-demand per their triggers).
 2. Load `<adopter>/AGENTS.md` and `<adopter>/docs/current/adoption-state.md`.
 3. Load this role card.
 4. Load `aidazi/templates/anti-hardcode-review-kernel.md` — the canonical 9-question kernel.

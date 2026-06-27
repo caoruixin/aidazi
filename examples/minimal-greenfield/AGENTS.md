@@ -16,8 +16,8 @@ last_updated: 2026-06-12
 
 Default Control Plane Sessions do not `@`-include the full governance chain. When a session is explicitly activated as a role session, load these in order:
 
-1. `aidazi/governance/constitution.md`
-2. `aidazi/governance/doc_governance.md`
+1. `aidazi/governance/constitution-core.md` (always-load kernel; full `aidazi/governance/constitution.md` on-demand per its triggers)
+2. `aidazi/governance/authoring-kernel.md` (always-load kernel; full `aidazi/governance/doc_governance.md` on-demand per context_briefing §2.6)
 3. `aidazi/governance/context_briefing.md`
 
 Then the session loads its role card from `aidazi/role-cards/`.
@@ -95,7 +95,7 @@ See `docs/current/adoption-state.md`. We override two suggested defaults (smalle
 
 Default Control Plane: this file → `.orchestrator/control/state.json` if present → `.orchestrator/control/intents.jsonl` recent summary if present → `docs/current/adoption-state.md` + `docs/current/agent_context_guide.md`.
 
-Explicit role session: this file → `aidazi/governance/constitution.md` → `aidazi/governance/doc_governance.md` → `aidazi/governance/context_briefing.md` → `docs/current/adoption-state.md` → the relevant role card.
+Explicit role session: this file → `aidazi/governance/constitution-core.md` → `aidazi/governance/authoring-kernel.md` → `aidazi/governance/context_briefing.md` → `docs/current/adoption-state.md` → the relevant role card (the always-load kernel trio; full `constitution.md` / `doc_governance.md` load on-demand per their triggers).
 
 ---
 

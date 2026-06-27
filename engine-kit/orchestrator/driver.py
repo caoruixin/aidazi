@@ -4003,10 +4003,15 @@ class Driver:
             # §1.2 step 1). Bind it. KEEP constitution.md bound too: the kernel's triggers let
             # the judge load the canonical ON-DEMAND (term / divergence / rule-conflict /
             # exception), so an edit to it can still affect a verdict — binding both is
-            # fail-closed (an edit to either re-spawns). (The full Acceptance LOAD-CLOSURE —
-            # proving no OTHER unbound on-demand read — is WP-4.)
+            # fail-closed (an edit to either re-spawns).
+            # WP-3: the judge cold-starts the authoring-kernel projection (context_briefing
+            # §1.2 step 2). Bind it. KEEP doc_governance.md bound too: the judge may load the
+            # full canonical ON-DEMAND (context_briefing §2.6 "Doc lifecycle question"), so an
+            # edit to it can still affect a verdict — binding both is fail-closed. (The full
+            # Acceptance LOAD-CLOSURE — proving no OTHER unbound on-demand read — is WP-4.)
             os.path.join("governance", "constitution-core.md"),
             os.path.join("governance", "constitution.md"),
+            os.path.join("governance", "authoring-kernel.md"),
             os.path.join("governance", "doc_governance.md"),
             os.path.join("governance", "context_briefing.md"),
         ):

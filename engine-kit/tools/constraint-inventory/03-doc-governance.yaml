@@ -141,7 +141,7 @@
   current_enforcement: none-judgment
 - id: doc-s7-3-true-conflict-reconciliation-note
   anchor: 'governance/doc_governance.md §7.3'
-  statement: A conflict between two comparable-tier governed docs MUST be handled as a governance task by opening a docs/current/ reconciliation note naming both docs, the disagreement, and the proposed resolution.
+  statement: A conflict between two comparable-tier governed docs that code does not clearly resolve MUST be handled as a governance task by opening a docs/current/ reconciliation note naming both docs, the disagreement, and the proposed resolution.
   roles: [all]
   condition: always
   current_enforcement: none-judgment
@@ -153,7 +153,7 @@
   current_enforcement: none-judgment
 - id: doc-s7-4-no-silent-stale-ref-delete
   anchor: 'governance/doc_governance.md §7.4'
-  statement: A stale reference MUST NOT be silently deleted; it MUST be fixed (moved target update link; deleted target inline summary plus sprint-archive pointer; code target link a stable dir/file not a line) or annotated.
+  statement: A stale reference MUST NOT be silently deleted; it MUST be fixed (moved target -> update link; a target deleted intentionally -> inline summary plus sprint-archive pointer; code target -> link a stable dir/file not a specific line UNLESS the line itself is the contract) or annotated.
   roles: [all]
   condition: always
   current_enforcement: none-judgment
@@ -222,14 +222,15 @@
   statement: The Research role authors docs/research-briefs/<id>.md, carrying the closure_contract plus scope IN/OUT, anti-goal, and KPI.
   roles: [research]
   condition: always
-  current_enforcement: 'schema:research-brief.schema.json'
+  current_enforcement: 'role-card:role-cards/research-agent.md'
+  notes: 'research-brief.schema.json validates the brief FIELDS/shape (see doc-s4-closure-contract-section-required/-shape), NOT the role authorship or the docs/research-briefs/ path — that authorship boundary is the Research role card (role-cards/research-agent.md).'
 - id: doc-role-acceptance-authors-report
   anchor: 'role-cards/acceptance-agent.md §intro'
-  statement: The Acceptance role authors the acceptance verdict JSON and docs/acceptance-reports/<scope>-acceptance-report.md, with no write access outside its report path.
+  statement: The Acceptance role authors the acceptance verdict JSON, docs/acceptance-reports/<scope>-acceptance-report.md, and the required human-confirm checkpoint under docs/checkpoints/ on fix_required, with no write access outside docs/acceptance-reports/ and docs/checkpoints/.
   roles: [acceptance]
   condition: always
   current_enforcement: 'role-card:role-cards/acceptance-agent.md'
-  notes: 'acceptance-verdict.schema.json validates the verdict JSON, not the report-file authorship or the no-write-outside-report-path boundary (role-card discipline).'
+  notes: 'acceptance-verdict.schema.json validates the verdict JSON, not the report/checkpoint authorship or the no-write-outside-(acceptance-reports + checkpoints) boundary (role-card §9 discipline, acceptance-agent.md:227).'
 - id: doc-role-deliver-authors-handoff-0-and-12
   anchor: 'role-cards/deliver-agent.md §4.1'
   statement: The Deliver role authors the handoff §0 cold-start scaffold and writes the §12 close verdict (Deliver + Customer co-sign).

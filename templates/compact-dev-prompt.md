@@ -34,8 +34,8 @@ title: Dev prompt — sprint-NNN
 context_budget:
   target_tokens: 12000              # suggested; adopter overrides per §7.0
   load_list:
-    - aidazi/governance/constitution.md
-    - aidazi/governance/doc_governance.md
+    - aidazi/governance/constitution-core.md   # always-load kernel; full constitution.md on-demand
+    - aidazi/governance/authoring-kernel.md     # always-load kernel; full doc_governance.md on-demand
     - aidazi/governance/context_briefing.md
     - aidazi/role-cards/dev-agent.md
     - aidazi/process/prompt-artifact-rules.md
@@ -68,8 +68,8 @@ backing_agent_kind: claude_code | codex | <other>     # per charter.tooling.dev.
 You are activating as the Dev Agent for sprint-NNN.
 
 Cold-start read (in order):
-  1. aidazi/governance/constitution.md
-  2. aidazi/governance/doc_governance.md
+  1. aidazi/governance/constitution-core.md   (always-load kernel; full constitution.md on-demand)
+  2. aidazi/governance/authoring-kernel.md     (always-load kernel; full doc_governance.md on-demand)
   3. aidazi/governance/context_briefing.md
   4. aidazi/role-cards/dev-agent.md (your full role card)
   5. <adopter>/AGENTS.md

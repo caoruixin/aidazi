@@ -685,6 +685,7 @@ class ResolverGraphAdopterRoot(unittest.TestCase):
                 ("role-cards/acceptance-agent.md", "# acceptance role\n"),
                 ("governance/constitution-core.md", "# constitution-core kernel v1\n"),
                 ("governance/constitution.md", "# constitution v1\n"),
+                ("governance/authoring-kernel.md", "# authoring kernel v1\n"),
                 ("governance/doc_governance.md", "# doc governance\n"),
                 ("governance/context_briefing.md", "# context briefing\n"),
             ):
@@ -716,6 +717,7 @@ class ResolverGraphAdopterRoot(unittest.TestCase):
                 # constitution.md stays bound (on-demand canonical — fail-closed).
                 self.assertIn("governance/constitution-core.md", bound_paths)
                 self.assertIn("governance/constitution.md", bound_paths)
+                self.assertIn("governance/authoring-kernel.md", bound_paths)
                 self.assertIn("governance/doc_governance.md", bound_paths)
                 self.assertIn("governance/context_briefing.md", bound_paths)
 
@@ -725,11 +727,20 @@ class ResolverGraphAdopterRoot(unittest.TestCase):
                 graph2, _ = drv._acceptance_resolver_graph(
                     "eval/runs/x/out.txt", None)
                 h2 = es.acceptance_input_hash("PROMPT", graph2)
+                self.assertNotEqual(
+                    h1, h2, "a canonical constitution edit must change the acceptance input hash")
+                # WP-3: the authoring-kernel binding is load-bearing too — editing this cold-start
+                # governance input must ALSO re-invalidate Acceptance §3.5b reuse (fail-closed).
+                with open(os.path.join(fw, "governance", "authoring-kernel.md"), "w") as fh:
+                    fh.write("# authoring kernel v2\n")
+                graph3, _ = drv._acceptance_resolver_graph(
+                    "eval/runs/x/out.txt", None)
+                h3 = es.acceptance_input_hash("PROMPT", graph3)
             finally:
                 D._find_schemas_dir = orig
             self.assertNotEqual(
-                h1, h2,
-                "a role-session governance edit must change the acceptance input hash",
+                h2, h3,
+                "a WP-3 authoring-kernel edit must change the acceptance input hash",
             )
 
     def test_acceptance_binds_compact_verdict_projection_not_canonical(self):

@@ -259,6 +259,8 @@ class ColdStartLoadGraphHashTests(unittest.TestCase):
         roots = ls.role_cold_start_roots("dev")
         self.assertNotIn(ls.ROLE_SKILL_MODEL, roots)
         self.assertIn(("governance/constitution-core.md", "governance"), roots)  # WP-2: kernel at cold-start
+        self.assertIn(("governance/authoring-kernel.md", "governance"), roots)  # WP-3: kernel at cold-start
+        self.assertNotIn(("governance/doc_governance.md", "governance"), roots)  # WP-3: canonical is on-demand
         self.assertIn(("role-cards/dev-agent.md", "role_card"), roots)
 
     def test_roots_skills_on_appends_role_skill_model_once(self):

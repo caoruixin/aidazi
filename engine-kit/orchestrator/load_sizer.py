@@ -80,8 +80,13 @@ GOVERNANCE_TRIO: list = [
     # machine-checked projection); the verbose canonical governance/constitution.md is loaded
     # on-demand, so it is NOT part of the per-spawn cold-start floor. The WP-7 load_graph_hash
     # fingerprints this set, so it tracks the kernel the agent actually reads.
+    # WP-3: cold-start step 2 loads the always-load authoring-kernel (a complete,
+    # machine-checked projection of doc_governance.md); the verbose canonical
+    # governance/doc_governance.md loads on-demand (context_briefing §2.6), so it is NOT in the
+    # per-spawn floor. The WP-7 load_graph_hash fingerprints this set, so it tracks the kernel
+    # the agent actually reads. The trio stays a TRIO (3 entries).
     ("governance/constitution-core.md", "governance"),
-    ("governance/doc_governance.md", "governance"),
+    ("governance/authoring-kernel.md", "governance"),
     ("governance/context_briefing.md", "governance"),
 ]
 

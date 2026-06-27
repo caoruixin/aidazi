@@ -102,7 +102,7 @@ scaffold.
 When a session is explicitly activated as one of the five roles, before any role work output it loads, in order:
 
 1. `aidazi/governance/constitution-core.md` (this is `always-load`) — the proactive HARD-constraint kernel: a machine-checked, complete projection of the canonical constitution. Load the full `aidazi/governance/constitution.md` ON-DEMAND per the triggers in constitution-core (a term you lack an operational definition for, a divergence/override question, a rule conflict, an exception/edge case, or a governance-editing question) — do not self-infer before loading.
-2. `aidazi/governance/doc_governance.md` (this is `always-load`).
+2. `aidazi/governance/authoring-kernel.md` (this is `always-load`) — the proactive doc-authoring/governance kernel: a machine-checked, complete projection of `doc_governance.md`. Load the full `aidazi/governance/doc_governance.md` ON-DEMAND per §2.6 "Doc lifecycle question".
 3. `aidazi/governance/context_briefing.md` (this file; `always-load`).
 4. The adopter's root entry — the `AGENTS.md` that names the project, instantiates the 5-role registry, defines the default Control Plane load block, and names the role/on-demand governance chain. **Which root file the harness auto-loads to reach that `AGENTS.md` is harness-specific — see §1.1.**
 5. The adopter's `docs/current/adoption-state.md` — read this BEFORE loading process docs so you know which Δs are at-spec vs divergent vs not-applicable in this adopter (§5).
@@ -197,7 +197,7 @@ If your task pulls you into territory the role list doesn't cover, route via the
 |---|---|
 | Domain discovery / industry research | `process/domain-discovery-process.md` (Δ-2) + adopter `docs/foundational/business-need.md` (or merged §5.3.1 brief) |
 | Tech architecture decisions | `process/tech-architecture-decision-catalog.md` (Δ-3) + adopter `docs/foundational/technical-plan.md` |
-| Doc lifecycle question | `process/doc-lifecycle-rules.md` (Δ-4) + `governance/doc_governance.md` |
+| Doc lifecycle question | `process/doc-lifecycle-rules.md` (Δ-4) + `governance/doc_governance.md` (on-demand canonical for authoring-kernel) |
 | Type A runtime / phase pipeline | `process/typeA-runtime-architecture-skeleton.md` (Δ-6) + adopter `docs/current/runtime_invariants.md` |
 | Worked example sync question | `process/worked-example-instance.md` (Δ-7) + the specific `examples/<ref>/` |
 | Eval / bad-case lifecycle | `process/badcase-lifecycle.md` + adopter `eval/bad_cases/_manifest.md` |
@@ -229,7 +229,7 @@ Role you are playing: <Research | Deliver | Dev | Code Reviewer | Acceptance>
 
 Read the following first (in order):
 1. aidazi/governance/constitution-core.md (the always-load constraint kernel; load the full aidazi/governance/constitution.md on-demand per its triggers)
-2. aidazi/governance/doc_governance.md
+2. aidazi/governance/authoring-kernel.md (the always-load doc-authoring/governance kernel; load the full aidazi/governance/doc_governance.md on-demand per §2.6)
 3. aidazi/governance/context_briefing.md
 4. <adopter root>/AGENTS.md (reached via the harness root file per §1.1 — Claude Code: a root CLAUDE.md importing @AGENTS.md; Codex: AGENTS.md directly)
 5. <adopter root>/docs/current/adoption-state.md

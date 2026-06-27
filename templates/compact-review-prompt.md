@@ -32,8 +32,8 @@ title: Review prompt — sprint-NNN
 context_budget:
   target_tokens: 8000                          # suggested per §7.0
   load_list:
-    - aidazi/governance/constitution.md
-    - aidazi/governance/doc_governance.md
+    - aidazi/governance/constitution-core.md   # always-load kernel; full constitution.md on-demand
+    - aidazi/governance/authoring-kernel.md     # always-load kernel; full doc_governance.md on-demand
     - aidazi/governance/context_briefing.md
     - aidazi/role-cards/code-reviewer-agent.md
     - aidazi/templates/anti-hardcode-review-kernel.md      # 9-question kernel
@@ -64,8 +64,8 @@ tool_whitelist: [Read, Grep, Glob]
 You are activating as the Code Reviewer Agent for <sprint-id>.
 
 Cold-start (in order):
-  1. aidazi/governance/constitution.md
-  2. aidazi/governance/doc_governance.md
+  1. aidazi/governance/constitution-core.md   (always-load kernel; full constitution.md on-demand)
+  2. aidazi/governance/authoring-kernel.md     (always-load kernel; full doc_governance.md on-demand)
   3. aidazi/governance/context_briefing.md
   4. aidazi/role-cards/code-reviewer-agent.md
   5. aidazi/templates/anti-hardcode-review-kernel.md (9-question kernel)

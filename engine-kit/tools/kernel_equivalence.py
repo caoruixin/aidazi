@@ -340,6 +340,7 @@ def check(repo_root=REPO_ROOT_DEFAULT) -> dict:
 
 
 KERNEL_COVERAGE_NAME = "_kernel_coverage.yaml"
+AUTHORING_KERNEL_COVERAGE_NAME = "_authoring_kernel_coverage.yaml"
 
 
 def _normalize_for_match(text: str) -> str:
@@ -348,25 +349,26 @@ def _normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[`*]", "", text)).strip()
 
 
-def check_kernel_coverage(repo_root=REPO_ROOT_DEFAULT) -> dict:
-    """WP-2: prove the constitution-core KERNEL carries every constitution inventory row.
+def _kernel_coverage_for(cov_name: str, repo_root=REPO_ROOT_DEFAULT) -> dict:
+    """Prove a KERNEL projection carries every inventory row it claims to (WP-2 constitution-core
+    via ``_kernel_coverage.yaml``; WP-3 authoring-kernel via ``_authoring_kernel_coverage.yaml``).
 
-    The coverage map (``_kernel_coverage.yaml``) binds each constitution-sourced row id to a
-    constraint-essence phrase the kernel MUST contain. This asserts (per the WP-EQ design's
-    ``coverage_status: kernel-clause`` rule):
+    The coverage map (``cov_name``) binds each sourced row id to a constraint-essence phrase the
+    kernel MUST contain. This asserts (per the WP-EQ design's ``coverage_status: kernel-clause``
+    rule):
       (a) COMPLETENESS — every inventory row (from the map's ``source_files``) is mapped;
       (b) NO-DANGLING  — every map entry names a real inventory row;
       (c) RESOLUTION   — EVERY phrase of a row is present in the kernel's NORMATIVE BODY.
     A row's value may be a single phrase OR a LIST of phrases; with a list, EVERY phrase must
     resolve — so a multi-subpart constraint (e.g. dev = workspace_write + network-boundary +
     no-push) cannot pass on one fragment while a mandatory subpart is dropped. Matching is over the
-    kernel BODY only — the YAML front-matter and the trailing non-normative sections (the
-    "Deferred …" list + the inherited-gaps section) are stripped — so a phrase must resolve inside
-    an actual clause, not metadata/pointer prose. Returns ``{ok, errors, kernel, stats}``; ``ok`` is
+    kernel BODY only — the YAML front-matter and the trailing non-normative sections (from the
+    "## Deferred to the canonical" heading on) are stripped — so a phrase must resolve inside an
+    actual clause, not metadata/pointer prose. Returns ``{ok, errors, kernel, stats}``; ``ok`` is
     False (clear error) when the kernel draft is absent — safe to run before the kernel is wired."""
     repo_root = Path(repo_root)
     inv_dir = repo_root / "engine-kit" / "tools" / "constraint-inventory"
-    cov_path = inv_dir / KERNEL_COVERAGE_NAME
+    cov_path = inv_dir / cov_name
     if yaml is None:
         return {"ok": False, "errors": ["PyYAML is required but not installed"], "stats": {}}
     if not cov_path.is_file():
@@ -435,12 +437,39 @@ def check_kernel_coverage(repo_root=REPO_ROOT_DEFAULT) -> dict:
     return {"ok": not errors, "errors": errors, "kernel": kernel_rel, "stats": stats}
 
 
+def check_kernel_coverage(repo_root=REPO_ROOT_DEFAULT) -> dict:
+    """WP-2: the constitution-core kernel vs its constitution inventory rows (01+02)."""
+    return _kernel_coverage_for(KERNEL_COVERAGE_NAME, repo_root=repo_root)
+
+
+def check_authoring_kernel_coverage(repo_root=REPO_ROOT_DEFAULT) -> dict:
+    """WP-3: the authoring-kernel vs the doc-governance inventory rows (03-doc-governance.yaml)."""
+    return _kernel_coverage_for(AUTHORING_KERNEL_COVERAGE_NAME, repo_root=repo_root)
+
+
+def _merged_coverage(repo_root, cov_fn) -> dict:
+    """Run a kernel-coverage check MERGED with the inventory/source-hash gate, failing if either
+    fails. The kernel is a projection of the inventory, which is bound to the canonical source
+    hashes; a coverage pass is meaningful only if ``check()`` (source-hash freshness, well-
+    formedness, row floors) ALSO passes — a stale canonical means a stale kernel (Codex fidelity
+    gate). So both run and any failure fails the merged result."""
+    base = check(repo_root=repo_root)
+    cov = cov_fn(repo_root=repo_root)
+    return {
+        "ok": base["ok"] and cov["ok"],
+        "kernel": cov.get("kernel"),
+        "errors": (["[inventory/source-hash gate] " + e for e in base["errors"]]
+                   + cov.get("errors", [])),
+        "stats": cov.get("stats", {}),
+    }
+
+
 def _print_kernel_coverage(result: dict) -> None:
     stats = result.get("stats", {})
     print(f"kernel_coverage ({result.get('kernel', '?')}): "
           f"{'OK' if result['ok'] else 'NOT OK'}")
     if stats:
-        print(f"  constitution rows : {stats.get('total')}")
+        print(f"  inventory rows    : {stats.get('total')}")
         print(f"  covered           : {stats.get('covered')} ({stats.get('coverage_pct')}%)")
     for e in result.get("errors", []):
         print(f"    - {e}")
@@ -477,22 +506,19 @@ def main(argv=None) -> int:
                         help="repo root (parent of engine-kit)")
     parser.add_argument("--kernel-coverage", action="store_true",
                         help="WP-2: report constitution-core kernel coverage vs the inventory "
-                             "(does NOT run the main inventory gate)")
+                             "(MERGED with the inventory/source-hash gate)")
+    parser.add_argument("--authoring-kernel-coverage", action="store_true",
+                        help="WP-3: report authoring-kernel coverage vs the doc-governance "
+                             "inventory (MERGED with the inventory/source-hash gate)")
     args = parser.parse_args(argv)
-    if args.kernel_coverage:
-        # The kernel is a projection of the inventory, which is bound to the canonical source
-        # hashes. A coverage pass is only meaningful if the inventory gate (source-hash freshness,
-        # well-formedness, row floors) ALSO passes — a stale canonical means a stale kernel. So
-        # --kernel-coverage runs BOTH and fails if either fails (Codex WP-2 fidelity gate).
-        base = check(repo_root=args.repo_root)
-        cov = check_kernel_coverage(repo_root=args.repo_root)
-        merged = {
-            "ok": base["ok"] and cov["ok"],
-            "kernel": cov.get("kernel"),
-            "errors": (["[inventory/source-hash gate] " + e for e in base["errors"]]
-                       + cov.get("errors", [])),
-            "stats": cov.get("stats", {}),
-        }
+    if args.kernel_coverage or args.authoring_kernel_coverage:
+        # Each kernel is a projection of the inventory, bound to the canonical source hashes. A
+        # coverage pass is meaningful only if the inventory gate (source-hash freshness, well-
+        # formedness, row floors) ALSO passes — a stale canonical means a stale kernel. So the
+        # coverage CLIs run BOTH and fail if either fails (Codex WP-2/WP-3 fidelity gate).
+        cov_fn = (check_authoring_kernel_coverage if args.authoring_kernel_coverage
+                  else check_kernel_coverage)
+        merged = _merged_coverage(args.repo_root, cov_fn)
         if args.json:
             print(json.dumps(merged, indent=2, ensure_ascii=False, sort_keys=True))
         else:

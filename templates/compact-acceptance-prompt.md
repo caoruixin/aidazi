@@ -32,8 +32,8 @@ title: Acceptance prompt — <scope-id>
 context_budget:
   target_tokens: 12000
   load_list:
-    - aidazi/governance/constitution.md
-    - aidazi/governance/doc_governance.md
+    - aidazi/governance/constitution-core.md   # always-load kernel; full constitution.md on-demand
+    - aidazi/governance/authoring-kernel.md     # always-load kernel; full doc_governance.md on-demand
     - aidazi/governance/context_briefing.md
     - aidazi/role-cards/acceptance-agent.md
     - aidazi/schemas/compact/acceptance-verdict.compact.schema.json   # agent loads the compact projection (verbose canonical = validator's)

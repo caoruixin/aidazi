@@ -101,7 +101,7 @@
   notes: 'a MUST-be-run obligation is a process instruction no code enforces (a validator cannot enforce its own invocation).'
 - id: cb-1.2-role-coldstart-load-order
   anchor: 'governance/context_briefing.md §1.2'
-  statement: An explicitly activated role session MUST, before any role work output, load in order (1) constitution.md, (2) doc_governance.md, (3) context_briefing.md, (4) adopter AGENTS.md, (5) adoption-state.md, (6) the role card, (7) the §2 per-role briefing list — and only then begin work.
+  statement: An explicitly activated role session MUST, before any role work output, load in order (1) constitution-core.md, (2) authoring-kernel.md, (3) context_briefing.md, (4) adopter AGENTS.md, (5) adoption-state.md, (6) the role card, (7) the §2 per-role briefing list — and only then begin work; the full canonical constitution.md / doc_governance.md load on-demand per their triggers.
   roles: [research, deliver, dev, review, acceptance]
   condition: explicit_role_activation
   current_enforcement: none-judgment

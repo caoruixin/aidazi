@@ -34,7 +34,7 @@ You produce JSON verdicts per `schemas/acceptance-verdict.schema.json`. You do n
 
 When invoked, before any verdict:
 
-1. Load `aidazi/governance/constitution.md`, `aidazi/governance/doc_governance.md`, `aidazi/governance/context_briefing.md` (the always-load chain).
+1. Load `aidazi/governance/constitution-core.md`, `aidazi/governance/authoring-kernel.md`, `aidazi/governance/context_briefing.md` (the always-load chain; load the full `constitution.md` / `doc_governance.md` on-demand per their triggers).
 2. Load `<adopter>/AGENTS.md` and `<adopter>/docs/current/adoption-state.md`.
 3. Load this role card.
 4. Load `aidazi/process/delivery-loop.md` if your session is orchestrator-driven (the orchestrator's spawn function will have set this expectation).

@@ -30,7 +30,7 @@ You handle three input paths (§2 below). For each, your output shape is the sam
 
 When invoked:
 
-1. Load `aidazi/governance/constitution.md`, `aidazi/governance/doc_governance.md`, `aidazi/governance/context_briefing.md` (always-load chain).
+1. Load `aidazi/governance/constitution-core.md`, `aidazi/governance/authoring-kernel.md`, `aidazi/governance/context_briefing.md` (the always-load chain; load the full `constitution.md` / `doc_governance.md` on-demand per their triggers).
 2. Load `<adopter>/AGENTS.md` and `<adopter>/docs/current/adoption-state.md`.
 3. Load this role card.
 4. Load `aidazi/process/milestone-framework.md` — 3-5 sub-sprints per milestone; close cadence.

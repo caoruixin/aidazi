@@ -27,8 +27,8 @@ last_updated: <YYYY-MM-DD>
 
 Default Control Plane Sessions do not `@`-include the full governance chain. This keeps fresh natural-language command sessions small. When a session is explicitly activated as a role session, or when the Control Plane needs to reason about framework governance, load these in order:
 
-1. `aidazi/governance/constitution.md`
-2. `aidazi/governance/doc_governance.md`
+1. `aidazi/governance/constitution-core.md` (always-load constraint kernel; load the full `aidazi/governance/constitution.md` on-demand per its triggers)
+2. `aidazi/governance/authoring-kernel.md` (always-load doc-authoring/governance kernel; load the full `aidazi/governance/doc_governance.md` on-demand per context_briefing §2.6)
 3. `aidazi/governance/context_briefing.md`
 
 Then session follows §3A. It loads a role-specific card only when a role is explicitly being adopted.
@@ -141,7 +141,7 @@ A fresh person joining this project reads:
 2. `aidazi/README.md` (framework elevator).
 3. `aidazi/docs/adoption-overview.md` (mental model).
 4. `aidazi/docs/two-loops-explainer.md` (Auto vs Delivery loop naming).
-5. `aidazi/governance/constitution.md`.
+5. `aidazi/governance/constitution-core.md` (the always-load constraint kernel; read the full `aidazi/governance/constitution.md` on-demand for rationale).
 6. `<adopter>/docs/current/adoption-state.md` (this project's overrides).
 7. `aidazi/docs/greenfield-guide.md` (if onboarding to a fresh project) OR `aidazi/docs/brownfield-guide.md` (if joining an in-flight project).
 8. Per-track guide: `aidazi/process/profile-aware-maturity.md` Δ-14.
