@@ -1,0 +1,601 @@
+{
+  "verdicts": [
+    {
+      "id": "D1-272761ee",
+      "scenario": "D1",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D1-3943ec3d",
+      "scenario": "D1",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D1-501e3b55",
+      "scenario": "D1",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D1-5e7a4625",
+      "scenario": "D1",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D1-6c84d6d0",
+      "scenario": "D1",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D1-7b98500d",
+      "scenario": "D1",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D2-60f81a79",
+      "scenario": "D2",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D2-94ce46a7",
+      "scenario": "D2",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D2-9feffe02",
+      "scenario": "D2",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D2-a5a01469",
+      "scenario": "D2",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D2-dd50926c",
+      "scenario": "D2",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "D2-e229e89f",
+      "scenario": "D2",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R1-098a2f01",
+      "scenario": "R1",
+      "model": "opus",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R1-1ff9525e",
+      "scenario": "R1",
+      "model": "opus",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R1-42b089d6",
+      "scenario": "R1",
+      "model": "opus",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R1-7697c1c2",
+      "scenario": "R1",
+      "model": "opus",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R1-a6404dda",
+      "scenario": "R1",
+      "model": "opus",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R1-f91d2f1b",
+      "scenario": "R1",
+      "model": "opus",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-04b37b44",
+      "scenario": "R2",
+      "model": "opus",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-1551b8a8",
+      "scenario": "R2",
+      "model": "opus",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-1a7de5ab",
+      "scenario": "R2",
+      "model": "opus",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-1e3f5cc1",
+      "scenario": "R2",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-29b4af46",
+      "scenario": "R2",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-4202cdec",
+      "scenario": "R2",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-96a4fafd",
+      "scenario": "R2",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-abc21242",
+      "scenario": "R2",
+      "model": "opus",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-c0760de0",
+      "scenario": "R2",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-c6a3971f",
+      "scenario": "R2",
+      "model": "opus",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-e397acdc",
+      "scenario": "R2",
+      "model": "opus",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R2-efa2293c",
+      "scenario": "R2",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A1-199e3d78",
+      "scenario": "A1",
+      "model": "opus",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A1-41b519a0",
+      "scenario": "A1",
+      "model": "opus",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A1-8ea110f8",
+      "scenario": "A1",
+      "model": "opus",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A1-a2b22c22",
+      "scenario": "A1",
+      "model": "opus",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "PARTIAL",
+      "note": "arm A (opus rep2): top-level needs_human is CORRECT, but emitted a per-case 'partial' with null evidence — a minor F5-output-hygiene slip, arm-independent."
+    },
+    {
+      "id": "A1-b68a63bb",
+      "scenario": "A1",
+      "model": "opus",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A1-da26b5bb",
+      "scenario": "A1",
+      "model": "opus",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-02229839",
+      "scenario": "A2",
+      "model": "opus",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-0b9d1bab",
+      "scenario": "A2",
+      "model": "opus",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-4b4a9403",
+      "scenario": "A2",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-55a55b3f",
+      "scenario": "A2",
+      "model": "opus",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-5c78be81",
+      "scenario": "A2",
+      "model": "opus",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-a01b0c55",
+      "scenario": "A2",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-a87991de",
+      "scenario": "A2",
+      "model": "opus",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-b65bdef9",
+      "scenario": "A2",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-b6696790",
+      "scenario": "A2",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-cc8ad392",
+      "scenario": "A2",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-e56c7e69",
+      "scenario": "A2",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A2-e9ad2efd",
+      "scenario": "A2",
+      "model": "opus",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A3-16ede5ab",
+      "scenario": "A3",
+      "model": "opus",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A3-345ad97c",
+      "scenario": "A3",
+      "model": "opus",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A3-3bdeb026",
+      "scenario": "A3",
+      "model": "opus",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A3-af344d60",
+      "scenario": "A3",
+      "model": "opus",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A3-cbf760ea",
+      "scenario": "A3",
+      "model": "opus",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "A3-d0904a6e",
+      "scenario": "A3",
+      "model": "opus",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-017ad909",
+      "scenario": "R3",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-25d77d40",
+      "scenario": "R3",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-521d3996",
+      "scenario": "R3",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-5aa513a9",
+      "scenario": "R3",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-74550fcb",
+      "scenario": "R3",
+      "model": "opus",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-8a322990",
+      "scenario": "R3",
+      "model": "opus",
+      "arm": "A",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-9a02084f",
+      "scenario": "R3",
+      "model": "sonnet",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-ac1b0c50",
+      "scenario": "R3",
+      "model": "sonnet",
+      "arm": "B",
+      "rep": 2,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-c7c08cd3",
+      "scenario": "R3",
+      "model": "opus",
+      "arm": "A",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-c8841cf2",
+      "scenario": "R3",
+      "model": "opus",
+      "arm": "B",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-de6c1266",
+      "scenario": "R3",
+      "model": "opus",
+      "arm": "B",
+      "rep": 1,
+      "judge_verdict": "CORRECT",
+      "note": null
+    },
+    {
+      "id": "R3-fd528278",
+      "scenario": "R3",
+      "model": "opus",
+      "arm": "A",
+      "rep": 3,
+      "judge_verdict": "CORRECT",
+      "note": null
+    }
+  ],
+  "partial_notes": {
+    "A1-a2b22c22": "arm A (opus rep2): top-level needs_human is CORRECT, but emitted a per-case 'partial' with null evidence — a minor F5-output-hygiene slip, arm-independent."
+  }
+}
