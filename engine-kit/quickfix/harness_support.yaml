@@ -37,7 +37,7 @@ harnesses:
     launch_argv: "codex exec --json -C <bundle> --add-dir <worktree> --sandbox workspace-write --skip-git-repo-check --ephemeral [--model M]"
     bundle_cwd: "out-of-tree ephemeral bundle (ships AGENTS.md, codex's memory file)"
     worktree_access: "--add-dir <worktree> (write grant; the worktree's AGENTS.md is not cold-started)"
-    cold_start_isolation: "cwd=out-of-tree bundle via -C; codex auto-loads the bundle's AGENTS.md only; --skip-git-repo-check keeps AGENTS.md discovery off the SIBLING adopter repo (the adopter Full chain is never an ancestor of the bundle), so it is not cold-started. A global ~/.codex/AGENTS.md is EXECUTOR-level and is NOT a blocker: the lane's machine boundary (scope guard + targeted verification + closure) holds regardless of any global prompt; on the verified run it was absent."
+    cold_start_isolation: "cwd=out-of-tree bundle via -C; codex auto-loads the bundle's AGENTS.md only; --skip-git-repo-check keeps AGENTS.md discovery off the SIBLING adopter repo (the adopter root entry / role-session governance chain is never an ancestor of the bundle), so it is not cold-started. A global ~/.codex/AGENTS.md is EXECUTOR-level and is NOT a blocker: the lane's machine boundary (scope guard + targeted verification + closure) holds regardless of any global prompt; on the verified run it was absent."
     evidence: archive/2026-06-22-quickfix-codex-e2e-evidence.md
     verified_on: "2026-06-22"
 

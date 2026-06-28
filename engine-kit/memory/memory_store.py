@@ -94,6 +94,8 @@ _FM_KEY_ORDER = (
     "model",
     "source_loops",
     "links",
+    "promoted_to",
+    "supersedes",
     "created",
     "last_reviewed",
 )
@@ -137,6 +139,20 @@ class MemoryEntry:
     model: Optional[str] = None
     source_loops: List[str] = field(default_factory=list)
     links: List[str] = field(default_factory=list)
+    # WP-6 lessons tiering (additive, backward-compatible — legacy entries default
+    # to empty and are NOT serialized when empty, so on-disk files stay byte-stable):
+    #   ``promoted_to``  = durable-mechanism references this lesson has been folded
+    #                      into (e.g. "test:test_foo", "validator:bar",
+    #                      "kernel:constitution-core§1.7", "governance:…"). A non-empty
+    #                      list marks the entry PROMOTED: at ingress it injects a
+    #                      COMPACT reference, not full historical prose.
+    #   ``supersedes``   = ids of entries this entry explicitly REPLACES. At ingress
+    #                      every superseded id is suppressed (deterministic, auditable)
+    #                      — the ONLY sanctioned removal of an L2/MATURED lesson.
+    # Both are set by a human / the propose-only feedback path, never inferred from
+    # prompt text. See lesson_selection.py + archive/2026-06-28-wp6-lessons-tiering-decision.md.
+    promoted_to: List[str] = field(default_factory=list)
+    supersedes: List[str] = field(default_factory=list)
     created: Optional[str] = None
     last_reviewed: Optional[str] = None
     body: str = ""
@@ -162,6 +178,10 @@ class MemoryEntry:
             fm["source_loops"] = list(self.source_loops)
         if self.links:
             fm["links"] = list(self.links)
+        if self.promoted_to:
+            fm["promoted_to"] = list(self.promoted_to)
+        if self.supersedes:
+            fm["supersedes"] = list(self.supersedes)
         if self.created is not None:
             fm["created"] = self.created
         if self.last_reviewed is not None:
@@ -343,12 +363,14 @@ def parse_entry(text: str) -> MemoryEntry:
         type=fm["type"],
         scope={k: list(v) for k, v in scope.items()},
         maturity=fm.get("maturity", MATURITY_L1),
-        occurrences=int(fm.get("occurrences", 1)),
+        occurrences=_coerce_occurrences(fm.get("occurrences", 1)),
         status=fm.get("status", STATUS_ACTIVE),
         provider=fm.get("provider"),
         model=fm.get("model"),
         source_loops=list(fm.get("source_loops", [])),
         links=list(fm.get("links", [])),
+        promoted_to=list(fm.get("promoted_to", []) or []),
+        supersedes=list(fm.get("supersedes", []) or []),
         created=fm.get("created"),
         last_reviewed=fm.get("last_reviewed"),
         body=body,
@@ -360,6 +382,24 @@ def parse_entry(text: str) -> MemoryEntry:
 # --------------------------------------------------------------------------- #
 # id / slug helpers (deterministic — no uuid)                                 #
 # --------------------------------------------------------------------------- #
+
+def _coerce_occurrences(raw: Any) -> int:
+    """Parse the on-disk ``occurrences`` value WITHOUT hiding malformedness.
+
+    The schema type is ``integer`` (minimum 1). A genuine ``int`` ≥ 1 (and NOT a
+    ``bool``) passes through; anything else — a YAML bool (``true``→1), a float
+    (``1.2``), a numeric string (``"1"``), ``None``, or a non-coercible value — is
+    MALFORMED and normalized to the sentinel ``0``. ``0`` is below the schema
+    minimum, so (a) ``lesson_selection.classify`` fails it safe to UNKNOWN
+    (PRESERVED, never dropped as a disposable L1 — WP-6 BLOCKING-2 fix) and
+    (b) the write-path ``_validate_shape`` rejects it. Never raises: a single
+    malformed file must not crash ingress (``load_all``/``select``)."""
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, int):
+        return raw if raw >= 1 else 0
+    return 0
+
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -555,6 +595,20 @@ class MemoryStore:
             if self._scope_matches(entry.scope, wanted):
                 out.append(entry)
         out.sort(key=lambda e: (0 if e.maturity == MATURITY_L2 else 1, -e.occurrences, e.id))
+        return out
+
+    def superseded_ids(self) -> set:
+        """The set of entry ids EXPLICITLY superseded by some active entry (WP-6).
+
+        An active entry's ``supersedes`` list names the ids it replaces; the union
+        over all active entries is the deterministic global supersession set used at
+        ingress to suppress superseded lessons (the sanctioned removal of even an
+        L2/MATURED lesson). Retired/superseded entries never confer supersession
+        (only an ACTIVE replacement does). Pure read; no clock."""
+        out: set = set()
+        for e in self.load_all():
+            if e.status == STATUS_ACTIVE and e.supersedes:
+                out.update(e.supersedes)
         return out
 
     @staticmethod

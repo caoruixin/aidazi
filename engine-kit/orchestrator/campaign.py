@@ -42,6 +42,7 @@ for _p in (_THIS_DIR, _ENGINE_KIT_DIR, _AUDIT_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 import audit_log as audit  # noqa: E402  (engine-kit/audit/audit_log.py — REUSE)
+import loop_ingress as li  # noqa: E402  (milestone-tier git isolation + merge)
 
 # A safe campaign_id — SAME discipline as the Driver's loop_id (letters/digits then
 # ._- only; no path separators, no leading dot). It is interpolated into the audit
@@ -129,6 +130,7 @@ DISPATCH_CHECKPOINTS: frozenset = frozenset({
     "loop_controller_halt",
     "loop_controller_escalate",
     "acceptance_fix_required",
+    "acceptance_cleanup_required",
     "acceptance_surface_approve",
     "advisory_acceptance_pass_signoff",
 })
@@ -136,6 +138,7 @@ DISPATCH_CHECKPOINTS: frozenset = frozenset({
 CAMPAIGN_CHECKPOINTS: frozenset = frozenset({
     "campaign_plan_signoff",
     "campaign_budget_exhausted",
+    "milestone_merge",
 })
 # Non-pause checkpoints — emitted by the Driver but auto-resolved / informational;
 # they never leave the loop paused awaiting a human (design §5.4a).
@@ -186,6 +189,15 @@ _DISPATCH_TABLE: Dict[str, Dict[Any, str]] = {
     "acceptance_surface_approve": {
         "approve_ship": ACT_ADVANCE_MILESTONE,
         "route_to_deliver_fix": ACT_DELIVER_FOLLOWUP, "abort": ACT_END},
+    "acceptance_cleanup_required": {
+        # Acceptance PASSED but cleanup failed (browser-E2E residue); the Driver
+        # HALTED (driver.py ~4106). retry_cleanup re-runs the SAME unit fresh so it
+        # must RE-SATISFY Acceptance closure; abort ends. accept_residue_and_ship is
+        # NOT listed here on purpose — it ships KNOWN residue, so it is gated on a
+        # COMPLETE waiver in interpret_dispatch's special-case branch below (a bare
+        # choice must NOT auto-ship). A missing/unknown choice falls through to the
+        # table's ACT_DELIVER_FOLLOWUP default (fail-closed).
+        "retry_cleanup": ACT_REDISPATCH_FRESH, "abort": ACT_END},
     "review_out_of_scope": {
         # review runs per SUB-SPRINT (mid-milestone) — accepting it advances the
         # sub-sprint, NOT the whole milestone (Codex inc-2 blocking #2).
@@ -211,7 +223,62 @@ _DISPATCH_TABLE: Dict[str, Dict[Any, str]] = {
         "narrow_plan": ACT_DELIVER_FOLLOWUP, "abort": ACT_END},
     "campaign_budget_exhausted": {
         "raise_cap": ACT_REDISPATCH_FRESH, "abort": ACT_END},
+    "milestone_merge": {
+        "merge_now": ACT_ADVANCE_MILESTONE,
+        "open_pr": ACT_ADVANCE_MILESTONE,
+        "keep_branch": ACT_ADVANCE_MILESTONE,
+        "abort": ACT_END},
 }
+
+
+# acceptance_cleanup_required → accept_residue_and_ship is a WAIVER, not a normal
+# "continue": Acceptance PASSED but cleanup failed, so shipping leaves KNOWN residue.
+# It is admissible ONLY on an explicit, auditable human waiver — ALL of `residue`,
+# `rationale`, `evidence` plus a waiver marker (`waiver: true` OR a `waiver_id`).
+# An incomplete/malformed waiver FAILS CLOSED (surface, do not ship). This mirrors the
+# acceptance_fix_required special-case (which inspects decision fields, not a bare
+# choice). The completeness + shape gate is `residue_waiver()` below.
+
+
+def _nonempty_str(v: Any) -> bool:
+    """A non-empty string — the documented shape for rationale / evidence / waiver_id
+    and for each residue item (campaign-decision.schema.json)."""
+    return isinstance(v, str) and bool(v)
+
+
+def residue_waiver(decision: Optional[dict]) -> Optional[dict]:
+    """Return the NORMALIZED waiver payload IFF `decision` carries a COMPLETE residue
+    waiver; else None (fail-closed: an incomplete/malformed waiver is NOT a waiver and
+    must NOT ship known residue).
+
+    COMPLETE = residue (a NON-EMPTY list of non-empty strings) + rationale + evidence
+    (non-empty strings) + a waiver MARKER (`waiver: true` OR a non-empty `waiver_id`),
+    matching the documented campaign-decision.schema.json shapes. The shape checks are
+    defense-in-depth for a PROGRAMMATIC decision_resolver — the file-based resolver
+    already schema-validates — so a truthy-but-MALFORMED field (e.g. a non-string
+    residue) FAILS CLOSED rather than shipping garbled/unattributable residue (Codex
+    concern B).
+
+    The returned payload records BOTH waiver-marker forms — `waiver` (bool: True when
+    the boolean marker was used) AND `waiver_id` — so the campaign_acceptance_residue_
+    waived audit attributes the waiver no matter which marker the human authored (Codex
+    blocking 2: a `waiver: true` marker must NOT be dropped, recording `waiver_id: None`
+    and omitting the marker → an un-attributable waiver)."""
+    decision = decision or {}
+    residue = decision.get("residue")
+    rationale = decision.get("rationale")
+    evidence = decision.get("evidence")
+    waiver = decision.get("waiver")
+    waiver_id = decision.get("waiver_id")
+    if not (isinstance(residue, list) and residue
+            and all(_nonempty_str(r) for r in residue)):
+        return None
+    if not (_nonempty_str(rationale) and _nonempty_str(evidence)):
+        return None
+    if not ((waiver is True) or _nonempty_str(waiver_id)):
+        return None
+    return {"residue": residue, "rationale": rationale, "evidence": evidence,
+            "waiver": bool(waiver), "waiver_id": waiver_id}
 
 
 def interpret_dispatch(pause_reason: str, decision: Optional[dict]) -> str:
@@ -226,6 +293,15 @@ def interpret_dispatch(pause_reason: str, decision: Optional[dict]) -> str:
         if confirm in ("no", False):
             return ACT_ADVANCE_MILESTONE          # ship advisory; assume residual risk
         return ACT_DELIVER_FOLLOWUP               # confirm:yes + route → new unit
+    # acceptance_cleanup_required: accept_residue_and_ship is gated on a COMPLETE
+    # waiver (inspects decision fields, like acceptance_fix_required). retry_cleanup /
+    # abort go through the table; a bare/incomplete ship → fail-closed surface.
+    if pause_reason == "acceptance_cleanup_required":
+        choice = decision.get("choice")
+        if choice == "accept_residue_and_ship":
+            return (ACT_ADVANCE_MILESTONE if residue_waiver(decision)
+                    else ACT_DELIVER_FOLLOWUP)    # fail-closed: no waiver → do NOT ship
+        return _DISPATCH_TABLE.get(pause_reason, {}).get(choice, ACT_DELIVER_FOLLOWUP)
     choice = decision.get("choice") or decision.get("confirm")
     return _DISPATCH_TABLE.get(pause_reason, {}).get(choice, ACT_DELIVER_FOLLOWUP)
 
@@ -252,6 +328,8 @@ class CampaignState:
     wall_clock_minutes: float = 0.0
     units: List[dict] = field(default_factory=list)
     followup_baseline_seq: Optional[List[str]] = None  # subsprint_sequence snapshot at a deliver_followup pause
+    milestone_context: Optional[dict] = None   # active milestone git isolation (campaign-tier ingress)
+    pending_milestone_advance: bool = False    # milestone DONE; cursor not advanced (at merge gate)
 
     def to_dict(self) -> dict:
         return {
@@ -266,6 +344,8 @@ class CampaignState:
                       "wall_clock_minutes": self.wall_clock_minutes},
             "units": self.units,
             "followup_baseline_seq": self.followup_baseline_seq,
+            "milestone_context": self.milestone_context,
+            "pending_milestone_advance": self.pending_milestone_advance,
         }
 
     @classmethod
@@ -282,7 +362,9 @@ class CampaignState:
             total_spawns=spent.get("total_spawns", 0),
             wall_clock_minutes=spent.get("wall_clock_minutes", 0.0),
             units=list(d.get("units") or []),
-            followup_baseline_seq=d.get("followup_baseline_seq"))
+            followup_baseline_seq=d.get("followup_baseline_seq"),
+            milestone_context=d.get("milestone_context"),
+            pending_milestone_advance=bool(d.get("pending_milestone_advance", False)))
 
 
 # --------------------------------------------------------------------------- #
@@ -354,11 +436,13 @@ class Campaign:
     `run_unit` (the only non-determinism) + filesystem state/audit."""
 
     def __init__(self, plan: dict, run_dir: str, run_unit: RunUnit, *,
-                 clock: Callable[[], str], audit_dir: Optional[str] = None):
+                 clock: Callable[[], str], audit_dir: Optional[str] = None,
+                 repo_dir: Optional[str] = None):
         self.plan = plan
         self.run_dir = run_dir
         self.run_unit = run_unit
         self.clock = clock
+        self.repo_dir = os.path.abspath(repo_dir) if repo_dir else None
         # Fail-closed plan ingress: validate the WHOLE plan against
         # schemas/campaign-plan.schema.json BEFORE any field access or dispatch, so a
         # malformed backlog cannot enter the outer loop. The schema pins the
@@ -384,6 +468,23 @@ class Campaign:
                 raise ValueError(
                     f"milestone {m['id']!r} has duplicate sub-sprint id(s): {dupes}")
         self.budget = plan.get("budget") or {}
+        iso = plan.get("milestone_isolation") or {}
+        # Legacy top-level isolation_strategy (shared|worktree) → map when milestone_isolation absent.
+        legacy = plan.get("isolation_strategy")
+        default_iso = iso.get("default_strategy")
+        if not default_iso and legacy == "worktree":
+            default_iso = li.STRATEGY_NEW_WORKTREE
+        elif not default_iso and legacy == "shared":
+            default_iso = li.STRATEGY_CURRENT_BRANCH
+        self._milestone_isolation = {
+            "default_strategy": default_iso or li.STRATEGY_CURRENT_BRANCH,
+            "branch_name_template": iso.get("branch_name_template")
+                or "milestone/{campaign_id}/{milestone_id}",
+            "worktree_root": iso.get("worktree_root"),
+            "merge_prompt_at_close": iso.get("merge_prompt_at_close", True),
+            "cleanup_policy": iso.get("cleanup_policy") or li.CLEANUP_KEEP,
+        }
+        self._trunk_branch = plan.get("trunk_branch") or "main"
         os.makedirs(run_dir, exist_ok=True)
         self.state_path = os.path.join(run_dir, "campaign-state.json")
         self.audit_ledger = audit.audit_path(
@@ -573,6 +674,197 @@ class Campaign:
                     {"why": why})
         return "paused"
 
+    # ----- milestone-tier git isolation (campaign Loop Ingress) ------------- #
+    def _milestone_isolation_cfg(self) -> dict:
+        return self._milestone_isolation
+
+    def _resolve_milestone_strategy(self, milestone: dict) -> str:
+        """Per-milestone isolation strategy (inherit → plan default)."""
+        raw = milestone.get("isolation_strategy") or "inherit"
+        if raw == "inherit":
+            return self._milestone_isolation["default_strategy"]
+        return raw
+
+    def _milestone_ingress_enabled(self) -> bool:
+        return self.repo_dir is not None
+
+    def _ensure_milestone_context(self, milestone: dict) -> None:
+        """At the START of a milestone: set up git isolation once (campaign-tier).
+
+        Sub-sprint Driver ingress stays on current_branch inside the milestone
+        work_dir — the milestone branch/worktree already exists."""
+        if not self._milestone_ingress_enabled():
+            return
+        mid = milestone["id"]
+        if (self.state.milestone_context
+                and self.state.milestone_context.get("milestone_id") == mid):
+            return  # already set up (resume mid-milestone)
+        strategy = self._resolve_milestone_strategy(milestone)
+        branch_name = li.render_branch_name(
+            self._milestone_isolation["branch_name_template"],
+            campaign_id=self.campaign_id, milestone_id=mid)
+        base = self._trunk_branch
+        handle = li.setup_context(
+            strategy, repo_dir=self.repo_dir, loop_id=mid,
+            base_ref=base, worktree_root=self._milestone_isolation.get("worktree_root"),
+            branch_name=branch_name)
+        self.state.milestone_context = {
+            "milestone_id": mid,
+            "strategy": handle.strategy,
+            "branch": handle.branch,
+            "work_dir": handle.work_dir,
+            "worktree": (handle.work_dir if handle.strategy == li.STRATEGY_NEW_WORKTREE
+                         else None),
+            "base_ref": handle.base_ref,
+            "repo_dir": handle.repo_dir,
+        }
+        self._audit("campaign_milestone_ingress", {
+            "milestone_id": mid, "strategy": handle.strategy,
+            "branch": handle.branch,
+            "work_dir": handle.work_dir, "base_ref": handle.base_ref})
+
+    def _milestone_work_dir(self) -> Optional[str]:
+        """The directory sub-sprints run in (worktree or repo root)."""
+        ctx = self.state.milestone_context
+        if ctx:
+            return ctx.get("work_dir") or self.repo_dir
+        return self.repo_dir
+
+    def _milestone_context_handle(self) -> Optional[li.ContextHandle]:
+        ctx = self.state.milestone_context
+        if not ctx:
+            return None
+        return li.ContextHandle(
+            work_dir=ctx["work_dir"],
+            branch=ctx["branch"],
+            strategy=ctx["strategy"],
+            repo_dir=ctx["repo_dir"],
+            created=(ctx["strategy"] != li.STRATEGY_CURRENT_BRANCH),
+            base_ref=ctx.get("base_ref"))
+
+    def _needs_milestone_merge_gate(self, milestone: dict) -> bool:
+        if not self._milestone_ingress_enabled():
+            return False
+        if not self._milestone_isolation.get("merge_prompt_at_close", True):
+            return False
+        handle = self._milestone_context_handle()
+        if handle is None or not handle.created:
+            return False
+        if handle.branch == self._trunk_branch:
+            return False
+        return True
+
+    def _write_milestone_merge_checkpoint(self, milestone: dict) -> str:
+        """Write a campaign-tier merge gate file; return its path."""
+        handle = self._milestone_context_handle()
+        assert handle is not None
+        mid = milestone["id"]
+        from datetime import datetime
+        try:
+            dt = datetime.fromisoformat(self.clock().replace("Z", "+00:00"))
+            stamp = dt.strftime("%Y%m%d-%H%M%S")
+        except (ValueError, AttributeError):
+            stamp = "00000000-000000"
+        fname = f"{stamp}__milestone_merge__{mid}.md"
+        cps_dir = os.path.join(self.run_dir, "docs", "checkpoints")
+        os.makedirs(cps_dir, exist_ok=True)
+        path = os.path.join(cps_dir, fname)
+        trunk = self._trunk_branch
+        merge_cmd = (f"git -C {handle.repo_dir} switch {trunk} && "
+                     f"git -C {handle.repo_dir} merge --no-ff -m "
+                     f"'aidazi: merge {handle.branch}' {handle.branch}")
+        pr_hint = (f"gh pr create --base {trunk} --head {handle.branch} "
+                   f"--title 'Milestone {mid}'")
+        body = (
+            f"---\n"
+            f"checkpoint_id: milestone_merge\n"
+            f"scope: {mid}\n"
+            f"emitted_at: {self.clock()}\n"
+            f"decision: pending\n"
+            f"resolved_at: null\n"
+            f"resolver: null\n"
+            f"---\n\n"
+            f"# Context\n"
+            f"Milestone `{mid}` is accepted. Its isolated branch `{handle.branch}` "
+            f"(strategy `{handle.strategy}`) is ready to integrate into "
+            f"`{trunk}`.\n\n"
+            f"Per Constitution §1.7-D the engine does NOT auto-merge — choose an "
+            f"option below and author a campaign-decision.json, then `--resume`.\n\n"
+            f"# Suggested commands\n"
+            f"- merge (manual): `{merge_cmd}`\n"
+            f"- open PR: `{pr_hint}`\n\n"
+            f"# Options\n"
+            f"- merge_now — engine executes a protected local `git merge --no-ff` "
+            f"(aborts on conflict; never force)\n"
+            f"- open_pr — advance without merging (you open a PR manually)\n"
+            f"- keep_branch — advance; leave the branch for later\n"
+            f"- abort — end the campaign\n"
+        )
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path
+
+    def _pause_milestone_merge(self, milestone: dict) -> "CampaignState":
+        path = self._write_milestone_merge_checkpoint(milestone)
+        self.state.pending_milestone_advance = True
+        return self._pause("milestone_merge", path, "campaign_milestone_merge",
+                           {"milestone_id": milestone["id"],
+                            "branch": (self.state.milestone_context or {}).get("branch"),
+                            "trunk": self._trunk_branch})
+
+    def _execute_milestone_merge(self) -> str:
+        """Protected local --no-ff merge after human merge_now. Returns audit action."""
+        handle = self._milestone_context_handle()
+        if handle is None or not handle.created:
+            return "noop"
+        action = li.merge_into_trunk(
+            handle, self._trunk_branch,
+            merge_message=f"aidazi: merge milestone {self.state.milestone_context.get('milestone_id')}")
+        cleanup_policy = self._milestone_isolation.get("cleanup_policy")
+        if handle.strategy == li.STRATEGY_NEW_WORKTREE:
+            li.cleanup(handle, cleanup_policy=cleanup_policy,
+                       merged=(action == "merged"), changed=True)
+        return action
+
+    def _advance_milestone_cursor(self, *, save: bool = True) -> None:
+        """Move to the next milestone; tear down milestone_context. ``save=False`` lets a
+        caller fold the advance into a LATER single durable save (the §3.5c
+        crash-idempotency barrier in the dispatch-resume path), so the cursor advance and
+        the pause-clear land atomically in ONE _save()."""
+        self.state.milestone_index += 1
+        self.state.subsprint_index = 0
+        self.state.milestone_context = None
+        self.state.pending_milestone_advance = False
+        if save:
+            self._save()
+
+    def _commit_dispatch_resolution(self) -> None:
+        """§3.5c crash-idempotency BARRIER for a resolved Mechanism-B dispatch that
+        ADVANCES the cursor: clear the pause (→ STATUS_RUNNING) and persist the advanced
+        cursor DURABLY in ONE _save(), BEFORE the side-effecting resume audits.
+
+        After this save the state is STATUS_RUNNING, so a crash in the audit window
+        replays through the STATUS_RUNNING crash-recovery path (run() → _crash_recovery),
+        which NEVER re-interprets the (now-cleared) pause — the cursor cannot
+        double-advance and the resume/waiver audits cannot double-emit. A crash BEFORE
+        this save replays from the still-PAUSED state and re-applies the resolution
+        cleanly (the audits had not been emitted yet). The only residue is that a crash
+        between this save and the audits LOSES (never duplicates) those informational
+        audits — strictly safer than the double-advance/double-audit it replaces."""
+        self.state.status = STATUS_RUNNING
+        self.state.pause_reason = None
+        self.state.pause_checkpoint = None
+        self._save()
+
+    def _complete_milestone(self, milestone: dict) -> Optional["CampaignState"]:
+        """After a milestone is accepted: optional merge gate, then advance cursor.
+
+        Returns a paused CampaignState when the merge gate fires; else None."""
+        if self._needs_milestone_merge_gate(milestone):
+            return self._pause_milestone_merge(milestone)
+        self._advance_milestone_cursor()
+        return None
+
     # ----- resume decision-execution (design §5.4a; increment 2) ---------- #
     def _handle_resume(self, decision_resolver) -> str:
         """Act on a resolved pause BEFORE re-entering the loop. Returns
@@ -590,6 +882,34 @@ class Campaign:
             ms = self.milestones[self.state.milestone_index]
             return ("proceed" if ms.get("subsprint_sequence")
                     else self._repause(reason, "still_undecomposed"))
+        if reason == "milestone_merge":
+            decision = (decision_resolver(reason, self.state.pause_checkpoint)
+                        if decision_resolver is not None else None)
+            if not decision:
+                return self._repause(reason, "decision_pending")
+            choice = decision.get("choice")
+            if choice == "abort":
+                self._end("milestone_merge_aborted")
+                return "ended"
+            # Capture the milestone id + run any (irreversible) merge BEFORE the cursor
+            # advance nulls milestone_context.
+            mid = (self.state.milestone_context or {}).get("milestone_id")
+            merge_action = (self._execute_milestone_merge()
+                            if choice == "merge_now" else None)
+            # §3.5c crash-idempotency barrier: fold the cursor advance + the pause-clear
+            # into ONE durable save BEFORE the audits, so a crash in the audit window
+            # replays through STATUS_RUNNING crash-recovery (no re-interpret → no
+            # double-advance / double-merge-advance), not from a PAUSED advanced cursor.
+            self._advance_milestone_cursor(save=False)
+            self._commit_dispatch_resolution()
+            if merge_action is not None:
+                self._audit("campaign_milestone_merged", {
+                    "milestone_id": mid,
+                    "action": merge_action, "trunk": self._trunk_branch})
+            self._audit("campaign_resume_dispatch",
+                        {"pause_reason": reason,
+                         "action": "advance_after_merge", "choice": choice})
+            return "proceed"
         if reason == "deliver_followup_required":
             # The manual follow-up contract (Codex inc-2 #3): Deliver INSERTS the
             # follow-up sub-sprint at cursor+1. A genuine insertion is detected iff the
@@ -635,16 +955,52 @@ class Campaign:
             return "ended"
 
         action = interpret_dispatch(reason, decision)
-        self._audit("campaign_resume_dispatch",
-                    {"pause_reason": reason, "action": action,
-                     "choice": decision.get("choice") or decision.get("confirm")})
-        if action == ACT_ADVANCE_SUBSPRINT:
-            self.state.subsprint_index += 1   # this sub-sprint accepted → next in milestone
+        dispatch_audit = {"pause_reason": reason, "action": action,
+                          "choice": decision.get("choice") or decision.get("confirm")}
+        # acceptance_cleanup_required → accept_residue_and_ship ships KNOWN residue: when
+        # interpret_dispatch admitted it (a COMPLETE waiver → ACT_ADVANCE_MILESTONE) a
+        # DEDICATED audit makes the waiver always attributable — recording BOTH marker
+        # forms (`waiver` bool AND `waiver_id`) so a `waiver: true` marker is never lost
+        # (Codex blocking 2). An incomplete waiver never reaches here (it fails closed to
+        # ACT_DELIVER_FOLLOWUP and surfaces). Computed now but EMITTED after the §3.5c
+        # barrier below, with the dispatch audit (Codex blocking 3).
+        waiver_audit = None
+        if (reason == "acceptance_cleanup_required"
+                and action == ACT_ADVANCE_MILESTONE):
+            waiver = residue_waiver(decision) or {}
+            waiver_audit = {"residue": waiver.get("residue"),
+                            "rationale": waiver.get("rationale"),
+                            "evidence": waiver.get("evidence"),
+                            "waiver": waiver.get("waiver"),
+                            "waiver_id": waiver.get("waiver_id")}
+
+        # CURSOR-ADVANCING outcomes: advance the cursor, then DURABLY clear the pause —
+        # the §3.5c crash-idempotency barrier (_commit_dispatch_resolution) — BEFORE the
+        # resume audits. A crash in the audit window then replays through STATUS_RUNNING
+        # crash-recovery (which never re-interprets the cleared pause), so neither the
+        # cursor nor the waiver audit can double (Codex blocking 3). acceptance_surface_
+        # approve (approve_ship) and review_out_of_scope (accept_and_advance) flow through
+        # here too, so the WHOLE advancing dispatch path is crash-idempotent, consistently
+        # with the milestone_merge advance above.
+        if action in (ACT_ADVANCE_SUBSPRINT, ACT_ADVANCE_MILESTONE):
+            if action == ACT_ADVANCE_SUBSPRINT:
+                self.state.subsprint_index += 1   # this sub-sprint accepted → next in milestone
+            else:                                 # ACT_ADVANCE_MILESTONE
+                self.state.milestone_index += 1   # milestone accepted → next milestone
+                self.state.subsprint_index = 0
+            self._commit_dispatch_resolution()    # barrier: clear pause → RUNNING + save
+            self._audit("campaign_resume_dispatch", dispatch_audit)
+            if waiver_audit is not None:
+                self._audit("campaign_acceptance_residue_waived", waiver_audit)
             return "proceed"
-        if action == ACT_ADVANCE_MILESTONE:
-            self.state.milestone_index += 1   # milestone accepted → next milestone
-            self.state.subsprint_index = 0
-            return "proceed"
+
+        # NON-advancing outcomes keep their existing durable-state semantics (each already
+        # crash-idempotent): REDISPATCH_FRESH leaves the cursor + the PAUSED state intact
+        # until the fresh re-dispatch records progress; END / FOLLOWUP persist a
+        # terminal/parked state via _end/_pause that a replay short-circuits (ENDED) or
+        # routes through the dedicated deliver_followup branch — never re-interpreting
+        # this dispatch.
+        self._audit("campaign_resume_dispatch", dispatch_audit)
         if action == ACT_REDISPATCH_FRESH:
             return "proceed"                  # re-dispatch the SAME unit fresh (cursor unchanged)
         if action == ACT_END:
@@ -722,6 +1078,9 @@ class Campaign:
                     None, "campaign_milestone_decompose_required",
                     {"milestone_id": milestone["id"]})
 
+            if not self.state.pending_milestone_advance:
+                self._ensure_milestone_context(milestone)
+
             while self.state.subsprint_index < len(seq):
                 # Countable budget cap, checked BETWEEN units (design §5.4a).
                 over = self._over_budget()
@@ -766,7 +1125,8 @@ class Campaign:
                     summary = self.run_unit(
                         subsprint_id, milestone_id=milestone["id"],
                         subsprint_sequence=seq, resume=resume_this,
-                        functional_acceptance=milestone.get("functional_acceptance"))
+                        functional_acceptance=milestone.get("functional_acceptance"),
+                        repo_dir=self._milestone_work_dir())
                     final_state = summary.get("final_state")
                     self.state.subsprints_run += 1
                     self.state.total_spawns += int(summary.get("spawn_count") or 0)
@@ -820,10 +1180,10 @@ class Campaign:
                      "loop_id": summary.get("loop_id"), "final_state": final_state,
                      "resume_class": classify_checkpoint(reason)})
 
-            # milestone complete → advance to the next, reset the sub-sprint cursor.
-            self.state.milestone_index += 1
-            self.state.subsprint_index = 0
-            self._save()
+            # milestone complete → optional merge gate → advance cursor.
+            paused = self._complete_milestone(milestone)
+            if paused is not None:
+                return paused
 
         # backlog exhausted.
         self.state.status = STATUS_DONE
@@ -836,10 +1196,11 @@ class Campaign:
 
 def run_campaign(plan: dict, run_dir: str, run_unit: RunUnit, *,
                  clock: Callable[[], str], audit_dir: Optional[str] = None,
-                 resume: bool = False, decision_resolver=None) -> CampaignState:
+                 resume: bool = False, decision_resolver=None,
+                 repo_dir: Optional[str] = None) -> CampaignState:
     """Convenience entry point — construct a Campaign and run it."""
     return Campaign(plan, run_dir, run_unit, clock=clock,
-                    audit_dir=audit_dir).run(resume=resume,
+                    audit_dir=audit_dir, repo_dir=repo_dir).run(resume=resume,
                                              decision_resolver=decision_resolver)
 
 
@@ -1024,7 +1385,7 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
             f"{campaign_id!r} — refusing to derive contexts from a mismatched plan")
 
     def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
-                 resume=False, functional_acceptance=None):
+                 resume=False, functional_acceptance=None, repo_dir=None):
         # Validate id components BEFORE building any path (fail-closed; never makedirs
         # an unsafe path), then build a COLLISION-FREE, bounded loop_id by hashing the
         # (campaign, milestone, subsprint) tuple — a raw '-' join is ambiguous when ids
@@ -1069,10 +1430,11 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
                            "loop_mode": _drv.LOOP_MODE_DELIVERY_ONLY}
 
         cps_dir = os.path.join(unit_run_dir, "docs", "checkpoints")
+        effective_repo = repo_dir or run_loop_kwargs.get("repo_dir")
         try:
             summary = run_loop_fn(unit_charter, run_dir=unit_run_dir, loop_id=loop_id,
                                   subsprint_id=subsprint_id, clock=clock,
-                                  resume=resume, **call_kwargs)
+                                  resume=resume, repo_dir=effective_repo, **call_kwargs)
         except gate_hard_fail as exc:
             cid, cpath = latest_checkpoint(cps_dir)
             return {"final_state": "halted", "spawn_count": 0, "loop_id": loop_id,

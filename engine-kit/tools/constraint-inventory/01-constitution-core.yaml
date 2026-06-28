@@ -1,0 +1,160 @@
+# Constraint inventory — governance/constitution.md §1.3–§1.8 (LLM/runtime ownership,
+# iteration/eval rules, the §1.7 forbidden list incl. A–E, §1.8 no-subtract).
+# WP-EQ row schema: {id, anchor, statement, roles, condition, current_enforcement, notes?}.
+# Source-of-truth extraction; completeness gated by kernel_equivalence.py + Codex review.
+- id: con-1.3-soft-decisions-not-runtime
+  anchor: 'governance/constitution.md §1.3'
+  statement: 'Soft semantic decisions (user goal, issue relation, use-case hypothesis, drift/topic-shift detection, next-action choice, escalation posture, response strategy, customer-facing wording) MUST stay LLM-owned and MUST NOT be moved to runtime guards.'
+  roles: [research, deliver, dev, review]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'Architectural ownership boundary; §1.7 core bullet 2 operationalizes part of it; only catch is the Code Reviewer anti-hardcode kernel (semantic, not programmatic).'
+- id: con-1.4-kernel-invariants-not-llm
+  anchor: 'governance/constitution.md §1.4'
+  statement: 'Hard kernel invariants (tool schema, capability/permission boundary, PII+safety floor, grounding floor, budget/timeout, idempotency, persistence, trace+eval contract) MUST stay runtime-owned and MUST NOT be delegated to the LLM.'
+  roles: [research, deliver, dev, review]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'Sub-parts (tool whitelist, sandbox, network_access) are structurally enforced per role via charter.tooling, but the blanket no-delegation rule itself is judgment.'
+- id: con-1.4i-sufficient-and-efficient
+  anchor: 'governance/constitution.md §1.4-i'
+  statement: 'Every Layer-D prompt artifact MUST be both sufficient (carries enough context to act without chat-history backchannel) AND efficient (carries no more context than necessary).'
+  roles: [deliver, research]
+  condition: authoring_compact_prompt
+  current_enforcement: none-judgment
+  notes: 'self_contained:true is the mechanical sufficiency proxy; efficiency is judgment.'
+- id: con-1.4i-context-budget-frontmatter
+  anchor: 'governance/constitution.md §1.4-i'
+  statement: 'Every compact/ prompt MUST declare a context_budget front-matter block carrying target_tokens, load_list, do_not_load, and self_contained:true.'
+  roles: [deliver, research]
+  condition: authoring_compact_prompt
+  current_enforcement: none-judgment
+  notes: 'only context_budget.self_contained:true is driver-checked; presence of target_tokens/load_list/do_not_load is not enforced.'
+- id: con-1.4i-self-contained-preflight-gate
+  anchor: 'governance/constitution.md §1.4-i'
+  statement: 'A compact prompt with self_contained:false (or absent) MUST be rejected at orchestrator preflight (or by the human reviewer in manual mode) — it MUST NOT run.'
+  roles: [deliver, research]
+  condition: orchestrator_preflight
+  current_enforcement: 'driver:_validate_compact_text'
+  notes: 'Called at dev/review/acceptance preflight; a non-empty problems list HALTs the run.'
+- id: con-1.5-no-hardcode-semantic-fix
+  anchor: 'governance/constitution.md §1.5'
+  statement: 'A semantic failure MUST NOT be fixed by adding keyword/regex/if-else/enum expansion unless a Tier-0 invariant is broken.'
+  roles: [deliver, dev, review]
+  condition: remediating_semantic_failure
+  current_enforcement: none-judgment
+  notes: 'The §1.7 forbidden list is its operational enforcement; caught if at all by the Code Reviewer anti-hardcode kernel.'
+- id: con-1.5-route-fix-through-triage
+  anchor: 'governance/constitution.md §1.5'
+  statement: 'An observed semantic failure fix MUST be routed through the post-deployment-iteration triage and classified to exactly one named fix-layer before a fix is built.'
+  roles: [deliver]
+  condition: semantic_failure_observed
+  current_enforcement: none-judgment
+  notes: 'Procedural (Δ-9); no programmatic gate.'
+- id: con-1.6-eval-evidence-not-authority
+  anchor: 'governance/constitution.md §1.6'
+  statement: 'A pass-rate increase MUST NOT be treated as acceptance authority; it is insufficient unless it improves generalizable customer problem-solving AND regresses none of safety, grounding, wrong-containment, or architecture health.'
+  roles: [deliver, acceptance, review]
+  condition: interpreting_eval_passrate
+  current_enforcement: none-judgment
+- id: con-1.6-shadow-holdout-regression-is-failure
+  anchor: 'governance/constitution.md §1.6'
+  statement: 'A target-set pass-rate climb accompanied by a shadow/holdout regression MUST be treated as a failure, not a success.'
+  roles: [deliver, acceptance, review]
+  condition: passrate_climb_with_shadow_regression
+  current_enforcement: none-judgment
+- id: con-1.7-core-no-eval-phrase-hardcode
+  anchor: 'governance/constitution.md §1.7'
+  statement: 'Encoding raw eval phrases into code/Java or into the prompt is FORBIDDEN (Tier-0 framework breach).'
+  roles: [dev, review, deliver]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'Caught semantically by the Code Reviewer anti-hardcode kernel; no programmatic symbol. §1.6 bullet 2 cross-refs.'
+- id: con-1.7-core-no-uc-hardrule-for-soft
+  anchor: 'governance/constitution.md §1.7'
+  statement: 'Adding UC-specific hard rules for soft semantic decisions is FORBIDDEN (Tier-0 framework breach).'
+  roles: [dev, review, deliver]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-1.7-core-no-widen-eval-for-bot-mistake
+  anchor: 'governance/constitution.md §1.7'
+  statement: 'Widening the eval spec to accept a genuine bot mistake is FORBIDDEN (Tier-0 framework breach).'
+  roles: [deliver, review, acceptance]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-1.7-core-no-overfit-visible-eval
+  anchor: 'governance/constitution.md §1.7'
+  statement: 'Optimizing the visible eval set at the cost of shadow/generalization is FORBIDDEN (Tier-0 framework breach).'
+  roles: [deliver, dev, review, acceptance]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-1.7-core-no-prompt-ifelse-dump
+  anchor: 'governance/constitution.md §1.7'
+  statement: 'Using the prompt as an if-else rule dump is FORBIDDEN (Tier-0 framework breach).'
+  roles: [dev, review, deliver]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-1.7a-single-abstraction-layer
+  anchor: 'governance/constitution.md §1.7-A'
+  statement: 'In greenfield agent design exactly one abstraction layer per agent MUST be chosen; dual abstraction layers (e.g., an action-enum AND tool-use simultaneously) are FORBIDDEN.'
+  roles: [deliver]
+  condition: greenfield_agent_design
+  current_enforcement: none-judgment
+- id: con-1.7b-closure-criterion-judgment-paragraph
+  anchor: 'governance/constitution.md §1.7-B'
+  statement: 'A bad-case closure_criterion and a Research closure_contract MUST each be a human-judgment paragraph carrying three components (positive_shape, anti_pattern, anchor_phrases) and MUST NOT be a keyword/regex matcher — anchor phrases are cited supporting evidence, never a passing condition.'
+  roles: [research, deliver, acceptance, review]
+  condition: authoring_closure_contract_or_criterion
+  current_enforcement: none-judgment
+  notes: 'research-brief.schema.json + case-spec.schema.json require the three fields to be PRESENT only; the human-judgment-paragraph / no-keyword-matcher rule itself is not schema-enforceable (judgment).'
+- id: con-1.7c-acceptance-spawn-isolation
+  anchor: 'governance/constitution.md §1.7-C'
+  statement: 'The Acceptance Agent MUST NOT be spawned by the Research, Deliver, or Dev role; a verdict from such a spawn is invalid and must be re-spawned from a proper surface.'
+  roles: [research, deliver, dev, acceptance]
+  condition: always
+  current_enforcement: 'driver:_run_acceptance'
+  notes: 'In orchestrator mode the driver is the sole spawn surface (structural isolation); in manual mode the rule is none-judgment. Restated in §3.4 #2 and §10.'
+- id: con-1.7c-advisory-pass-halts-for-signoff
+  anchor: 'governance/constitution.md §1.7-C'
+  statement: 'An advisory Acceptance pass MUST NOT auto-ship the milestone or route work; it MUST HALT at the advisory_acceptance_pass_signoff checkpoint for human sign-off.'
+  roles: [acceptance, customer, deliver]
+  condition: advisory_acceptance_pass
+  current_enforcement: 'driver:_run_acceptance'
+- id: con-1.7c-authoritative-autoship-conditions
+  anchor: 'governance/constitution.md §1.7-C'
+  statement: 'An Acceptance pass may auto-ship ONLY when tooling.acceptance.mode==auto AND the judge is calibrated for the active class AND autonomy.level==fully_autonomous_within_budget; otherwise the pass is advisory.'
+  roles: [acceptance, deliver]
+  condition: acceptance_pass
+  current_enforcement: 'driver:_acceptance_authoritative'
+- id: con-1.7c-fixrequired-human-confirm-not-skipped
+  anchor: 'governance/constitution.md §1.7-C'
+  statement: 'The Acceptance fix_required → Deliver routing MUST NOT skip the human-confirm checkpoint: Acceptance writes the checkpoint and the Customer writes the decision before Deliver may pick up the gap brief.'
+  roles: [acceptance, customer, deliver]
+  condition: verdict_fix_required
+  current_enforcement: 'driver:_run_acceptance'
+  notes: 'Restated in §3.5 and §10.'
+- id: con-1.7d-no-bypass-mandatory-checkpoints
+  anchor: 'governance/constitution.md §1.7-D'
+  statement: 'A charter MAY add checkpoints but MUST NOT bypass any of the 9 default MANDATORY_CHECKPOINTS via any of the four evasion shapes — omitted, emptied, disabled, or overridden.'
+  roles: [deliver, customer]
+  condition: charter_authoring
+  current_enforcement: 'validator:_check_mandatory_checkpoints'
+- id: con-1.7d-validator-rejects-and-refuses-boot
+  anchor: 'governance/constitution.md §1.7-D'
+  statement: 'The orchestrator charter validator MUST reject any checkpoint-bypass shape and refuse to boot.'
+  roles: [deliver, customer]
+  condition: charter_validation
+  current_enforcement: 'validator:_check_mandatory_checkpoints'
+- id: con-1.7e-no-loop-conflation-in-docs
+  anchor: 'governance/constitution.md §1.7-E'
+  statement: 'When both the Auto Loop and the Delivery Loop are in use in the same project, adopter documentation MUST name each loop distinctly on first reference.'
+  roles: [all]
+  condition: doc_references_either_loop
+  current_enforcement: none-judgment
+- id: con-1.8-may-not-subtract-forbidden-list
+  anchor: 'governance/constitution.md §1.8'
+  statement: 'Adopters MAY NOT subtract from the framework §1.7 forbidden list; a row in adoption-state.md targeting §1.7 MUST NOT carry status:divergent (such divergence is a framework breach, not a project override).'
+  roles: [customer, deliver]
+  condition: maintaining_adoption_state
+  current_enforcement: none-judgment
+  notes: 'adoption-state.schema.json describes the rule but the status enum still permits divergent and no validator blocks a §1.7-targeting divergent row.'

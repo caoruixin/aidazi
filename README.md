@@ -56,7 +56,7 @@ Each Δ is one small, portable pattern, loaded on demand by the role that needs 
 - A **6-primitive `trace_check` DSL** — `tool_call_present`, `tool_call_order`, `slot_collected`, `session_flag`, `any_of`, `all_of` — whose grammar *structurally rejects* keyword / message-content matching.
 - **F5 evidence**: Acceptance judges from execution artifacts, never from code inspection. Source: `modules/m-evaluation.md`.
 
-**How to read down the pyramid:** start at the always-loaded **Layer A** (`governance/` — constitution, doc governance, context briefing), then pull **Layer B** (`process/` Δ docs) on demand per role, keep your live **state ledgers** in your own repo, and freeze per-sprint **prompt artifacts** under `compact/`. The full doc tree is indexed in `governance/constitution.md` §11.
+**How to read down the pyramid:** start at the always-load **Layer A** kernels (`governance/constitution-core.md` + `authoring-kernel.md` + `context_briefing.md` — the full canonical `constitution.md` / `doc_governance.md` load on-demand), then pull **Layer B** (`process/` Δ docs) on demand per role, keep your live **state ledgers** in your own repo, and freeze per-sprint **prompt artifacts** under `compact/`. The full doc tree is indexed in `governance/constitution.md` §11.
 
 ## What aidazi IS
 
@@ -94,9 +94,9 @@ Your track decides which Δ patterns are necessary now vs deferred (`process/pro
 
 ### Greenfield (new project) — copy the example, swap the domain
 
-1. **Copy `examples/minimal-greenfield/` as your starting tree** and edit `AGENTS.md` §1: `project_name`, `adopter_track`, `framework_version`. `AGENTS.md` is what every fresh role session reads first; it `@`-includes the governance chain and your state ledgers.
+1. **Copy `examples/minimal-greenfield/` as your starting tree** and edit `AGENTS.md` §1: `project_name`, `adopter_track`, `framework_version`. `AGENTS.md` is what every fresh session reads first: by default it is the lightweight Control Plane entry; explicit role sessions then load the always-load governance kernel trio (`constitution-core.md` + `authoring-kernel.md` + `context_briefing.md`; the full canonical `constitution.md` / `doc_governance.md` load on-demand) and their role card.
 2. **Run elicitation as the Research role** (`process/agent-design-elicitation.md`, Δ-15) → write a research brief like `docs/research-briefs/RB-001-*.md`. Its heart is the **`closure_contract`**: a *positive shape* + an *anti-pattern* + *anchor phrases* (example language, **not** keyword matchers). The Customer signs it — that's **Gate 1**.
-3. **Author the three domain contracts** under `docs/current/` (the domain-specific counterpart to the constitution, loaded at every cold-start):
+3. **Author the three domain contracts** under `docs/current/` (the domain-specific counterpart to the constitution, loaded by roles on demand through their briefing lists and prompt `load_list`s):
    - `domain_taxonomy.md` — entities, use-cases, vocabulary.
    - `runtime_invariants.md` — your Tier-0 hard rules (Acme's: eligibility is a tool call, never an LLM guess; no cross-customer PII; idempotent processing).
    - `eval_acceptance_bars.md` — KPI thresholds + safety floors (Acme's: ≥ 0.95 eligibility accuracy, ≤ 0.02 wrong-containment).
@@ -200,7 +200,7 @@ If you're new to aidazi, read in this order:
 1. **This file** (you're here).
 2. `docs/adoption-overview.md` — the mental model: what aidazi does and does not decide.
 3. `docs/two-loops-explainer.md` — Auto Loop vs Delivery Loop naming discipline (Constitution §1.7-E).
-4. `governance/constitution.md` — the always-loaded core.
+4. `governance/constitution.md` — the canonical core (full normative source; loaded on-demand by roles — read in full here for the rationale).
 5. `governance/doc_governance.md` — front-matter schema + tier model + edit rules.
 6. `governance/context_briefing.md` — cold-start reading discipline + Context Pack Prompt.
 7. Per-track adoption guide:
@@ -218,10 +218,12 @@ The framework's full doc tree is detailed in `governance/constitution.md` §11.
 aidazi/
 ├── README.md                    — this file
 ├── AGENTS.md                    — consumer-side template
-├── governance/                  — Layer A (always-load)
-│   ├── constitution.md
-│   ├── doc_governance.md
-│   └── context_briefing.md
+├── governance/                  — Layer A (always-load kernels + on-demand canonical)
+│   ├── constitution-core.md      — always-load constraint kernel
+│   ├── authoring-kernel.md       — always-load doc-governance kernel
+│   ├── constitution.md           — full canonical (on-demand)
+│   ├── doc_governance.md         — full canonical (on-demand)
+│   └── context_briefing.md       — always-load cold-start briefing
 ├── process/                     — Layer B (on-demand by role)
 │   ├── delivery-loop.md         — Δ-18 (Concept 2)
 │   ├── customer-checkpoints.md  — human-side gate catalog

@@ -46,7 +46,7 @@ class KimiGateTests(unittest.TestCase):
         self.assertEqual(ctx.exception.role, "dev")
 
     def test_gated_off_no_subprocess(self):
-        with mock.patch("adapters.kimi.subprocess.run") as run_mock:
+        with mock.patch("adapters.kimi.run_with_monitor") as run_mock:
             with self.assertRaises(AdapterError):
                 KimiAdapter().spawn("dev", "p", [], {})
         run_mock.assert_not_called()
@@ -95,7 +95,7 @@ class KimiSpawnTests(unittest.TestCase):
                 capture["argv"] = argv
             return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
-        with mock.patch("adapters.kimi.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.kimi.run_with_monitor", side_effect=_fake_run):
             return a.spawn(role, "p", [], schema)
 
     def test_artifact_spawn_returns_cleaned_text(self):
@@ -130,14 +130,14 @@ class KimiSpawnTests(unittest.TestCase):
         def _fake_run(argv, **kw):
             return subprocess.CompletedProcess(argv, 2, stdout="", stderr="boom")
 
-        with mock.patch("adapters.kimi.subprocess.run", side_effect=_fake_run):
+        with mock.patch("adapters.kimi.run_with_monitor", side_effect=_fake_run):
             with self.assertRaises(AdapterError) as ctx:
                 a.spawn("dev", "p", [], {})
         self.assertIn("exited 2", str(ctx.exception))
 
     def test_granted_connector_fails_closed(self):
         a = KimiAdapter(model="m", allow_subprocess=True)
-        with mock.patch("adapters.kimi.subprocess.run") as run_mock:
+        with mock.patch("adapters.kimi.run_with_monitor") as run_mock:
             with self.assertRaises(AdapterError) as ctx:
                 a.spawn("dev", "p", [], {}, connectors=_GRANT)
         run_mock.assert_not_called()

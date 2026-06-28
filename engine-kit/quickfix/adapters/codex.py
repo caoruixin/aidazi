@@ -19,11 +19,12 @@ Codex has every CLI primitive the lane needs for cold-start isolation (verified 
 STATUS: SUPPORTED. The lane's bar for ``supported`` — a RECORDED real-launch cold-start proof on
 this environment — was met on codex-cli 0.134.0 / macOS arm64
 (``archive/2026-06-22-quickfix-codex-e2e-evidence.md``): the bundle's ``AGENTS.md`` is loaded, the
-adopter's Full-governance chain is NOT (the bundle is a SIBLING of the repo, never an ancestor; the
-adopter canary never appears in output), and the runtime's scope-guard + targeted-verification +
-closure boundary holds. A global ``~/.codex/AGENTS.md`` is EXECUTOR-level and is NOT a blocker — the
-machine boundary holds regardless of any executor global instruction. The verified floor is pinned
-at ``MIN_VERSION`` below; the launcher still fails closed for any non-``supported`` registry entry.
+adopter's root Control Plane entry / role-session governance chain is NOT (the bundle is a SIBLING
+of the repo, never an ancestor; the adopter canary never appears in output), and the runtime's
+scope-guard + targeted-verification + closure boundary holds. A global ``~/.codex/AGENTS.md`` is
+EXECUTOR-level and is NOT a blocker — the machine boundary holds regardless of any executor global
+instruction. The verified floor is pinned at ``MIN_VERSION`` below; the launcher still fails closed
+for any non-``supported`` registry entry.
 """
 from __future__ import annotations
 

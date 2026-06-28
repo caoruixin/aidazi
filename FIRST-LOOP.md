@@ -59,10 +59,10 @@ You are the coding agent starting the FIRST DELIVERY LOOP for an aidazi-adopted
 project. The Onboarding Wizard is already complete and the charter validates GREEN.
 Working directory is THIS repo's root (the adopter repo). Do everything from here.
 
-1. COLD-START. Read AGENTS.md first (it @-includes the governance chain), then
-   docs/current/adoption-state.md, docs/current/runtime_invariants.md, and the
-   signed brief in docs/research-briefs/. Re-confirm the intent contract with me
-   before running anything.
+1. COLD-START. Read AGENTS.md first as the default Control Plane entry. Read
+   .orchestrator/control/state.json and .orchestrator/control/intents.jsonl if
+   present, then docs/current/adoption-state.md and docs/current/agent_context_guide.md.
+   Re-confirm the intent contract with me before running anything.
 
 2. SANITY. Re-validate the charter (use the project's Python env that has the deps):
    .venv/bin/python engine-kit/validators/charter_validator.py charter.yaml
@@ -109,12 +109,27 @@ Audit-Spine hash chain.
 | `--charter charter.yaml` | the validated charter (required) |
 | `--loop-mode delivery_only \| full_chain_guided` | `delivery_only` is default; `full_chain_guided` adds research→gate1→decompose |
 | `--subsprint-id sprint-001` | which sub-sprint to drive |
-| `--repo-dir .` | enables **Loop Ingress** git isolation (per `charter.isolation`) |
+| `--repo-dir .` | enables **Loop Ingress** git isolation (per `charter.isolation`); also sets the base for the default run dir |
+| `--run-dir <path>` | override run-artifact dir (default: `<repo>/.runs/<loop_id>`) |
 | `--allow-real` (+ env `AIDAZI_ALLOW_REAL_ADAPTER=1`) | build + run the **real** adapters; without it, **mock** (safe dry-run) |
 | `--memory-root <dir>` (or `charter.memory.enabled: true`) | enable **Loop Memory** (optional; OFF by default) — inject prior cross-loop lessons at ingress, record lessons at close; starts empty |
 
-Real adapters are **gated off by default** — an offline mock run is always safe and
-writes artifacts to a fresh temp dir, never your repo.
+Real adapters are **gated off by default** — an offline mock run is always safe.
+Run artifacts default to **`<repo>/.runs/<loop_id>/`** (gitignored; see
+`docs/current/adoption-config.md`). `--run-dir` overrides with any explicit path.
+
+### Live progress during a loop
+
+| What you want | Path (default) |
+|---|---|
+| Current state | `.runs/<loop_id>/.orchestrator/state.json` |
+| Event timeline (`tail -f`) | `.runs/<loop_id>/.orchestrator/audit/<loop_id>.jsonl` |
+| Dev/Review transcripts | `.runs/<loop_id>/.orchestrator/audit/transcripts/<loop_id>/` |
+| Human gate checkpoints | `.runs/<loop_id>/docs/checkpoints/` |
+| Cross-loop registry | `.orchestrator/loops.json` (repo-side; not the run-dir) |
+
+Re-check onboarding completeness anytime:
+`python engine-kit/validators/adoption_status.py .`
 
 ## When NOT to use the runner
 
@@ -142,6 +157,11 @@ intent-contract re-confirm; only steps 4–5 change to manual role hand-offs.
 
 ## Drive the whole goal — continuous multi-milestone delivery (以终为始)
 
+Most humans should reach this through the default **Control Plane** session:
+ask "what is next?", "continue", or "run the campaign", and let Control Plane
+choose the proper runner/resume action. The CLI below is the internal execution
+surface and CI/automation interface; it is not the normal human memory contract.
+
 The plain `run_loop.py` above drives **one milestone** and returns — by design it
 stops at the milestone boundary so *you* decide what's next. To make the team work
 **backward from the end goal** and drive the WHOLE backlog (one milestone after
@@ -162,10 +182,11 @@ another, pausing only at human-authority gates), use the **Campaign Loop**
    ```
    .venv/bin/python engine-kit/scheduling/run_loop.py \
      --charter charter.yaml --campaign campaign-plan.json \
-     --campaign-run-dir .orchestrator/campaign
+     --repo-dir .
    ```
-   (Mock/offline by default; add `--allow-real` + `AIDAZI_ALLOW_REAL_ADAPTER=1` for
-   live models. `--campaign-run-dir` is the campaign's persistent home — keep it
+   (Campaign home defaults to `.runs/campaign-<id>/`; override with
+   `--campaign-run-dir`. Mock/offline by default; add `--allow-real` +
+   `AIDAZI_ALLOW_REAL_ADAPTER=1` for live models. Keep `--campaign-run-dir`
    stable across `--resume`.)
 4. **Resolve a pause + resume.** At every pause the CLI prints what to do and exits
    with a STABLE code (**0**=done, **10**=paused-for-a-human, **2**=invalid,
@@ -174,6 +195,11 @@ another, pausing only at human-authority gates), use the **Campaign Loop**
    (`schemas/campaign-decision.schema.json`, identity-bound to the exact pause) —
    then re-run with `--resume` (add `--decision <file>` for a sign-off/route gate).
    Resume never re-runs a finished milestone or re-counts its Acceptance.
+
+If the adopter has not explicitly opted into Campaign mode, stay in the default
+single-milestone topology: Control Plane uses `charter.yaml` as the active
+execution source, and any generated `docs/milestone-backlog.md` is a status view,
+not the executable queue.
 
 **Tier-1 boundary (deferred).** The runner drives a *pre-decomposed* backlog: it
 does **not** yet auto-decompose an empty milestone (it pauses at

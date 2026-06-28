@@ -1,0 +1,193 @@
+# WP-4 Acceptance LOAD-CLOSURE manifest (build-time only; `_`-prefixed → excluded from the inventory
+# row glob). Layer (a) of the three-layer closure proof in engine-kit/tools/acceptance_load_closure.py.
+#
+# Enumerates EVERY file an Acceptance session may load (proactive cold-start, conditional, on-demand)
+# and assigns each a TARGET disposition — exactly one of:
+#   INLINED       : its Acceptance content is carried by governance/acceptance-kernel.md (proven by
+#                   kernel_equivalence.py --acceptance-kernel-coverage) and embedded into the projected
+#                   prompt, so the whole-file read is retired. `target` = the retired file.
+#   RESOLVER_BOUND: bound in driver `_acceptance_resolver_graph` so a content change re-invalidates the
+#                   §3.5b reuse hash (acceptance_input_hash). `target` = a repo-rel path the resolver
+#                   binds literally, OR `data:<purpose>` for a path-variable input bound by purpose.
+#   HALT_ROUTED   : an insufficient projection routes to the resumable refinement HALT
+#                   (_acceptance_spec_refine_halt), never an unbound read.
+#
+# `parse_token` is the verbatim backtick token the layer-(b) parser extracts from the source region;
+# its presence in the source IS the live "Load X" instruction. `region` namespaces it. Entries with a
+# null parse_token are not text-parsed (loaded via the projected prompt or a sentinel) and are verified
+# by layer (c) cross-check only.
+#
+# `status: pending_wp4b` marks an entry whose TARGET disposition is NOT YET true on this tree (WP-4A is
+# UNWIRED): the kernel is not embedded and the delivery-loop / role-skill-model triggers + the prior-
+# report binding are not yet applied. Layer (c) cross-check SKIPS pending entries (their target isn't
+# true yet — that is the point); `closure_state` reports the exact pending set, which the test suite
+# asserts explicitly (green) while the STRICT closure assertion is an expectedFailure until WP-4B.
+
+entries:
+  # ===== Cold-start governance chain (role card §1 step 1) — RESOLVER_BOUND today =====
+  - source: "acceptance-agent.md §1 step 1 — constitution-core (always-load kernel)"
+    region: acceptance_cold_start
+    parse_token: "aidazi/governance/constitution-core.md"
+    target: "governance/constitution-core.md"
+    disposition: RESOLVER_BOUND
+    evidence: "bound in _acceptance_resolver_graph governance for-loop (WP-2)"
+  - source: "acceptance-agent.md §1 step 1 — authoring-kernel (always-load kernel)"
+    region: acceptance_cold_start
+    parse_token: "aidazi/governance/authoring-kernel.md"
+    target: "governance/authoring-kernel.md"
+    disposition: RESOLVER_BOUND
+    evidence: "bound in _acceptance_resolver_graph governance for-loop (WP-3)"
+  - source: "acceptance-agent.md §1 step 1 — context_briefing (always-load)"
+    region: acceptance_cold_start
+    parse_token: "aidazi/governance/context_briefing.md"
+    target: "governance/context_briefing.md"
+    disposition: RESOLVER_BOUND
+    evidence: "bound in _acceptance_resolver_graph governance for-loop"
+  - source: "acceptance-agent.md §1 step 1 — full constitution.md on-demand"
+    region: acceptance_cold_start
+    parse_token: "constitution.md"
+    target: "governance/constitution.md"
+    disposition: RESOLVER_BOUND
+    evidence: "bound (fail-closed alongside the core kernel) so an on-demand canonical read re-spawns"
+  - source: "acceptance-agent.md §1 step 1 — full doc_governance.md on-demand"
+    region: acceptance_cold_start
+    parse_token: "doc_governance.md"
+    target: "governance/doc_governance.md"
+    disposition: RESOLVER_BOUND
+    evidence: "bound (fail-closed alongside the authoring-kernel) so an on-demand canonical read re-spawns"
+
+  # ===== Cold-start adopter ledgers (role card §1 step 2) — RESOLVER_BOUND today =====
+  - source: "acceptance-agent.md §1 step 2 — adopter AGENTS.md"
+    region: acceptance_cold_start
+    parse_token: "<adopter>/AGENTS.md"
+    target: "AGENTS.md"
+    disposition: RESOLVER_BOUND
+    evidence: "bound as adopter_cold_start (self.repo_dir/AGENTS.md) AND framework_cold_start"
+  - source: "acceptance-agent.md §1 step 2 — adopter docs/current/adoption-state.md"
+    region: acceptance_cold_start
+    parse_token: "<adopter>/docs/current/adoption-state.md"
+    target: "data:adopter_ledger"
+    disposition: RESOLVER_BOUND
+    evidence: "bound by the docs/current/*.md adopter_ledger loop in _acceptance_resolver_graph"
+
+  # ===== Cold-start data/criteria inputs (role card §1 steps 7-10) =====
+  # Steps 7-8 are PATH-VARIABLE loads ("at the path the orchestrator provided" / "per the F5
+  # pattern"), so the layer-(b) parser (which extracts literal backtick paths) does not see them —
+  # but they are verdict-affecting (the closure_contract IS the criteria; the F5 evidence IS what is
+  # judged), so they MUST be enumerated here and proven RESOLVER_BOUND. parse_token is null (no
+  # literal "Load `path`" token); the live cross-check verifies the resolver binds each by purpose.
+  - source: "acceptance-agent.md §1 step 7 — Research brief / closure_contract"
+    region: null
+    parse_token: null
+    target: "data:closure_contract"
+    disposition: RESOLVER_BOUND
+    evidence: "bound by purpose closure_contract in _acceptance_resolver_graph (self.state.brief_draft_ref) when a brief is bound; the verdict judges ONLY this signed contract."
+  - source: "acceptance-agent.md §1 step 8 — F5 dev execution evidence (static class)"
+    region: null
+    parse_token: null
+    target: "data:f5_evidence"
+    disposition: RESOLVER_BOUND
+    evidence: "bound by purpose f5_evidence (MANDATORY) in _acceptance_resolver_graph (evidence_path) for the static (M1) acceptance class."
+  # Browser-E2E (M3) judge inputs (role card §6.1 + kernel §C): the committed evidence manifest + the
+  # signed functional-checklist. These are PATH-VARIABLE (per run_id), enumerated explicitly so the
+  # closure gate fails if either resolver binding is deleted (Codex R7-B1).
+  - source: "acceptance-agent.md §6.1 / kernel §C — browser_e2e signed functional checklist"
+    region: null
+    parse_token: null
+    target: "data:functional_checklist"
+    disposition: RESOLVER_BOUND
+    evidence: "bound by purpose functional_checklist (MANDATORY) in _acceptance_resolver_graph (charter tooling.acceptance.functional.checklist_path); the judge judges each criterion_id against it."
+  - source: "acceptance-agent.md §6.1 / kernel §C — browser_e2e committed evidence manifest"
+    region: null
+    parse_token: null
+    target: "data:evidence_manifest"
+    disposition: RESOLVER_BOUND
+    evidence: "bound by purpose evidence_manifest (MANDATORY) in _acceptance_resolver_graph (manifest.json under the committed e2e run dir); the verdict cites functional_evidence_refs against it."
+  - source: "acceptance-agent.md §1 step 9 — Code Reviewer findings"
+    region: acceptance_cold_start
+    parse_token: "docs/codex-findings.md"
+    target: "docs/codex-findings.md"
+    disposition: RESOLVER_BOUND
+    evidence: "bound as review_context (docs/codex-findings.md) when present"
+  - source: "acceptance-agent.md §1 step 10 — prior acceptance report (residual-risk lineage)"
+    region: acceptance_cold_start
+    parse_token: "docs/acceptance-reports/<scope>-acceptance-report.md"
+    target: "data:prior_acceptance_report"
+    disposition: RESOLVER_BOUND
+    evidence: "WP-4B DONE: bound conditionally in _acceptance_resolver_graph (purpose prior_acceptance_report, docs/acceptance-reports/<scope>-acceptance-report.md under the adopter repo) exactly as the closure_contract is bound — an edit re-invalidates §3.5b reuse."
+
+  # ===== Loaded via the projected prompt's cold-start line (no §1 literal path) =====
+  - source: "projected prompt cold-start line — Acceptance role card"
+    region: null
+    parse_token: null
+    target: "role-cards/acceptance-agent.md"
+    disposition: RESOLVER_BOUND
+    evidence: "bound as role_card; the role card stays resolver-bound + cold-started (its 6 judge gaps are ALSO inlined into the kernel for prompt self-containment — see _acceptance_kernel_coverage.yaml supplemental_rows)"
+  - source: "projected prompt output line — acceptance-verdict compact schema"
+    region: null
+    parse_token: null
+    target: "schemas/compact/acceptance-verdict.compact.schema.json"
+    disposition: RESOLVER_BOUND
+    evidence: "bound as verdict_schema (the compact projection the judge reads; WP-1b)"
+
+  # ===== context_briefing §2.5 Acceptance briefing — the SECOND cold-start load region =====
+  - source: "context_briefing.md §2.5 — Acceptance role card"
+    region: context_briefing_acceptance_role
+    parse_token: "aidazi/role-cards/acceptance-agent.md"
+    target: "role-cards/acceptance-agent.md"
+    disposition: RESOLVER_BOUND
+    evidence: "bound as role_card in _acceptance_resolver_graph (same file as the prompt cold-start entry)."
+  - source: "context_briefing.md §2.5 — acceptance-verdict compact schema"
+    region: context_briefing_acceptance_role
+    parse_token: "aidazi/schemas/compact/acceptance-verdict.compact.schema.json"
+    target: "schemas/compact/acceptance-verdict.compact.schema.json"
+    disposition: RESOLVER_BOUND
+    evidence: "bound as verdict_schema in _acceptance_resolver_graph (WP-1b compact projection)."
+  - source: "context_briefing.md §2.5 — compact-acceptance-prompt template (output template + judging discipline)"
+    region: context_briefing_acceptance_role
+    parse_token: "aidazi/templates/compact-acceptance-prompt.md"
+    target: "templates/compact-acceptance-prompt.md"
+    disposition: RESOLVER_BOUND
+    evidence: "WP-4B DONE: bound in _acceptance_resolver_graph (purpose compact_acceptance_prompt_template, rel templates/compact-acceptance-prompt.md). Its judging-discipline is also inlined into the kernel (§D/§E/§F); binding the template means any discipline edit re-invalidates §3.5b reuse (belt-and-suspenders closure)."
+
+  # ===== The two whole-file reads WP-4B retires → INLINED into the acceptance-kernel =====
+  - source: "acceptance-agent.md §1 step 4 — delivery-loop.md (RETIRED: negated in the doc)"
+    region: null
+    parse_token: null
+    target: "process/delivery-loop.md"
+    disposition: INLINED
+    evidence: "WP-4B DONE: §1 step 4 now says 'Do NOT load process/delivery-loop.md' (the load instruction is retired). Its Acceptance content (§4.2.x: F5, calibration, checkpoints #3/#9, anti-patterns) is inlined into governance/acceptance-kernel.md (proven by --acceptance-kernel-coverage, 33 delivery-loop rows) and EMBEDDED into the projected prompt (driver:_acceptance_kernel_section). Not resolver-bound (correctly: no longer a separate input)."
+  - source: "context_briefing.md §6 — Δ-18 delivery-loop trigger (RETIRED for Acceptance: §6 carve-out)"
+    region: null
+    parse_token: null
+    target: "process/delivery-loop.md"
+    disposition: INLINED
+    evidence: "WP-4B DONE: context_briefing §6 now carries an 'Acceptance Agent EXCEPTION' carve-out (Acceptance does NOT load delivery-loop.md); the generic §6 triggers no longer route an Acceptance verdict session to the whole doc. Same kernel inlining + prompt embed."
+  - source: "acceptance-agent.md §11 — role-skill-model.md (RETIRED: negated in the doc)"
+    region: null
+    parse_token: null
+    target: "process/role-skill-model.md"
+    disposition: INLINED
+    evidence: "WP-4B DONE: §11 now says 'do NOT load process/role-skill-model.md'. Its §4 boundary (rsm-4) + §6 skill packaging (rsm-6) Acceptance rows are inlined into the kernel (proven by --acceptance-kernel-coverage, 11 role-skill rows) + embedded into the projected prompt. Not resolver-bound (correctly retired)."
+
+  # ===== Enumeration completeness note (design §E sources) =====
+  # The Acceptance-reachable load set is enumerated from: role-card §1 (cold-start) + §11 (role-skill
+  # conditional); context_briefing §2.5 (Acceptance briefing) + §6 (delivery-loop trigger). The other
+  # two design-§E sources add NO unbound Acceptance load:
+  #  - context_briefing §1.2 is the UNIVERSAL cold-start; its Acceptance-role members are the
+  #    governance trio (constitution-core/constitution/authoring-kernel/doc_governance/context_briefing)
+  #    + AGENTS.md + docs/current/adoption-state.md — all RESOLVER_BOUND above. Its Control-Plane-only
+  #    files (control-plane-routing, action_bank, agent_context_guide, ONBOARDING, state.json) are NOT
+  #    role-session loads.
+  #  - context_briefing §2.6 is the per-task lookup fallback ("when the role list doesn't cover what
+  #    you need"). For an Acceptance VERDICT the role list (role-card §1 + §2.5) is complete, so §2.6
+  #    does not fire proactively; the one row Acceptance could reach ("Doc lifecycle question" →
+  #    governance/doc_governance.md) is already RESOLVER_BOUND. Any genuine "role list doesn't cover"
+  #    need is an INSUFFICIENCY → HALT_ROUTED (below), never an unbound §2.6 read.
+  # ===== Insufficiency / "role list doesn't cover" → resumable refinement HALT (never an unbound read) =====
+  - source: "insufficient projection (missing/unsigned/incomplete contract, unresolvable conflict, or any §2.6 per-task need the role-list cold-start does not cover)"
+    region: null
+    parse_token: null
+    target: "_acceptance_spec_refine_halt"
+    disposition: HALT_ROUTED
+    evidence: "driver:_acceptance_spec_refine_halt writes the acceptance_spec_refinement checkpoint, sets STATE_HALTED (resumable), returns _ACCEPTANCE_SPEC_HALT; no fallback file read, no auto-advance."

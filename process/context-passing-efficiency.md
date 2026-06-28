@@ -55,7 +55,7 @@ context_budget:
 
 ### §2.1 `target_tokens`
 
-A suggested upper budget for the receiving session's context (prompt + load_list-loaded files + always-load governance chain). Adopters set per-prompt; suggested defaults per Constitution §7.0:
+A suggested upper budget for the receiving role session's context (prompt + load_list-loaded files + role-session governance chain). Adopters set per-prompt; suggested defaults per Constitution §7.0:
 
 - Dev prompt: 8000-16000.
 - Review prompt: 6000-10000.
@@ -101,7 +101,7 @@ There is no `self_contained: partial` or `self_contained: pending` value. Self-c
 - **Adjacent-domain padding** — prompt embeds 5 pages of customer-service domain context when the sub-sprint is editing one prompt projection field. Most of the embedded context is unused.
 - **Historical context** — prompt cites every related decision back to milestone M1. The current sub-sprint depends on the LAST two, not all of them.
 - **Failure-mode catalog overload** — Review prompt embeds 20 anti-patterns to watch for; the sub-sprint touched 2 of them. Reviewer's attention diluted.
-- **Mirroring governance** — prompt re-states Constitution §1.7 verbatim. Governance is always-load; the prompt should reference, not duplicate.
+- **Mirroring governance** — prompt re-states Constitution §1.7 verbatim. Governance is role-session cold-start context; the prompt should reference, not duplicate.
 
 ### §3.3 Both-properties violations
 
@@ -128,7 +128,7 @@ The Code Reviewer's audit of compact prompts (`role-cards/code-reviewer-agent.md
 
 - Does the prompt declare `self_contained: true`?
 - Is `load_list` specific (no glob spew)?
-- Are inputs the prompt body references all in `load_list` OR auto-loaded (governance chain)?
+- Are inputs the prompt body references all in `load_list` OR loaded by the explicit role-session cold-start (governance chain)?
 - Are there embedded paragraphs that don't tie to a self-check rule in §11 of the eventual handoff?
 - Is `target_tokens` realistic given the load_list contents?
 

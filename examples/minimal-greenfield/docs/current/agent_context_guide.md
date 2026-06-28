@@ -12,7 +12,7 @@ review_cadence: per milestone close
 
 Adopter-side companion to `aidazi/governance/context_briefing.md`. Tells each role which project-specific files to load on top of the framework chain. Keeps cold-start reads tight (§1.4-i).
 
-| Task / role | Load (beyond the @-included governance chain + role card) |
+| Task / role | Load (beyond the always-load governance kernel trio + role card) |
 |---|---|
 | Research (new brief) | `docs/current/domain_taxonomy.md`, recent `docs/proposals/`, ~20 sample transcripts |
 | Deliver (planning) | latest signed `docs/research-briefs/`, `docs/action_bank.md`, `docs/10-handoff.md` §0/§1 |

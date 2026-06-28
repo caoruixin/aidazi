@@ -12,6 +12,21 @@
     "pause_reason": {"type": ["string", "null"], "description": "When paused: the driver/campaign checkpoint_id that caused the halt (the resume map key)."},
     "pause_checkpoint": {"type": ["string", "null"], "description": "When paused: path to the checkpoint file the human resolves."},
     "followup_baseline_seq": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Internal: the milestone's subsprint_sequence SNAPSHOT recorded at a deliver_followup_required pause, so resume advances ONLY to a NEWLY inserted follow-up (an id not in this snapshot, at cursor+1) — never to a pre-existing or appended-elsewhere sub-sprint."},
+    "milestone_context": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "The ACTIVE milestone's git isolation context (campaign-tier Loop Ingress). Persisted for resume; cleared when the milestone cursor advances past a merge gate.",
+      "properties": {
+        "milestone_id": {"type": "string"},
+        "strategy": {"type": "string", "enum": ["current_branch", "new_branch", "new_worktree"]},
+        "branch": {"type": "string"},
+        "work_dir": {"type": "string", "description": "Directory sub-sprints run in (repo root or worktree path)."},
+        "worktree": {"type": ["string", "null"]},
+        "base_ref": {"type": ["string", "null"]},
+        "repo_dir": {"type": "string", "description": "The main git admin dir (.orchestrator lives here)."}
+      }
+    },
+    "pending_milestone_advance": {"type": "boolean", "default": false, "description": "Internal: the current milestone is DONE but the cursor has NOT advanced yet — waiting at milestone_merge."},
     "cursor": {
       "type": "object",
       "additionalProperties": false,

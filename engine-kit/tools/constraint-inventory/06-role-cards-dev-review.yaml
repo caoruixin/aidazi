@@ -1,0 +1,640 @@
+# Constraint inventory — process/role-skill-model.md §4/§6 (intra-role fan-out + skill
+# tool-subset rules) + role-cards/dev-agent.md + role-cards/code-reviewer-agent.md.
+# WP-EQ row schema: {id, anchor, statement, roles, condition, current_enforcement, notes?}.
+# Source-of-truth extraction; completeness gated by kernel_equivalence.py + Codex review.
+- id: rsm-4-1-whitelist-sandbox-inheritance
+  anchor: 'process/role-skill-model.md §4 #1'
+  statement: Any role skill or sub-agent MUST operate transitively within the spawning role's tool whitelist and sandbox.
+  roles: [research, deliver, dev, review, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+  notes: 'the claude_code adapter maps a ROLE sandbox to a permission mode but does not enforce skill/sub-agent inheritance; only the narrow read-only-tools subpart is checked by _check_skill_integrity (see rsm-4-1a / dl-antipattern-13).'
+- id: rsm-4-1a-reviewer-acceptance-skills-readonly
+  anchor: 'process/role-skill-model.md §4 #1'
+  statement: A skill whose allowed-tools exceeds the read-only Read/Grep/Glob whitelist MUST NOT be mounted on Code Reviewer or Acceptance.
+  roles: [review, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rsm-4-1b-dev-subagent-inherits-sandbox
+  anchor: 'process/role-skill-model.md §4 #1'
+  statement: Dev sub-agents MUST inherit workspace-write, the role network grant, no git push, and no holdout-eval read.
+  roles: [dev]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rsm-4-1c-research-deliver-subagent-no-feature-edit
+  anchor: 'process/role-skill-model.md §4 #1'
+  statement: Research and Deliver sub-agents MUST inherit their role's no-feature-code-edit posture.
+  roles: [research, deliver]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rsm-4-2-fanout-not-a-gate
+  anchor: 'process/role-skill-model.md §4 #2'
+  statement: A sub-agent's output is a draft input only and MUST NOT substitute for a chain gate — every Constitution §3 gate still fires in its own role session.
+  roles: [research, deliver, dev, review, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rsm-4-3-single-author-signer
+  anchor: 'process/role-skill-model.md §4 #3'
+  statement: The role MUST consolidate fan-out results and sign its artifacts alone — no artifact may be attributed to a sub-agent.
+  roles: [research, deliver, dev, review, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rsm-4-4-no-cross-role-skill
+  anchor: 'process/role-skill-model.md §4 #4'
+  statement: A role MUST NOT load a skill or spawn a sub-agent that performs another role's gate function.
+  roles: [research, deliver, dev, review, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rsm-4-5-no-new-spawn-surface
+  anchor: 'process/role-skill-model.md §4 #5'
+  statement: Intra-role fan-out MUST grant no new spawn surface — in particular no role's sub-agent mechanism may spawn the Acceptance Agent.
+  roles: [research, deliver, dev, review, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rsm-4-corollary-acceptance-calibration
+  anchor: 'process/role-skill-model.md §4'
+  statement: Adding/removing/updating any mounted Acceptance skill MUST invalidate judge calibration and force a re-run before the verdict is authoritative in fully_autonomous_within_budget mode.
+  roles: [acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rsm-6-allowed-tools-subset
+  anchor: 'process/role-skill-model.md §6'
+  statement: A skill's allowed-tools MUST be a subset of the target role's tool whitelist; a skill declaring tools beyond it is unmountable on that role.
+  roles: [research, deliver, dev, review, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rsm-6-skillmd-frontmatter-name-description
+  anchor: 'process/role-skill-model.md §6'
+  statement: 'A skill SKILL.md MUST carry YAML frontmatter with a required name (lowercase alphanumeric + hyphens, matching the directory name, <=64 chars) and a required non-empty description (<=1024 chars) saying what it does AND when to use it.'
+  roles: [research, deliver, dev, review, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+  notes: 'Agent Skills SKILL.md standard; no framework validator checks skill frontmatter.'
+- id: rsm-6-skillmd-body-progressive-disclosure
+  anchor: 'process/role-skill-model.md §6'
+  statement: 'A skill SKILL.md body MUST stay under 500 lines, moving detail to references/ (progressive disclosure: metadata -> instructions -> resources).'
+  roles: [research, deliver, dev, review, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rsm-6-framework-skill-thin-packaging
+  anchor: 'process/role-skill-model.md §6'
+  statement: 'A framework-procedure skill MUST be thin packaging (declare trigger + constraints + a pointer to the normative source via frontmatter metadata.normative_source; NOT duplicate the procedure body), and a change to that source obligates a same-sprint review of the skill wrapper.'
+  roles: [research, deliver, dev, review, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-dev-sandbox-workspace-write
+  anchor: 'role-cards/dev-agent.md §1'
+  statement: Dev MUST run in the workspace-write sandbox.
+  roles: [dev]
+  condition: always
+  current_enforcement: 'driver:route_for_role'
+- id: rc-dev-network-follows-charter
+  anchor: 'role-cards/dev-agent.md §1'
+  statement: Dev network access MUST follow charter.tooling.dev.network_access (default-deny otherwise).
+  roles: [dev]
+  condition: always
+  current_enforcement: 'driver:route_for_role'
+- id: rc-dev-no-git-push
+  anchor: 'role-cards/dev-agent.md §1'
+  statement: Dev MUST NOT run git push — edits stay local; Deliver/Customer push at close.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-no-holdout-read
+  anchor: 'role-cards/dev-agent.md §1'
+  statement: Dev MUST NOT read case_specs_shadow/ or any holdout eval set (eval contamination).
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-sandbox-mismatch-halt
+  anchor: 'role-cards/dev-agent.md §1'
+  statement: If the actual sandbox differs from workspace-write and the dev prompt did not flag the read-only path, Dev MUST halt and surface the mismatch.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-coldstart-governance-chain
+  anchor: 'role-cards/dev-agent.md §2'
+  statement: Before acting Dev MUST load the always-load kernel chain (constitution-core.md, authoring-kernel.md, context_briefing.md; full constitution.md / doc_governance.md on-demand), adopter AGENTS.md + adoption-state, this role card, prompt-artifact-rules, context-passing-efficiency, and the specific dev prompt.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-coldstart-loadlist-strict
+  anchor: 'role-cards/dev-agent.md §2'
+  statement: Dev MUST follow the dev prompt's load_list strictly and read exactly those files.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-coldstart-no-do-not-load
+  anchor: 'role-cards/dev-agent.md §2'
+  statement: Dev MUST NOT load any file listed in the dev prompt's do_not_load.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-no-widen-scope
+  anchor: 'role-cards/dev-agent.md §3'
+  statement: Dev MUST NOT widen the sub-sprint scope or add features beyond the dev prompt's contract.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-no-touch-out-of-scope
+  anchor: 'role-cards/dev-agent.md §3'
+  statement: Dev MUST NOT touch modules in charter.approved_scope.explicitly_out_of_scope.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-no-undeclared-semantic-surface
+  anchor: 'role-cards/dev-agent.md §3'
+  statement: Dev MUST NOT add semantic-surface changes (prompt projection/planner/new tools/new judge config) not declared in the dev prompt.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-no-edit-bad-cases
+  anchor: 'role-cards/dev-agent.md §3'
+  statement: Dev MUST NOT modify eval/bad_cases/ files (may run them, not edit).
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-no-edit-research-briefs
+  anchor: 'role-cards/dev-agent.md §3'
+  statement: Dev MUST NOT modify docs/research-briefs/*.md (Research-authored, Customer-signed).
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-no-spawn-chain-roles
+  anchor: 'role-cards/dev-agent.md §3'
+  statement: Dev MUST NOT spawn chain roles (Research/Deliver/Reviewer/Acceptance); only bounded intra-role implementation sub-agents per §8 are permitted.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-refactor-no-semantic-surface
+  anchor: 'role-cards/dev-agent.md §3'
+  statement: Dev may refactor mechanically only if the refactor does not change the semantic surface.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-unrelated-fix-mechanical-only
+  anchor: 'role-cards/dev-agent.md §3'
+  statement: Dev may fix unrelated bugs only if the fix is mechanical; non-mechanical drift MUST be filed as a diagnostic note instead.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-misscope-halt
+  anchor: 'role-cards/dev-agent.md §3'
+  statement: If the sub-sprint contract cannot be satisfied without a scope change, Dev MUST halt and file docs/diagnostics/<id>.md then stop.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-no-silent-scope-expansion
+  anchor: 'role-cards/dev-agent.md §3'
+  statement: Dev MUST NOT silently expand scope to make the dev prompt's contract satisfiable.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-17-no-keyword-for-semantic
+  anchor: 'role-cards/dev-agent.md §4'
+  statement: Dev MUST NOT add a keyword/regex/if-else to handle a semantic decision the LLM should own — route through Δ-9 instead.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-17-no-uc-hard-rule
+  anchor: 'role-cards/dev-agent.md §4'
+  statement: Dev MUST NOT add a UC-specific hard rule.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-17-no-eval-literal
+  anchor: 'role-cards/dev-agent.md §4'
+  statement: Dev MUST NOT encode an eval-phrase literal into Java or prompt.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-17-no-eval-widening
+  anchor: 'role-cards/dev-agent.md §4'
+  statement: Dev MUST NOT widen the eval to accept what was previously a bot mistake.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-17-halt-if-prompt-asks
+  anchor: 'role-cards/dev-agent.md §4'
+  statement: If the dev prompt appears to ask for any §1.7-forbidden pattern, Dev MUST halt and surface.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-handoff-author-1-11
+  anchor: 'role-cards/dev-agent.md §5'
+  statement: At sub-sprint close Dev MUST author handoff.md sections §1 through §11 per the handoff template.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-handoff-no-12
+  anchor: 'role-cards/dev-agent.md §5'
+  statement: Dev MUST NOT write handoff §12 (reserved for Deliver+Customer close verdict) and MUST leave it blank.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-handoff-no-section0
+  anchor: 'role-cards/dev-agent.md §5'
+  statement: Dev MUST NOT author the handoff §0 cold-start table (Deliver maintains it across sprints).
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-self-smoke-launch-exercise
+  anchor: 'role-cards/dev-agent.md §5.1'
+  statement: For a browser_e2e milestone Dev MUST launch the running app and actually exercise the changed happy path once before declaring done.
+  roles: [dev]
+  condition: browser_e2e_milestone
+  current_enforcement: none-judgment
+  notes: '_check_dev_self_smoke checks docs/self-smoke.json PRESENCE + non-empty command/result only; it does NOT verify Dev actually launched the app or exercised the path (see rc-dev-self-smoke-record-json for the enforced presence subpart).'
+- id: rc-dev-self-smoke-record-json
+  anchor: 'role-cards/dev-agent.md §5.1'
+  statement: For a browser_e2e milestone Dev MUST record docs/self-smoke.json with non-empty command and result.
+  roles: [dev]
+  condition: browser_e2e_milestone
+  current_enforcement: 'driver:_check_dev_self_smoke'
+- id: rc-dev-selfcontain-check-prompt
+  anchor: 'role-cards/dev-agent.md §6'
+  statement: Before emitting handoff Dev MUST verify the dev prompt was self-contained and file a diagnostic naming the gap if it wanted to ask Deliver or check a prior sprint.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-selfcontain-note-extra-reads
+  anchor: 'role-cards/dev-agent.md §6'
+  statement: If Dev read anything not in load_list to complete the work, it MUST note the under-specified load_list in the handoff.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-selfcontain-confirm-skip-donotload
+  anchor: 'role-cards/dev-agent.md §6'
+  statement: Dev MUST confirm in the handoff that it skipped the do_not_load files.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-checklist-1-tests-pass
+  anchor: 'role-cards/dev-agent.md §7 #1'
+  statement: Before declaring done Dev MUST run the tests and confirm they pass.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+  notes: '_step_gate/_run_gates require a Dev handoff artifact and optionally run tooling.eval.cmd; they do not prove Dev ran the tests and confirmed they pass before declaring done.'
+- id: rc-dev-checklist-2-handoff-1-11-12blank
+  anchor: 'role-cards/dev-agent.md §7 #2'
+  statement: Before declaring done Dev MUST confirm handoff §1-§11 are written and §12 is left blank.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-checklist-3-no-forbidden-path-edits
+  anchor: 'role-cards/dev-agent.md §7 #3'
+  statement: Before declaring done Dev MUST confirm no edits to forbidden paths (research-briefs, eval/bad_cases, codex-findings).
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-checklist-4-no-push-network-spawn
+  anchor: 'role-cards/dev-agent.md §7 #4'
+  statement: Before declaring done Dev MUST confirm no git push, no network calls outside the charter grant, and no other-agent spawns.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-checklist-5-17-audit
+  anchor: 'role-cards/dev-agent.md §7 #5'
+  statement: Before declaring done Dev MUST run the Constitution §1.7 audit on its edits.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-checklist-6-scope-modules
+  anchor: 'role-cards/dev-agent.md §7 #6'
+  statement: Before declaring done Dev MUST confirm every touched file is in modules_in_scope and not in explicitly_out_of_scope.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-checklist-7-selfcontain-recorded
+  anchor: 'role-cards/dev-agent.md §7 #7'
+  statement: Before declaring done Dev MUST record the self-containment integrity check in handoff §11.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-checklist-8-token-budget
+  anchor: 'role-cards/dev-agent.md §7 #8'
+  statement: Before declaring done Dev MUST not have blown the compact prompt's context_budget.target_tokens with its reads.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-checklist-9-browser-e2e-selfsmoke
+  anchor: 'role-cards/dev-agent.md §7 #9'
+  statement: For a browser_e2e milestone Dev MUST confirm the self-smoke run and docs/self-smoke.json are written before declaring done.
+  roles: [dev]
+  condition: browser_e2e_milestone
+  current_enforcement: none-judgment
+  notes: 'the json-written subpart is presence-checked by _check_dev_self_smoke, but the bundled self-smoke RUN confirmation is not verified (judgment).'
+- id: rc-dev-checklist-halt-on-no
+  anchor: 'role-cards/dev-agent.md §7'
+  statement: A no to any pre-output checklist item MUST halt the Dev, trigger a diagnostic, and forbid declaring done.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-dev-rsm-load-model
+  anchor: 'role-cards/dev-agent.md §8'
+  statement: Dev MUST load role-skill-model.md when charter.tooling.dev.skills is non-empty or it intends to fan out.
+  roles: [dev]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-dev-rsm-fanout-bounded
+  anchor: 'role-cards/dev-agent.md §8'
+  statement: Dev may load skills and fan out to specialist sub-agents only when the backing agent supports it and charter.tooling.dev.subagent_fanout is not false.
+  roles: [dev]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-dev-rsm-sandbox-inherit-transitive
+  anchor: 'role-cards/dev-agent.md §8'
+  statement: Every Dev skill and sub-agent MUST inherit §1 in full (workspace-write only, same network grant, no git push, no holdout read); a sub-agent exceeding the network grant is the Dev's sandbox breach.
+  roles: [dev]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-dev-rsm-scope-binds-subagents
+  anchor: 'role-cards/dev-agent.md §8'
+  statement: Scope discipline MUST bind Dev sub-agents identically — they edit only the declared modules and their diffs count toward scope_envelope_check.
+  roles: [dev]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-dev-rsm-no-cross-role-skill
+  anchor: 'role-cards/dev-agent.md §8'
+  statement: Dev MUST NOT load an acceptance-judging skill or run the anti-hardcode kernel as a substitute review.
+  roles: [dev]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-dev-rsm-sole-author-handoff
+  anchor: 'role-cards/dev-agent.md §8'
+  statement: The Dev handoff §1-§11 MUST cover all session work including fan-out, authored solely by the Dev.
+  roles: [dev]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-rev-readonly-whitelist
+  anchor: 'role-cards/code-reviewer-agent.md §intro'
+  statement: Code Reviewer MUST operate read-only by the mechanical tool whitelist (Read, Grep, Glob) — no code edits, no script runs.
+  roles: [review]
+  condition: always
+  current_enforcement: 'driver:route_for_role'
+- id: rc-rev-network-follows-charter
+  anchor: 'role-cards/code-reviewer-agent.md §intro'
+  statement: Code Reviewer network access MUST follow charter.tooling.review.network_access.
+  roles: [review]
+  condition: always
+  current_enforcement: 'driver:route_for_role'
+- id: rc-rev-not-acceptance-gate
+  anchor: 'role-cards/code-reviewer-agent.md §intro'
+  statement: Code Reviewer is the code-side gate and MUST NOT act as the Acceptance Agent — the two verdicts are independent.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-coldstart-load-chain
+  anchor: 'role-cards/code-reviewer-agent.md §1'
+  statement: Before reviewing, Code Reviewer MUST load the always-load kernel chain (constitution-core.md, authoring-kernel.md, context_briefing.md; full constitution.md / doc_governance.md on-demand), adopter AGENTS.md + adoption-state, this role card, the anti-hardcode-review-kernel, review-verdict.schema.json, the sprint review prompt, runtime_invariants, and sprint_objective.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-trigger-halt-if-unclear
+  anchor: 'role-cards/code-reviewer-agent.md §2'
+  statement: Code Reviewer MUST fire only at a valid trigger (sub-sprint close, the §4.3 fine-grained mid-sprint triggers, or milestone close) and otherwise halt and ask Deliver/Customer to clarify.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-kernel-on-every-semantic-diff
+  anchor: 'role-cards/code-reviewer-agent.md §3'
+  statement: Code Reviewer MUST apply the 9-question anti-hardcode kernel to every diff touching a semantic surface.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-kernel-exemptions-declared
+  anchor: 'role-cards/code-reviewer-agent.md §3'
+  statement: An exemption (pure infra, docs-only, config-governance, characterization-test) MUST be declared explicitly in the verdict and routed approve with the exemption named.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-kernel-default-run-if-unsure
+  anchor: 'role-cards/code-reviewer-agent.md §3'
+  statement: When unsure whether a diff is exempt, Code Reviewer MUST default to running the kernel.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-correctness-ownership
+  anchor: 'role-cards/code-reviewer-agent.md §4'
+  statement: Code Reviewer MUST check for §1.3/§1.4 ownership violations (LLM-owned decisions moved to runtime guards or vice versa).
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-correctness-tier0-break
+  anchor: 'role-cards/code-reviewer-agent.md §4'
+  statement: Code Reviewer MUST check for Tier-0 invariant breaks and either fix-route or escalate them as a new Tier-0 candidate.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-correctness-test-coverage
+  anchor: 'role-cards/code-reviewer-agent.md §4'
+  statement: Code Reviewer MUST flag a new semantic behavior introduced without a corresponding bad-case in eval/bad_cases/.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-correctness-trace-integrity
+  anchor: 'role-cards/code-reviewer-agent.md §4'
+  statement: Code Reviewer MUST check that the diff does not break the trace/eval contract shape the bad-case suite relies on.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-correctness-selfcontainment
+  anchor: 'role-cards/code-reviewer-agent.md §4'
+  statement: Code Reviewer MUST flag a compact prompt added without context_budget + self_contained true.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-codex-findings-append-only
+  anchor: 'role-cards/code-reviewer-agent.md §5'
+  statement: Code Reviewer MUST write the verdict to the single file docs/codex-findings.md, appended-to at milestone close so prior-sprint findings stay visible.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-header-4-line
+  anchor: 'role-cards/code-reviewer-agent.md §5.1'
+  statement: The sprint-close verdict MUST carry the 4-line header (decision, blocking_count, summary, sub-sprint scope claim).
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-finding-schema
+  anchor: 'role-cards/code-reviewer-agent.md §5.1'
+  statement: 'Each finding MUST carry id, severity, layer, evidence (file:line), and rationale per review-verdict.schema.json.'
+  roles: [review]
+  condition: always
+  current_enforcement: 'schema:review-verdict.schema.json'
+- id: rc-rev-verdict-enum
+  anchor: 'role-cards/code-reviewer-agent.md §5.2'
+  statement: The verdict decision MUST be exactly one of pass, fix_required, out_of_scope_review.
+  roles: [review]
+  condition: always
+  current_enforcement: 'schema:review-verdict.schema.json'
+- id: rc-rev-p0p1-only-blocking
+  anchor: 'role-cards/code-reviewer-agent.md §5.2'
+  statement: Only P0/P1 findings may set decision fix_required, count toward blocking_count, and be injected into the Dev auto-fix round.
+  roles: [review]
+  condition: always
+  current_enforcement: 'driver:_maybe_normalize_record_only'
+- id: rc-rev-p2-record-only
+  anchor: 'role-cards/code-reviewer-agent.md §5.2'
+  statement: P2 findings are strictly record-only — they MUST NOT set fix_required, MUST NOT raise blocking_count, and are never fixed or re-driven.
+  roles: [review]
+  condition: always
+  current_enforcement: 'driver:_maybe_normalize_record_only'
+- id: rc-rev-all-p2-not-fix-required
+  anchor: 'role-cards/code-reviewer-agent.md §5.2'
+  statement: A verdict whose findings are all P2 MUST emit pass (not fix_required) and carry the P2 findings for the record.
+  roles: [review]
+  condition: always
+  current_enforcement: 'driver:_maybe_normalize_record_only'
+- id: rc-rev-out-of-scope-honest
+  anchor: 'role-cards/code-reviewer-agent.md §5.2'
+  statement: out_of_scope_review MUST be used only when the review prompt's scope does not match the diff's scope, not as an escape from judging.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-tier0-via-checkpoint
+  anchor: 'role-cards/code-reviewer-agent.md §6.1'
+  statement: A proposed new Tier-0 invariant MUST be surfaced as a new_tier0_candidate finding routed through MANDATORY_CHECKPOINT, not applied directly.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-no-edit-outside-findings
+  anchor: 'role-cards/code-reviewer-agent.md §6.2'
+  statement: Code Reviewer MUST NOT edit code, tests, configs, or any file outside docs/codex-findings.md.
+  roles: [review]
+  condition: always
+  current_enforcement: 'driver:route_for_role'
+- id: rc-rev-no-run-scripts-eval-network
+  anchor: 'role-cards/code-reviewer-agent.md §6.2'
+  statement: Code Reviewer MUST NOT run scripts, the eval harness, or any network call outside charter.tooling.review.network_access.
+  roles: [review]
+  condition: always
+  current_enforcement: 'driver:route_for_role'
+- id: rc-rev-no-browser-e2e
+  anchor: 'role-cards/code-reviewer-agent.md §6.2'
+  statement: Code Reviewer MUST NOT run the browser-E2E evidence run — it stays read-only/static and does not launch the app or drive a browser.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+  notes: '_run_e2e_evidence is the orchestrator evidence path; the role-discipline that Reviewer must not run the browser-E2E is not enforced by it (read-only sandbox is the indirect backstop).'
+- id: rc-rev-no-spawn-agents
+  anchor: 'role-cards/code-reviewer-agent.md §6.2'
+  statement: Code Reviewer MUST NOT spawn other agents, and MUST NOT spawn Acceptance from anywhere downstream of itself.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-verdict-not-outcome-gate
+  anchor: 'role-cards/code-reviewer-agent.md §6.2'
+  statement: Code Reviewer MUST NOT treat its verdict as the outcome gate — its verdict is code-side and independent of Acceptance's outcome-side verdict.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-no-keyword-passing-condition
+  anchor: 'role-cards/code-reviewer-agent.md §6.2'
+  statement: Code Reviewer MUST NOT apply keyword matching as a passing condition — anchor phrases in closure_criterion are evidence to cite.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-no-approve-with-17-forbidden
+  anchor: 'role-cards/code-reviewer-agent.md §6.2'
+  statement: Code Reviewer MUST NOT approve a diff containing any §1.7 forbidden pattern; such patterns are P0.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-17-audit-all-10
+  anchor: 'role-cards/code-reviewer-agent.md §7'
+  statement: Code Reviewer MUST run the §1.7 forbidden-list audit across all 10 items (5 core + 5 v4 additions) on every reviewed diff.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-17-finding-is-p0
+  anchor: 'role-cards/code-reviewer-agent.md §7'
+  statement: A finding tied to a §1.7 forbidden item MUST default to P0 with decision fix_required.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-checklist-1-header-4-line
+  anchor: 'role-cards/code-reviewer-agent.md §8 #1'
+  statement: Before emitting, Code Reviewer MUST confirm the sprint-close header has all 4 lines.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-checklist-2-finding-fields
+  anchor: 'role-cards/code-reviewer-agent.md §8 #2'
+  statement: 'Before emitting, Code Reviewer MUST confirm each finding has severity, layer, evidence (file:line), and rationale.'
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-checklist-3-17-audit-ran
+  anchor: 'role-cards/code-reviewer-agent.md §8 #3'
+  statement: Before emitting, Code Reviewer MUST confirm the §1.7 audit ran across all 10 forbidden items.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-checklist-4-kernel-ran
+  anchor: 'role-cards/code-reviewer-agent.md §8 #4'
+  statement: Before emitting, Code Reviewer MUST confirm the anti-hardcode kernel ran on every semantic-surface diff or an exemption was explicitly declared.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-checklist-5-correctness-ran
+  anchor: 'role-cards/code-reviewer-agent.md §8 #5'
+  statement: Before emitting, Code Reviewer MUST confirm the correctness lens ran.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-checklist-6-verdict-enum
+  anchor: 'role-cards/code-reviewer-agent.md §8 #6'
+  statement: Before emitting, Code Reviewer MUST confirm the verdict is one of pass, fix_required, out_of_scope_review and not an invented value.
+  roles: [review]
+  condition: always
+  current_enforcement: 'schema:review-verdict.schema.json'
+- id: rc-rev-checklist-7-json-validates
+  anchor: 'role-cards/code-reviewer-agent.md §8 #7'
+  statement: Before emitting, Code Reviewer MUST confirm each finding's JSON validates against review-verdict.schema.json.
+  roles: [review]
+  condition: always
+  current_enforcement: 'schema:review-verdict.schema.json'
+- id: rc-rev-checklist-8-no-edits
+  anchor: 'role-cards/code-reviewer-agent.md §8 #8'
+  statement: Before emitting, Code Reviewer MUST confirm it did NOT edit any non-codex-findings.md file.
+  roles: [review]
+  condition: always
+  current_enforcement: 'driver:route_for_role'
+- id: rc-rev-checklist-halt-on-no
+  anchor: 'role-cards/code-reviewer-agent.md §8'
+  statement: A no to any pre-output checklist item MUST halt the Reviewer and forbid emitting the verdict.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+- id: rc-rev-rsm-load-model
+  anchor: 'role-cards/code-reviewer-agent.md §9'
+  statement: Code Reviewer MUST load role-skill-model.md when charter.tooling.review.skills is non-empty or it intends to fan out.
+  roles: [review]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-rev-rsm-skill-allowedtools-subset
+  anchor: 'role-cards/code-reviewer-agent.md §9'
+  statement: Each mounted review-lens skill's allowed-tools MUST be a subset of Read/Grep/Glob and its network use MUST stay within review.network_access.
+  roles: [review]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-rev-rsm-fanout-readonly-transitive
+  anchor: 'role-cards/code-reviewer-agent.md §9'
+  statement: Code Reviewer may fan out only read-only review-lens sub-agents; a sub-agent editing a file or running a script is the Reviewer's boundary breach.
+  roles: [review]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-rev-rsm-one-verdict
+  anchor: 'role-cards/code-reviewer-agent.md §9'
+  statement: Code Reviewer MUST consolidate all lenses into one verdict it owns alone; sub-agent outputs are draft evidence, not parallel verdicts.
+  roles: [review]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+- id: rc-rev-rsm-no-cross-role-skill
+  anchor: 'role-cards/code-reviewer-agent.md §9'
+  statement: Code Reviewer MUST NOT load an acceptance-judging skill — outcome judgment stays with Acceptance.
+  roles: [review]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment

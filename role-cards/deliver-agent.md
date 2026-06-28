@@ -30,7 +30,7 @@ You handle three input paths (§2 below). For each, your output shape is the sam
 
 When invoked:
 
-1. Load `aidazi/governance/constitution.md`, `aidazi/governance/doc_governance.md`, `aidazi/governance/context_briefing.md` (always-load chain).
+1. Load `aidazi/governance/constitution-core.md`, `aidazi/governance/authoring-kernel.md`, `aidazi/governance/context_briefing.md` (the always-load chain; load the full `constitution.md` / `doc_governance.md` on-demand per their triggers).
 2. Load `<adopter>/AGENTS.md` and `<adopter>/docs/current/adoption-state.md`.
 3. Load this role card.
 4. Load `aidazi/process/milestone-framework.md` — 3-5 sub-sprints per milestone; close cadence.
@@ -41,6 +41,8 @@ When invoked:
 9. Load `aidazi/process/common-detours-and-warnings-type<A|B|C>.md` (Δ-17) — pitfalls per track.
 10. Load `aidazi/templates/deliver-close-taxonomy.md` — A/B/C/D verdict + subclasses.
 11. Load `aidazi/templates/sprint-objective.md`, `aidazi/templates/milestone-objective.md`, `aidazi/templates/compact-dev-prompt.md`.
+
+**Task-scoping (WP-5A).** When your dispatch prompt carries a `[TASK-SCOPED COLD-START …]` directive, it is AUTHORITATIVE — load exactly the docs it lists and skip the rest. A **Close** spawn (you are told to emit a `deliver-close-verdict`) is narrowed to the kernel trio + this role card + `aidazi/templates/deliver-close-taxonomy.md` (step 10); steps 4-9 and 11 (plan-authoring templates + Δ process briefings) are not needed to emit a close-verdict. If you genuinely need a not-listed doc to render a correct, honest verdict, HALT and report the insufficiency — never guess. A **Deliver-plan / decompose** spawn carries no such directive and loads the full set above.
 
 Adopter inputs depend on input path (§2). Load:
 - Path 1: research brief from gate 1 (`docs/research-briefs/<id>.md` with `customer_signed: true`).

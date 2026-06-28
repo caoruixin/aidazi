@@ -411,5 +411,87 @@ class AntiGamingTests(unittest.TestCase):
         self.assertEqual(written.id, "legit-write")
 
 
+class WP6FieldsTests(unittest.TestCase):
+    """WP-6 additive fields: promoted_to / supersedes round-trip + superseded_ids()."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store = ms.MemoryStore(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_promoted_to_and_supersedes_round_trip_and_validate(self):
+        e = ms.MemoryEntry(
+            id="promoted-and-supersedes", type="failure",
+            scope={"role": ["dev"]}, maturity="L2", occurrences=3, status="active",
+            promoted_to=["test:test_foo", "kernel:constitution-core§1.7"],
+            supersedes=["older-lesson-1", "older-lesson-2"],
+            body="Matured + promoted lesson.")
+        written = self.store.write_entry(e, ts="2026-06-15", loop_id="wf_wp6")
+        # front-matter VALIDATES against the (extended) schema.
+        _validate(written.front_matter())
+        # and on-disk text round-trips the new fields.
+        back = self.store.get("promoted-and-supersedes")
+        self.assertEqual(back.promoted_to,
+                         ["test:test_foo", "kernel:constitution-core§1.7"])
+        self.assertEqual(back.supersedes, ["older-lesson-1", "older-lesson-2"])
+
+    def test_legacy_entry_without_new_fields_parses_empty(self):
+        # An entry written WITHOUT the new fields omits them on disk (byte-stable)
+        # and parses back with empty lists (backward compatible).
+        e = ms.MemoryEntry(id="legacy", type="heuristic", scope={"role": ["dev"]},
+                           body="Legacy lesson.")
+        self.store.write_entry(e, ts="2026-06-15", loop_id="wf_legacy")
+        with open(self.store._entry_path("legacy"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertNotIn("promoted_to", text)
+        self.assertNotIn("supersedes", text)
+        back = self.store.get("legacy")
+        self.assertEqual(back.promoted_to, [])
+        self.assertEqual(back.supersedes, [])
+
+    def test_malformed_occurrences_coerced_to_sentinel_not_silently_int(self):
+        # WP-6 BLOCKING-2: parse must NOT silently coerce a malformed occurrences
+        # (bool / float / numeric-string / non-coercible) into a clean int 1 — that
+        # would let it classify as a droppable L1. It is normalized to the sentinel 0
+        # (below the schema minimum) so it fails safe to UNKNOWN at ingress, and a
+        # single bad file never crashes load_all/select.
+        for bad in ("true", "1.2", '"1"', "not-a-number", "0", "-3"):
+            path = os.path.join(self.store.entries_dir, "bad.md")
+            text = ("---\n"
+                    f"id: bad\ntype: heuristic\nscope:\n  role: [dev]\n"
+                    f"maturity: L1\noccurrences: {bad}\nstatus: active\n"
+                    "---\n\nBody.\n")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            e = self.store.get("bad")
+            self.assertEqual(e.occurrences, 0, f"malformed {bad!r} must coerce to 0")
+            # load_all / select must not crash on the malformed file.
+            self.assertEqual(self.store.select({"role": ["dev"]})[0].occurrences, 0)
+            os.remove(path)
+
+    def test_genuine_int_occurrences_preserved(self):
+        path = os.path.join(self.store.entries_dir, "good.md")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("---\nid: good\ntype: heuristic\nscope:\n  role: [dev]\n"
+                     "maturity: L2\noccurrences: 4\nstatus: active\n---\n\nBody.\n")
+        self.assertEqual(self.store.get("good").occurrences, 4)
+
+    def test_superseded_ids_unions_active_supersedes_only(self):
+        active = ms.MemoryEntry(id="superseder", type="failure",
+                                scope={"role": ["dev"]}, maturity="L2",
+                                occurrences=2, status="active",
+                                supersedes=["a", "b"], body="Active superseder.")
+        # a RETIRED entry's supersedes must NOT confer supersession.
+        retired = ms.MemoryEntry(id="retired-superseder", type="failure",
+                                 scope={"role": ["dev"]}, maturity="L2",
+                                 occurrences=2, status="retired",
+                                 supersedes=["c"], body="Retired superseder.")
+        self.store.write_entry(active, ts="2026-06-15", loop_id="wf_a")
+        self.store.write_entry(retired, ts="2026-06-15", loop_id="wf_r")
+        self.assertEqual(self.store.superseded_ids(), {"a", "b"})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

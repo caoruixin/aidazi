@@ -1,0 +1,123 @@
+anomaly_abs_ceiling_bytes: 400000
+bytes_per_token_est: 4
+drift_warn_fraction: 0.1
+entries:
+- by_purpose:
+    governance: 59533
+  est_tokens: 14883
+  files:
+    governance/authoring-kernel.md: 12328
+    governance/constitution-core.md: 22611
+    governance/context_briefing.md: 24594
+  key: governance-floor
+  role: null
+  task_kind: null
+  total_bytes: 59533
+- by_purpose:
+    briefing: 30900
+    governance: 59533
+    role_card: 11767
+  est_tokens: 25550
+  files:
+    governance/authoring-kernel.md: 12328
+    governance/constitution-core.md: 22611
+    governance/context_briefing.md: 24594
+    process/agent-creation-prerequisites.md: 8739
+    process/agent-design-elicitation.md: 8743
+    process/domain-discovery-process.md: 7178
+    role-cards/research-agent.md: 11767
+    schemas/research-brief.schema.json: 2215
+    templates/compact-research-brief.md: 4025
+  key: research
+  role: research
+  task_kind: null
+  total_bytes: 102200
+- by_purpose:
+    briefing: 89697
+    governance: 59533
+    role_card: 18787
+  est_tokens: 42004
+  files:
+    governance/authoring-kernel.md: 12328
+    governance/constitution-core.md: 22611
+    governance/context_briefing.md: 24594
+    process/artifact-taxonomy.md: 11953
+    process/common-detours-and-warnings-typeA.md: 9370
+    process/milestone-framework.md: 9672
+    process/post-deployment-iteration.md: 13623
+    process/tech-architecture-decision-catalog.md: 7304
+    process/typeA-runtime-architecture-skeleton.md: 12431
+    role-cards/deliver-agent.md: 18787
+    templates/compact-dev-prompt.md: 7409
+    templates/deliver-close-taxonomy.md: 8923
+    templates/milestone-objective.md: 4981
+    templates/sprint-objective.md: 4031
+  key: deliver
+  role: deliver
+  task_kind: null
+  total_bytes: 168017
+- by_purpose:
+    briefing: 8923
+    governance: 59533
+    role_card: 18787
+  est_tokens: 21810
+  files:
+    governance/authoring-kernel.md: 12328
+    governance/constitution-core.md: 22611
+    governance/context_briefing.md: 24594
+    role-cards/deliver-agent.md: 18787
+    templates/deliver-close-taxonomy.md: 8923
+  key: deliver:close
+  role: deliver
+  task_kind: close
+  total_bytes: 87243
+- by_purpose:
+    briefing: 22004
+    governance: 59533
+    role_card: 11338
+  est_tokens: 23218
+  files:
+    governance/authoring-kernel.md: 12328
+    governance/constitution-core.md: 22611
+    governance/context_briefing.md: 24594
+    process/context-passing-efficiency.md: 8864
+    process/prompt-artifact-rules.md: 13140
+    role-cards/dev-agent.md: 11338
+  key: dev
+  role: dev
+  task_kind: null
+  total_bytes: 92875
+- by_purpose:
+    briefing: 9548
+    governance: 59533
+    role_card: 13333
+  est_tokens: 20603
+  files:
+    governance/authoring-kernel.md: 12328
+    governance/constitution-core.md: 22611
+    governance/context_briefing.md: 24594
+    role-cards/code-reviewer-agent.md: 13333
+    schemas/compact/review-verdict.compact.schema.json: 2535
+    templates/anti-hardcode-review-kernel.md: 7013
+  key: review
+  role: review
+  task_kind: null
+  total_bytes: 82414
+- by_purpose:
+    briefing: 11096
+    governance: 59533
+    role_card: 19544
+  est_tokens: 22543
+  files:
+    governance/authoring-kernel.md: 12328
+    governance/constitution-core.md: 22611
+    governance/context_briefing.md: 24594
+    role-cards/acceptance-agent.md: 19544
+    schemas/compact/acceptance-verdict.compact.schema.json: 5579
+    templates/compact-acceptance-prompt.md: 5517
+  key: acceptance
+  role: acceptance
+  task_kind: null
+  total_bytes: 90173
+generated_from: load_sizer framework-static cold-start sizing (WP-9)
+version: 1

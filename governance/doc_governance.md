@@ -9,11 +9,13 @@ last_reviewed: 2026-06-07
 review_cadence: every fold-back sub-sprint
 supersedes: []
 superseded_by: null
-load_discipline: always-load
+load_discipline: on-demand
 size_target: 20KB
 split_trigger: if any single section grows past 4KB, move detail to a process/ doc and leave a one-line stub
 notes: >
-  Layer-A always-loaded doc-governance rulebook. Defines front-matter schema,
+  Layer-A doc-governance rulebook (canonical; loaded on-demand — the always-load
+  governance/authoring-kernel.md kernel projects its proactive constraints at role-session
+  cold-start, and this full doc loads on-demand per context_briefing §2.6). Defines front-matter schema,
   allowed values, decision rules (code-ahead-of-docs / docs-ahead-of-code /
   true-conflict / stale-references / future-proposals), live-vs-intermediate
   lifecycle (Δ-4), closure_contract field requirement, cell_size_target field
@@ -81,7 +83,7 @@ Front-matter is added incrementally. New docs MUST include it from day one; lega
 
 Framework-side tiers:
 
-- `governance` — Layer A always-loaded; lives in `governance/`.
+- `governance` — Layer A governance tier; lives in `governance/`. Holds the always-load projection kernels (`constitution-core.md`, `authoring-kernel.md`) + `context_briefing.md`, plus the full canonical `constitution.md` / `doc_governance.md` loaded on-demand.
 - `process` — Layer B on-demand by role; lives in `process/`.
 - `role-card` — activation prompts for each role; lives in `role-cards/`.
 - `template` — copyable templates for adopter instantiation; lives in `templates/`.
@@ -130,7 +132,7 @@ A doc MAY be `status: current` AND `implementation_status: partial` at the same 
 
 Each governed doc declares one of:
 
-- **`always-load`** — every cold-start session loads this. Reserved for governance tier: `governance/constitution.md`, `governance/doc_governance.md`, `governance/context_briefing.md`.
+- **`always-load`** — every role-session cold-start loads this; reserved for the governance tier. The always-load set is the projection kernels `governance/constitution-core.md` + `governance/authoring-kernel.md` plus `governance/context_briefing.md`; the full canonical `governance/constitution.md` / `governance/doc_governance.md` are governance-tier but load **on-demand** (their kernels carry the proactive constraints at cold-start).
 - **`on-demand`** — load when the role's session needs it. Most `process/*` docs are on-demand; the cold-start session does NOT pre-load them.
 - **`by-role`** — role-card style; load when adopting that role. `role-cards/*` are by-role.
 

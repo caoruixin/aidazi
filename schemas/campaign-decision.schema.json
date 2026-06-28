@@ -53,6 +53,31 @@
     "note": {
       "type": "string",
       "description": "Optional free-text rationale recorded with the decision (audit only)."
+    },
+    "residue": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1,
+      "description": "ONLY for the acceptance_cleanup_required gate + choice:accept_residue_and_ship (ship KNOWN residue: Acceptance PASSED but cleanup failed). The known cleanup residue being shipped (e.g. the failed cleanup operations / leftover browser-E2E artifacts listed in the acceptance cleanup-status.json). Together with rationale + evidence + a waiver marker (waiver:true OR waiver_id) it forms the COMPLETE waiver campaign.interpret_dispatch requires to ship; recorded in the campaign_acceptance_residue_waived audit event. An incomplete waiver fail-closes to a Deliver follow-up (never ships)."
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ONLY for acceptance_cleanup_required + choice:accept_residue_and_ship. The human's justification for shipping WITH the known residue. Part of the complete residue waiver; audited."
+    },
+    "evidence": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ONLY for acceptance_cleanup_required + choice:accept_residue_and_ship. A reference to the supporting evidence (e.g. the acceptance F5 evidence path / cleanup-status.json). Part of the complete residue waiver; audited."
+    },
+    "waiver": {
+      "type": "boolean",
+      "description": "ONLY for acceptance_cleanup_required + choice:accept_residue_and_ship. Explicit waiver marker; waiver:true (OR a waiver_id) is required — with residue + rationale + evidence — to ship known residue (fail-closed: never ships unattributed residue)."
+    },
+    "waiver_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ONLY for acceptance_cleanup_required + choice:accept_residue_and_ship. A stable id for the residue waiver/audit record; an alternative waiver marker to waiver:true."
     }
   },
   "allOf": [
@@ -72,6 +97,38 @@
         "properties": {"pause_reason": {"const": "campaign_budget_exhausted"}}
       },
       "then": {"properties": {"choice": {"enum": ["raise_cap", "abort"]}}}
+    },
+    {
+      "description": "milestone_merge is campaign-tier (no subsprint_id). merge_now executes a protected local --no-ff merge after human confirmation.",
+      "if": {
+        "required": ["pause_reason"],
+        "properties": {"pause_reason": {"const": "milestone_merge"}}
+      },
+      "then": {
+        "required": ["milestone_id", "choice"],
+        "properties": {
+          "choice": {"enum": ["merge_now", "open_pr", "keep_branch", "abort"]}
+        },
+        "not": {"required": ["subsprint_id"]}
+      }
+    },
+    {
+      "description": "The residue-waiver fields (residue/rationale/evidence/waiver/waiver_id) are ONLY for the acceptance_cleanup_required gate's choice:accept_residue_and_ship; EVERY other decision shape forbids them so unrelated gates stay strict (defense-in-depth at the schema ingress; the runtime already ignores them elsewhere). Completeness of the waiver is enforced at dispatch by campaign.residue_waiver, not here — a bare accept_residue_and_ship stays schema-valid but fail-closes to a Deliver follow-up.",
+      "if": {
+        "not": {
+          "required": ["choice"],
+          "properties": {"choice": {"const": "accept_residue_and_ship"}}
+        }
+      },
+      "then": {
+        "properties": {
+          "residue": false,
+          "rationale": false,
+          "evidence": false,
+          "waiver": false,
+          "waiver_id": false
+        }
+      }
     }
   ]
 }

@@ -42,19 +42,23 @@ tooling:
     harness: claude_code
     provider: anthropic
     model: claude-opus-4-8
+    network_access: true
   deliver:
     harness: claude_code
     provider: anthropic
     model: claude-opus-4-8
+    network_access: true
   dev:
     harness: claude_code
     provider: anthropic
     model: claude-sonnet-4-6
     sandbox: workspace_write
+    network_access: true
   review:
     harness: headless          # OpenAI-compatible endpoint (multi-model)
     provider: deepseek
     model: deepseek-v4-pro
+    network_access: true
     endpoint: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY   # value lives in a gitignored .env.local, never here
     tools: [Read, Grep, Glob]

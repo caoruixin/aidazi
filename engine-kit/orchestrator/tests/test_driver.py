@@ -41,10 +41,13 @@ from driver import (  # noqa: E402
     STATE_REVIEW_PENDING, STATE_CLOSE_PENDING,
 )
 import memory_store as ms  # noqa: E402  (driver put engine-kit/memory on sys.path)
+import lesson_selection as ls  # noqa: E402  (WP-6 bounded ingress)
 
 CHARTER_PATH = os.path.join(_ORCH_DIR, "examples", "p2-charter.yaml")
 _FIXTURES_DIR = os.path.join(_TESTS_DIR, "fixtures")
 _FAKE_EVAL = os.path.join(_FIXTURES_DIR, "fake_eval.py")
+_FAKE_EVAL_ACCEPTANCE_FAIL = os.path.join(
+    _FIXTURES_DIR, "fake_eval_acceptance_fail.py")
 
 
 def _clock():
@@ -109,6 +112,44 @@ class TestCleanTransitions(unittest.TestCase):
             self.assertTrue(os.path.isfile(drv_.state_path))
             reloaded = drv_._load_state()
             self.assertEqual(reloaded.state, STATE_ADVANCE)
+
+
+class TestSubSprintGate(unittest.TestCase):
+    def test_eval_cmd_runs_before_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            events = audit.read_events(drv_.audit_ledger)
+            types = [e["type"] for e in events]
+            self.assertIn("subsprint_gate_run", types)
+            gate_idx = types.index("subsprint_gate_run")
+            review_idx = next(i for i, e in enumerate(events)
+                              if e["type"] == "spawn"
+                              and e["payload"]["role"] == "review")
+            self.assertLess(gate_idx, review_idx)
+            gate = next(e for e in events if e["type"] == "subsprint_gate_run")
+            self.assertTrue(gate["payload"]["ok"])
+            self.assertTrue(
+                gate["payload"]["evidence_path"].startswith(
+                    "eval/runs/sprint-001/subsprint_gate/"))
+
+    def test_eval_cmd_failure_blocks_review_and_close(self):
+        fail_cmd = (f'FAKE_EVAL_EXIT=4 "{_sys.executable}" "{_FAKE_EVAL}"')
+        charter = load_charter(CHARTER_PATH)
+        charter["tooling"]["eval"] = {"cmd": fail_cmd, "timeout_seconds": 30}
+        adapters = _adapters()
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=charter, adapters=adapters)
+            with self.assertRaises(GateHardFail) as ctx:
+                drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(ctx.exception.state, STATE_GATE_PENDING)
+            self.assertIn("sub-sprint gate", ctx.exception.reason)
+            self.assertEqual(len(adapters["review"].history), 0)
+            self.assertEqual(len(adapters["deliver"].history), 0)
+            events = audit.read_events(drv_.audit_ledger)
+            gate = next(e for e in events if e["type"] == "subsprint_gate_run")
+            self.assertFalse(gate["payload"]["ok"])
 
 
 class TestInvalidVerdictHardFails(unittest.TestCase):
@@ -184,9 +225,9 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(route_for_role(charter, "dev").harness, "claude_code")
 
     def test_network_access_routing_is_fail_closed(self):
-        # The opt-in network grant parses ONLY a literal boolean `true`; anything
-        # else (false / absent / a non-bool typo) is default-deny — it never
-        # silently over-grants network to a write sandbox.
+        # The network grant parses ONLY a literal boolean `true`; anything else
+        # (false / absent / a non-bool typo) is default-deny — it never silently
+        # over-grants network to a write sandbox.
         def _na(val):
             ch = {"tooling": {"dev": {"harness": "codex", "network_access": val}}}
             return route_for_role(ch, "dev").network_access
@@ -226,6 +267,55 @@ class TestAuditLedger(unittest.TestCase):
             self.assertIn("loop_start", types)
             self.assertEqual(types.count("spawn"), 3)
             self.assertIn("advance", types)
+
+    def test_wp0_measurement_fields_recorded_on_every_spawn(self):
+        """WP-0 (observation-only): every spawn event carries prompt_bytes / memory_bytes
+        / fix_round, and prompt_bytes EQUALS the byte size of the verbatim as-dispatched
+        prompt transcript it references — proving the measurement is wired to the real
+        dispatched bytes, not a stale/duplicated value. The chain still verifies."""
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.fix_round, 0)
+            spawns = [e for e in audit.read_events(drv_.audit_ledger)
+                      if e["type"] == "spawn"]
+            self.assertEqual(len(spawns), 3)  # dev, review, deliver
+            for ev in spawns:
+                p = ev["payload"]
+                self.assertEqual(p["fix_round"], 0)
+                self.assertIsInstance(p["prompt_bytes"], int)
+                self.assertGreater(p["prompt_bytes"], 0)
+                # memory is OFF in this driver → no lessons block injected.
+                self.assertEqual(p["memory_bytes"], 0)
+                self.assertEqual(p["memory_injected"], [])
+                # prompt_bytes == bytes of the verbatim prompt transcript (driver
+                # writes the as-dispatched prompt byte-for-byte, _write_transcript).
+                with open(os.path.join(drv_.run_dir, p["prompt_ref"]), "rb") as fh:
+                    self.assertEqual(len(fh.read()), p["prompt_bytes"])
+            # Forward-only fields do not break the hash chain.
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_wp7_load_graph_hash_recorded_on_every_spawn(self):
+        """WP-7 (observation-only): every spawn event carries a non-null cold-start
+        load_graph_hash ('sha256:<16hex>'); it is role-specific (dev / review / deliver
+        load distinct cold-start sets → distinct fingerprints), deterministic across the
+        run, and the forward-only field does not break the hash chain."""
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            spawns = [e for e in audit.read_events(drv_.audit_ledger)
+                      if e["type"] == "spawn"]
+            self.assertEqual(len(spawns), 3)  # dev, review, deliver
+            by_role = {}
+            for ev in spawns:
+                lgh = ev["payload"]["load_graph_hash"]
+                self.assertIsInstance(lgh, str)         # non-null (real framework_root)
+                self.assertTrue(lgh.startswith("sha256:"), lgh)
+                self.assertEqual(len(lgh), len("sha256:") + 16)
+                by_role[ev["payload"]["role"]] = lgh
+            # dev / review / deliver each load a different role card + briefing set.
+            self.assertEqual(len(set(by_role.values())), 3, by_role)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
 
     def test_loop_id_threads_every_event(self):
         with tempfile.TemporaryDirectory() as d:
@@ -370,6 +460,89 @@ class TestCloseTaxonomyCheckpoints(unittest.TestCase):
             self.assertTrue(any("scope_deviation" in c for c in cps), cps)
 
 
+class TestCloseTaskScopedColdStart(unittest.TestCase):
+    """WP-5A: the Close spawn (deliver / schema_key="close") gets a task-scoped cold-start —
+    an authoritative directive injected into the dispatched prompt that drops the 9
+    Deliver-plan-only briefing docs, plus a load_graph_hash fingerprinting the narrowed set.
+    FAIL-CLOSED: no directive for Deliver-plan / unknown / None tasks."""
+
+    DROPPED_9 = {
+        "process/milestone-framework.md", "process/tech-architecture-decision-catalog.md",
+        "process/typeA-runtime-architecture-skeleton.md", "process/artifact-taxonomy.md",
+        "process/post-deployment-iteration.md",
+        "process/common-detours-and-warnings-typeA.md",
+        "templates/sprint-objective.md", "templates/milestone-objective.md",
+        "templates/compact-dev-prompt.md",
+    }
+
+    def test_directive_lists_retained_dropped_and_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            directive = _driver(d)._task_scoped_coldstart_directive("deliver", "close")
+            self.assertIn("TASK-SCOPED COLD-START", directive)
+            self.assertIn("templates/deliver-close-taxonomy.md", directive)  # retained
+            for doc in self.DROPPED_9:
+                self.assertIn(doc, directive)
+            self.assertIn("HALT", directive)
+
+    def test_directive_dropped_set_matches_load_sizer_single_source(self):
+        # The directive is RENDERED from load_sizer, so the dispatched "do not load" set
+        # cannot drift from the measured/fingerprinted narrowing.
+        with tempfile.TemporaryDirectory() as d:
+            directive = _driver(d)._task_scoped_coldstart_directive("deliver", "close")
+            full = {r for r, _ in drv.load_sizer.role_cold_start_roots("deliver")}
+            close = {r for r, _ in drv.load_sizer.role_cold_start_roots("deliver", "close")}
+            self.assertEqual(full - close, self.DROPPED_9)
+            for doc in (full - close):
+                self.assertIn(doc, directive)
+
+    def test_directive_fail_closed_for_plan_none_unknown_and_other_roles(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            self.assertEqual(drv_._task_scoped_coldstart_directive("deliver", "deliver_plan"), "")
+            self.assertEqual(drv_._task_scoped_coldstart_directive("deliver", None), "")
+            self.assertEqual(drv_._task_scoped_coldstart_directive("deliver", "bogus-task"), "")
+            self.assertEqual(drv_._task_scoped_coldstart_directive("review", "close"), "")
+
+    def test_close_prompt_carries_directive_other_roles_do_not(self):
+        # The REAL dispatched close prompt (the as-dispatched transcript) carries the
+        # directive + the 9 drops; dev/review prompts carry NO close directive.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            spawns = [e for e in audit.read_events(drv_.audit_ledger)
+                      if e["type"] == "spawn"]
+            dlv = next(e for e in spawns if e["payload"]["role"] == "deliver")
+            prompt = open(os.path.join(d, dlv["payload"]["prompt_ref"]),
+                          encoding="utf-8").read()
+            self.assertIn("TASK-SCOPED COLD-START", prompt)
+            self.assertIn("deliver-close-taxonomy.md", prompt)
+            for doc in self.DROPPED_9:
+                self.assertIn(doc, prompt)
+            for e in spawns:
+                if e["payload"]["role"] != "deliver":
+                    p = open(os.path.join(d, e["payload"]["prompt_ref"]),
+                             encoding="utf-8").read()
+                    self.assertNotIn("TASK-SCOPED COLD-START", p)
+
+    def test_close_spawn_load_graph_hash_is_close_scoped(self):
+        # The recorded WP-7 fingerprint on the close spawn = the Close-scoped hash, and is
+        # DISTINCT from the full/deliver_plan hash (proving the narrowing is fingerprinted).
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            dlv = next(e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                       if e["type"] == "spawn" and e["payload"]["role"] == "deliver")
+            # Task-scoping composes with the (independent) skills gate — compute the
+            # expected hashes with the SAME skills_active the driver used for deliver.
+            skills_on = bool(drv_._effective_role("deliver").skills)
+            expected_close, _ = drv.load_sizer.cold_start_load_graph_hash(
+                "deliver", "close", repo_root=drv_.framework_root, skills_active=skills_on)
+            full_hash, _ = drv.load_sizer.cold_start_load_graph_hash(
+                "deliver", "deliver_plan", repo_root=drv_.framework_root, skills_active=skills_on)
+            self.assertEqual(dlv["load_graph_hash"], expected_close)
+            self.assertNotEqual(dlv["load_graph_hash"], full_hash)
+
+
 class TestRealAdaptersGatedOff(unittest.TestCase):
     """The real claude_code / headless I/O paths must refuse to run unless
     explicitly enabled — confirming tests never touch network/subprocess."""
@@ -412,7 +585,7 @@ _EVAL_CMD = f'"{_sys.executable}" "{_FAKE_EVAL}"'
 
 # A schema-valid acceptance evidence path (matches ^eval/runs/.+). In a real run
 # the driver computes this; the mock verdict must cite the SAME shape.
-_EVID = "eval/runs/sprint-001/stdout.txt"
+_EVID = "eval/runs/sprint-001/acceptance/stdout.txt"
 
 ACC_PASS = {
     "milestone_verdict": "pass",
@@ -493,6 +666,7 @@ def _acceptance_charter(*, level="human_on_the_loop",
         },
         "harness": "claude_code", "provider": "anthropic",
         "model": "claude-opus-4-8",
+        "network_access": True,
         "tools": ["Read", "Grep", "Glob"],
         "judge_calibration": {"status": calibration},
     }
@@ -520,8 +694,7 @@ class TestAcceptanceDisabledIsIdentical(unittest.TestCase):
             self.assertNotIn(STATE_ACCEPTANCE_PENDING, final.history)
             types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
             self.assertNotIn("acceptance_start", types)
-            # No eval/ run dir created when acceptance is disabled.
-            self.assertFalse(os.path.isdir(os.path.join(d, "eval")))
+            self.assertNotIn("acceptance_eval_run", types)
 
     def test_acceptance_enabled_false_ends_in_advance(self):
         with tempfile.TemporaryDirectory() as d:
@@ -781,7 +954,8 @@ class TestAcceptanceF5Evidence(unittest.TestCase):
             drv_.run(subsprint_id="sprint-001")
 
             # 1. The DRIVER ran the eval cmd + captured an artifact under eval/runs.
-            evidence_dir = os.path.join(d, "eval", "runs", "sprint-001")
+            evidence_dir = os.path.join(d, "eval", "runs", "sprint-001",
+                                        "acceptance")
             self.assertTrue(os.path.isdir(evidence_dir))
             self.assertTrue(os.path.isfile(os.path.join(evidence_dir,
                                                          "evidence.json")))
@@ -797,17 +971,21 @@ class TestAcceptanceF5Evidence(unittest.TestCase):
             # 3. Acceptance received the artifact PATH (read-only), NOT raw code:
             #    its prompt names the eval/runs path and forbids running the harness.
             self.assertEqual(len(acc_adapter.history), 1)
+            self.assertTrue(acc_adapter.history[0]["network_access"])
             spawn_ev = next(e for e in events if e["type"] == "acceptance_spawn")
             self.assertTrue(
                 spawn_ev["payload"]["evidence_path"].startswith("eval/runs/"))
             # §1.7-C: the spawn surface is the orchestrator, gated by calibration.
             self.assertEqual(spawn_ev["payload"]["spawn_surface"], "orchestrator")
+            grant_roles = [e["payload"]["role"] for e in events
+                           if e["type"] == "sandbox_network_granted"]
+            self.assertIn("acceptance", grant_roles)
 
     def test_eval_nonzero_exit_is_gate_hard_fail(self):
         # The fake eval honors FAKE_EVAL_EXIT to simulate an eval-harness failure.
         # Per §4.2.6 a non-zero eval exit → gate_hard_fail (human resolves), NOT a
         # permissive pass. We set the env var via the eval.cmd itself (offline).
-        fail_cmd = (f'FAKE_EVAL_EXIT=3 "{_sys.executable}" "{_FAKE_EVAL}"')
+        fail_cmd = f'"{_sys.executable}" "{_FAKE_EVAL_ACCEPTANCE_FAIL}"'
         with tempfile.TemporaryDirectory() as d:
             charter = _acceptance_charter(eval_cmd=fail_cmd)
             drv_ = _driver(d, charter=charter,
@@ -817,6 +995,8 @@ class TestAcceptanceF5Evidence(unittest.TestCase):
             self.assertIn("eval", ctx.exception.reason.lower())
             # Acceptance was NOT spawned (no evidence to judge).
             types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("subsprint_gate_run", types)
+            self.assertIn("acceptance_eval_run", types)
             self.assertNotIn("acceptance_spawn", types)
 
 
@@ -971,10 +1151,13 @@ class TestLoopControllerAutoFixContinue(unittest.TestCase):
             # the original + the auto-fix re-run), and the loop advanced.
             self.assertEqual(final.history.count("dev_pending"), 2)
             self.assertEqual(final.history.count("review_pending"), 2)
+            self.assertEqual(final.history.count("close_pending"), 1)
+            self.assertEqual(len(adapters["deliver"].history), 1)
             self.assertEqual(final.state, STATE_ADVANCE)
             types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
             self.assertIn("auto_fix_round_spawned", types)
             self.assertIn("controller_decision", types)
+            self.assertIn("advance", types)
             self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
 
     def test_fix_round_dev_prompt_carries_review_findings(self):
@@ -1266,6 +1449,46 @@ class TestLoopMemoryIngressAndClose(unittest.TestCase):
                              and e["payload"]["role"] == "dev")
             self.assertIn("prefer-explicit-eligibility-branches",
                           dev_spawn["payload"]["memory_injected"])
+            # WP-0: memory_bytes is the ACTUAL injected lessons-block size (faithful to
+            # the dispatched prompt), not a recompute — > 0 here and equal to the block.
+            self.assertEqual(dev_spawn["payload"]["memory_bytes"],
+                             len(drv_._lessons_block("dev").encode("utf-8")))
+            self.assertGreater(dev_spawn["payload"]["memory_bytes"], 0)
+
+    def test_wp0_memory_bytes_faithful_to_injected_block_not_recomputed(self):
+        """WP-0 regression (Codex r2 BLOCKING): the spawn audit derives memory_bytes /
+        memory_injected from the lessons block the caller ACTUALLY prepended, not a
+        recomputed "would-inject" estimate. A spawn that injects NO block
+        (lessons_block=None — the Acceptance execution-plan shape) records 0 / [] EVEN
+        WHEN role-scoped memory exists; a spawn that injects the block records its real
+        bytes + ids."""
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            self._seed_memory(mem)  # a "dev"-scoped lesson now exists in the store
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-mem-wp0", clock=_clock(), memory_root=mem)
+            drv_.run(subsprint_id="sprint-001")  # initializes state + adapters
+            block = drv_._lessons_block("dev")
+            self.assertTrue(block.strip(), "precondition: dev memory block is non-empty")
+
+            def _last_spawn_payload():
+                return [e for e in audit.read_events(drv_.audit_ledger)
+                        if e["type"] == "spawn"][-1]["payload"]
+
+            # (A) No block injected (the Acceptance-plan shape) → faithful 0 / [],
+            # despite dev-scoped memory being present.
+            drv_._spawn("dev", "PLAN PROMPT (no lessons block)", schema_key=None,
+                        lessons_block=None)
+            a = _last_spawn_payload()
+            self.assertEqual(a["memory_bytes"], 0)
+            self.assertEqual(a["memory_injected"], [])
+
+            # (B) The block IS injected → memory_bytes = its real size; ids recorded.
+            drv_._spawn("dev", block + "BODY", schema_key=None, lessons_block=block)
+            b = _last_spawn_payload()
+            self.assertEqual(b["memory_bytes"], len(block.encode("utf-8")))
+            self.assertIn("prefer-explicit-eligibility-branches", b["memory_injected"])
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
 
     def test_close_records_observation_and_matures_l1_to_l2(self):
         # On a fix_required finding, the driver records a generalizable lesson;
@@ -1320,6 +1543,175 @@ class TestLoopMemoryIngressAndClose(unittest.TestCase):
             types = [e["type"] for e in events]
             self.assertNotIn("memory_observation_recorded", types)
 
+    # ----- WP-6: tier-aware bounded ingress wiring ------------------------- #
+    def _seed_many_dev_l1(self, root, n):
+        """Seed n DISTINCT dev-scoped L1 singletons (occurrences=1)."""
+        store = ms.MemoryStore(root)
+        for i in range(n):
+            store.record_observation(
+                f"dev singleton lesson number {i:03d}",
+                ts="2026-06-15", loop_id=f"loop-seed-{i}",
+                type="heuristic", scope={"role": ["dev"], "module": ["m"]},
+                body=(f"Singleton observation {i:03d}: under condition C{i}, prefer "
+                      f"approach A{i} because of rationale R{i}."))
+        return store
+
+    def _dev_spawn_payload(self, ledger):
+        return next(e for e in audit.read_events(ledger)
+                    if e["type"] == "spawn" and e["payload"]["role"] == "dev")["payload"]
+
+    def test_wp6_l1_budget_bounds_injection_and_records_suppression(self):
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            self._seed_many_dev_l1(mem, 12)
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-wp6-budget", clock=_clock(),
+                          memory_root=mem,
+                          lesson_budget=ls.LessonBudget(max_l1_count=3,
+                                                        max_l1_bytes=10_000))
+            drv_.run(subsprint_id="sprint-001")
+            p = self._dev_spawn_payload(drv_.audit_ledger)
+            # exactly 3 injected, 9 suppressed (all L1 over the count budget).
+            self.assertEqual(len(p["memory_injected"]), 3)
+            self.assertEqual(len(p["suppressed_lesson_ids"]), 9)
+            self.assertEqual(set(p["memory_injected"]) & set(p["suppressed_lesson_ids"]),
+                             set())
+            seldata = p["lesson_selection"]
+            self.assertEqual(seldata["version"], ls.SELECTION_VERSION)
+            self.assertTrue(all(s["reason"] == "l1_count_budget"
+                                for s in seldata["suppressed"]))
+            self.assertTrue(all(t == "L1" for t in seldata["tiers"].values()))
+            self.assertLess(seldata["bytes_after"], seldata["bytes_before"])
+            # Non-silent: the bounded block carries the footer + the audit chain holds.
+            self.assertIn("Loop Memory bounded", drv_._lessons_block("dev"))
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_wp6_matured_l2_preserved_over_budget(self):
+        # An L2 + a MATURED lesson must survive even a budget of 1, alongside L1s.
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            store = self._seed_many_dev_l1(mem, 8)
+            # promote two distinct keys to L2 / MATURED by re-observation.
+            store.record_observation("dev validated lesson", ts="2026-06-16",
+                                     loop_id="lp-v1", type="failure",
+                                     scope={"role": ["dev"], "module": ["m"]},
+                                     body="Validated: always re-check the guard.")
+            store.record_observation("dev validated lesson", ts="2026-06-16",
+                                     loop_id="lp-v2", type="failure",
+                                     scope={"role": ["dev"], "module": ["m"]},
+                                     body="Validated: always re-check the guard.")  # occ2→L2
+            for k in range(3):
+                store.record_observation("dev matured lesson", ts="2026-06-17",
+                                         loop_id=f"lp-m{k}", type="failure",
+                                         scope={"role": ["dev"], "module": ["m"]},
+                                         body="Matured: never collapse the branch.")
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-wp6-mat", clock=_clock(), memory_root=mem,
+                          lesson_budget=ls.LessonBudget(max_l1_count=1,
+                                                        max_l1_bytes=10_000))
+            drv_.run(subsprint_id="sprint-001")
+            p = self._dev_spawn_payload(drv_.audit_ledger)
+            tiers = p["lesson_selection"]["tiers"]
+            l2_id = ms.slug("dev validated lesson")
+            mat_id = ms.slug("dev matured lesson")
+            self.assertEqual(tiers[l2_id], "L2")
+            self.assertEqual(tiers[mat_id], "MATURED")
+            self.assertIn(l2_id, p["memory_injected"])
+            self.assertIn(mat_id, p["memory_injected"])
+            self.assertNotIn(l2_id, p["suppressed_lesson_ids"])
+            self.assertNotIn(mat_id, p["suppressed_lesson_ids"])
+            # No non-L1 ever suppressed.
+            for s in p["lesson_selection"]["suppressed"]:
+                self.assertEqual(s["tier"], "L1")
+
+    def test_wp6_input_hash_and_block_deterministic_across_runs(self):
+        # Same store + same budget → identical injected block → identical input_hash
+        # (retry/reuse determinism). Acceptance is untouched (it injects no lessons).
+        with tempfile.TemporaryDirectory() as mem:
+            self._seed_many_dev_l1(mem, 10)
+            budget = ls.LessonBudget(max_l1_count=4, max_l1_bytes=10_000)
+            hashes, blocks = [], []
+            for run_i in range(2):
+                with tempfile.TemporaryDirectory() as d:
+                    drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                                  loop_id=f"loop-wp6-det-{run_i}", clock=_clock(),
+                                  memory_root=mem, lesson_budget=budget)
+                    drv_.run(subsprint_id="sprint-001")
+                    p = self._dev_spawn_payload(drv_.audit_ledger)
+                    hashes.append(p["input_hash"])
+                    blocks.append(drv_._lessons_block("dev"))
+            self.assertEqual(hashes[0], hashes[1])
+            self.assertEqual(blocks[0], blocks[1])
+
+    def test_wp6_acceptance_plan_shape_records_no_lesson_audit(self):
+        # A spawn that injects NO lessons block (lessons_block=None) records
+        # suppressed_lesson_ids=None + lesson_selection=None — Acceptance-neutral.
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            self._seed_many_dev_l1(mem, 5)
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-wp6-acc", clock=_clock(), memory_root=mem)
+            drv_.run(subsprint_id="sprint-001")
+            drv_._spawn("dev", "PLAN PROMPT (no lessons block)", schema_key=None,
+                        lessons_block=None)
+            p = [e for e in audit.read_events(drv_.audit_ledger)
+                 if e["type"] == "spawn"][-1]["payload"]
+            self.assertEqual(p["memory_injected"], [])
+            self.assertEqual(p["memory_bytes"], 0)
+            self.assertIsNone(p["suppressed_lesson_ids"])
+            self.assertIsNone(p["lesson_selection"])
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_wp6_explicit_supersession_through_driver(self):
+        # An active entry that supersedes an L2 lesson removes it at ingress.
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            store = ms.MemoryStore(mem)
+            old = ms.MemoryEntry(id="old-lesson", type="failure",
+                                 scope={"role": ["dev"], "module": ["m"]},
+                                 maturity="L2", occurrences=4, status="active",
+                                 body="Old matured guidance.")
+            store.write_entry(old, ts="2026-06-15", loop_id="lp-old")
+            new = ms.MemoryEntry(id="new-lesson", type="failure",
+                                 scope={"role": ["dev"], "module": ["m"]},
+                                 maturity="L2", occurrences=2, status="active",
+                                 supersedes=["old-lesson"],
+                                 body="New replacement guidance.")
+            store.write_entry(new, ts="2026-06-16", loop_id="lp-new")
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-wp6-sup", clock=_clock(), memory_root=mem)
+            drv_.run(subsprint_id="sprint-001")
+            p = self._dev_spawn_payload(drv_.audit_ledger)
+            self.assertIn("new-lesson", p["memory_injected"])
+            self.assertNotIn("old-lesson", p["memory_injected"])
+            self.assertIn("old-lesson", p["suppressed_lesson_ids"])
+            sup = [s for s in p["lesson_selection"]["suppressed"]
+                   if s["id"] == "old-lesson"][0]
+            self.assertEqual(sup["reason"], "superseded")
+            self.assertEqual(sup["tier"], "MATURED")
+
+    def test_wp6_malformed_entry_failsafe_preserved_through_driver(self):
+        # A store with a contradictory entry (maturity L1, occurrences>=2 — written
+        # via write_entry which does not re-derive maturity) classifies UNKNOWN and
+        # is PRESERVED even under a zero-room L1 budget — never dropped as L1.
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            store = self._seed_many_dev_l1(mem, 6)
+            bad = ms.MemoryEntry(id="contradictory", type="heuristic",
+                                 scope={"role": ["dev"], "module": ["m"]},
+                                 maturity="L1", occurrences=5, status="active",
+                                 body="Contradictory metadata lesson.")
+            store.write_entry(bad, ts="2026-06-15", loop_id="lp-bad")
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-wp6-bad", clock=_clock(), memory_root=mem,
+                          lesson_budget=ls.LessonBudget(max_l1_count=1,
+                                                        max_l1_bytes=10_000))
+            drv_.run(subsprint_id="sprint-001")
+            p = self._dev_spawn_payload(drv_.audit_ledger)
+            self.assertEqual(p["lesson_selection"]["tiers"]["contradictory"], "UNKNOWN")
+            self.assertIn("contradictory", p["memory_injected"])
+            self.assertNotIn("contradictory", p["suppressed_lesson_ids"])
+
 
 class TestRunStateResumeRoundTrip(unittest.TestCase):
     def test_new_controller_fields_persist_across_save_load(self):
@@ -1371,29 +1763,30 @@ class TestConnectorPassThrough(unittest.TestCase):
         for role in ("dev", "review", "deliver"):
             self.assertEqual(adapters[role].history[0]["connectors"], [])
 
-    def test_network_access_grant_threads_and_audits(self):
-        # An EXPLICIT dev network grant is threaded to the adapter AND recorded on
-        # the audit spine as a deliberate `sandbox_network_granted` escalation.
+    def test_network_access_grants_thread_and_audit(self):
+        # The example charter explicitly grants network to the three spawned roles;
+        # each grant is threaded to the adapter and recorded on the audit spine.
         charter = load_charter(CHARTER_PATH)
-        charter["tooling"]["dev"]["network_access"] = True
         with tempfile.TemporaryDirectory() as d:
             adapters = _adapters()
             drv_ = _driver(d, charter=charter, adapters=adapters)
             drv_.run(subsprint_id="sprint-001")
             events = audit.read_events(drv_.audit_ledger)
-        self.assertTrue(adapters["dev"].history[0]["network_access"])
+        for role in ("dev", "review", "deliver"):
+            self.assertTrue(adapters[role].history[0]["network_access"])
         grants = [e for e in events if e["type"] == "sandbox_network_granted"]
-        self.assertEqual(len(grants), 1)
-        self.assertEqual(grants[0]["payload"]["role"], "dev")
-        # The reviewer never gets the grant (default-deny) — no flag, no event.
-        self.assertFalse(adapters["review"].history[0]["network_access"])
+        self.assertEqual([g["payload"]["role"] for g in grants],
+                         ["dev", "review", "deliver"])
 
-    def test_no_network_grant_is_default_and_silent(self):
-        # The unmodified example charter grants no network → every adapter sees
-        # False and NO sandbox_network_granted event is emitted (byte-identical).
+    def test_explicit_network_false_suppresses_grant_and_audit(self):
+        # Explicit false keeps the old no-network path: adapters see False and no
+        # sandbox_network_granted event is emitted.
+        charter = load_charter(CHARTER_PATH)
+        for role in ("dev", "review", "deliver"):
+            charter["tooling"][role]["network_access"] = False
         with tempfile.TemporaryDirectory() as d:
             adapters = _adapters()
-            drv_ = _driver(d, adapters=adapters)
+            drv_ = _driver(d, charter=charter, adapters=adapters)
             drv_.run(subsprint_id="sprint-001")
             events = audit.read_events(drv_.audit_ledger)
         for role in ("dev", "review", "deliver"):
@@ -1466,6 +1859,26 @@ class TestLoopIngressWiring(unittest.TestCase):
         close = self._events(drv_, "loop_close")
         self.assertEqual(len(close), 1)
         self.assertEqual(close[0]["payload"]["cleanup_action"], "noop")
+
+    def test_missing_registry_record_at_close_is_repaired(self):
+        run_dir = os.path.join(self.tmp, "run-missing-reg")
+        drv_ = Driver(load_charter(CHARTER_PATH), run_dir, _adapters(),
+                      loop_id="loop-ing-missing", clock=_clock(), repo_dir=self.repo)
+        original_handle_close = drv_._handle_close
+
+        def _handle_close_and_drop_registry(close_verdict):
+            original_handle_close(close_verdict)
+            os.remove(self._registry().path)
+
+        drv_._handle_close = _handle_close_and_drop_registry
+        final = drv_.run(subsprint_id="sprint-001")
+        self.assertEqual(final.state, STATE_ADVANCE)
+        rec = self._registry().get("loop-ing-missing")
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.status, "done")
+        types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+        self.assertIn("loop_registry_repaired", types)
+        self.assertIn("loop_close", types)
 
     def test_new_branch_strategy_switches_and_keeps_branch(self):
         run_dir = os.path.join(self.tmp, "run2")
@@ -2578,6 +2991,49 @@ class TestAcceptanceTranscripts(unittest.TestCase):
             with open(out_path, encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh), ACC_PASS)
 
+    def test_wp7_load_graph_hash_recorded_on_acceptance_spawn(self):
+        # WP-7 (observation-only): the heaviest role records the cold-start fingerprint too,
+        # on the same acceptance_spawn event as the WP-0 prompt_bytes/fix_round fields. This
+        # is AUDIT-ONLY and does NOT touch acceptance_input_hash (the §3.5b reuse hash).
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=_acceptance_charter(),
+                           adapters=_acceptance_adapters(ACC_PASS))
+            drv_.run(subsprint_id="sprint-001")
+            spawns = [e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                      if e["type"] == "acceptance_spawn"]
+            self.assertEqual(len(spawns), 1)
+            lgh = spawns[0]["load_graph_hash"]
+            self.assertIsInstance(lgh, str)
+            self.assertTrue(lgh.startswith("sha256:"), lgh)
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_wp7_cold_start_hash_is_best_effort_degrades_to_none(self):
+        # WP-7 invariant 6: the driver's cold-start fingerprint must NEVER block a spawn.
+        # Any sizing problem — a non-empty `missing` (unreadable/absent mandatory file), a
+        # raised exception, or no framework_root — degrades to None (the field is nullable),
+        # not a misleading partial fingerprint and not an exception into the spawn path.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            orig = drv.load_sizer.cold_start_load_graph_hash
+            try:
+                # (a) non-empty missing -> None (never a partial hash).
+                drv.load_sizer.cold_start_load_graph_hash = (
+                    lambda *a, **k: ("sha256:partial00000000", [{"rel": "governance/x.md"}]))
+                self.assertIsNone(drv_._cold_start_load_graph_hash("dev", False))
+                # (b) a raised OSError/KeyError/ValueError -> None (best-effort).
+                def _boom(*a, **k):
+                    raise OSError("simulated read failure")
+                drv.load_sizer.cold_start_load_graph_hash = _boom
+                self.assertIsNone(drv_._cold_start_load_graph_hash("dev", False))
+            finally:
+                drv.load_sizer.cold_start_load_graph_hash = orig
+            # (c) no framework_root -> None (no governance tree to fingerprint).
+            saved_root, drv_.framework_root = drv_.framework_root, None
+            try:
+                self.assertIsNone(drv_._cold_start_load_graph_hash("dev", False))
+            finally:
+                drv_.framework_root = saved_root
+
     def test_acceptance_adapter_error_records_prompt_ref_null_output(self):
         with tempfile.TemporaryDirectory() as d:
             adapters = _acceptance_adapters(AdapterError("acc boom"))
@@ -2629,7 +3085,9 @@ class ReviewSpecResolutionTests(unittest.TestCase):
         self.assertIn("UC-1 tests pass", out)                       # exit criteria
         self.assertIn("anti-hardcode", out.lower())                 # kernel
         self.assertIn("blocking_count", out)                        # severity rules
-        self.assertIn("review-verdict.schema.json", out)            # verdict schema
+        # WP-1b: the agent-facing prompt names the COMPACT projection (not the canonical).
+        self.assertIn("compact/review-verdict.compact.schema.json", out)
+        self.assertNotIn("schemas/review-verdict.schema.json", out)  # canonical not dispatched
 
     def test_live_projects_from_subsprint_spec(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2744,7 +3202,9 @@ class AcceptanceSpecResolutionTests(unittest.TestCase):
             self.assertIn("All bad-cases pass under F5 eval", out)         # proof_of_done
             self.assertIn(_EVID, out)                                       # evidence ref
             self.assertIn("Calibration status: calibrated", out)           # reported
-            self.assertIn("acceptance-verdict.schema.json", out)           # schema
+            # WP-1b: the agent-facing prompt names the COMPACT projection (not canonical).
+            self.assertIn("compact/acceptance-verdict.compact.schema.json", out)
+            self.assertNotIn("schemas/acceptance-verdict.schema.json", out)  # canonical not dispatched
 
     def test_live_unsigned_contract_halts(self):
         with tempfile.TemporaryDirectory() as d:

@@ -35,14 +35,28 @@ Use this guide when you're starting clean: an empty repo, or an existing codebas
 
 ## STEP 1 — Initialize the framework
 
-Vendor the framework into your repo and wire the governance chain:
+Vendor the framework into your repo and wire the governance chain.
+
+**Recommended (copy / vendored — no submodule):**
 
 ```bash
-git submodule add <aidazi-url> aidazi        # or copy; submodule lets you pull releases
-cp aidazi/AGENTS.md ./AGENTS.md              # consumer template — edit placeholders
+# From the aidazi framework repo root:
+./engine-kit/tools/vendor-framework.sh . /path/to/your-adopter-repo
+cp /path/to/your-adopter-repo/aidazi/AGENTS.md /path/to/your-adopter-repo/AGENTS.md
 ```
 
-Edit your root `AGENTS.md` (§1 project identification + §3 ledger paths). It @-includes the always-loaded governance chain (`aidazi/governance/constitution.md` + `doc_governance.md` + `context_briefing.md`). Set `adopter_track` and `framework_version`.
+This copies the framework into `<adopter>/aidazi/` and writes `aidazi/.aidazi-version`
+(source commit + framework version). The adopter owns the copy in its own git history;
+upgrade by re-running the vendor script and diffing (see `process/fold-back-protocol.md` §1.2).
+
+**Optional (git submodule — only if you want `git submodule update` to pull releases):**
+
+```bash
+git submodule add <aidazi-url> aidazi
+cp aidazi/AGENTS.md ./AGENTS.md
+```
+
+Edit your root `AGENTS.md` (§1 project identification + §3 ledger paths). It defines the lightweight default Control Plane entry and names the role/on-demand governance chain — the always-load kernel trio `aidazi/governance/constitution-core.md` + `authoring-kernel.md` + `context_briefing.md`, with the full canonical `constitution.md` / `doc_governance.md` loaded on-demand. Set `adopter_track` and `framework_version`.
 
 A working filled-in example of everything STEP 1-6 produces lives at `aidazi/examples/minimal-greenfield/` — copy from it rather than authoring blank. It also ships a recorded, byte-reproducible offline run proving the standalone driver drives a full sub-sprint end-to-end: `examples/minimal-greenfield/docs/recorded-run.md`.
 
@@ -64,7 +78,7 @@ Walk `process/agent-creation-prerequisites.md` (Δ-16): verify the 7 categories 
 
 ## STEP 4 — Instantiate the framework
 
-- The constitution stays @-included; you never edit it.
+- The constitution stays vendored and on-demand (its always-load `constitution-core.md` kernel projects it at cold-start); you never edit it.
 - Author your three **domain contracts** from templates (`docs/domain-adaptation.md` walks these): `docs/current/domain_taxonomy.md`, `docs/current/runtime_invariants.md`, `docs/current/eval_acceptance_bars.md`.
 - Author the **implementation-stack snapshot** `docs/current/implementation-stack.md` from `templates/implementation-stack-template.md` — a present-tense record of the product's own language / framework / build / test / data deps / deploy-runtime. Greenfield has nothing to detect, so offer a track-informed *starting point* (humble, not a selection) and mark anything undecided `DEFERRED → Phase 3` (does not block). This is the *adopter implementation stack*, distinct from the *agent execution stack* (`charter.tooling.<role>`, STEP 7); it is **not** a domain contract and **not** architecture selection — Phase 3 (STEP 5) owns those decisions. `load_discipline: by-role`.
 - Author `docs/current/adoption-state.md` from `templates/adoption-state-template.md` — your per-Δ status + override registry.

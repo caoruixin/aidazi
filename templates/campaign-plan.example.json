@@ -1,6 +1,7 @@
 {
   "campaign_id": "demo-campaign",
   "goal": "Deliver the demo feature end-to-end across two milestones (以终为始: this whole goal, not one milestone).",
+  "delivery_mode": "campaign",
   "signed_by_human": false,
   "budget": {
     "max_subsprints": 20,

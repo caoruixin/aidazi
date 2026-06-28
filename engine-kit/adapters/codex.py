@@ -32,9 +32,9 @@ EXACT CLI FORM — CONFIRMED against codex-cli 0.134.0 (`codex exec --help`):
   - ``-c sandbox_workspace_write.network_access=true`` (config override) RE-ENABLES
     network inside the workspace-write sandbox, which codex DISABLES by default.
     Emitted ONLY for an EXPLICIT, audited charter grant
-    (``tooling.<role>.network_access: true``) on a workspace-write role — the
-    opt-in escape hatch for a Dev that must ``pip``/``npm`` install. OFF by default
-    (the framework invariant is Dev = no network; process/delivery-loop.md §4.2.7).
+    (``tooling.<role>.network_access: true``) on a workspace-write role. The
+    adapter method default is fail-closed; shipped role configs pass the charter
+    value explicitly.
   - ``--skip-git-repo-check`` (optional, OFF by default) lets codex run outside a
     git repo; enable via the ``skip_git_repo_check`` ctor flag.
   Codex has NO single-envelope ``--output-format json`` like claude; ``--json``
@@ -58,6 +58,7 @@ import tempfile
 from typing import Any, Optional, Sequence
 
 from .base import Adapter, AdapterError
+from .monitor import run_with_monitor
 
 _ALLOW_ENV = "AIDAZI_ALLOW_REAL_ADAPTER"
 
@@ -72,6 +73,7 @@ class CodexAdapter(Adapter):
         *,
         provider: str = "openai",
         model: str = "",
+        reasoning_effort: str = "",
         binary: str = "codex",
         sandbox: str = "read-only",
         allow_subprocess: bool = False,
@@ -82,6 +84,7 @@ class CodexAdapter(Adapter):
     ):
         super().__init__(provider=provider, model=model, **kwargs)
         self.binary = binary
+        self.reasoning_effort = reasoning_effort
         self.sandbox = sandbox
         self.allow_subprocess = allow_subprocess
         self.timeout_seconds = timeout_seconds
@@ -147,15 +150,18 @@ class CodexAdapter(Adapter):
             argv += ["-o", last_message_path]
         if self.model:
             argv += ["--model", self.model]
+        if self.reasoning_effort:
+            argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
         if sb:
             argv += ["--sandbox", sb]
-        # OPT-IN network grant (default OFF). codex's workspace-write OS-sandbox
-        # DISABLES network by default — so a Dev cannot `pip`/`npm` install. An
-        # EXPLICIT, audited charter grant (tooling.<role>.network_access: true) is
-        # the only way to re-enable it, via codex's documented config override
+        if sb == "read-only":
+            argv += ["-c", "approval_policy=never"]
+        # Network grant. codex's workspace-write OS-sandbox disables network by
+        # default; an explicit charter grant (tooling.<role>.network_access: true)
+        # re-enables it via codex's documented config override
         # `-c sandbox_workspace_write.network_access=true`. ONLY for workspace-write
         # (the config key is namespaced to it; read-only never gets network anyway),
-        # so a grant on a read-only role is a no-op here (the validator WARNS on it).
+        # so a grant on a read-only role is a no-op here.
         # FAIL CLOSED at the enforcement layer: require a LITERAL ``True`` (not just
         # a truthy value), so a direct adapter call with a non-bool (the string
         # "false", or 1) can never grant network — the adapter never relies on an
@@ -227,13 +233,15 @@ class CodexAdapter(Adapter):
                 network_access=network_access,
             )
             try:
-                proc = subprocess.run(  # noqa: S603 - argv is a fixed CLI, no shell
+                proc = run_with_monitor(
                     argv,
                     input=prompt,  # prompt via STDIN, never argv (no dash-injection)
                     capture_output=True,
                     text=True,
                     timeout=self.timeout_seconds,
                     cwd=self.cwd,
+                    role=role,
+                    harness=self.harness,
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 raise AdapterError(
@@ -322,9 +330,9 @@ class CodexAdapter(Adapter):
         No schema ⇒ a JSON object is sufficient (the driver-less unit tests; the
         driver always passes the role schema in production). With a schema, validate
         via jsonschema when importable — FAIL CLOSED on non-conformance. If
-        jsonschema is unavailable the adapter cannot deep-validate, so a dict passes
-        and the DRIVER's own schema validation stays the gate (defense-in-depth,
-        never weaker)."""
+        jsonschema is unavailable, apply a small built-in subset (required +
+        primitive property types) so the adapter never accepts an obviously
+        non-conforming verdict."""
         if not isinstance(candidate, dict):
             return False
         if not schema:
@@ -332,11 +340,39 @@ class CodexAdapter(Adapter):
         try:
             import jsonschema  # noqa: E402,WPS433 - optional, validated lazily
         except ImportError:
-            return True
+            return CodexAdapter._verdict_conforms_minimal(candidate, schema)
         try:
             return jsonschema.Draft202012Validator(schema).is_valid(candidate)
         except jsonschema.exceptions.SchemaError:
             return True  # a malformed role schema is the driver's problem, not ours
+
+    @staticmethod
+    def _verdict_conforms_minimal(candidate: dict, schema: dict) -> bool:
+        required = schema.get("required") or []
+        for key in required:
+            if key not in candidate:
+                return False
+        properties = schema.get("properties") or {}
+        type_map = {
+            "string": str,
+            "integer": int,
+            "number": (int, float),
+            "boolean": bool,
+            "object": dict,
+            "array": list,
+        }
+        for key, prop in properties.items():
+            if key not in candidate or not isinstance(prop, dict):
+                continue
+            expected = prop.get("type")
+            py_type = type_map.get(expected)
+            if py_type is not None and not isinstance(candidate[key], py_type):
+                return False
+            if expected == "integer" and isinstance(candidate[key], bool):
+                return False
+            if expected == "number" and isinstance(candidate[key], bool):
+                return False
+        return True
 
     @staticmethod
     def _extract_verdict(stdout: str, role: str,

@@ -453,7 +453,24 @@ def cleanup(
     # UNCHANGED worktree it is clean so plain remove works. We never pass --force
     # blindly (that would discard work); remove_if_unchanged is gated on
     # not-changed precisely so the remove is safe.
-    _run_git(handle.repo_dir, ["worktree", "remove", handle.work_dir])
+    #
+    # IDEMPOTENT under crash/replay (campaign milestone_merge resolves merge +
+    # cleanup before the durable §3.5c barrier persists the advance, so a crash
+    # after the remove but before the save replays this cleanup): if the worktree
+    # is already gone, prune any stale `.git/worktrees/` metadata and report
+    # "removed" rather than raising on the second attempt.
+    if not os.path.isdir(handle.work_dir):
+        _run_git(handle.repo_dir, ["worktree", "prune"])
+        return "removed"
+    try:
+        _run_git(handle.repo_dir, ["worktree", "remove", handle.work_dir])
+    except GitOpError:
+        # A prior (crashed) attempt may have removed it concurrently; treat an
+        # already-gone worktree as success (prune metadata). If it is genuinely
+        # still present, the failure is real — surface it.
+        if os.path.isdir(handle.work_dir):
+            raise
+        _run_git(handle.repo_dir, ["worktree", "prune"])
     return "removed"
 
 
@@ -511,6 +528,52 @@ def _safe_ref_component(loop_id: str) -> str:
     """Sanitize a loop_id into a git-ref-safe component (deterministic)."""
     safe = "".join(c if (c.isalnum() or c in "-_.") else "-" for c in str(loop_id))
     return safe or "loop"
+
+
+def render_branch_name(template: str, *, campaign_id: str, milestone_id: str) -> str:
+    """Expand a branch_name_template; sanitize each segment, keep ``/`` separators."""
+    cid = _safe_ref_component(campaign_id)
+    mid = _safe_ref_component(milestone_id)
+    raw = template.format(campaign_id=cid, milestone_id=mid)
+    return "/".join(_safe_ref_component(p) for p in raw.split("/"))
+
+
+def merge_into_trunk(
+    handle: ContextHandle,
+    trunk: str,
+    *,
+    no_ff: bool = True,
+    merge_message: Optional[str] = None,
+) -> str:
+    """Merge ``handle.branch`` into ``trunk`` from the main ``handle.repo_dir``.
+
+  1. ``git switch <trunk>`` in the admin repo.
+  2. ``git merge [--no-ff] -m <msg> <handle.branch>``.
+
+    On conflict the merge is aborted (``git merge --abort`` when possible) and
+    ``GitOpError`` is raised — the engine NEVER force-merges. Offline only.
+    Returns ``"merged"`` on success.
+    """
+    if handle.strategy == STRATEGY_CURRENT_BRANCH or not handle.created:
+        return "noop"
+    repo_dir = handle.repo_dir
+    trunk = trunk or "main"
+    msg = merge_message or f"aidazi: merge milestone branch {handle.branch}"
+    _run_git(repo_dir, ["switch", trunk])
+    merge_cmd = ["merge"]
+    if no_ff:
+        merge_cmd.append("--no-ff")
+    merge_cmd.extend(["-m", msg, handle.branch])
+    try:
+        _run_git(repo_dir, merge_cmd)
+    except GitOpError:
+        # Best-effort abort so the admin repo is left on trunk, not mid-merge.
+        try:
+            _run_git(repo_dir, ["merge", "--abort"])
+        except GitOpError:
+            pass
+        raise
+    return "merged"
 
 
 # --------------------------------------------------------------------------- #

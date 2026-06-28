@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/control-plane-intent.schema.json",
+  "title": "Control-plane intent record",
+  "description": "Schema-valid record appended by the default control-plane session when it classifies a human natural-language request. The LLM may classify, but this schema is the fail-closed contract before dispatch or ledger append.",
+  "type": "object",
+  "required": [
+    "classification",
+    "confidence",
+    "affected_scope",
+    "next_action",
+    "requires_role",
+    "needs_human_clarification",
+    "evidence_refs",
+    "loaded_refs"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "intent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable id assigned when the record is appended to .orchestrator/control/intents.jsonl."
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp assigned by the control-plane session at append time."
+    },
+    "raw_user_prompt_summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Concise summary of the human's natural-language request. Do not store secrets."
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "new_requirement",
+        "priority_change",
+        "scope_change",
+        "continue_delivery",
+        "gate_decision",
+        "status_request",
+        "explicit_role_activation",
+        "unclear"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "affected_scope": {
+      "type": ["string", "null"],
+      "description": "Campaign, milestone, sub-sprint, checkpoint, or role scope affected by the request."
+    },
+    "delivery_mode": {
+      "type": ["string", "null"],
+      "enum": ["single_milestone", "campaign", null],
+      "description": "Optional execution topology relevant to this intent. single_milestone uses charter.yaml as the active execution source; campaign uses campaign-plan.json."
+    },
+    "roadmap_mutation_ref": {
+      "type": ["string", "null"],
+      "description": "Optional pointer to a JSONL roadmap mutation record written by the Control Plane for Customer roadmap commands."
+    },
+    "next_action": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The control-plane's next safe action after validation."
+    },
+    "requires_role": {
+      "type": "string",
+      "enum": ["research", "deliver", "dev", "review", "acceptance", "none"]
+    },
+    "needs_human_clarification": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["queued", "dispatched", "blocked", "resolved", "unclear"],
+      "description": "Ledger lifecycle state. Optional in the classifier output; should be present once appended."
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Specific files or run refs used as evidence for the classification."
+    },
+    "loaded_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Specific files or state summaries loaded by the default session. Broad globs are forbidden by validator policy."
+    }
+  }
+}

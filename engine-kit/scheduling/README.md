@@ -26,23 +26,24 @@ Exit code is `0` only on a clean terminal state (`advance`/`done`) **and** a ver
 - **Default (dry-run):** `build_adapters(charter, allow_real=False)` builds a `MockAdapter` per role with a clean-pass canned verdict set. This runs the full P2 happy path **offline** — a smoke test you can schedule safely.
 - **`--allow-real`:** builds real adapters from `ADAPTER_REGISTRY` for each role's harness. Those still refuse to touch the network/subprocess **unless** `AIDAZI_ALLOW_REAL_ADAPTER=1` (the adapters' own gate). So a real scheduled run needs BOTH `--allow-real` AND that env var.
 
-Run artifacts (`state.json`, `docs/checkpoints/`, `.orchestrator/audit/`) always go to a **run dir outside the repo** (`--run-dir`, default: a fresh temp dir).
+Run artifacts (`state.json`, `docs/checkpoints/`, `.orchestrator/audit/`) go to a **run dir that defaults to `<repo>/.runs/<loop_id>`** — inside the repo so you can tail the live ledger/transcripts without hunting through `/tmp`, but **gitignored** (`.runs/`) so a loop's own writes never enter the delivered diff. `--run-dir` overrides with any explicit path; `--campaign-run-dir` defaults to `<repo>/.runs/campaign-<id>`.
 
 ## Usage
 
 ```bash
 # offline dry-run (no network) — a safe scheduled smoke test
+# (omit --run-dir to use the default <repo>/.runs/<loop_id>/)
 python engine-kit/scheduling/run_loop.py \
   --charter path/to/charter.yaml \
   --mode overnight_autoloop \
-  --run-dir /var/aidazi/runs/$(date +%F)
+  --repo-dir /srv/app
 
 # real run (operator opts in to I/O)
 AIDAZI_ALLOW_REAL_ADAPTER=1 python engine-kit/scheduling/run_loop.py \
   --charter path/to/charter.yaml \
   --mode milestone_delivery \
   --allow-real \
-  --repo-dir /srv/app           # optional: enable Loop Ingress
+  --repo-dir /srv/app           # enables Loop Ingress; default run dir = /srv/app/.runs/<loop_id>/
   # --memory-root /srv/app/memory  # optional: enable Loop Memory (OFF by default; or set
   #                                 # charter.memory.enabled:true — --memory-root overrides)
 ```

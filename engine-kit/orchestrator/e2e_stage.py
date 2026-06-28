@@ -314,7 +314,9 @@ def check_acceptance_consistency(verdict: dict, manifest: dict, checklist: dict,
 # =========================================================================== #
 def authority_fingerprint(charter: dict, *, active_class: str, calibration_status: str,
                           calibration_record_id: Optional[str],
-                          autonomy_level_declared: Optional[str]) -> str:
+                          autonomy_level_declared: Optional[str],
+                          effective_skill_set_hash: Optional[str] = None,
+                          effective_functional: Optional[dict] = None) -> str:
     """Canonical fingerprint over EVERYTHING that determines authority + judge identity
     (round-3 BLOCKING). ``autonomy_level_declared`` MUST be the CHARTER-DECLARED (PRE-degrade)
     level captured BEFORE _calibration_gate runs — the §3.6 degrade mutates the live
@@ -336,6 +338,8 @@ def authority_fingerprint(charter: dict, *, active_class: str, calibration_statu
             "capability_ref": acc.get("capability_ref"),
         },
         "skills": acc.get("skills"),
+        "effective_skill_set_hash": effective_skill_set_hash,
+        "effective_functional": effective_functional,
         "subagent_fanout": acc.get("subagent_fanout"),
     })
 
@@ -354,12 +358,13 @@ def resolve_load_graph(entries: list, *, repo_root: Optional[str] = None,
     the judge loads (governance chain, conditional process docs, role card, schema, adopter
     ledgers reached via AGENTS.md, …) invalidates §3.5b reuse. An ``inline`` entry hashes a
     dict directly (e.g. tooling.e2e, not a file). Returns ``(graph, missing)`` — ``graph`` =
-    sorted ``[{path, sha256, purpose}]``; ``missing`` = MANDATORY roots whose file is
+    sorted ``[{path, purpose, bytes, sha256}]`` (``bytes`` is a WP-0 observation-only size
+    field, EXCLUDED from acceptance_input_hash); ``missing`` = MANDATORY roots whose file is
     absent/unreadable (the driver gate_hard_fails). Bounded by ``max_files`` (include backstop);
     symlinks are skipped (containment)."""
-    by_real: dict = {}                      # realpath (or inline:key) -> {path, sha256, purpose}
+    by_real: dict = {}                      # realpath (or inline:key) -> {path, purpose, bytes, sha256}
     missing: list = []
-    frontier: list = []                     # (abspath, display_rel, purpose)
+    frontier: list = []                     # (abspath, display_rel, purpose, mandatory)
     bases = tuple(b for b in (repo_root, os.path.dirname(repo_root) if repo_root else None) if b)
 
     for e in entries:
@@ -370,21 +375,38 @@ def resolve_load_graph(entries: list, *, repo_root: Optional[str] = None,
             continue
         p = e.get("path")
         if p and os.path.isfile(p) and not os.path.islink(p):
-            frontier.append((p, e.get("rel", p), e.get("purpose", "")))
+            frontier.append((p, e.get("rel", p), e.get("purpose", ""),
+                             bool(e.get("mandatory"))))
         elif e.get("mandatory"):
             missing.append(e)
 
     while frontier and len(by_real) < max_files:
-        path, disp, purpose = frontier.pop()
+        path, disp, purpose, mandatory = frontier.pop()
         rp = os.path.realpath(path)
         if rp in by_real:
-            continue
+            continue                        # content already resolved (dedup) — not missing
         try:
             with open(path, "rb") as fh:
                 data = fh.read()
         except OSError:
+            # A MANDATORY root that EXISTS (passed isfile) but cannot be READ (permission,
+            # race) must NOT be silently dropped: a partial graph that the caller treats as
+            # complete (empty `missing`) would yield a misleading cold-start load_graph_hash
+            # (WP-7 invariant 6) or an Acceptance reuse hash over partial criteria. Report it
+            # as missing (fail-closed) — honoring this function's own contract ("`missing` =
+            # MANDATORY roots whose file is absent/UNREADABLE"). An @-include (mandatory
+            # False) carries no such contract and stays best-effort.
+            if mandatory:
+                missing.append({"path": disp, "rel": disp, "purpose": purpose,
+                                "mandatory": True})
             continue
         by_real[rp] = {"path": disp, "purpose": purpose,
+                       # WP-0 measurement (observation-only): the file's byte size, so
+                       # the load_sizer can sum cold-start volume WITHOUT a spawn. It is
+                       # content-redundant (sha256 already commits to the content) and is
+                       # EXCLUDED from acceptance_input_hash, so the §3.5b reuse
+                       # fingerprint is byte-identical to its pre-measurement value.
+                       "bytes": len(data),
                        "sha256": hashlib.sha256(data).hexdigest()}
         try:
             text = data.decode("utf-8")
@@ -398,16 +420,25 @@ def resolve_load_graph(entries: list, *, repo_root: Optional[str] = None,
                 if (os.path.isfile(cand) and not os.path.islink(cand)
                         and os.path.realpath(cand) not in by_real):
                     rel = os.path.relpath(cand, repo_root) if repo_root else inc
-                    frontier.append((cand, rel.replace(os.sep, "/"), "include"))
+                    frontier.append((cand, rel.replace(os.sep, "/"), "include", False))
                     break
     return sorted(by_real.values(), key=lambda g: (g["purpose"], g["path"])), missing
 
 
 def acceptance_input_hash(projected_prompt: str, resolver_graph: list) -> str:
     """rev6/rev7: bind the verdict to the FULL criteria/prompt context — the resolved
-    prompt PLUS the content hash of every path the judge loads (resolver graph)."""
+    prompt PLUS the content hash of every path the judge loads (resolver graph).
+
+    WP-0: the reuse fingerprint binds each graph entry's CONTENT IDENTITY only — the
+    observational ``bytes`` field (added to resolve_load_graph for the measurement
+    baseline) is content-redundant (``sha256`` already commits to the file content) and
+    is dropped before hashing, so this hash is BYTE-IDENTICAL to its pre-measurement
+    value (old §3.5b reuse records still match; only ``bytes`` is excluded — every other
+    key is preserved, so any future graph shape stays bound)."""
+    graph_identity = [{k: v for k, v in g.items() if k != "bytes"}
+                      for g in resolver_graph]
     return sha256_obj({"projected_acceptance_prompt": projected_prompt,
-                       "resolver_graph": resolver_graph})
+                       "resolver_graph": graph_identity})
 
 
 # =========================================================================== #
@@ -444,9 +475,23 @@ def build_runtime_contract(e2e_cfg: dict, *, port: int, store_path: str,
         c["app_start_cmd"] = [_sub_tokens(tok, subs) for tok in cmd]
     elif isinstance(cmd, str):
         c["app_start_cmd"] = _sub_tokens(cmd, subs)
-    host = urllib.parse.urlparse(c.get("base_url") or "http://127.0.0.1").hostname \
-        or "127.0.0.1"
-    c["base_url"] = f"http://{host}:{port}"
+    for op in c.get("lifecycle_operations") or []:
+        if not isinstance(op, dict):
+            continue
+        op_cmd = op.get("command")
+        if isinstance(op_cmd, list):
+            op["command"] = [_sub_tokens(tok, subs) for tok in op_cmd]
+        elif isinstance(op_cmd, str):
+            op["command"] = _sub_tokens(op_cmd, subs)
+    parsed = urllib.parse.urlparse(c.get("base_url") or "http://127.0.0.1")
+    host = parsed.hostname or "127.0.0.1"
+    if port:
+        scheme = parsed.scheme or "http"
+        c["base_url"] = f"{scheme}://{host}:{port}"
+    else:
+        # Staging/production contracts retain their explicit remote URL. They do
+        # not receive a framework-allocated local port.
+        c["base_url"] = c.get("base_url")
     c["store"] = store_path
     c["mode"] = mode
     return c

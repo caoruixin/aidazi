@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/compact/review-verdict.compact.schema.json",
+  "type": "object",
+  "required": [
+    "decision",
+    "blocking_count",
+    "summary",
+    "findings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fix_required",
+        "out_of_scope_review"
+      ]
+    },
+    "blocking_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_claim": {
+      "type": "string"
+    },
+    "kernel_exemption": {
+      "type": "string",
+      "enum": [
+        "infra_only",
+        "docs_only",
+        "config_governance",
+        "characterization_test",
+        "none"
+      ],
+      "default": "none"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "severity",
+          "layer",
+          "evidence",
+          "rationale"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "layer": {
+            "type": "string",
+            "enum": [
+              "infra",
+              "java_guard",
+              "runtime_guard",
+              "workflow_definition",
+              "prompt_projection",
+              "skill_state",
+              "semantic_planner",
+              "eval_spec",
+              "product_policy",
+              "judge_calibration",
+              "human_review_required"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^.+:\\d+(-\\d+)?$"
+            },
+            "minItems": 1
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "constitution_clause": {
+            "type": "string"
+          },
+          "kernel_question": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9
+          }
+        }
+      }
+    }
+  },
+  "x-canonical-source": "review-verdict.schema.json",
+  "x-canonical-sha256": "18446c752b27e6593cea0381607dcf5d24d9574d524ba3e2e569ed46a3946bca"
+}

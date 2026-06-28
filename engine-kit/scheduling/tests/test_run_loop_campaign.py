@@ -160,6 +160,11 @@ class TestCampaignEntry(unittest.TestCase):
             r1 = self._entry(plan, charter, home, adapters, clk, resume=True)
             self.assertEqual(r1["pause_reason"], "advisory_acceptance_pass_signoff")
             self.assertEqual(r1["milestone_index"], 0)
+            # scope-coverage wiring: m1 in-flight (not yet accepted) ⇒ 0/2 delivered.
+            cov1 = r1["scope_coverage"]
+            self.assertEqual((cov1["milestones_delivered"], cov1["milestones_total"]),
+                             (0, 2))
+            self.assertFalse(cov1["baseline_available"])
             self.assertEqual(len(os.listdir(units)), 1, "only m1 has run")
             m1_loop = _expected_loop_id("cliB", "m1", "sprint-001")
             self.assertIn("acceptance_start",
@@ -181,6 +186,11 @@ class TestCampaignEntry(unittest.TestCase):
             self.assertEqual(r3["status"], "done")
             self.assertEqual(r3["exit_code"], rl.CAMPAIGN_EXIT_DONE)
             self.assertEqual(r3["milestone_index"], 2)
+            # scope-coverage wiring: backlog exhausted ⇒ 2/2 delivered, nothing left.
+            cov3 = r3["scope_coverage"]
+            self.assertEqual(cov3["milestones_delivered"], 2)
+            self.assertEqual(cov3["pct_milestones_delivered"], 100)
+            self.assertEqual(cov3["remaining_milestones"], [])
 
     def test_decision_identity_binding_rejects_mismatch(self):
         # At the m1 Acceptance pause, a decision is REFUSED fail-closed unless EVERY
@@ -409,6 +419,133 @@ class TestDecisionSchema(unittest.TestCase):
         self._invalid({"campaign_id": "c", "pause_reason": "gate_hard_fail",
                        "checkpoint": "", "choice": "re_run"})
 
+    def test_cleanup_gate_waiver_fields_accepted(self):
+        # acceptance_cleanup_required: a COMPLETE residue waiver (the fields
+        # campaign.interpret_dispatch needs to ship known residue) MUST pass the
+        # decision schema — else accept_residue_and_ship is dead-on-arrival at the
+        # file-based resolver (additionalProperties:false). retry_cleanup|abort carry no
+        # waiver fields. (Waiver COMPLETENESS is enforced by interpret_dispatch, not the
+        # schema — so a bare accept_residue_and_ship is schema-valid but fail-closes to
+        # a Deliver follow-up at dispatch, never ships.)
+        base = {"campaign_id": "c", "pause_reason": "acceptance_cleanup_required",
+                "checkpoint": self._CPT}
+        self._valid({**base, "choice": "retry_cleanup"})
+        self._valid({**base, "choice": "abort"})
+        self._valid({**base, "choice": "accept_residue_and_ship",
+                     "residue": ["leftover-db"], "rationale": "non-blocking",
+                     "evidence": "evidence.json", "waiver_id": "WV-1"})
+        self._valid({**base, "choice": "accept_residue_and_ship",
+                     "residue": ["leftover-db"], "rationale": "non-blocking",
+                     "evidence": "evidence.json", "waiver": True})
+        self._invalid({**base, "confirm": "no"})   # confirm on a choice gate (else-clause)
+
+    def test_waiver_fields_scoped_to_cleanup_ship_choice(self):
+        # Concern A: the residue-waiver fields are ONLY valid with
+        # choice:accept_residue_and_ship; an UNRELATED gate (or even the cleanup gate's
+        # retry_cleanup) carrying them is schema-REJECTED, so other gates stay strict
+        # (defense-in-depth at the ingress; the runtime ignores them elsewhere anyway).
+        self._valid({"campaign_id": "c",
+                     "pause_reason": "acceptance_cleanup_required",
+                     "checkpoint": self._CPT, "choice": "accept_residue_and_ship",
+                     "residue": ["r"], "rationale": "x", "evidence": "e",
+                     "waiver_id": "w"})
+        for fld, val in (("residue", ["r"]), ("rationale", "x"), ("evidence", "e"),
+                         ("waiver", True), ("waiver_id", "w")):
+            # advisory sign-off (choice:ship) must NOT accept any waiver field.
+            self._invalid({"campaign_id": "c",
+                           "pause_reason": "advisory_acceptance_pass_signoff",
+                           "checkpoint": self._CPT, "choice": "ship", fld: val})
+        # the cleanup gate's retry_cleanup (not accept_residue_and_ship) rejects them too.
+        self._invalid({"campaign_id": "c",
+                       "pause_reason": "acceptance_cleanup_required",
+                       "checkpoint": self._CPT, "choice": "retry_cleanup",
+                       "residue": ["r"]})
+
+
+class TestFileResolverResidueWaiver(unittest.TestCase):
+    """Blocking 1 (end-to-end): the FILE-based decision_resolver must pass the residue-
+    waiver fields THROUGH to campaign.interpret_dispatch — else a complete waiver
+    authored in campaign-decision.json is silently stripped at the resolver and
+    accept_residue_and_ship can NEVER ship on the real CLI (dead-on-arrival).
+
+    Drives campaign.run_campaign with a fake run_unit that halts at
+    acceptance_cleanup_required (carrying a schema-shaped checkpoint basename so the
+    resolver's identity binding resolves the live unit) + the REAL
+    rl.make_campaign_decision_resolver reading a real decision file."""
+
+    _CPT_BASENAME = "20260101-000000__acceptance_cleanup_required__s1.md"
+
+    def _events(self, ledger, type_):
+        return [e for e in audit.read_events(ledger) if e["type"] == type_]
+
+    def _run_unit(self, script):
+        def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
+                     resume=False, functional_acceptance=None, repo_dir=None):
+            return dict(script[subsprint_id])
+        return run_unit
+
+    def _setup_cleanup_pause(self, home):
+        cpt = os.path.join(home, "docs", "checkpoints", self._CPT_BASENAME)
+        os.makedirs(os.path.dirname(cpt), exist_ok=True)
+        with open(cpt, "w", encoding="utf-8") as fh:
+            fh.write("---\ncheckpoint_id: acceptance_cleanup_required\n---\n")
+        script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                         "pause_reason": "acceptance_cleanup_required",
+                         "checkpoint_path": cpt},
+                  "s2": {"final_state": "done", "spawn_count": 1}}
+        plan = _plan("cliWaiver", [
+            {"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+            {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}], signed=True)
+        st = cp.run_campaign(plan, home, self._run_unit(script), clock=_clock())
+        self.assertEqual(st.pause_reason, "acceptance_cleanup_required")
+        return plan, script, cpt
+
+    def _resolve_and_run(self, home, plan, script, cpt, **extra):
+        decision = {"campaign_id": "cliWaiver", "milestone_id": "m1",
+                    "subsprint_id": "s1", "pause_reason": "acceptance_cleanup_required",
+                    "checkpoint": os.path.basename(cpt),
+                    "choice": "accept_residue_and_ship",
+                    "residue": ["leftover-db"], "rationale": "non-blocking",
+                    "evidence": "docs/evidence/cleanup-status.json", **extra}
+        dec_path = os.path.join(home, "dec.json")
+        with open(dec_path, "w", encoding="utf-8") as fh:
+            json.dump(decision, fh)
+        resolver = rl.make_campaign_decision_resolver("cliWaiver", dec_path, home)
+        camp = cp.Campaign(plan, home, self._run_unit(script), clock=_clock())
+        st = camp.run(resume=True, decision_resolver=resolver)
+        return camp, st
+
+    def test_complete_waiver_file_survives_resolver_and_ships(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            plan, script, cpt = self._setup_cleanup_pause(home)
+            camp, st = self._resolve_and_run(home, plan, script, cpt, waiver_id="WV-1")
+            # WITHOUT the resolver pass-through fix the waiver fields would be stripped →
+            # interpret_dispatch fail-closes to deliver_followup_required (no ship). With
+            # the fix the complete waiver reaches interpret_dispatch → ships → DONE.
+            self.assertEqual(st.status, cp.STATUS_DONE)
+            self.assertEqual(st.milestone_index, 2)
+            waived = self._events(camp.audit_ledger,
+                                  "campaign_acceptance_residue_waived")
+            self.assertEqual(len(waived), 1)
+            self.assertEqual(waived[0]["payload"]["waiver_id"], "WV-1")
+            self.assertEqual(waived[0]["payload"]["residue"], ["leftover-db"])
+
+    def test_boolean_marker_waiver_file_survives_resolver_and_ships(self):
+        # Blocking 1 + 2 via the file path: the boolean marker (waiver:true, no
+        # waiver_id) also survives the resolver and ships, recording the marker.
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            plan, script, cpt = self._setup_cleanup_pause(home)
+            camp, st = self._resolve_and_run(home, plan, script, cpt, waiver=True)
+            self.assertEqual(st.status, cp.STATUS_DONE)
+            self.assertEqual(st.milestone_index, 2)
+            waived = self._events(camp.audit_ledger,
+                                  "campaign_acceptance_residue_waived")
+            self.assertEqual(len(waived), 1)
+            self.assertIs(waived[0]["payload"]["waiver"], True)
+            self.assertIsNone(waived[0]["payload"]["waiver_id"])
+
 
 class TestCampaignMainCLI(unittest.TestCase):
     """main(['--campaign', ...]) — exit codes + the machine-readable status line."""
@@ -455,6 +592,63 @@ class TestCampaignMainCLI(unittest.TestCase):
                                 "--charter", _EXAMPLE_CHARTER])
             self.assertEqual(code, rl.CAMPAIGN_EXIT_INVALID)
             self.assertEqual(_parse_campaign_status(buf.getvalue())["status"], "invalid")
+
+
+class TestScopeCoverageWiring(unittest.TestCase):
+    """Phase-0 scope-coverage is a GUARDED, ADDITIVE reporting nicety: it must
+    never break a run, and the CAMPAIGN_STATUS= parse contract stays byte-stable."""
+
+    _STATUS_KEYS = {
+        "campaign_id", "status", "pause_reason", "pause_checkpoint",
+        "pause_milestone_id", "pause_subsprint_id", "pause_loop_id",
+        "milestone_index", "milestones_total", "subsprints_run",
+        "total_spawns", "exit_code"}
+
+    def _paused_result(self, d):
+        charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+        plan = _plan("cliCov", [{"id": "m1", "objective": "x",
+                                 "subsprint_sequence": ["sprint-001"]}])
+        return rl.run_campaign_entry(
+            plan, charter, clock=_clock(),
+            campaign_run_dir=os.path.join(d, "h"),
+            adapters=_acceptance_adapters(ACC_PASS))
+
+    def test_status_keyset_locked_and_scope_coverage_additive(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self._paused_result(d)
+            self.assertIsNotNone(r["scope_coverage"])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rl.print_campaign_result(r)
+            out = buf.getvalue()
+            # CAMPAIGN_STATUS= key set is locked (additive line must not leak in)
+            self.assertEqual(set(_parse_campaign_status(out)), self._STATUS_KEYS)
+            cov = [ln for ln in out.splitlines() if ln.startswith("SCOPE_COVERAGE=")]
+            self.assertEqual(len(cov), 1, "exactly one additive SCOPE_COVERAGE= line")
+            json.loads(cov[0][len("SCOPE_COVERAGE="):])  # valid JSON
+
+    def test_scope_report_failure_degrades_to_none_and_suppresses_line(self):
+        import scope_report
+        orig = scope_report.compute_coverage
+
+        def _boom(*a, **k):
+            raise RuntimeError("scope_report bug")
+
+        scope_report.compute_coverage = _boom
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                r = self._paused_result(d)
+                # the campaign run still completes; coverage degraded to None
+                self.assertEqual(r["status"], "paused")
+                self.assertIsNone(r["scope_coverage"])
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rl.print_campaign_result(r)
+                out = buf.getvalue()
+                _parse_campaign_status(out)            # CAMPAIGN_STATUS still emitted
+                self.assertNotIn("SCOPE_COVERAGE=", out)  # additive line suppressed
+        finally:
+            scope_report.compute_coverage = orig
 
 
 if __name__ == "__main__":

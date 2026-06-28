@@ -1,0 +1,266 @@
+# Constraint inventory — governance/constitution.md §2/§3/§5/§6/§7/§8/§9/§10
+# (5-role chain + boundary invariants §3.4, human-confirm §3.5, calibration §3.6,
+#  hard-requirements registry §7.0, anti-patterns §10, doc/governance/versioning rules).
+- id: con-3.2-gate1-blocks-downstream
+  anchor: 'governance/constitution.md §3.2'
+  statement: No downstream work may proceed until the Customer signs the Research brief at gate 1.
+  roles: [all]
+  condition: always
+  current_enforcement: 'driver:_step_gate1'
+- id: con-3.2-gate2-ship-authority
+  anchor: 'governance/constitution.md §3.2'
+  statement: The ship/no-ship decision on the Acceptance verdict belongs to the Customer at gate 2; an agent MUST NOT ship without it.
+  roles: [acceptance, deliver]
+  condition: always
+  current_enforcement: 'driver:_acceptance_authoritative'
+- id: con-3.3-dev-sandbox-workspace-write-no-push
+  anchor: 'governance/constitution.md §3.3'
+  statement: The Dev Agent executes in a workspace_write sandbox with network per charter.tooling.dev.network_access and MUST NOT git push.
+  roles: [dev]
+  condition: always
+  current_enforcement: 'driver:_DEFAULT_SANDBOX_BY_ROLE'
+- id: con-3.3-dev-no-scope-authority
+  anchor: 'governance/constitution.md §3.3'
+  statement: The Dev Agent implements only and has no scope authority.
+  roles: [dev]
+  condition: always
+  current_enforcement: 'role-card:role-cards/dev-agent.md'
+- id: con-3.3-review-read-only-whitelist
+  anchor: 'governance/constitution.md §3.3'
+  statement: The Code Reviewer Agent operates read-only via the mechanical tool whitelist Read/Grep/Glob — no edits, no git push.
+  roles: [review]
+  condition: always
+  current_enforcement: 'driver:route_for_role'
+  notes: 'route_for_role routes the read-only Read/Grep/Glob whitelist + read_only sandbox for review.'
+- id: con-3.3-review-findings-header
+  anchor: 'governance/constitution.md §3.3'
+  statement: The Code Reviewer output MUST carry the header fields decision + blocking_count + summary + signed sub-sprint scope claim.
+  roles: [review]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'review-verdict.schema.json requires decision/blocking_count/summary/findings but scope_claim (the signed sub-sprint scope claim) is OPTIONAL, so the full header is not schema-enforced.'
+- id: con-3.3-acceptance-read-only-calibration-gated
+  anchor: 'governance/constitution.md §3.3'
+  statement: The Acceptance Agent runs read-only by tool whitelist and is calibration-gated per §3.6.
+  roles: [acceptance]
+  condition: always
+  current_enforcement: 'driver:route_for_role'
+  notes: 'route_for_role routes the read-only whitelist/sandbox; the calibration-gating clause is a §3.6 cross-ref.'
+- id: con-3.3-acceptance-agent-distinct
+  anchor: 'governance/constitution.md §3.3'
+  statement: The Acceptance backing agent_kind MUST be distinct from Dev/Reviewer/Research for independence.
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-3.3-research-closure-contract-3-part
+  anchor: 'governance/constitution.md §3.3'
+  statement: The Research brief MUST contain a closure_contract with positive_shape + anti_pattern + anchor_phrases (per §1.7-B), not a keyword match.
+  roles: [research]
+  condition: always
+  current_enforcement: 'schema:research-brief.schema.json'
+- id: con-3.4-no-self-grading
+  anchor: 'governance/constitution.md §3.4 #1'
+  statement: Each role MUST execute in a fresh agent session with self-contained prompt artifacts; cross-role context passes only via repo docs, never chat history.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'invariant #1; _validate_compact_text only checks context_budget.self_contained:true on the compact prompt — fresh-session and no-chat-history-backchannel are not programmatically enforced.'
+- id: con-3.4-acceptance-spawn-isolation
+  anchor: 'governance/constitution.md §3.4 #2'
+  statement: The Acceptance Agent MUST NOT be spawned by Research, Deliver, or Dev; an advisory spawn HALTs for sign-off unless authoritative (calibrated active class AND fully_autonomous_within_budget).
+  roles: [acceptance, research, deliver, dev]
+  condition: always
+  current_enforcement: 'driver:_spawn_acceptance'
+  notes: 'invariant #2 / §1.7-C; structural isolation is the orchestrator-only _spawn_acceptance surface (the audit stamp enforces nothing).'
+- id: con-3.4-reviewer-not-acceptance
+  anchor: 'governance/constitution.md §3.4 #3'
+  statement: The Code Reviewer question (is the code well-built) and the Acceptance question (did we build the right thing vs closure_contract) are independent; both gates run and neither substitutes for the other.
+  roles: [review, acceptance]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'invariant #3.'
+- id: con-3.4-research-acceptance-contract-symmetry
+  anchor: 'governance/constitution.md §3.4 #4'
+  statement: Research MUST NOT change the closure_contract after milestone start without Customer re-sign-off, and Acceptance MUST NOT evaluate against criteria the closure_contract does not specify (route research_contract_revision).
+  roles: [research, acceptance]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'invariant #4; campaign_plan_signoff is the initial-backlog sign-off only; post-start closure_contract immutability + Acceptance criteria-coverage symmetry are judgment.'
+- id: con-3.4-deliver-no-code
+  anchor: 'governance/constitution.md §3.4 #5'
+  statement: The Deliver Agent does not write/edit feature or test code, does not run review, and does not run acceptance — it plans, orchestrates, and closes only.
+  roles: [deliver]
+  condition: always
+  current_enforcement: 'role-card:role-cards/deliver-agent.md'
+  notes: 'invariant #5.'
+- id: con-3.4-skill-subagent-inherits-boundary
+  anchor: 'governance/constitution.md §3.4 #6'
+  statement: A role's skills/sub-agents inherit its tool whitelist + sandbox + invariants #1-#5 transitively and MUST NOT perform another role's gate function; for Acceptance, changing mounted skills invalidates calibration.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'invariant #6; only the Acceptance-skills-while-calibrated subpart is validator-warned (_check_calibration_corollary); full transitive inheritance is judgment.'
+- id: con-3.5-acceptance-fixrequired-human-confirm
+  anchor: 'governance/constitution.md §3.5'
+  statement: On Acceptance fix_required, Acceptance MUST write a human-confirm checkpoint file and Deliver MUST NOT pick up the gap brief until the human writes confirm:yes + a route.
+  roles: [acceptance, deliver]
+  condition: verdict_fix_required
+  current_enforcement: 'driver:_handle_acceptance_verdict'
+  notes: '_check_acceptance_on_fix_required only validates the charter config; the runtime checkpoint-write + HALT before Deliver is enforced by _handle_acceptance_verdict.'
+- id: con-3.5-human-confirm-required-true
+  anchor: 'governance/constitution.md §3.5'
+  statement: tooling.acceptance.on_fix_required.human_confirm_required MUST be true and route_options MUST be a non-empty list.
+  roles: [acceptance]
+  condition: tooling_acceptance_present
+  current_enforcement: 'validator:_check_acceptance_on_fix_required'
+- id: con-3.6-calibration-required-for-authoritative
+  anchor: 'governance/constitution.md §3.6'
+  statement: An Acceptance verdict MUST NOT be authoritative unless the judge is calibrated (default agreement_rate >= 0.9 AND flip_rate <= 0.1) for the active class under fully_autonomous_within_budget.
+  roles: [acceptance]
+  condition: fully_autonomous_within_budget
+  current_enforcement: 'driver:_acceptance_authoritative'
+- id: con-3.6-uncalibrated-auto-degrade
+  anchor: 'governance/constitution.md §3.6'
+  statement: An uncalibrated judge under fully_autonomous_within_budget MUST auto-degrade autonomy to human_on_the_loop (mandatory, never silent) and still run advisory, HALTing at advisory_acceptance_pass_signoff.
+  roles: [acceptance]
+  condition: uncalibrated_fully_autonomous
+  current_enforcement: 'driver:_calibration_gate'
+- id: con-3.6-calibration-invalidated-on-swap
+  anchor: 'governance/constitution.md §3.6'
+  statement: Switching the Acceptance agent_kind, model, or mounted skills invalidates calibration and requires a re-run.
+  roles: [acceptance]
+  condition: judge_identity_changed
+  current_enforcement: none-judgment
+  notes: '_check_calibration_corollary only WARNS when skills change while status is calibrated; it does not enforce invalidation on agent_kind/model swap, so the full rule is judgment.'
+- id: con-7.0-forbidden-list-nonoverridable
+  anchor: 'governance/constitution.md §7.0'
+  statement: The §1.7 forbidden list (including §1.7-A..§1.7-E) is non-overridable; violations are framework breaches, not adopter customizations.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-7.0-role-boundaries-nonoverridable
+  anchor: 'governance/constitution.md §7.0'
+  statement: The §3.4 five role-boundary invariants are non-overridable hard requirements.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-7.0-9-checkpoints-nonoverridable
+  anchor: 'governance/constitution.md §7.0'
+  statement: If the orchestrator is adopted, all 9 MANDATORY_CHECKPOINTS fire; the charter MAY add but MAY NOT remove any.
+  roles: [all]
+  condition: orchestrator_adopted
+  current_enforcement: none-judgment
+  notes: 'the validator enforces charter NON-bypass (see con-1.7d-*); it does not prove all 9 checkpoints actually FIRE at runtime — that is runtime/human discipline.'
+- id: con-7.0-calibration-nonoverridable
+  anchor: 'governance/constitution.md §7.0'
+  statement: If Acceptance is enabled in fully_autonomous_within_budget mode, calibration is required and uncalibrated auto-degrade is mandatory (not optional).
+  roles: [acceptance]
+  condition: acceptance_enabled_fully_autonomous
+  current_enforcement: 'driver:_calibration_gate'
+- id: con-7.0-hard-reqs-not-divergent
+  anchor: 'governance/constitution.md §7.0'
+  statement: Hard requirements (§7.0 registry) are framework breaches, NOT eligible for status:divergent in adoption-state.md.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'adoption-state.schema.json permits status:divergent and only requires a rationale; it does NOT block a §1.7/§7.0-targeting divergent row, so the rule is judgment.'
+- id: con-7.1-suggested-defaults-overridable-with-rationale
+  anchor: 'governance/constitution.md §7.1'
+  statement: Suggested defaults (size/split thresholds, fold-back cadence, calibration thresholds, suite-format, context_budget token values, autonomy-level naming) MAY be overridden ONLY with a documented rationale + status:divergent row in adoption-state.md.
+  roles: [all]
+  condition: adopter_diverges_from_default
+  current_enforcement: 'schema:adoption-state.schema.json'
+- id: con-10-acceptance-spawn-from-deliver-dev
+  anchor: 'governance/constitution.md §10'
+  statement: Spawning the Acceptance Agent from a Deliver or Dev session is forbidden (the verdict is invalid).
+  roles: [acceptance, deliver, dev]
+  condition: always
+  current_enforcement: 'driver:_spawn_acceptance'
+  notes: 'restates §1.7-C / §3.4 #2; structural isolation is the orchestrator-only _spawn_acceptance surface.'
+- id: con-10-fixrequired-route-without-checkpoint
+  anchor: 'governance/constitution.md §10'
+  statement: Acceptance routing fix_required to Deliver without a written human-confirm checkpoint decision is forbidden.
+  roles: [acceptance, deliver]
+  condition: verdict_fix_required
+  current_enforcement: 'driver:_handle_acceptance_verdict'
+  notes: 'the schema does not REQUIRE a checkpoint path on fix_required; the driver enforces it — _handle_acceptance_verdict writes the acceptance_fix_required checkpoint and HALTs before Deliver can pick up the gap.'
+- id: con-10-unattended-autoship-uncalibrated
+  anchor: 'governance/constitution.md §10'
+  statement: Unattended auto-iterate/auto-ship on an uncalibrated Acceptance verdict is forbidden; advisory-with-sign-off under human_on_the_loop is explicitly permitted.
+  roles: [acceptance]
+  condition: uncalibrated
+  current_enforcement: 'driver:_calibration_gate'
+- id: con-10-bypass-scope-envelope
+  anchor: 'governance/constitution.md §10'
+  statement: Bypassing scope_envelope_check on close is forbidden.
+  roles: [deliver]
+  condition: on_close
+  current_enforcement: none-judgment
+  notes: 'deterministic scope_envelope_check NOT wired in P2 (driver.py:2858); _handle_close only reacts to a Deliver in_scope:false self-claim, so the rule itself is judgment.'
+- id: con-10-dev-shadow-eval-access
+  anchor: 'governance/constitution.md §10'
+  statement: Giving the Dev sandbox read access to case_specs_shadow/ (or any holdout eval set) is forbidden — eval contamination.
+  roles: [dev]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-10-acceptance-code-inspection-verdict
+  anchor: 'governance/constitution.md §10'
+  statement: An Acceptance verdict claiming pass/fail from code inspection instead of execution evidence is forbidden (F5 violation).
+  roles: [acceptance]
+  condition: always
+  current_enforcement: 'schema:acceptance-verdict.schema.json'
+- id: con-10-conflate-auto-delivery-loop
+  anchor: 'governance/constitution.md §10'
+  statement: Conflating the Auto Loop with the Delivery Loop in adopter docs is forbidden; each MUST be named distinctly on first reference.
+  roles: [all]
+  condition: doc_mentions_either_loop
+  current_enforcement: none-judgment
+- id: con-2-doc-frontmatter-required
+  anchor: 'governance/constitution.md §2'
+  statement: Every framework and adopter doc MUST carry front-matter declaring its tier, load_discipline, source-of-truth, and lifecycle category; load_discipline always-load is permitted for the governance tier only.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-5-handoff-section12-close-authority
+  anchor: 'governance/constitution.md §5'
+  statement: Handoff §12 (close verdict) is authored by Deliver+Customer only; the Dev Agent fills §1-§11 and MUST NOT write §12.
+  roles: [dev, deliver]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-5-badcase-closure-criterion-human-authored
+  anchor: 'governance/constitution.md §5'
+  statement: The bad-case closure_criterion MUST be human-authored (joint Deliver+human; the human writes closure_criterion), not agent-generated.
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'case-spec.schema.json requires the 3-part closure_criterion presence but cannot enforce human (not agent) authorship.'
+- id: con-6-prompt-self-contained-frontmatter
+  anchor: 'governance/constitution.md §6'
+  statement: Every compact prompt artifact MUST declare context_budget with self_contained:true or be rejected at orchestrator preflight.
+  roles: [all]
+  condition: always
+  current_enforcement: 'driver:_validate_compact_text'
+- id: con-8-governance-edit-four-checks
+  anchor: 'governance/constitution.md §8'
+  statement: Before editing any governance-tier doc, the editor MUST verify timelessness, principle-vs-current-state, necessity, and durable-shift-vs-reaction; if any fails, the content goes to lessons/ or process/ instead.
+  roles: [all]
+  condition: editing_governance_doc
+  current_enforcement: none-judgment
+- id: con-8-governance-edits-foldback-only
+  anchor: 'governance/constitution.md §8'
+  statement: Governance edits land only at fold-back sub-sprint cadence — never mid-milestone, never inside an adopter repo — and planning-time scope authorization does NOT authorize execution-time governance content.
+  roles: [all]
+  condition: always
+  current_enforcement: none-judgment
+- id: con-9-no-auto-update-update-adoption-state
+  anchor: 'governance/constitution.md §9'
+  statement: Adopters consume framework versions on their own cadence (no auto-update) and MUST update docs/current/adoption-state.md when consuming a new version.
+  roles: [all]
+  condition: consuming_new_version
+  current_enforcement: none-judgment
+- id: con-9-semver-discipline
+  anchor: 'governance/constitution.md §9'
+  statement: Framework version bumps MUST follow semver discipline — patch = no Δ-shape change; minor = backwards-compatible additions; major = removals / role-chain / breaking front-matter changes.
+  roles: [all]
+  condition: cutting_release
+  current_enforcement: none-judgment

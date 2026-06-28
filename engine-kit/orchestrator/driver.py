@@ -130,6 +130,13 @@ import charter_compat  # noqa: E402
 # them, so the path stays byte-identical for every existing charter.
 import e2e_stage  # noqa: E402
 import e2e_executor  # noqa: E402
+import effective_role_config as effective_roles  # noqa: E402
+
+# WP-7 (context/token-optimization) — the read-only cold-start load-graph sizer owns the
+# canonical per-role cold-start set (context_briefing §1.2/§2). The driver reuses its
+# cold_start_load_graph_hash to fingerprint the governance/kernel VERSION each spawn loaded
+# (audit-only; never alters dispatched context). Sibling under orchestrator/ (on sys.path).
+import load_sizer  # noqa: E402
 
 # P3 INTEGRATION 2 — Loop Memory (engine-kit/memory/memory_store.py) is OPTIONAL.
 # It is imported lazily/guarded so the driver has NO hard dependency on it: a
@@ -142,9 +149,11 @@ if _MEMORY_DIR not in sys.path:
 try:
     from memory_store import MemoryStore  # noqa: E402
     from memory_store import MemoryError as _MemoryError  # noqa: E402
+    import lesson_selection as _lesson_selection  # noqa: E402  (WP-6 bounded ingress)
 except Exception:  # pragma: no cover - memory is optional; absence must not break
     MemoryStore = None  # type: ignore
     _MemoryError = Exception  # type: ignore
+    _lesson_selection = None  # type: ignore
 
 # P5 — the Loop Memory FEEDBACK engine (engine-kit/memory/feedback.py). Optional,
 # read-only, PROPOSE-ONLY: at a successful milestone close (memory enabled) it
@@ -262,6 +271,7 @@ def load_verdict_schemas(schemas_dir: Optional[str] = None) -> dict[str, dict]:
         ("review", "review-verdict.schema.json"),
         ("close", "deliver-close-verdict.schema.json"),
         ("acceptance", "acceptance-verdict.schema.json"),
+        ("acceptance_plan", "acceptance-execution-plan.schema.json"),
         # P6.1 — the milestone-decomposition verdict for full_chain_guided. Loaded
         # unconditionally (read-only) but only USED in loop_mode full_chain_guided
         # (the decompose_pending pre-state), so existing delivery_only charters are
@@ -305,12 +315,14 @@ class RoleRouting:
     # config. DEFAULT-DENY: an absent `connectors` is an empty list (no grant).
     connectors: list = field(default_factory=list)
     sandbox: str = "workspace_write"
-    # EXPLICIT opt-in network grant for a write sandbox (default-deny). The
-    # framework invariant is Dev = NO network (delivery-loop §4.2.7); an adopter
-    # that genuinely needs a Dev to `pip`/`npm` install sets
-    # tooling.<role>.network_access: true. The codex adapter then un-blocks the
-    # OS-sandbox network; the driver AUDITS it as a deliberate escalation and the
-    # charter validator WARNS. Off ⇒ byte-identical to the no-network default.
+    # Per-spawn reasoning effort (charter tooling.<role>.reasoning_effort). Threaded
+    # into harness-native flags: claude_code --effort, codex -c model_reasoning_effort.
+    reasoning_effort: str = ""
+    # Explicit per-role network grant. The shipped role configs set this true for
+    # all five LLM roles, while absent/false legacy configs remain fail-closed.
+    # The codex adapter can only un-block the OS-sandbox network for a
+    # workspace_write sandbox; grants on read_only roles are still routed/audited
+    # but remain a sandbox no-op.
     network_access: bool = False
 
 
@@ -372,10 +384,11 @@ def route_for_role(charter: dict, role: str) -> RoleRouting:
         # the role's sandbox (LEAST PRIVILEGE: dev⇒workspace_write, else read_only).
         connectors=list(rc.get("connectors") or []),
         sandbox=str(rc.get("sandbox") or default_sandbox),
-        # Opt-in network grant — FAIL CLOSED: only a literal boolean ``true`` grants
+        # Network grant — FAIL CLOSED: only a literal boolean ``true`` grants
         # network (``is True``), so a typo / non-bool (e.g. the string "yes", or 1)
-        # never silently over-grants. Default-deny matches the Dev=no-network invariant.
+        # never silently over-grants. Absent remains default-deny for legacy charters.
         network_access=(rc.get("network_access") is True),
+        reasoning_effort=str(rc.get("reasoning_effort") or ""),
     )
 
 
@@ -571,8 +584,16 @@ class Driver:
         loop_mode: Optional[str] = None,
         gate_resolver: Optional[Callable[[str, dict, Sequence[str]],
                                          Optional[dict]]] = None,
+        lesson_budget: Optional["object"] = None,
     ):
         self.charter = charter
+        # WP-6 (lessons tiering): the bound applied to the L1 (singleton) tier of the
+        # Loop-Memory ingress block. Defaults to lesson_selection.DEFAULT_BUDGET; only
+        # L1 is ever constrained (L2/MATURED/PROMOTED/UNKNOWN are preserved). Optional
+        # so existing callers are unchanged; configurable per-Driver for tests/adopters.
+        if lesson_budget is None and _lesson_selection is not None:
+            lesson_budget = _lesson_selection.DEFAULT_BUDGET
+        self._lesson_budget = lesson_budget
         # P-A: normalize the acceptance namespace + mode IN PLACE so every read
         # below is canonical (tooling.acceptance.mode) with NO per-read fallback
         # (design §1.4). A genuine config conflict (e.g. enabled vs mode disagree)
@@ -661,6 +682,9 @@ class Driver:
         self.browser_dir = os.path.join(
             self.audit_dir, "browser", self._safe_path_component(self.loop_id))
         self._pc_schema_cache: dict = {}
+        schemas_dir = _find_schemas_dir()
+        self.framework_root = os.path.dirname(schemas_dir) if schemas_dir else None
+        self._effective_role_cache: dict[str, effective_roles.EffectiveRoleConfig] = {}
         # §2a runtime hard-fail (Codex MAJOR-1): browser_e2e functional acceptance with
         # acceptance OFF is incoherent (a browser-evidence run with no judge). Enforce at
         # CONSTRUCTION — independent of the charter validator, which run_loop invokes only
@@ -827,30 +851,142 @@ class Driver:
             )
 
     # ----- the spawn boundary (driver → adapter → schema-valid verdict) ----- #
-    def _spawn(self, role: str, prompt: str, schema_key: Optional[str]) -> dict:
+    def _cold_start_load_graph_hash(self, role: str, skills_active: bool,
+                                    task_kind: Optional[str] = None) -> Optional[str]:
+        """WP-7 (observation-only): the ``load_graph_hash`` for ``role``'s cold-start
+        governance/kernel set, resolved against the FRAMEWORK root (where governance/,
+        role-cards/, process/ live — the same root ``_acceptance_resolver_graph`` derives).
+        ``skills_active`` (the role's effective skills are non-empty) folds in the
+        CONDITIONAL ``process/role-skill-model.md`` so a change to a conditionally-loaded
+        constraint source is still fingerprinted. ``task_kind`` (WP-5A, the spawn's stable
+        ``schema_key``) selects the task-scoped cold-start set (Close loads a narrower set
+        than Deliver-plan) AND is bound into the hash, so the fingerprint binds role +
+        task_kind + the actual cold-start roots + content (HARD-CONSTRAINT C).
+
+        BEST-EFFORT + AUDIT-ONLY: a sizing problem must NEVER block a spawn, so any failure
+        — no framework root, an unknown role, an unreadable/missing MANDATORY cold-start
+        file — degrades to None (the ledger field is nullable). A missing file is already a
+        drift signal surfaced elsewhere; here it simply yields no fingerprint rather than a
+        misleading partial one. This is NOT the Acceptance §3.5b reuse hash (design §E)."""
+        if not self.framework_root:
+            return None
+        try:
+            h, missing = load_sizer.cold_start_load_graph_hash(
+                role, task_kind, repo_root=self.framework_root,
+                skills_active=skills_active)
+        except (KeyError, OSError, ValueError):
+            return None
+        return None if missing else h
+
+    def _task_scoped_coldstart_directive(self, role: str, task_kind: str) -> str:
+        """WP-5A: an authoritative TASK-SCOPED COLD-START directive for a task whose
+        cold-start set is NARROWER than the role's full set (currently only deliver/close).
+        RENDERED from load_sizer — the SAME single source the byte sizer and the WP-7
+        ``load_graph_hash`` use — so the dispatched directive can never drift from the
+        measured/fingerprinted set. The task identity is the stable ``schema_key``; the
+        directive is NEVER derived from prompt text.
+
+        FAIL-CLOSED: returns "" when ``(role, task_kind)`` is NOT task-scoped (an unknown/
+        ``None``/unscoped task — e.g. ``deliver_plan``) so the agent simply follows its full
+        role-card cold-start. A directive is emitted ONLY when there is a genuine narrowing,
+        and it routes any insufficiency to a HALT (no silent on-demand fallback)."""
+        try:
+            scoped = load_sizer.role_cold_start_roots(role, task_kind)
+            full = load_sizer.role_cold_start_roots(role, None)
+        except (KeyError, ValueError):
+            return ""
+        scoped_paths = {p for p, _ in scoped}
+        dropped = [p for p, _ in full if p not in scoped_paths]
+        if not dropped:
+            return ""  # not narrowed ⇒ no directive ⇒ full role-card cold-start
+        retained = [p for p, purpose in scoped if purpose == "briefing"]
+        lines = [f"[TASK-SCOPED COLD-START — this is a `{task_kind}` task]",
+                 "Your cold-start load set is SCOPED to this task. Beyond the always-load "
+                 "kernel trio (constitution-core + authoring-kernel + context_briefing), this "
+                 "role card, and the adopter AGENTS.md + docs/current/adoption-state.md, load "
+                 "ONLY these briefing docs:"]
+        lines += [f"  - {p}" for p in retained]
+        lines.append(f"Do NOT load these — they are Deliver-plan/decompose-only briefing docs, "
+                     f"not needed for this `{task_kind}` task:")
+        lines += [f"  - {p}" for p in dropped]
+        lines.append("If you find you GENUINELY need one of the not-loaded docs to render a "
+                     "correct, honest verdict, do NOT guess — HALT and report the insufficiency. "
+                     "(The full constitution.md / doc_governance.md remain available on-demand "
+                     "per their existing triggers.)")
+        return "\n".join(lines) + "\n\n"
+
+    def _spawn(self, role: str, prompt: str, schema_key: Optional[str],
+               *, lessons_block: Optional[str] = None) -> dict:
         """Select the role's adapter, spawn, and (if a verdict schema applies)
         validate the result. An AdapterError OR a schema-invalid verdict becomes
-        a gate_hard_fail (delivery-loop §4.2.7) — never a permissive default."""
+        a gate_hard_fail (delivery-loop §4.2.7) — never a permissive default.
+
+        ``lessons_block`` (WP-0, observation-only) is the exact Loop-Memory lessons
+        block the caller prepended to ``prompt``; pass None when none was injected
+        (e.g. the Acceptance execution-plan spawn). The spawn audit records
+        memory_injected + memory_bytes from THIS, so they are faithful to the
+        dispatched prompt rather than a recomputed "would-inject" estimate."""
         assert self.state is not None
         adapter = self.adapters.get(role)
         if adapter is None:
             raise self._gate_hard_fail(
                 f"no adapter wired for role {role!r}", self.state.state)
         routing = route_for_role(self.charter, role)
+        effective = self._effective_role(role)
+        prompt = prompt + effective_roles.skill_prompt_block(effective)
         input_hash = "sha256:" + hashlib.sha256(
             (role + "\x00" + prompt).encode("utf-8")).hexdigest()[:16]
-        # P3 INTEGRATION 2: which Loop-Memory entries the ingress block injected
-        # (recorded on the spawn event, Audit Spine §4.5 G3). [] when memory off.
-        injected = self._injected_ids(role)
+        # P3 INTEGRATION 2 + WP-0 measurement (observation-only — does NOT alter the
+        # dispatched prompt): record the Loop-Memory channel ACTUALLY injected into
+        # `prompt`, so memory_injected (which ids) and memory_bytes (their size) are
+        # faithful to the dispatched transcript (Audit Spine §4.5 G3), not a recomputed
+        # "would-inject" estimate. `lessons_block` is the exact block the caller
+        # prepended (None when the caller injected none — e.g. the Acceptance
+        # execution-plan spawn — for which both are empty); when a block was injected,
+        # its ids come from the same deterministic scope select. The cold-start volume
+        # (the agent's own mid-session reads) is sized statically by load_sizer.py.
+        # WP-6 (lessons tiering): derive the injected ids, the SUPPRESSED ids, and
+        # the full selection audit from the SAME deterministic selection that built
+        # ``lessons_block`` (no drift). When no block was injected (lessons_block is
+        # None — e.g. the Acceptance execution-plan spawn — or memory disabled →
+        # selection None) all three are empty/None, byte-identical to before.
+        if lessons_block is None:
+            injected, memory_bytes = [], 0
+            suppressed_lesson_ids = None
+            lesson_selection_audit = None
+        else:
+            _sel = self._lesson_selection(role)
+            injected = list(_sel.selected_ids) if _sel is not None else []
+            suppressed_lesson_ids = _sel.suppressed_ids if _sel is not None else None
+            lesson_selection_audit = _sel.audit_dict() if _sel is not None else None
+            memory_bytes = len(lessons_block.encode("utf-8"))
+        prompt_bytes = len(prompt.encode("utf-8"))
+        fix_round = self.state.fix_round
+        # WP-7 (observation-only): fingerprint the role's cold-start governance/kernel load
+        # set (the agent's own mid-session reads — invisible to the prompt-only input_hash),
+        # so a kernel/governance swap on an otherwise audit-NEUTRAL Dev/Review/Close/Research
+        # spawn is recorded on the Audit Spine. CONDITIONAL role-skill-model.md is folded in
+        # when the role's effective skills are active. WP-5A: the spawn's stable ``schema_key``
+        # is the task_kind, so a task-scoped cold-start (e.g. Close loads a narrower set than
+        # Deliver-plan) is fingerprinted distinctly. Best-effort (None on any read problem);
+        # AUDIT-ONLY — not the Acceptance §3.5b reuse hash.
+        load_graph_hash = self._cold_start_load_graph_hash(
+            role, bool(effective.skills), task_kind=schema_key)
 
-        # An opt-in network grant is a DELIBERATE privilege escalation (the
-        # Dev=no-network invariant is the default, delivery-loop §4.2.7). Record it
-        # explicitly on the Audit Spine BEFORE the spawn so it is NEVER silent —
-        # even if the spawn then fails. Default-deny ⇒ no event (byte-identical).
+        # A network grant is explicit role configuration. Record it on the Audit
+        # Spine BEFORE the spawn so it is never silent, even if the spawn then
+        # fails. Absent/false legacy configs emit no event.
         if routing.network_access:
             self._audit("sandbox_network_granted", {
                 "role": role, "harness": adapter.harness,
                 "sandbox": routing.sandbox})
+        self._audit("effective_role_config", {
+            "role": role,
+            "skill_mode": effective.skill_mode,
+            "skills": [{"id": s.id, "sha256": s.content_hash}
+                       for s in effective.skills],
+            "skill_set_hash": effective.skill_set_hash,
+        })
 
         self.state.spawn_count += 1
         # PERSIST the bumped spawn_count NOW (before any transcript is keyed on it):
@@ -868,8 +1004,9 @@ class Driver:
             # uniform spawn boundary (keyword-only). DEFAULT-DENY: an empty grant
             # is a no-op (the adapter emits no native connector config), so the
             # spawn is byte-identical to before for a charter without connectors.
-            # network_access is the opt-in network grant (default False ⇒ the codex
-            # OS-sandbox stays no-network); only the codex adapter acts on it.
+            # network_access is the per-role network grant. Only the codex adapter
+            # has a concrete OS-sandbox network toggle; other adapters accept it
+            # for the uniform spawn boundary.
             verdict = adapter.spawn(
                 role, prompt, routing.tools,
                 self.schemas.get(schema_key, {}) if schema_key else {},
@@ -880,7 +1017,11 @@ class Driver:
                 role=role, harness=adapter.harness, provider=adapter.provider,
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
+                suppressed_lesson_ids=suppressed_lesson_ids,
+                lesson_selection=lesson_selection_audit,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
+                prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
+                fix_round=fix_round, load_graph_hash=load_graph_hash,
                 verdict_ref="adapter_error", prompt_ref=prompt_ref,
                 output_ref=None))  # no output produced — the adapter raised
             raise self._gate_hard_fail(
@@ -900,7 +1041,11 @@ class Driver:
                 role=role, harness=adapter.harness, provider=adapter.provider,
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
+                suppressed_lesson_ids=suppressed_lesson_ids,
+                lesson_selection=lesson_selection_audit,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
+                prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
+                fix_round=fix_round, load_graph_hash=load_graph_hash,
                 verdict_ref="invalid" if err else "valid",
                 prompt_ref=prompt_ref, output_ref=output_ref))
             if err is not None:
@@ -913,24 +1058,114 @@ class Driver:
                 role=role, harness=adapter.harness, provider=adapter.provider,
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
+                suppressed_lesson_ids=suppressed_lesson_ids,
+                lesson_selection=lesson_selection_audit,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
+                prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
+                fix_round=fix_round, load_graph_hash=load_graph_hash,
                 verdict_ref="artifact",
                 prompt_ref=prompt_ref, output_ref=output_ref))
         self.state.last_verdict = verdict
         return verdict
 
+    def _effective_role(self, role: str) -> effective_roles.EffectiveRoleConfig:
+        """Resolve framework defaults + adopter overrides once per role/run."""
+        if role not in self._effective_role_cache:
+            try:
+                self._effective_role_cache[role] = effective_roles.resolve_role_config(
+                    self.charter,
+                    role,
+                    framework_root=self.framework_root,
+                    adopter_root=self.repo_dir,
+                )
+            except effective_roles.EffectiveConfigError as exc:
+                state = self.state.state if self.state is not None else STATE_IDLE
+                raise self._gate_hard_fail(
+                    f"effective role configuration invalid for {role}: {exc}", state)
+        return self._effective_role_cache[role]
+
     # ----- the deterministic gate set (§4.2.4) ----------------------------- #
+    def _run_eval_cmd(self, *, event_type: str, run_subdir: str,
+                      fail_state: str, missing_cmd_hard_fail: bool,
+                      missing_msg: str, failure_label: str) -> Optional[str]:
+        """Run charter.tooling.eval.cmd as orchestrator-owned deterministic evidence.
+
+        The same charter eval command backs two different gates:
+        - sub-sprint gate: Dev -> deterministic compile/test check -> Review.
+        - Acceptance F5: milestone evidence handed to the Acceptance Agent.
+
+        ``run_subdir`` keeps those artifacts separate so stdout/stderr from one gate
+        never overwrites the other. Returns the stdout artifact path relative to
+        ``run_dir`` when a command ran, or None when no cmd is configured and the
+        caller allowed that as a backward-compatible no-op.
+        """
+        eval_cfg = (self.charter.get("tooling") or {}).get("eval") or {}
+        cmd = eval_cfg.get("cmd")
+        if not cmd:
+            if missing_cmd_hard_fail:
+                raise self._gate_hard_fail(missing_msg, fail_state)
+            return None
+        timeout = eval_cfg.get("timeout_seconds")
+        eval_run_dir = os.path.join(self.run_dir, run_subdir)
+        os.makedirs(eval_run_dir, exist_ok=True)
+        env = dict(os.environ)
+        env["EVAL_RUN_DIR"] = eval_run_dir
+        stdout_path = os.path.join(eval_run_dir, "stdout.txt")
+        stderr_path = os.path.join(eval_run_dir, "stderr.txt")
+        import subprocess  # local import: only when an eval command is configured
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, cwd=eval_run_dir, env=env,
+                capture_output=True, text=True,
+                timeout=timeout if isinstance(timeout, (int, float)) else None,
+            )
+        except subprocess.TimeoutExpired:
+            raise self._gate_hard_fail(
+                f"{failure_label} eval cmd timed out after {timeout}s "
+                f"(charter.tooling.eval.cmd)",
+                fail_state)
+        with open(stdout_path, "w", encoding="utf-8") as fh:
+            fh.write(proc.stdout or "")
+        with open(stderr_path, "w", encoding="utf-8") as fh:
+            fh.write(proc.stderr or "")
+        rel_stdout = os.path.relpath(stdout_path, self.run_dir).replace(os.sep, "/")
+        evidence_dir = run_subdir.replace(os.sep, "/")
+        if proc.returncode != 0:
+            self._audit(event_type, {
+                "cmd": cmd, "returncode": proc.returncode,
+                "evidence_dir": evidence_dir, "ok": False})
+            raise self._gate_hard_fail(
+                f"{failure_label} eval cmd exited {proc.returncode} "
+                f"(charter.tooling.eval.cmd); human resolves "
+                f"(re-run / accept-failure-and-route / abort)",
+                fail_state)
+        self._audit(event_type, {
+            "cmd": cmd, "returncode": 0,
+            "evidence_dir": evidence_dir,
+            "evidence_path": rel_stdout, "ok": True})
+        return rel_stdout
+
     def _run_gates(self) -> None:
-        """P2 gate set is deterministic + adapter-free. We assert the Dev handoff
-        artifact verdict exists (spawn_dev produced something) — a skipped/missing
-        required gate is NOT a pass (§4.2.4 state invariant) → gate_hard_fail."""
+        """Sub-sprint deterministic gate set.
+
+        The minimal gate remains adapter-free: Dev must have produced a handoff
+        artifact, and if the charter declares ``tooling.eval.cmd`` the orchestrator
+        runs it here before Review. This makes each sub-sprint catch compile/test
+        failures instead of deferring all deterministic evidence to milestone close.
+        """
         assert self.state is not None
         if self.state.last_verdict is None:
             raise self._gate_hard_fail(
                 "dev produced no handoff artifact before gate_pending",
                 STATE_GATE_PENDING)
-        # (run_tests / validate_stanza / check_handoff / check_trace are wired in
-        #  later phases; in the P2 MVP the gate is the presence-of-artifact check.)
+        self._run_eval_cmd(
+            event_type="subsprint_gate_run",
+            run_subdir=os.path.join("eval", "runs", self.state.subsprint_id,
+                                    "subsprint_gate"),
+            fail_state=STATE_GATE_PENDING,
+            missing_cmd_hard_fail=False,
+            missing_msg="",
+            failure_label="sub-sprint gate")
 
     # ----- P3 INTEGRATION 2: Loop Memory at ingress (read) ----------------- #
     def _modules_in_scope(self) -> list[str]:
@@ -939,37 +1174,45 @@ class Driver:
         scope = (self.autonomy.get("approved_scope") or {})
         return list(scope.get("modules_in_scope") or [])
 
-    def _lessons_block(self, role: str) -> str:
-        """Build the "Relevant prior lessons" ingress block for ``role`` from
-        Loop Memory, or "" when memory is disabled or has nothing relevant.
+    def _lesson_selection(self, role: str):
+        """The deterministic, BOUNDED Loop-Memory ingress selection for ``role``
+        (WP-6). Single source of truth for both the injected block and the spawn
+        audit — recomputing it is pure (no store mutation between calls within a
+        spawn step), so the block, ``memory_injected``, ``suppressed_lesson_ids``
+        and the ``lesson_selection`` audit never drift.
 
-        Selection is the store's deterministic scope match on {role, module};
-        the block injected into the prompt is short + generalizable (the entry
-        BODIES, never case-specific input→output — that is guarded at write).
-        Returns the entry ids it injected too, so the spawn audit can record
-        ``memory_injected`` (Audit Spine §4.5 G3)."""
-        if self.memory is None:
-            return ""
+        Returns a ``lesson_selection.LessonSelection`` or None when memory is
+        disabled. Scope is the store's deterministic match on {role, module}; the
+        tier-aware budget bounds only the L1 (singleton) tail — every validated
+        (L2/MATURED), promoted, or uncertain (UNKNOWN) lesson is preserved, and
+        any suppression is recorded (never silent)."""
+        if self.memory is None or _lesson_selection is None:
+            return None
         scope = {"role": [role], "module": self._modules_in_scope()}
-        entries = self.memory.select(scope)
-        if not entries:
-            return ""
-        lines = ["## Relevant prior lessons (Loop Memory)",
-                 "(generalizable heuristics from earlier loops — not rules to "
-                 "memorize; apply judgement)"]
-        for e in entries:
-            body = (e.body or "").strip().splitlines()
-            first = body[0].strip() if body else ""
-            lines.append(f"- [{e.maturity}] {first}")
-        return "\n".join(lines) + "\n\n"
+        candidates = self.memory.select(scope)
+        budget = self._lesson_budget or _lesson_selection.DEFAULT_BUDGET
+        return _lesson_selection.select_for_injection(
+            candidates,
+            superseded_ids=self.memory.superseded_ids(),
+            budget=budget,
+        )
+
+    def _lessons_block(self, role: str) -> str:
+        """Build the bounded "Relevant prior lessons" ingress block for ``role``
+        from Loop Memory, or "" when memory is disabled or has nothing relevant.
+
+        The block injected into the prompt is short + generalizable (the entry
+        BODIES, never case-specific input→output — that is guarded at write) and
+        TIER-BOUNDED (WP-6): only low-confidence L1 singletons are budget-limited;
+        an under-budget store renders byte-identically to the pre-WP-6 block."""
+        sel = self._lesson_selection(role)
+        return sel.block if sel is not None else ""
 
     def _injected_ids(self, role: str) -> list[str]:
-        """The entry ids Loop Memory would inject for ``role`` (for the spawn
-        audit's ``memory_injected`` field). [] when memory disabled."""
-        if self.memory is None:
-            return []
-        scope = {"role": [role], "module": self._modules_in_scope()}
-        return [e.id for e in self.memory.select(scope)]
+        """The entry ids Loop Memory ACTUALLY injects for ``role`` (post-budget; for
+        the spawn audit's ``memory_injected`` field). [] when memory disabled."""
+        sel = self._lesson_selection(role)
+        return list(sel.selected_ids) if sel is not None else []
 
     # ----- P4 INTEGRATION: Loop Ingress (git isolation + loop registry) ----- #
     def _ingress_enabled(self) -> bool:
@@ -1094,7 +1337,23 @@ class Driver:
         handle = self.context_handle
         isolation_cfg = self.charter.get("isolation") or {}
         if self.registry is not None:
-            self.registry.mark_done(self.loop_id, ts=self.clock())
+            try:
+                self.registry.mark_done(self.loop_id, ts=self.clock())
+            except KeyError:
+                # Bookkeeping must not make a completed delivery loop fatal. If an
+                # adopter hit a legacy path that did setup_context without a registry
+                # row, repair the registry at close, then mark done.
+                ts = self.clock()
+                self.registry.register(
+                    self.loop_id, handle.strategy, handle.branch,
+                    handle.work_dir if handle.strategy == li.STRATEGY_NEW_WORKTREE else None,
+                    ts=ts)
+                self.registry.mark_done(self.loop_id, ts=ts)
+                self._audit("loop_registry_repaired", {
+                    "loop_id": self.loop_id,
+                    "reason": "missing_record_at_close",
+                    "strategy": handle.strategy,
+                    "branch": handle.branch})
         changed = li.context_has_changes(handle)
         action = li.cleanup(
             handle, cleanup_policy=isolation_cfg.get("cleanup_policy"),
@@ -1504,10 +1763,12 @@ class Driver:
         sid = spec.get("id") or self.state.subsprint_id
         parts = [
             f"You are activating as the Code Reviewer Agent for sub-sprint {sid}.\n",
-            "Read-only judge: Read/Grep/Glob only — NO edits, NO network, NO git "
-            "push, NO agent spawn. Cold-start the always-load governance chain plus "
+            "Read-only judge: Read/Grep/Glob only — NO edits, NO git push, NO agent "
+            "spawn. Network access follows `tooling.review.network_access`. "
+            "Cold-start the explicit role-session governance chain plus "
             "role-cards/code-reviewer-agent.md, templates/anti-hardcode-review-"
-            "kernel.md (the 9-question kernel) and schemas/review-verdict.schema.json"
+            "kernel.md (the 9-question kernel) and "
+            "schemas/compact/review-verdict.compact.schema.json"
             ".\n\n",
             "## Sub-sprint under review\n",
             f"Objective: {spec.get('objective', '')}\n",
@@ -1553,7 +1814,8 @@ class Driver:
             "counted in blocking_count. Only P0/P1 block close or drive a fix round; "
             "P2 is never fixed or re-driven in this loop.\n"
             "- blocking_count = count of P0 + P1 findings (P2 excluded).\n\n",
-            "## Output — emit a review-verdict (schemas/review-verdict.schema.json)\n"
+            "## Output — emit a review-verdict "
+            "(schemas/compact/review-verdict.compact.schema.json)\n"
             "Return ONE JSON object and nothing else:\n"
             "  decision: \"pass\" | \"fix_required\" | \"out_of_scope_review\" "
             "(never invent another value)\n"
@@ -1708,10 +1970,11 @@ class Driver:
         resolved = self._resolve_dev_spec()
         if resolved is _DEV_SPEC_HALT:
             return  # checkpoint written + STATE_HALTED set; the drive loop stops
+        lessons = self._lessons_block("dev")
         if resolved is not None:
-            prompt = self._lessons_block("dev") + resolved
+            prompt = lessons + resolved
         else:
-            prompt = (self._lessons_block("dev")
+            prompt = (lessons
                       + f"Implement sub-sprint {self.state.subsprint_id}; "
                         f"write the handoff.")
         # On an auto-fix round the Reviewer's specific findings are appended as a
@@ -1722,6 +1985,7 @@ class Driver:
         verdict = self._spawn(
             "dev", prompt,
             schema_key=None,  # spawn_dev's artifact IS the code+handoff, no verdict schema
+            lessons_block=lessons,
         )
         # Capture the Dev change-summary transcript ref so the projected Review prompt
         # can cite it by a CONCRETE path (not just "the working-tree diff").
@@ -1741,21 +2005,31 @@ class Driver:
         resolved = self._resolve_review_spec()
         if resolved is _REVIEW_SPEC_HALT:
             return None  # checkpoint written + STATE_HALTED set; the drive loop stops
+        lessons = self._lessons_block("review")
         if resolved is not None:
-            prompt = self._lessons_block("review") + resolved
+            prompt = lessons + resolved
         else:
-            prompt = (self._lessons_block("review")
+            prompt = (lessons
                       + f"Review sub-sprint {self.state.subsprint_id}. "
                         f"Emit a review-verdict.")
-        verdict = self._spawn("review", prompt, schema_key="review")
+        verdict = self._spawn("review", prompt, schema_key="review",
+                              lessons_block=lessons)
         self.state.history.append(STATE_REVIEW_PENDING)
         return verdict
 
     def _step_close(self) -> dict:
-        prompt = (self._lessons_block("deliver")
+        lessons = self._lessons_block("deliver")
+        # WP-5A: Close is the same `deliver` role as Deliver-plan but a distinct task
+        # (schema_key="close"). Inject the authoritative task-scoped cold-start directive
+        # so the live agent skips the 9 Deliver-plan-only briefing docs (the directive is
+        # part of the prompt → recorded in input_hash; the matching narrowed load set is
+        # what the WP-7 load_graph_hash fingerprints). HALT-on-insufficiency, never guess.
+        directive = self._task_scoped_coldstart_directive("deliver", "close")
+        prompt = (lessons + directive
                   + f"Close sub-sprint {self.state.subsprint_id}. "
                     f"Emit a deliver-close-verdict.")
-        verdict = self._spawn("deliver", prompt, schema_key="close")
+        verdict = self._spawn("deliver", prompt, schema_key="close",
+                              lessons_block=lessons)
         self.state.history.append(STATE_CLOSE_PENDING)
         return verdict
 
@@ -1812,7 +2086,8 @@ class Driver:
                         {"reason": "brief signed upfront "
                                    "(intent_contract.confirmed_by_human)"})
             return
-        prompt = (self._lessons_block("research")
+        lessons = self._lessons_block("research")
+        prompt = (lessons
                   + f"Draft the milestone brief for mission "
                     f"{(self.charter.get('mission') or {}).get('id')}: state the "
                     f"intent contract (problem, in/out of scope, closure contract) "
@@ -1820,7 +2095,7 @@ class Driver:
                     f"the stated intent — scope widening needs the Gate-1 human "
                     f"checkpoint.")
         # ARTIFACT spawn (a brief is a doc, NOT a verdict) → schema_key=None.
-        self._spawn("research", prompt, schema_key=None)
+        self._spawn("research", prompt, schema_key=None, lessons_block=lessons)
         # The drafted brief is an artifact under the run dir; we persist a stable
         # reference (deterministic — no clock/uuid; the loop_id + subsprint anchor
         # it) so resume + Gate-1 context point at the same draft.
@@ -1972,13 +2247,15 @@ class Driver:
                          "subsprint_sequence": list(supplied)})
             return
 
-        prompt = (self._lessons_block("deliver")
+        lessons = self._lessons_block("deliver")
+        prompt = (lessons
                   + f"Decompose the SIGNED milestone brief "
                     f"(`{self.state.brief_draft_ref}`) into an ordered list of "
                     f"sub-sprints. Emit a deliver-plan-verdict: each sub_sprint "
                     f"declares id, objective, scope_in, scope_out, modules, layers, "
                     f"exit_criteria. Stay within the human-signed approved scope.")
-        verdict = self._spawn("deliver", prompt, schema_key="deliver_plan")
+        verdict = self._spawn("deliver", prompt, schema_key="deliver_plan",
+                              lessons_block=lessons)
         sub_sprints = list(verdict.get("sub_sprints") or [])
         seq = [str(s.get("id")) for s in sub_sprints if isinstance(s, dict)]
         self.state.planned_sequence = seq
@@ -2541,10 +2818,12 @@ class Driver:
 
             # --- map decide() action → driver side effect --------------------- #
             if decision.action == lc.ACTION_ADVANCE:
-                # A fix round that came back clean — leave the fix loop. (Reached
-                # only if a re-review returned a clean verdict below.)
-                self.state.state = STATE_ADVANCE
+                # A fix round that came back clean still needs the Delivery Loop's
+                # close step. Review pass is necessary, not a complete close.
+                self.state.state = STATE_CLOSE_PENDING
                 self._save_state()
+                close_verdict = self._step_close()
+                self._handle_close(close_verdict)
                 return
 
             if decision.action == lc.ACTION_HALT:
@@ -2933,6 +3212,166 @@ class Driver:
                 STATE_E2E_PENDING)
         return e2e
 
+    def _acceptance_interaction_mode(self) -> str:
+        """Legacy browser charters stay deterministic; new templates set hybrid."""
+        functional = (((self.charter.get("tooling") or {}).get("acceptance") or {})
+                      .get("functional") or {})
+        return str(functional.get("interaction_mode") or "deterministic")
+
+    def _acceptance_target_environment(self) -> str:
+        functional = (((self.charter.get("tooling") or {}).get("acceptance") or {})
+                      .get("functional") or {})
+        return str(functional.get("target_environment") or "local")
+
+    def _acceptance_plan_prompt(self, checklist: dict, e2e: dict,
+                                interaction_mode: str) -> str:
+        operations = [
+            {
+                "id": op.get("id"),
+                "phase": op.get("phase"),
+                "environments": op.get("environments"),
+                "side_effect": op.get("side_effect"),
+            }
+            for op in (e2e.get("lifecycle_operations") or [])
+            if isinstance(op, dict)
+        ]
+        policy = self._effective_role("acceptance").acceptance_functional
+        return (
+            "You are the Acceptance Agent preparing your own browser validation. "
+            "You own environment/account/data preparation, user-style browser "
+            "exploration, and cleanup, while repository files and signed criteria "
+            "remain read-only. Return only the JSON execution plan schema.\n\n"
+            f"Interaction mode: {interaction_mode}\n"
+            f"Target environment: {self._acceptance_target_environment()}\n"
+            "Signed functional checklist:\n"
+            f"{json.dumps(checklist, ensure_ascii=False, sort_keys=True)}\n\n"
+            "Pre-authorized lifecycle operations (select ids only; never invent "
+            "shell commands or credentials):\n"
+            f"{json.dumps(operations, ensure_ascii=False, sort_keys=True)}\n\n"
+            "Browser/production policy:\n"
+            f"{json.dumps(policy, ensure_ascii=False, sort_keys=True)}\n\n"
+            "For hybrid mode, the fixed journeys will run automatically; add "
+            "exploratory journeys that exercise realistic user behavior and edge "
+            "states. For agentic mode, your planned assertion steps must cover every "
+            "signed criterion_id. Select cleanup operations for every setup operation "
+            "that creates accounts/data where a matching cleanup exists."
+        )
+
+    def _validate_acceptance_execution_plan(self, plan: dict, checklist: dict,
+                                            e2e: dict,
+                                            interaction_mode: str) -> None:
+        if plan.get("interaction_mode") != interaction_mode:
+            raise self._gate_hard_fail(
+                "Acceptance execution plan interaction_mode does not match charter",
+                STATE_E2E_PENDING)
+        operations = {
+            str(op.get("id")): op for op in (e2e.get("lifecycle_operations") or [])
+            if isinstance(op, dict) and op.get("id")
+        }
+        target = self._acceptance_target_environment()
+        effective = self._effective_role("acceptance").acceptance_functional
+        production = effective.get("production") or {}
+        allow = set(production.get("allowed_side_effects") or [])
+        deny = set(production.get("denied_side_effects") or [])
+        policy = production.get("side_effect_policy", "explicit_allow")
+
+        for phase, key in (("setup", "setup_operations"),
+                           ("cleanup", "cleanup_operations")):
+            for op_id in plan.get(key) or []:
+                op = operations.get(str(op_id))
+                if not op:
+                    raise self._gate_hard_fail(
+                        f"Acceptance selected unknown lifecycle operation {op_id!r}",
+                        STATE_E2E_PENDING)
+                if op.get("phase") != phase:
+                    raise self._gate_hard_fail(
+                        f"Acceptance selected {op_id!r} in the wrong phase",
+                        STATE_E2E_PENDING)
+                envs = op.get("environments") or []
+                if envs and target not in envs:
+                    raise self._gate_hard_fail(
+                        f"lifecycle operation {op_id!r} is not authorized for {target}",
+                        STATE_E2E_PENDING)
+                side_effect = op.get("side_effect")
+                if target == "production" and side_effect:
+                    if side_effect in deny or (
+                            policy == "explicit_allow" and side_effect not in allow):
+                        raise self._gate_hard_fail(
+                            f"production side effect {side_effect!r} is not authorized",
+                            STATE_E2E_PENDING)
+
+        browser = effective.get("browser") or {}
+        allowed_actions = set(browser.get("allowed_actions") or [])
+        allowed_origins = set(browser.get("allowed_origins") or e2e.get(
+            "allowed_origins") or [])
+        for journey in plan.get("journeys") or []:
+            for step in journey.get("steps") or []:
+                action = step.get("action")
+                if allowed_actions and action not in allowed_actions and not str(
+                        action).startswith("assert_"):
+                    raise self._gate_hard_fail(
+                        f"Acceptance browser action {action!r} is not authorized",
+                        STATE_E2E_PENDING)
+                url = step.get("url")
+                if isinstance(url, str) and url.startswith(("http://", "https://")):
+                    from urllib.parse import urlparse
+                    parsed = urlparse(url)
+                    origin = f"{parsed.scheme}://{parsed.netloc}"
+                    if origin not in allowed_origins:
+                        raise self._gate_hard_fail(
+                            f"Acceptance navigation origin {origin!r} is not allowed",
+                            STATE_E2E_PENDING)
+                side_effect = step.get("side_effect")
+                if target == "production" and side_effect:
+                    if side_effect in deny or (
+                            policy == "explicit_allow" and side_effect not in allow):
+                        raise self._gate_hard_fail(
+                            f"production browser side effect {side_effect!r} is not authorized",
+                            STATE_E2E_PENDING)
+
+        if interaction_mode == "agentic":
+            expected = {str(c.get("criterion_id")) for c in checklist.get(
+                "criteria", []) if c.get("criterion_id")}
+            covered = {
+                str(step.get("criterion_id"))
+                for journey in plan.get("journeys") or []
+                for step in journey.get("steps") or []
+                if step.get("criterion_id") and str(
+                    step.get("action", "")).startswith("assert_")
+            }
+            if covered != expected:
+                raise self._gate_hard_fail(
+                    "agentic Acceptance plan must cover the signed criterion_id set "
+                    f"exactly (expected={sorted(expected)}, got={sorted(covered)})",
+                    STATE_E2E_PENDING)
+
+    def _acceptance_execution_plan(self, checklist: dict, e2e: dict) -> Optional[dict]:
+        interaction_mode = self._acceptance_interaction_mode()
+        if interaction_mode == "deterministic":
+            return None
+        if "acceptance_plan" not in self.schemas:
+            raise self._gate_hard_fail(
+                "hybrid/agentic Acceptance requires acceptance-execution-plan schema",
+                STATE_E2E_PENDING)
+        # This spawn prepends NO Loop-Memory lessons block, so lessons_block stays None
+        # → the audit records memory_injected=[] / memory_bytes=0, faithful to the
+        # dispatched prompt (WP-0). Changing what this prompt carries is out of scope.
+        plan = self._spawn(
+            "acceptance",
+            self._acceptance_plan_prompt(checklist, e2e, interaction_mode),
+            schema_key="acceptance_plan",
+        )
+        self._validate_acceptance_execution_plan(
+            plan, checklist, e2e, interaction_mode)
+        self._audit("acceptance_execution_plan", {
+            "interaction_mode": interaction_mode,
+            "target_environment": self._acceptance_target_environment(),
+            "setup_operations": plan.get("setup_operations") or [],
+            "cleanup_operations": plan.get("cleanup_operations") or [],
+            "journey_ids": [j.get("id") for j in plan.get("journeys") or []],
+        })
+        return plan
+
     def _e2e_checklist_path(self) -> str:
         functional = (((self.charter.get("tooling") or {}).get("acceptance") or {})
                       .get("functional") or {})
@@ -2963,7 +3402,8 @@ class Driver:
                 f"functional-checklist does not validate: {err}", STATE_E2E_PENDING)
         return checklist
 
-    def _e2e_runtime_contract(self, run_id: str) -> dict:
+    def _e2e_runtime_contract(self, run_id: str,
+                              acceptance_plan: Optional[dict] = None) -> dict:
         """Build the concrete runtime executor-contract from charter.tooling.e2e:
         validate the static mechanics, allocate a free port + per-run store, project
         {port}/{store}/{mode}. Re-validate the runtime form (fail-closed, since run_loop
@@ -2974,10 +3414,23 @@ class Driver:
         if err:
             raise self._gate_hard_fail(
                 f"tooling.e2e invalid (executor-contract): {err}", STATE_E2E_PENDING)
-        port = e2e_stage.allocate_free_port()
+        target = self._acceptance_target_environment()
+        port = e2e_stage.allocate_free_port() if target == "local" else 0
         store = os.path.join(self.orch_dir, f"e2e_store_{run_id}.json")
         contract = e2e_stage.build_runtime_contract(
             e2e, port=port, store_path=store, mode=e2e.get("mode", "normal"))
+        contract["target_environment"] = target
+        if acceptance_plan is not None:
+            contract["acceptance_execution_plan"] = acceptance_plan
+            contract["selected_setup_operations"] = list(
+                acceptance_plan.get("setup_operations") or [])
+            contract["selected_cleanup_operations"] = list(
+                acceptance_plan.get("cleanup_operations") or [])
+            planned = list(acceptance_plan.get("journeys") or [])
+            if self._acceptance_interaction_mode() == "agentic":
+                contract["journeys"] = planned
+            else:
+                contract["journeys"] = list(contract.get("journeys") or []) + planned
         err2 = e2e_stage.validate(contract, ec_schema)
         if err2:
             raise self._gate_hard_fail(
@@ -3051,7 +3504,8 @@ class Driver:
         staging = final + ".staging"
         shutil.rmtree(staging, ignore_errors=True)
         checklist = self._e2e_checklist()
-        contract = self._e2e_runtime_contract(run_id)
+        acceptance_plan = self._acceptance_execution_plan(checklist, self._e2e_config())
+        contract = self._e2e_runtime_contract(run_id, acceptance_plan)
         self._audit("e2e_start", {"subsprint_id": self.state.subsprint_id,
                                   "run_id": run_id,
                                   "executor_kind": contract.get("executor_kind")})
@@ -3143,54 +3597,16 @@ class Driver:
 
         On non-zero exit / timeout → gate_hard_fail (§4.2.6: human resolves)."""
         assert self.state is not None
-        eval_cfg = (self.charter.get("tooling") or {}).get("eval") or {}
-        cmd = eval_cfg.get("cmd")
-        if not cmd:
-            raise self._gate_hard_fail(
+        return self._run_eval_cmd(
+            event_type="acceptance_eval_run",
+            run_subdir=os.path.join("eval", "runs", self.state.subsprint_id,
+                                    "acceptance"),
+            fail_state=STATE_ACCEPTANCE_PENDING,
+            missing_cmd_hard_fail=True,
+            missing_msg=(
                 "acceptance enabled but charter.tooling.eval.cmd is missing "
-                "(F5 evidence has no harness to run; §4.2.6)",
-                STATE_ACCEPTANCE_PENDING)
-        timeout = eval_cfg.get("timeout_seconds")
-        run_subdir = os.path.join("eval", "runs", self.state.subsprint_id)
-        eval_run_dir = os.path.join(self.run_dir, run_subdir)
-        os.makedirs(eval_run_dir, exist_ok=True)
-        # The eval cmd writes its artifact here; the driver passes EVAL_RUN_DIR so
-        # a deterministic local script (tests) can write a fake artifact offline.
-        env = dict(os.environ)
-        env["EVAL_RUN_DIR"] = eval_run_dir
-        stdout_path = os.path.join(eval_run_dir, "stdout.txt")
-        stderr_path = os.path.join(eval_run_dir, "stderr.txt")
-        import subprocess  # local import: only on the F5 path
-        try:
-            proc = subprocess.run(
-                cmd, shell=True, cwd=eval_run_dir, env=env,
-                capture_output=True, text=True,
-                timeout=timeout if isinstance(timeout, (int, float)) else None,
-            )
-        except subprocess.TimeoutExpired:
-            raise self._gate_hard_fail(
-                f"F5 eval cmd timed out after {timeout}s "
-                f"(charter.tooling.eval.cmd); §4.2.6 → human resolves",
-                STATE_ACCEPTANCE_PENDING)
-        with open(stdout_path, "w", encoding="utf-8") as fh:
-            fh.write(proc.stdout or "")
-        with open(stderr_path, "w", encoding="utf-8") as fh:
-            fh.write(proc.stderr or "")
-        rel_stdout = os.path.relpath(stdout_path, self.run_dir)
-        if proc.returncode != 0:
-            self._audit("acceptance_eval_run",
-                        {"cmd": cmd, "returncode": proc.returncode,
-                         "evidence_dir": run_subdir, "ok": False})
-            raise self._gate_hard_fail(
-                f"F5 eval cmd exited {proc.returncode} "
-                f"(charter.tooling.eval.cmd); §4.2.6 → human resolves "
-                f"(re-run / accept-failure-and-route / abort)",
-                STATE_ACCEPTANCE_PENDING)
-        self._audit("acceptance_eval_run",
-                    {"cmd": cmd, "returncode": 0,
-                     "evidence_dir": run_subdir,
-                     "evidence_path": rel_stdout, "ok": True})
-        return rel_stdout
+                "(F5 evidence has no harness to run; §4.2.6)"),
+            failure_label="F5")
 
     # ----- Acceptance-prompt resolution (signed contract + milestone evidence) - #
     # A DISTINCT contract from the Review one: the Acceptance prompt is scoped to
@@ -3233,6 +3649,42 @@ class Driver:
                 "intent_contract.confirmed_by_human must be `true` — Acceptance judges "
                 "ONLY a human-signed contract (Constitution §3.4 invariant #4)")
         return problems
+
+    def _acceptance_kernel_section(self) -> str:
+        """WP-4B: read the standalone ``governance/acceptance-kernel.md`` projection and return it as a
+        self-contained prompt section embedded into the projected Acceptance prompt. The judge gets the
+        delivery-loop §4.2.x (F5 / calibration / checkpoints / anti-patterns), the role-skill §4/§6
+        boundary, and the six judge-instruction gaps INLINE — so the prompt is self-contained and the
+        whole-file ``process/delivery-loop.md`` + ``process/role-skill-model.md`` reads are retired
+        (Acceptance LOAD-CLOSURE). The embedded text feeds ``acceptance_input_hash`` via the prompt, so
+        a kernel edit re-invalidates §3.5b reuse. Best-effort: a missing kernel (a broken framework
+        deployment) degrades to a marker; the shipped framework always carries the kernel."""
+        base = _find_schemas_dir()
+        repo_root = os.path.dirname(base) if base else None
+        if repo_root:
+            kpath = os.path.join(repo_root, "governance", "acceptance-kernel.md")
+            try:
+                with open(kpath, "r", encoding="utf-8") as fh:
+                    body = fh.read()
+            except OSError:
+                body = None
+            if body:
+                if body.startswith("---"):  # strip YAML front-matter; embed the normative body
+                    end = body.find("\n---", 3)
+                    if end != -1:
+                        body = body[end + 4:]
+                return (
+                    "## Acceptance governance kernel (binding — judge by these rules)\n"
+                    "The delivery-loop §4.2.x (F5 / calibration / checkpoints / anti-patterns), the "
+                    "role-skill §4/§6 boundary, and the judge-instruction discipline are projected "
+                    "INLINE below; do NOT separately load `process/delivery-loop.md` or "
+                    "`process/role-skill-model.md` (retired for Acceptance). If this projection is "
+                    "insufficient, HALT for prompt refinement — never read an unbound file.\n\n"
+                    + body.strip() + "\n\n")
+        return (  # degenerate: framework kernel unreadable (deployment error)
+            "## Acceptance governance kernel\n"
+            "(governance/acceptance-kernel.md is unreadable — surface this as a framework "
+            "deployment error rather than proceeding on an incomplete projection.)\n\n")
 
     def _project_acceptance_prompt(self, ic: dict, evidence_path: str,
                                    calibration_status: str) -> str:
@@ -3277,10 +3729,14 @@ class Driver:
             f"You are activating as the Acceptance Agent for the milestone close of "
             f"`{scope}`.\n",
             "Read-only customer-perspective judge: Read/Grep/Glob only — NO edits, "
-            "NO network, NO eval-harness run. Spawn surface: orchestrator (§1.7-C, "
-            "calibration-gated). Cold-start the always-load governance chain plus "
+            "NO eval-harness run. Network access follows "
+            "`tooling.acceptance.network_access`. Spawn surface: orchestrator (§1.7-C, "
+            "calibration-gated). Cold-start the explicit role-session governance chain plus "
             "role-cards/acceptance-agent.md and "
-            "schemas/acceptance-verdict.schema.json.\n\n",
+            "schemas/compact/acceptance-verdict.compact.schema.json. The acceptance-kernel below "
+            "is self-contained for the delivery-loop / role-skill judge rules — do NOT load "
+            "`process/delivery-loop.md` or `process/role-skill-model.md`.\n\n",
+            self._acceptance_kernel_section(),
             "## Customer need (signed intent contract)\n"
             f"Goal (customer terms): {ic.get('goal','')}\n"
             f"Standard (the bar for 'good'): {ic.get('standard','')}\n"
@@ -3304,7 +3760,7 @@ class Driver:
             "has ALREADY degraded authority (§3.6) and your verdict is ADVISORY "
             "ONLY until calibrated — do not self-escalate.\n\n",
             "## Output — emit an acceptance-verdict "
-            "(schemas/acceptance-verdict.schema.json)\n"
+            "(schemas/compact/acceptance-verdict.compact.schema.json)\n"
             "Return ONE JSON object and nothing else:\n"
             "  milestone_verdict: \"pass\" | \"fix_required\" | \"needs_human\"\n"
             + closure_ref_line +
@@ -3443,6 +3899,15 @@ class Driver:
         routing = route_for_role(self.charter, "acceptance")
         input_hash = "sha256:" + hashlib.sha256(
             ("acceptance\x00" + prompt).encode("utf-8")).hexdigest()[:16]
+        # WP-7 (observation-only): the same cold-start governance/kernel fingerprint the
+        # uniform _spawn boundary records, so the heaviest role's governance version is
+        # ledger-recorded too. CONDITIONAL role-skill-model.md folds in when Acceptance
+        # skills are active. AUDIT-ONLY — this does NOT feed acceptance_input_hash (the
+        # §3.5b reuse hash, computed separately over prompt + resolver graph); it never
+        # substitutes for resolver binding on a verdict-affecting input (design §E).
+        load_graph_hash = self._cold_start_load_graph_hash(
+            "acceptance", bool(self._effective_role("acceptance").skills),
+            task_kind="acceptance")
         self.state.spawn_count += 1
         # PERSIST the bumped spawn_count NOW (see _spawn): a resume after a mid-spawn
         # halt must not rewind it and clobber a referenced transcript.
@@ -3466,6 +3931,14 @@ class Driver:
                 "evidence_path": evidence_path,
                 "calibration_status": calibration_status,
                 "run_mode": self.autonomy.get("level", "human_in_the_loop"),
+                # WP-0 measurement (observation-only): the as-dispatched Acceptance
+                # prompt size + fix-round index, parallel to the uniform _spawn fields
+                # so the heaviest role is not blind to the baseline. Acceptance injects
+                # no Loop-Memory lessons block, so there is no memory_bytes here.
+                "prompt_bytes": len(prompt.encode("utf-8")),
+                "fix_round": self.state.fix_round,
+                # WP-7 (observation-only): cold-start governance/kernel fingerprint.
+                "load_graph_hash": load_graph_hash,
                 "input_hash": input_hash,
                 "prompt_ref": prompt_ref,
                 "output_ref": output_ref,
@@ -3475,18 +3948,20 @@ class Driver:
                 "spawn_surface": "orchestrator",
             })
 
+        if routing.network_access:
+            self._audit("sandbox_network_granted", {
+                "role": "acceptance", "harness": adapter.harness,
+                "sandbox": routing.sandbox})
+
         try:
             # Facet C: acceptance connectors are read-only evidence connectors
             # only (judgment is never delegated); threaded through uniformly.
-            # network_access is HARD-PINNED False: Acceptance is a read-only judge
-            # that NEVER receives a network grant. The charter schema already bars
-            # it structurally (the acceptance block is additionalProperties:false
-            # with no network_access field); pinning False here is defense-in-depth
-            # so the judge stays network-free even if that schema guard regresses.
+            # network_access follows the same explicit role routing as other
+            # roles; read_only sandboxes remain read_only regardless of this flag.
             verdict = adapter.spawn(
                 "acceptance", prompt, routing.tools, self.schemas["acceptance"],
                 connectors=routing.connectors, sandbox=routing.sandbox,
-                network_access=False)
+                network_access=routing.network_access)
         except AdapterError as exc:
             _acceptance_spawn_audit("adapter_error", None)  # prompt-only; no output
             raise self._gate_hard_fail(
@@ -3598,9 +4073,25 @@ class Driver:
                 entries.append({"path": ap, "rel": rel.replace(os.sep, "/"),
                                 "purpose": "review_context"})
         if base:
-            entries.append({"path": os.path.join(base, "acceptance-verdict.schema.json"),
-                            "rel": "schemas/acceptance-verdict.schema.json",
+            # WP-1b: the Acceptance judge READS the compact projection (the agent-facing
+            # loaders — context_briefing §2, the compact-acceptance-prompt load_list, and the
+            # projected prompt above — all point here), so the §3.5b resolver binds the
+            # COMPACT file (LOAD-CLOSURE: bind what the judge actually loads). The verbose
+            # canonical stays the driver's validator input (load_verdict_schemas) and is NOT
+            # an agent input → not bound. The lockstep gate keeps compact ≡ canonical, so a
+            # canonical edit regenerates the compact and re-invalidates reuse transitively.
+            entries.append({"path": os.path.join(
+                                base, "compact", "acceptance-verdict.compact.schema.json"),
+                            "rel": "schemas/compact/acceptance-verdict.compact.schema.json",
                             "purpose": "verdict_schema"})
+            # WP-4B: context_briefing §2.5 lists templates/compact-acceptance-prompt.md as an
+            # Acceptance input ("output template + judging discipline"). Its judging discipline is
+            # inlined into the embedded acceptance-kernel, but bind the template too so a discipline
+            # edit re-invalidates §3.5b reuse (LOAD-CLOSURE: no unbound verdict-affecting input).
+            entries.append({"path": os.path.join(repo_root, "templates",
+                                                 "compact-acceptance-prompt.md"),
+                            "rel": "templates/compact-acceptance-prompt.md",
+                            "purpose": "compact_acceptance_prompt_template"})
         entries.append({"path": os.path.join(repo_root, "role-cards",
                                              "acceptance-agent.md"),
                         "rel": "role-cards/acceptance-agent.md", "purpose": "role_card"})
@@ -3617,7 +4108,7 @@ class Driver:
         # REAL AGENTS.md / docs/current ledgers, so an edit there could not invalidate
         # §3.5b reuse (Codex impl r2 BLOCKING-3). When ingress is off (repo_dir is None)
         # there is no adopter repo, so there is no adopter cold-start to bind here — the
-        # framework cold-start below still anchors the always-load governance chain.
+        # framework role-session entries below still anchor the governance chain.
         adopter_root = self.repo_dir
         if adopter_root:
             ag = os.path.join(adopter_root, "AGENTS.md")
@@ -3631,13 +4122,46 @@ class Driver:
                         entries.append({"path": os.path.join(cur, fn),
                                         "rel": f"docs/current/{fn}",
                                         "purpose": "adopter_ledger"})
-        # The framework cold-start root: AGENTS.md @-includes the always-load governance
-        # chain, so the transitive resolver reaches constitution / doc_governance /
-        # context_briefing (and whatever else they include) — an edit to any invalidates reuse.
+            # WP-4B: the judge reads a prior docs/acceptance-reports/<scope>-acceptance-report.md for
+            # residual-risk lineage (role card §1 step 10), which feeds the verdict's residual_risks —
+            # a verdict-affecting input. Bind it conditionally (like the closure_contract) so an edit
+            # to the prior report re-invalidates §3.5b reuse (LOAD-CLOSURE).
+            scope_id = self._acceptance_scope_id()
+            prior = os.path.join(adopter_root, "docs", "acceptance-reports",
+                                 f"{scope_id}-acceptance-report.md")
+            if os.path.isfile(prior):
+                entries.append({"path": prior,
+                                "rel": f"docs/acceptance-reports/{scope_id}-acceptance-report.md",
+                                "purpose": "prior_acceptance_report"})
+        # The framework role-session governance chain is explicit. The default Control
+        # Plane entry no longer @-includes these files, so do not rely on transitive
+        # AGENTS.md closure here; an edit to any role-session governance input must
+        # invalidate Acceptance reuse.
         fw_agents = os.path.join(repo_root, "AGENTS.md")
         if os.path.isfile(fw_agents):
             entries.append({"path": fw_agents, "rel": "AGENTS.md",
                             "purpose": "framework_cold_start"})
+        for rel in (
+            # WP-2: the judge cold-starts the constitution-CORE projection (context_briefing
+            # §1.2 step 1). Bind it. KEEP constitution.md bound too: the kernel's triggers let
+            # the judge load the canonical ON-DEMAND (term / divergence / rule-conflict /
+            # exception), so an edit to it can still affect a verdict — binding both is
+            # fail-closed (an edit to either re-spawns).
+            # WP-3: the judge cold-starts the authoring-kernel projection (context_briefing
+            # §1.2 step 2). Bind it. KEEP doc_governance.md bound too: the judge may load the
+            # full canonical ON-DEMAND (context_briefing §2.6 "Doc lifecycle question"), so an
+            # edit to it can still affect a verdict — binding both is fail-closed. (The full
+            # Acceptance LOAD-CLOSURE — proving no OTHER unbound on-demand read — is WP-4.)
+            os.path.join("governance", "constitution-core.md"),
+            os.path.join("governance", "constitution.md"),
+            os.path.join("governance", "authoring-kernel.md"),
+            os.path.join("governance", "doc_governance.md"),
+            os.path.join("governance", "context_briefing.md"),
+        ):
+            path = os.path.join(repo_root, rel)
+            if os.path.isfile(path):
+                entries.append({"path": path, "rel": rel.replace(os.sep, "/"),
+                                "purpose": "framework_role_session_governance"})
         return e2e_stage.resolve_load_graph(entries, repo_root=repo_root)
 
     def _run_acceptance(self) -> None:
@@ -3709,7 +4233,11 @@ class Driver:
                 self.charter, active_class=active_class,
                 calibration_status=calibration_status,
                 calibration_record_id=cal_record_id,
-                autonomy_level_declared=declared_autonomy),
+                autonomy_level_declared=declared_autonomy,
+                effective_skill_set_hash=self._effective_role(
+                    "acceptance").skill_set_hash,
+                effective_functional=self._effective_role(
+                    "acceptance").acceptance_functional),
             "acceptance_input_hash": e2e_stage.acceptance_input_hash(prompt, graph),
             "authoritative": bool(self._acceptance_authoritative()),
         }
@@ -3753,6 +4281,19 @@ class Driver:
                 data = json.load(fh)
             return data if isinstance(data, list) else []
         except (OSError, ValueError):  # pragma: no cover - reconcile already verified it
+            return []
+
+    def _acceptance_cleanup_failures(self, run_id: Optional[str]) -> list:
+        if run_id is None:
+            return []
+        try:
+            with open(os.path.join(
+                    self._e2e_final_dir(run_id), "cleanup-status.json"),
+                    "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            failures = data.get("failures") if isinstance(data, dict) else []
+            return failures if isinstance(failures, list) else []
+        except (OSError, ValueError):
             return []
 
     def _handle_acceptance_verdict(self, verdict: dict, evidence_path: str, *,
@@ -3821,6 +4362,26 @@ class Driver:
                      "evidence_path": evidence_path})
 
         if mv == "pass":
+            cleanup_failures = self._acceptance_cleanup_failures(run_id)
+            if cleanup_failures:
+                path = self._write_checkpoint(
+                    "acceptance_cleanup_required", self.state.subsprint_id,
+                    context_md=(
+                        "Acceptance completed its judgment, but one or more selected "
+                        "cleanup operations failed. The verdict remains recorded; "
+                        "shipping is halted until the production/test residue is "
+                        f"resolved. Failures: {json.dumps(cleanup_failures, sort_keys=True)}. "
+                        f"Evidence: {evidence_path}."),
+                    options_md=(
+                        "- retry_cleanup\n- accept_residue_and_ship\n- abort\n"),
+                )
+                self._audit("acceptance_cleanup_required", {
+                    "failures": cleanup_failures,
+                    "checkpoint": os.path.relpath(path, self.run_dir),
+                })
+                self.state.state = STATE_HALTED
+                self._save_state()
+                return
             if snapshot.get("authoritative"):
                 # Authoritative pass (auto mode + calibrated + fully-autonomous):
                 # the milestone ships. STATE_DONE marks a fully-accepted close.

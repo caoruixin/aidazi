@@ -33,9 +33,13 @@ decisions and supplies inputs; you do the reading, the writing, and the shell
 work, one decision at a time, and you confirm before you change anything that
 already exists.
 
-If you are a human: open a fresh session in your target repo, point your coding
-agent at this file ("read `aidazi/ONBOARDING.md` and run it"), and answer its
-questions. You can stop at any point and re-run later — the wizard resumes.
+If you are a human: open a fresh session **in your target (adopter) repo root**
+(e.g. `~/projects/airplat`), point your coding agent at this file
+("read `aidazi/ONBOARDING.md` and run it"), and answer its questions. The agent
+may **read** the wizard from a vendored/submodule `aidazi/` path, but **every
+write** lands in the adopter repo (the session's cwd) — **not** in the aidazi
+framework repo (`~/projects/aidazi`). You can stop at any point and re-run later
+— the wizard resumes.
 
 This wizard installs aidazi **once**, into a codebase. It is **not** a loop. It
 does not run your project. After it completes, the standalone driver runs the
@@ -117,14 +121,15 @@ And one governing interaction style:
 ## The journey at a glance — the decisions you'll make
 
 Before the wizard drives you decision-by-decision, here is the whole route. The
-wizard runs **Step 0–9, including the Step 4a snapshot checkpoint** (11 entries
+wizard runs **Step 0–9, including Step 0a and the Step 4a snapshot checkpoint** (12 entries
 below). This table is the **map only** — it does **not** restate the rules; each
 step section below is the source of truth. After this overview, execution still
 follows property 5: **one decision at a time**.
 
 | Step | What you decide | Recommended approach / default action | Deferrable? | Main output |
 |---|---|---|---|---|
-| 0 | (no decision) bootstrap the ledger + record | — (always first) | no | `adoption-state.md` + `onboarding-record.md` |
+| 0 | (no decision) bootstrap the ledger + record | — (always first) | no | `adoption-state.md` + `onboarding-record.md` + `adoption-config.md` |
+| 0a | confirm cwd = adopter repo (fail-fast) | agent detects framework repo signals | no | workspace OK or STOP |
 | 1 | greenfield vs brownfield | agent auto-detects from repo signals; you confirm | no | adoption shape in the ledger |
 | 2 | (brownfield only) inventory the codebase | read-only scan; nothing decided yet | n/a | inventory in the record |
 | 3 | adoption track (Type A / B / C / A+B) + brownfield profile depth | recommend from signals (Δ-14); brownfield default = start at B/C | no | `track:` |
@@ -133,7 +138,7 @@ follows property 5: **one decision at a time**.
 | 5 | role config: 3 facets (execution = *agent execution stack*, capability, connector) | per-role defaults from `skills/registry.yaml`; connectors default-deny | partial | charter `tooling.*` |
 | 6 | generate the adopter artifacts | copy from `examples/minimal-greenfield/`; read-before-write | no | `AGENTS.md` / `CLAUDE.md` / `charter.yaml` / `docs/current/*` |
 | 7 | autonomy + checkpoint posture | default `human_in_the_loop`; the 9 MANDATORY_CHECKPOINTS always fire | no | charter `autonomy.*` |
-| 8 | validate — the green gate | run both validators to exit 0 | no | recorded green result |
+| 8 | validate — the green gate | validators + `adoption_status.py` exit 0 | no | green result + `adoption-readiness.md` |
 | 9 | first-loop hand-off | hand off to `FIRST-LOOP.md` (not the wizard) | no | the loops begin |
 
 > **Two distinct "stacks" — never conflate them.** Step 4a captures the **adopter
@@ -145,13 +150,46 @@ follows property 5: **one decision at a time**.
 
 ---
 
+## Step 0a — Confirm workspace (fail-fast; always before Step 0 writes)
+
+**Action (read-only):** verify this session's **cwd is the adopter repo root**,
+NOT the aidazi framework repo. If `engine-kit/validators/adoption_status.py` is
+already present (Step 6 not done yet), run it; otherwise apply the signals below
+manually. When the validator is available:
+
+```bash
+python engine-kit/validators/adoption_status.py .
+```
+
+If the report says **framework repo detected — wrong workspace**, **STOP** and tell
+the human to open a fresh session whose cwd is the target codebase (e.g.
+`~/projects/airplat`), then re-run the wizard from there. The agent may still
+**read** `aidazi/ONBOARDING.md` from a submodule or sibling path; all generated
+files must land under the adopter cwd.
+
+**Wrong-repo signals (any two is enough to STOP):**
+
+- Root has `process/delivery-loop.md` + `role-cards/` (framework layout).
+- Root `AGENTS.md` is still the consumer **template** (`<adopter-name>` placeholders)
+  with no `docs/current/adoption-state.md`.
+- `adoption_status.py` exits non-zero with the framework-repo message.
+
+Record **workspace OK** as the first row in `onboarding-record.md`.
+
+> Properties: non-destructive (read-only), audited (record the check), harness-
+> agnostic (plain Python CLI).
+
+---
+
 ## Step 0 — Bootstrap the ledger and the audit record (always first)
 
-Before anything else:
+Before anything else (after Step 0a passes):
 
 1. **Locate the framework.** Confirm `aidazi/` (or the vendored framework root)
-   is reachable from the target repo. If it is a submodule, it is already in
-   place; if not, copy it in (greenfield STEP 1 in `docs/greenfield-guide.md`).
+   is reachable from the target repo. **Recommended:** run
+   `engine-kit/tools/vendor-framework.sh <aidazi-source> <adopter-root>` to copy
+   the framework in (no submodule). A git submodule also works but is optional
+   (greenfield STEP 1 in `docs/greenfield-guide.md`).
 2. **Read-before-write the ledger.** If `docs/current/adoption-state.md` exists,
    load it and resume from the first unfinished step (property 2). If not, create
    it from `templates/adoption-state-template.md` (schema:
@@ -159,6 +197,11 @@ Before anything else:
 3. **Open the onboarding record.** If `docs/current/onboarding-record.md` exists,
    append to it; else create it with a header. Every subsequent step writes one
    row here (property 4).
+4. **Open the configuration map.** If `docs/current/adoption-config.md` exists,
+   load it; else create it from `templates/adoption-config-template.md`
+   (read-before-write + diff-confirm). This is the human-facing catalog of **what
+   can be configured and where** — pair it with `adoption_status.py` (Step 8) for
+   **what is configured vs missing**.
 
 > Properties honored: idempotent+resumable (reads the ledger to find resume
 > point), audited (opens the record), non-destructive (never recreates an
@@ -300,7 +343,8 @@ an empty cell.
   **not** block onboarding.
 
 The snapshot is **`load_discipline: by-role`** (Dev + Deliver load it on demand)
-— it is **not** added to the always-load governance chain.
+— it is **not** added to the default Control Plane load graph or the role-session
+governance chain.
 
 > Properties: recommendation-driven (one snapshot, recommend-then-confirm),
 > non-destructive (read-only detection; names-not-values; read-before-write),
@@ -406,9 +450,9 @@ Generate / install:
    `framework_version`, `charter_path`) and §3 ledger paths.
    1a. **Root `CLAUDE.md` harness wiring** (normative: `governance/context_briefing.md`
        §1.1). Claude Code auto-loads `CLAUDE.md`, **not** a bare `AGENTS.md`, so a
-       Claude-Code session at a root that has only `AGENTS.md` starts with the always-load
-       governance chain silently absent (a Default-Full breach). Generate a **one-line root
-       `CLAUDE.md` containing exactly `@AGENTS.md`** so Claude Code imports the same chain
+       Claude-Code session at a root that has only `AGENTS.md` starts without the default
+       Control Plane entry. Generate a **one-line root
+       `CLAUDE.md` containing exactly `@AGENTS.md`** so Claude Code imports the same entry
        Codex auto-loads. Generate it **regardless of the primary harness** — Claude Code and
        Codex are used alternately, and one wiring serves both. Discipline: **read-before-write
        + diff-confirm** like every artifact; if a `CLAUDE.md` already exists (brownfield),
@@ -423,7 +467,8 @@ Generate / install:
 3. **`docs/current/*`** — the three domain contracts plus state ledgers, per the
    worked example: `domain_taxonomy.md`, `runtime_invariants.md`,
    `eval_acceptance_bars.md`, `agent_context_guide.md`, the already-created
-   `adoption-state.md` + `onboarding-record.md`, and `implementation-stack.md`
+   `adoption-state.md` + `onboarding-record.md` + `adoption-config.md`, and
+   `implementation-stack.md`
    (created in Step 4a). (`docs/domain-adaptation.md` walks the three domain
    contracts; the implementation-stack snapshot is separate — product facts, not
    domain semantics.)
@@ -433,10 +478,22 @@ Generate / install:
 5. **Vendor the default skills** under `skills/vendored/<id>/` (each with its
    upstream `LICENSE` + provenance), bound per Step 5; pins recorded in
    `skills/skills.lock`.
-6. **Create `.orchestrator/` and the audit dir** — the loop registry +
-   `.orchestrator/audit/` for the hash-chained per-loop ledger (charter `audit.ledger_dir`,
-   default `.orchestrator/audit`).
-7. **(Optional — ONLY when enabling Loop Memory) Create the memory store.** If the
+6. **Create `.orchestrator/` with control + audit dirs** — `.orchestrator/control/`
+   for the lightweight default-session state index (`state.json`) and intent ledger
+   (`intents.jsonl`), plus `.orchestrator/audit/` for the hash-chained per-loop
+   ledger (charter `audit.ledger_dir`, default `.orchestrator/audit`). This is the
+   **repo-side** registry/control area (`loops.json` plus control state); per-loop
+   live state/audit/transcripts land under **`.runs/<loop_id>/`** (gitignored).
+7. **Ensure `.gitignore` covers loop + secret paths** — at minimum append (read-before-
+   write + diff-confirm if `.gitignore` already exists):
+   ```
+   .orchestrator/
+   .runs/
+   .env.local
+   ```
+   `.runs/` is the default run-dir root (`run_loop.py`); keeping it gitignored lets
+   you tail live progress in-repo without polluting the delivered diff.
+8. **(Optional — ONLY when enabling Loop Memory) Create the memory store.** If the
    charter sets `memory.enabled: true`, scaffold `<memory.root>/` (default `memory/`)
    with an empty `entries/` subdir and a seed `index.md` (the store also self-creates on
    first use). **With Loop Memory OFF (the default), create NOTHING** — the loop is
@@ -501,7 +558,7 @@ until this is green.**
    sandbox). Warnings are allowed; **errors block.** Fix and re-run until exit 0.
 2. **`adopter_wiring_validator`** — confirm the Step 6.1a harness root-file wiring
    (`governance/context_briefing.md` §1.1) is actually in place, so a Claude-Code
-   cold-start gets the Default-Full chain:
+   cold-start gets the root Control Plane entry:
    ```bash
    python engine-kit/validators/adopter_wiring_validator.py . --harness claude_code
    ```
@@ -514,14 +571,35 @@ until this is green.**
    unspecified, or a Cursor target (a bare `AGENTS.md` is not Cursor wiring); WARN does not block.
    Omit `--harness` to validate against the charter's declared harness(es) instead; for a
    Codex-only adopter the bare `AGENTS.md` PASSes and no `CLAUDE.md` is required.
-3. **Structural checks** — confirm the generated tree exists and resolves:
-   `AGENTS.md`, `docs/current/*`, the copied `engine-kit/`, vendored skills +
-   `skills/skills.lock`, `.orchestrator/audit/`, and that the intent contract
-   triple is present. Also confirm the **Step 5 Facet A preflight** ran: every
-   bound `(harness, provider)` pair has a `reachable yes` row in the onboarding
-   record, or an explicit human-recorded deferral in `adoption-state.md`.
-4. Record the green result (both validators' exit codes + timestamp) in the
-   onboarding record. Mark the relevant `adoption-state.md` rows `at-spec`.
+3. **`control_plane_validator`** — confirm the default session stays lightweight and
+   schema-backed:
+   ```bash
+   python engine-kit/validators/control_plane_validator.py .
+   ```
+   **PASS** ⇒ `AGENTS.md` has the required `control-plane-load` block and the default
+   load graph does not include role cards, action banks, handoffs, audit transcripts,
+   eval artifacts, archives, or broad globs. **FAIL** ⇒ fix `AGENTS.md` before using
+   natural-language default sessions.
+4. **`adoption_status`** — run the adoption readiness report (configured vs missing;
+   never reads secret values — env-var **names** only):
+   ```bash
+   python engine-kit/validators/adoption_status.py . --write-readiness docs/current/adoption-readiness.md
+   ```
+   Exit 0 ⇒ workspace is the adopter repo (not the framework repo) AND every
+   **REQUIRED** row is `[✓]`. The `--write-readiness` flag writes
+   `docs/current/adoption-readiness.md` (human snapshot; re-run anytime to refresh).
+   Pair with `docs/current/adoption-config.md` (the configuration map from Step 0).
+   Fix any `[ ]` / `[~]` / `[✗]` REQUIRED items and re-run until exit 0.
+5. **Structural checks** — confirm the generated tree exists and resolves:
+   `AGENTS.md`, `docs/current/*` (including `adoption-config.md` +
+   `adoption-readiness.md`), the copied `engine-kit/`, vendored skills +
+   `skills/skills.lock`, `.gitignore` covers `.runs/` + `.env.local`,
+   `.orchestrator/control/`, `.orchestrator/audit/`, and that the intent contract triple is present. Also
+   confirm the **Step 5 Facet A preflight** ran: every bound `(harness, provider)`
+   pair has a `reachable yes` row in the onboarding record, or an explicit
+   human-recorded deferral in `adoption-state.md`.
+6. Record the green result (all validators + adoption_status exit codes + timestamp)
+   in the onboarding record. Mark the relevant `adoption-state.md` rows `at-spec`.
 
 > Properties: audited (the green gate is recorded), idempotent (re-running the
 > validator is side-effect-free), harness-agnostic (a plain Python CLI, no
@@ -554,13 +632,18 @@ The bootstrap is done. Hand off to the **standalone driver** — this is where
 - **Scheduling** (overnight Auto Loop / milestone Delivery Loop) is plain cron /
   CI — never a harness scheduler (plan §4.2). Wire it when you want unattended
   runs.
-- **Drive the whole goal** (continuous multi-milestone delivery, 以终为始): the
-  single-loop driver above runs ONE milestone and stops. Once the Deliver agent has
-  authored + the Customer has signed an ordered milestone backlog
+- **Drive the whole goal** (continuous multi-milestone delivery, 以终为始): default
+  human operation remains Control Plane-first and single-milestone unless the
+  adopter explicitly opts into Campaign mode. In the default topology,
+  `charter.yaml` is the active execution source and generated
+  `docs/milestone-backlog.md` is a status view. Once the Deliver agent has authored
+  + the Customer has signed an ordered campaign plan
   (`templates/campaign-plan.example.json`; `schemas/campaign-plan.schema.json`), the
-  **Campaign Loop** drives the ENTIRE backlog through the same driver, pausing only at
-  human gates: `engine-kit/scheduling/run_loop.py --charter charter.yaml --campaign
-  campaign-plan.json`. See `FIRST-LOOP.md` → "Drive the whole goal" + `process/campaign-loop.md`.
+  **Campaign Loop** can drive the ENTIRE backlog through the same driver, pausing
+  only at human gates. Humans normally ask the Control Plane to continue/resume;
+  `engine-kit/scheduling/run_loop.py --charter charter.yaml --campaign
+  campaign-plan.json` is the internal/automation interface. See `FIRST-LOOP.md` →
+  "Drive the whole goal" + `process/campaign-loop.md`.
 - **Quick-Fix lane** (loop-independent; **usable on Claude Code and Codex**). For small,
   non-behavioral fixes a human may use the **Quick-Fix lane** (`process/quickfix-lane.md`,
   `QUICK-FIX.md`) instead of a loop — a human-explicit, per-session lane that runs OUTSIDE
@@ -585,6 +668,14 @@ Re-running this wizard is **safe**. On each run the agent: reads
 from the first unfinished step, re-checks every file before writing, and confirms
 before overwriting anything that exists. No step is performed twice; no existing
 work is clobbered.
+
+After onboarding (or anytime), humans can re-check configured vs missing:
+
+```bash
+python engine-kit/validators/adoption_status.py .
+```
+
+See `docs/current/adoption-config.md` for the full configuration map.
 
 ## Packaging note (optional, not created here)
 

@@ -1,0 +1,52 @@
+# Shipped per-role execution defaults (Facet A: harness × provider × model × effort).
+# Normative for new adopters copying templates/mission-charter.yaml.
+# Override with rationale in docs/current/adoption-state.md (Constitution §7.0).
+#
+# Validated by engine-kit/validators/tests/test_role_execution_defaults.py
+# (template tooling blocks MUST match these bindings for the listed keys).
+
+catalog_version: 1
+last_updated: "2026-06-24"
+
+role_execution_defaults:
+  research:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-opus-4-8
+    capability_ref: anthropic-opus-judge
+    reasoning_effort: xhigh
+    network_access: true
+  deliver:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-opus-4-8
+    capability_ref: anthropic-opus-judge
+    reasoning_effort: high
+    network_access: true
+  dev:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    capability_ref: anthropic-sonnet-dev
+    sandbox: workspace_write
+    reasoning_effort: high
+    network_access: true
+  review:
+    agent_kind: codex
+    harness: codex
+    provider: openai
+    model: gpt-5.5
+    capability_ref: openai-gpt5-codex
+    reasoning_effort: high
+    network_access: true
+  acceptance:
+    mode: advisory
+    agent_kind: codex
+    harness: codex
+    provider: openai
+    model: gpt-5.5
+    capability_ref: openai-gpt5-codex
+    network_access: true

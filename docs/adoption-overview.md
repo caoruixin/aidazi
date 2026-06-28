@@ -59,7 +59,7 @@ Adopters get confused about "what do I decide vs what does the framework decide?
 
 | Layer | Who decides | When | Examples | Where it lives |
 |---|---|---|---|---|
-| **Layer 1 — Framework** | The framework (you inherit it; you don't edit it) | Once, by adopting | LLM-vs-runtime ownership; the 5-role boundaries; the forbidden list; MANDATORY_CHECKPOINTS; calibration gate | `governance/constitution.md` (always-loaded; @-included) |
+| **Layer 1 — Framework** | The framework (you inherit it; you don't edit it) | Once, by adopting | LLM-vs-runtime ownership; the 5-role boundaries; the forbidden list; MANDATORY_CHECKPOINTS; calibration gate | `governance/constitution.md` (canonical; loaded on-demand — its always-load `constitution-core.md` kernel carries the cold-start constraints) |
 | **Layer 2 — Adoption** | The adopter, at onboarding | Once per project (revisited at fold-back) | Track (A/B/C/A+B); profile depth; charter values; the three domain contracts; which defaults you override | `docs/current/` + `charter.yaml` + `docs/current/adoption-state.md` |
 | **Layer 3 — Per-milestone** | The roles, in flight | Every milestone/sprint | Scope IN/OUT; sub-sprint sequence; bad-case suite additions; close verdicts | `docs/research-briefs/`, `docs/milestone_objective.md`, `docs/sprint_objective.md`, etc. |
 
@@ -71,7 +71,7 @@ The split exists so the framework can be opinionated where opinions are load-bea
 
 Orthogonal to the decision layers, the framework's files sort into four content layers (`governance/constitution.md` §1.1):
 
-- **A — Constitution** (`governance/`): always-loaded; timeless ownership + forbidden list.
+- **A — Constitution** (`governance/`): the always-load kernels (`constitution-core.md` + `authoring-kernel.md`) + `context_briefing.md`; the full canonical `constitution.md` / `doc_governance.md` load on-demand. Timeless ownership + forbidden list.
 - **B — Process** (`process/`): on-demand by role; one doc per process pattern (the numbered Δs).
 - **C — State ledgers** (adopter repo): live state — `action_bank.md`, `handoff.md`, `adoption-state.md`.
 - **D — Prompt artifacts** (adopter repo `compact/`): per-sprint self-contained job specs.

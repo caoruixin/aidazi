@@ -41,6 +41,7 @@ import subprocess
 from typing import Any, Optional, Sequence
 
 from .base import Adapter, AdapterError
+from .monitor import run_with_monitor
 
 _ALLOW_ENV = "AIDAZI_ALLOW_REAL_ADAPTER"
 _DEFAULT_KIMI_PATH = os.path.expanduser("~/.kimi-code/bin/kimi")
@@ -127,13 +128,15 @@ class KimiAdapter(Adapter):
         # --- below here is NEVER exercised in offline tests ------------------- #
         argv = self._build_argv(prompt, tools)
         try:
-            proc = subprocess.run(  # noqa: S603 - argv is a fixed CLI, no shell
+            proc = run_with_monitor(
                 argv,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
                 cwd=self.cwd,
                 stdin=subprocess.DEVNULL,
+                role=role,
+                harness=self.harness,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise AdapterError(

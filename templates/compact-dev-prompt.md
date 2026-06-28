@@ -13,8 +13,9 @@ notes: >
   Template for compact/sprint-NNN-dev-prompt.md. The Deliver Agent authors a
   per-sprint instance; the Dev Agent consumes it as a self-contained job spec.
   Required front-matter: context_budget with self_contained: true
-  (Constitution §1.4-i). Sandbox: workspace_write; no network; no git push;
-  no holdout read (process/delivery-loop.md §4.2.8 #4).
+  (Constitution §1.4-i). Sandbox: workspace_write; network follows
+  charter.tooling.dev.network_access; no git push; no holdout read
+  (process/delivery-loop.md §4.2.8 #4).
 ---
 
 # Compact Dev prompt — instance template
@@ -33,8 +34,8 @@ title: Dev prompt — sprint-NNN
 context_budget:
   target_tokens: 12000              # suggested; adopter overrides per §7.0
   load_list:
-    - aidazi/governance/constitution.md
-    - aidazi/governance/doc_governance.md
+    - aidazi/governance/constitution-core.md   # always-load kernel; full constitution.md on-demand
+    - aidazi/governance/authoring-kernel.md     # always-load kernel; full doc_governance.md on-demand
     - aidazi/governance/context_briefing.md
     - aidazi/role-cards/dev-agent.md
     - aidazi/process/prompt-artifact-rules.md
@@ -67,14 +68,14 @@ backing_agent_kind: claude_code | codex | <other>     # per charter.tooling.dev.
 You are activating as the Dev Agent for sprint-NNN.
 
 Cold-start read (in order):
-  1. aidazi/governance/constitution.md
-  2. aidazi/governance/doc_governance.md
+  1. aidazi/governance/constitution-core.md   (always-load kernel; full constitution.md on-demand)
+  2. aidazi/governance/authoring-kernel.md     (always-load kernel; full doc_governance.md on-demand)
   3. aidazi/governance/context_briefing.md
   4. aidazi/role-cards/dev-agent.md (your full role card)
   5. <adopter>/AGENTS.md
   6. <adopter>/docs/current/adoption-state.md
 
-Sandbox: workspace-write. No network (default — deps must be pre-provisioned; an explicit, audited `tooling.dev.network_access: true` is the only opt-in for in-sandbox installs). No git push. No read of shadow holdout.
+Sandbox: workspace-write. Network access follows `tooling.dev.network_access`. No git push. No read of shadow holdout.
 ```
 
 ### §2 Sub-sprint contract
@@ -138,7 +139,7 @@ Before declaring done:
   [ ] Handoff §1-§11 written; §12 left blank for Deliver+Customer.
   [ ] No edits to forbidden paths (research-briefs, eval/bad_cases,
       codex-findings, anything in case_specs_shadow).
-  [ ] No git push, no network calls, no other-agent spawns.
+  [ ] No git push, no network calls outside the charter's `tooling.dev.network_access` grant, no other-agent spawns.
   [ ] Constitution §1.7 audit on your edits (§4 above).
   [ ] Scope check: every file touched is in modules_in_scope AND not in
       explicitly_out_of_scope.

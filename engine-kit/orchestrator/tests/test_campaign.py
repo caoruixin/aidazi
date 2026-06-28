@@ -43,7 +43,7 @@ def _fake_run_unit(script):
     Accepts (ignores) the `subsprint_sequence` the campaign passes for per-milestone
     derivation — the fake bypasses the real Driver, so it needs no charter projection."""
     def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
-                 resume=False, functional_acceptance=None):
+                 resume=False, functional_acceptance=None, repo_dir=None):
         return dict(script[subsprint_id])
     return run_unit
 
@@ -55,7 +55,7 @@ def _seq_run_unit(seqs, record=None):
     resume=True and that the campaign passes the milestone's live sequence."""
     counters: dict = {}
     def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
-                 resume=False, functional_acceptance=None):
+                 resume=False, functional_acceptance=None, repo_dir=None):
         i = counters.get(subsprint_id, 0)
         counters[subsprint_id] = i + 1
         if record is not None:
@@ -141,6 +141,13 @@ class TestInterpretDispatch(unittest.TestCase):
                          cp.ACT_REDISPATCH_FRESH)
         self.assertEqual(cp.interpret_dispatch("scope_deviation",
                                                {"choice": "abandon"}), cp.ACT_END)
+
+    def test_milestone_merge_dispatch(self):
+        self.assertEqual(cp.interpret_dispatch("milestone_merge",
+                                               {"choice": "merge_now"}),
+                         cp.ACT_ADVANCE_MILESTONE)
+        self.assertEqual(cp.interpret_dispatch("milestone_merge",
+                                               {"choice": "abort"}), cp.ACT_END)
 
     def test_unknown_is_fail_closed(self):
         self.assertEqual(cp.interpret_dispatch("mystery", {"choice": "x"}),
@@ -513,6 +520,395 @@ class TestCampaignResume(unittest.TestCase):
             resumed = cp.Campaign(plan, d, _fake_run_unit(done),
                                   clock=_clock()).run(resume=True)
             self.assertEqual(resumed.status, cp.STATUS_DONE)
+
+
+class TestAcceptanceCleanupRequired(unittest.TestCase):
+    """acceptance_cleanup_required: Acceptance PASSED but a selected cleanup operation
+    failed, so the Driver HALTS shipping (driver.py ~4106). It is a STATE_HALTED
+    Human-decision DISPATCH checkpoint — NOT driver-resume, NOT auto-advancing.
+
+      * retry_cleanup           -> ACT_REDISPATCH_FRESH: re-run the SAME unit FRESH, so
+                                   it must RE-SATISFY Acceptance closure (re-run accept).
+      * accept_residue_and_ship -> ships ONLY on a COMPLETE, audited waiver
+                                   (residue + rationale + evidence + a waiver marker);
+                                   an incomplete waiver FAILS CLOSED (surface, no ship).
+      * abort                   -> ACT_END.
+      * unknown / missing       -> fail-closed surface (ACT_DELIVER_FOLLOWUP)."""
+
+    def _resolver(self, mapping):
+        return lambda reason, checkpoint: mapping.get(reason)
+
+    def _events(self, ledger, type_):
+        return [e for e in audit.read_events(ledger) if e["type"] == type_]
+
+    # ---- classification ------------------------------------------------- #
+    def test_classified_as_dispatch_checkpoint(self):
+        self.assertIn("acceptance_cleanup_required", cp.DISPATCH_CHECKPOINTS)
+        self.assertEqual(cp.classify_checkpoint("acceptance_cleanup_required"),
+                         cp.RESUME_DISPATCH)
+
+    # ---- interpret_dispatch (pure) -------------------------------------- #
+    def test_retry_cleanup_maps_to_redispatch_fresh(self):
+        self.assertEqual(
+            cp.interpret_dispatch("acceptance_cleanup_required",
+                                  {"choice": "retry_cleanup"}),
+            cp.ACT_REDISPATCH_FRESH)
+
+    def test_abort_maps_to_end(self):
+        self.assertEqual(
+            cp.interpret_dispatch("acceptance_cleanup_required", {"choice": "abort"}),
+            cp.ACT_END)
+
+    def test_accept_residue_with_complete_waiver_advances(self):
+        base = {"choice": "accept_residue_and_ship", "residue": ["leftover-db"],
+                "rationale": "non-blocking", "evidence": "evidence.json"}
+        # waiver_id OR waiver:true are both valid waiver markers.
+        self.assertEqual(
+            cp.interpret_dispatch("acceptance_cleanup_required",
+                                  {**base, "waiver_id": "WV-1"}),
+            cp.ACT_ADVANCE_MILESTONE)
+        self.assertEqual(
+            cp.interpret_dispatch("acceptance_cleanup_required",
+                                  {**base, "waiver": True}),
+            cp.ACT_ADVANCE_MILESTONE)
+
+    def test_accept_residue_without_waiver_fails_closed(self):
+        # a bare choice (no waiver fields) MUST NOT ship.
+        self.assertEqual(
+            cp.interpret_dispatch("acceptance_cleanup_required",
+                                  {"choice": "accept_residue_and_ship"}),
+            cp.ACT_DELIVER_FOLLOWUP)
+
+    def test_accept_residue_partial_waiver_fails_closed(self):
+        # each missing component (evidence; rationale; the waiver marker) fail-closes.
+        for partial in (
+                {"residue": ["r"], "rationale": "x", "waiver_id": "w"},     # no evidence
+                {"residue": ["r"], "evidence": "e", "waiver_id": "w"},      # no rationale
+                {"residue": ["r"], "rationale": "x", "evidence": "e"}):     # no marker
+            self.assertEqual(
+                cp.interpret_dispatch("acceptance_cleanup_required",
+                                      {"choice": "accept_residue_and_ship", **partial}),
+                cp.ACT_DELIVER_FOLLOWUP, partial)
+
+    def test_unknown_choice_fails_closed(self):
+        self.assertEqual(
+            cp.interpret_dispatch("acceptance_cleanup_required", {"choice": "mystery"}),
+            cp.ACT_DELIVER_FOLLOWUP)
+
+    def test_missing_choice_fails_closed(self):
+        self.assertEqual(cp.interpret_dispatch("acceptance_cleanup_required", {}),
+                         cp.ACT_DELIVER_FOLLOWUP)
+        self.assertEqual(cp.interpret_dispatch("acceptance_cleanup_required", None),
+                         cp.ACT_DELIVER_FOLLOWUP)
+
+    def test_residue_waiver_helper(self):
+        complete = {"residue": ["r"], "rationale": "x", "evidence": "e",
+                    "waiver_id": "w"}
+        # the normalized payload records BOTH marker forms (waiver bool + waiver_id) so a
+        # `waiver: true` marker is never lost (Codex blocking 2). waiver_id-only ⇒
+        # waiver:False; the boolean marker (no waiver_id) ⇒ waiver:True, waiver_id:None.
+        self.assertEqual(
+            cp.residue_waiver(complete),
+            {"residue": ["r"], "rationale": "x", "evidence": "e",
+             "waiver": False, "waiver_id": "w"})
+        self.assertEqual(
+            cp.residue_waiver({"residue": ["r"], "rationale": "x", "evidence": "e",
+                               "waiver": True}),
+            {"residue": ["r"], "rationale": "x", "evidence": "e",
+             "waiver": True, "waiver_id": None})
+        self.assertIsNone(cp.residue_waiver({**complete, "evidence": ""}))   # blank field
+        self.assertIsNone(cp.residue_waiver({"residue": ["r"], "rationale": "x",
+                                             "evidence": "e"}))               # no marker
+        self.assertIsNone(cp.residue_waiver(None))
+        # shape sanity (Codex concern B): a truthy-but-MALFORMED field fails closed —
+        # residue must be a NON-EMPTY list of NON-EMPTY strings; rationale a string.
+        self.assertIsNone(cp.residue_waiver({**complete, "residue": "r"}))   # bare string
+        self.assertIsNone(cp.residue_waiver({**complete, "residue": []}))    # empty list
+        self.assertIsNone(cp.residue_waiver({**complete, "residue": [""]}))  # blank item
+        self.assertIsNone(cp.residue_waiver({**complete, "rationale": 5}))   # non-string
+
+    # ---- full run() flow ------------------------------------------------ #
+    def test_run_retry_cleanup_reruns_acceptance_fresh(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            rec = []
+            ru = _seq_run_unit({"s1": [
+                {"final_state": "halted", "spawn_count": 1,
+                 "pause_reason": "acceptance_cleanup_required"},
+                {"final_state": "done", "spawn_count": 1}]}, rec)
+            cp.run_campaign(plan, d, ru, clock=_clock())
+            self.assertEqual(rec[0]["resume"], False)
+            resumed = cp.run_campaign(
+                plan, d, ru, clock=_clock(), resume=True,
+                decision_resolver=self._resolver(
+                    {"acceptance_cleanup_required": {"choice": "retry_cleanup"}}))
+            self.assertEqual(resumed.status, cp.STATUS_DONE)
+            # Re-dispatched the SAME unit FRESH (resume=False): a fresh run re-runs the
+            # whole sub-sprint incl. Acceptance closure — NOT a driver-resume that would
+            # skip back into the halt.
+            self.assertEqual(len(rec), 2)
+            self.assertEqual(rec[-1]["subsprint_id"], "s1")
+            self.assertFalse(rec[-1]["resume"])
+
+    def test_run_retry_cleanup_re_requires_acceptance_can_re_halt(self):
+        # cleanup fails AGAIN -> the re-dispatched unit re-halts at the SAME gate: proof
+        # the unit stays NOT-closed until Acceptance closure is re-satisfied.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            ru = _seq_run_unit({"s1": [
+                {"final_state": "halted", "spawn_count": 1,
+                 "pause_reason": "acceptance_cleanup_required"},
+                {"final_state": "halted", "spawn_count": 1,
+                 "pause_reason": "acceptance_cleanup_required"}]})
+            cp.run_campaign(plan, d, ru, clock=_clock())
+            again = cp.run_campaign(
+                plan, d, ru, clock=_clock(), resume=True,
+                decision_resolver=self._resolver(
+                    {"acceptance_cleanup_required": {"choice": "retry_cleanup"}}))
+            self.assertEqual(again.status, cp.STATUS_PAUSED)
+            self.assertEqual(again.pause_reason, "acceptance_cleanup_required")
+
+    def test_run_accept_residue_with_waiver_advances_and_audits(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([
+                {"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_cleanup_required"},
+                      "s2": {"final_state": "done", "spawn_count": 1}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            waiver = {"choice": "accept_residue_and_ship",
+                      "residue": ["browser-profile-dir"],
+                      "rationale": "residue is a non-blocking dev artifact",
+                      "evidence": "docs/evidence/cleanup-status.json",
+                      "waiver_id": "WV-7"}
+            camp = cp.Campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            resumed = camp.run(resume=True, decision_resolver=self._resolver(
+                {"acceptance_cleanup_required": waiver}))
+            self.assertEqual(resumed.status, cp.STATUS_DONE)
+            self.assertEqual(resumed.milestone_index, 2)   # advanced m1 -> m2 -> done
+            waived = self._events(camp.audit_ledger,
+                                  "campaign_acceptance_residue_waived")
+            self.assertEqual(len(waived), 1)               # audited exactly once
+            p = waived[0]["payload"]
+            self.assertEqual(p["residue"], ["browser-profile-dir"])
+            self.assertEqual(p["rationale"], "residue is a non-blocking dev artifact")
+            self.assertEqual(p["evidence"], "docs/evidence/cleanup-status.json")
+            self.assertEqual(p["waiver_id"], "WV-7")
+            self.assertTrue(audit.verify_chain(camp.audit_ledger).ok)
+
+    def test_run_accept_residue_without_waiver_does_not_ship(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([
+                {"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_cleanup_required"},
+                      "s2": {"final_state": "done", "spawn_count": 1}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            camp = cp.Campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            resumed = camp.run(resume=True, decision_resolver=self._resolver(
+                {"acceptance_cleanup_required": {"choice": "accept_residue_and_ship"}}))
+            # fail-closed: NO ship — surfaces a Deliver follow-up; milestone NOT advanced.
+            self.assertEqual(resumed.status, cp.STATUS_PAUSED)
+            self.assertEqual(resumed.pause_reason, "deliver_followup_required")
+            self.assertEqual(resumed.milestone_index, 0)
+            self.assertEqual(self._events(camp.audit_ledger,
+                                          "campaign_acceptance_residue_waived"), [])
+
+    def test_run_abort_ends_campaign(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_cleanup_required"}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            resumed = cp.run_campaign(
+                plan, d, _fake_run_unit(script), clock=_clock(), resume=True,
+                decision_resolver=self._resolver(
+                    {"acceptance_cleanup_required": {"choice": "abort"}}))
+            self.assertEqual(resumed.status, cp.STATUS_ENDED)
+
+    def test_run_unknown_choice_surfaces(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_cleanup_required"}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            resumed = cp.run_campaign(
+                plan, d, _fake_run_unit(script), clock=_clock(), resume=True,
+                decision_resolver=self._resolver(
+                    {"acceptance_cleanup_required": {"choice": "huh"}}))
+            self.assertEqual(resumed.status, cp.STATUS_PAUSED)
+            self.assertEqual(resumed.pause_reason, "deliver_followup_required")
+
+    def test_run_no_decision_repauses(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_cleanup_required"}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            resumed = cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock(),
+                                      resume=True, decision_resolver=None)
+            self.assertEqual(resumed.status, cp.STATUS_PAUSED)
+            self.assertEqual(resumed.pause_reason, "acceptance_cleanup_required")
+
+    def test_run_waiver_ship_is_idempotent_on_replay(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([
+                {"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_cleanup_required"},
+                      "s2": {"final_state": "done", "spawn_count": 1}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            waiver = {"choice": "accept_residue_and_ship", "residue": ["r"],
+                      "rationale": "ok", "evidence": "e.json", "waiver_id": "WV-9"}
+            resolver = self._resolver({"acceptance_cleanup_required": waiver})
+            first = cp.Campaign(plan, d, _fake_run_unit(script),
+                                clock=_clock()).run(resume=True, decision_resolver=resolver)
+            self.assertEqual(first.status, cp.STATUS_DONE)
+            self.assertEqual(first.milestone_index, 2)
+            # Re-apply the SAME resolved decision: a no-op (DONE short-circuits) — NO
+            # double-advance and NO double-audit.
+            camp2 = cp.Campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            second = camp2.run(resume=True, decision_resolver=resolver)
+            self.assertEqual(second.status, cp.STATUS_DONE)
+            self.assertEqual(second.milestone_index, 2)
+            self.assertEqual(
+                len(self._events(camp2.audit_ledger,
+                                 "campaign_acceptance_residue_waived")), 1)
+            self.assertTrue(audit.verify_chain(camp2.audit_ledger).ok)
+
+    def test_run_accept_residue_with_boolean_marker_ships_and_audits_marker(self):
+        # Blocking 2: a complete waiver using the BOOLEAN marker (waiver:true, NO
+        # waiver_id) ships AND the audit records the marker form (waiver:true) — not an
+        # un-attributable waiver_id:None with the marker dropped.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([
+                {"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_cleanup_required"},
+                      "s2": {"final_state": "done", "spawn_count": 1}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            waiver = {"choice": "accept_residue_and_ship",
+                      "residue": ["browser-profile-dir"], "rationale": "non-blocking",
+                      "evidence": "docs/evidence/cleanup-status.json", "waiver": True}
+            camp = cp.Campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            resumed = camp.run(resume=True, decision_resolver=self._resolver(
+                {"acceptance_cleanup_required": waiver}))
+            self.assertEqual(resumed.status, cp.STATUS_DONE)
+            self.assertEqual(resumed.milestone_index, 2)
+            waived = self._events(camp.audit_ledger,
+                                  "campaign_acceptance_residue_waived")
+            self.assertEqual(len(waived), 1)
+            p = waived[0]["payload"]
+            self.assertIs(p["waiver"], True)         # the boolean marker is recorded
+            self.assertIsNone(p["waiver_id"])        # no waiver_id was authored
+            self.assertEqual(p["residue"], ["browser-profile-dir"])
+            self.assertTrue(audit.verify_chain(camp.audit_ledger).ok)
+
+    def test_run_partial_waiver_each_missing_field_does_not_ship(self):
+        # Fail-closed: a partial waiver missing ANY one component (residue, rationale,
+        # evidence, or the marker — here waiver_id is the only marker) does NOT ship — it
+        # surfaces a Deliver follow-up, never advances, and writes NO waiver audit.
+        complete = {"choice": "accept_residue_and_ship", "residue": ["r"],
+                    "rationale": "ok", "evidence": "e.json", "waiver_id": "WV-1"}
+        for drop in ("residue", "rationale", "evidence", "waiver_id"):
+            with tempfile.TemporaryDirectory() as d:
+                plan = _plan([
+                    {"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                    {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}])
+                script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                                 "pause_reason": "acceptance_cleanup_required"},
+                          "s2": {"final_state": "done", "spawn_count": 1}}
+                cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+                partial = {k: v for k, v in complete.items() if k != drop}
+                camp = cp.Campaign(plan, d, _fake_run_unit(script), clock=_clock())
+                resumed = camp.run(resume=True, decision_resolver=self._resolver(
+                    {"acceptance_cleanup_required": partial}))
+                self.assertEqual(resumed.status, cp.STATUS_PAUSED, drop)
+                self.assertEqual(resumed.pause_reason, "deliver_followup_required", drop)
+                self.assertEqual(resumed.milestone_index, 0, drop)
+                self.assertEqual(self._events(camp.audit_ledger,
+                                              "campaign_acceptance_residue_waived"),
+                                 [], drop)
+
+    def test_run_malformed_truthy_residue_does_not_ship(self):
+        # Concern B (run level): a truthy-but-MALFORMED residue (a bare string, not a
+        # list) fails the shape gate and does NOT ship — the programmatic resolver path
+        # is not schema-pre-validated, so residue_waiver is the fail-closed guard.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([
+                {"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_cleanup_required"},
+                      "s2": {"final_state": "done", "spawn_count": 1}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            bad = {"choice": "accept_residue_and_ship", "residue": "leftover",
+                   "rationale": "ok", "evidence": "e.json", "waiver_id": "WV-1"}
+            camp = cp.Campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            resumed = camp.run(resume=True, decision_resolver=self._resolver(
+                {"acceptance_cleanup_required": bad}))
+            self.assertEqual(resumed.status, cp.STATUS_PAUSED)
+            self.assertEqual(resumed.pause_reason, "deliver_followup_required")
+            self.assertEqual(resumed.milestone_index, 0)
+            self.assertEqual(self._events(camp.audit_ledger,
+                                          "campaign_acceptance_residue_waived"), [])
+
+    def test_waiver_ship_crash_after_audit_before_save_is_idempotent(self):
+        # Blocking 3: a crash AFTER _handle_resume emitted the dispatch + waiver audits
+        # and durably advanced the cursor (the §3.5c barrier), but BEFORE the next
+        # milestone records a terminal state, must REPLAY idempotently — NO double-advance
+        # and NO second waiver audit. The crash is simulated by raising from the m2
+        # dispatch (which runs right after the barrier+audits), then replaying.
+        with tempfile.TemporaryDirectory() as d:
+            clk = _clock()   # shared so the cross-resume ledger stays monotonic
+            plan = _plan([
+                {"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}])
+            calls = {"s2": 0}
+
+            def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
+                         resume=False, functional_acceptance=None, repo_dir=None):
+                if subsprint_id == "s1":
+                    return {"final_state": "halted", "spawn_count": 1,
+                            "pause_reason": "acceptance_cleanup_required"}
+                calls["s2"] += 1
+                if calls["s2"] == 1:
+                    raise RuntimeError("simulated crash after barrier + audits")
+                return {"final_state": "done", "spawn_count": 1}
+
+            cp.run_campaign(plan, d, run_unit, clock=clk)   # → m1 cleanup pause
+            waiver = {"choice": "accept_residue_and_ship", "residue": ["r"],
+                      "rationale": "ok", "evidence": "e.json", "waiver_id": "WV-3"}
+            resolver = self._resolver({"acceptance_cleanup_required": waiver})
+
+            # resume → ships m1 (barrier advances to m2 + emits the waiver audit), then the
+            # m2 dispatch raises: the barrier state + audits are already durable on disk.
+            with self.assertRaises(RuntimeError):
+                cp.Campaign(plan, d, run_unit, clock=clk).run(
+                    resume=True, decision_resolver=resolver)
+            with open(os.path.join(d, "campaign-state.json")) as fh:
+                mid = json.load(fh)
+            self.assertEqual(mid["status"], cp.STATUS_RUNNING)         # barrier landed
+            self.assertEqual(mid["cursor"]["milestone_index"], 1)     # advanced once
+            self.assertIsNone(mid["pause_reason"])                    # pause cleared
+            ledger = os.path.join(d, "audit", os.listdir(os.path.join(d, "audit"))[0])
+            self.assertEqual(
+                len(self._events(ledger, "campaign_acceptance_residue_waived")), 1)
+
+            # replay → STATUS_RUNNING crash-recovery re-dispatches m2 (NOT _handle_resume)
+            # → DONE. No double-advance (milestone_index 2, not 3); NO second waiver audit.
+            camp2 = cp.Campaign(plan, d, run_unit, clock=clk)
+            final = camp2.run(resume=True)
+            self.assertEqual(final.status, cp.STATUS_DONE)
+            self.assertEqual(final.milestone_index, 2)
+            self.assertEqual(
+                len(self._events(camp2.audit_ledger,
+                                 "campaign_acceptance_residue_waived")), 1)
+            self.assertTrue(audit.verify_chain(camp2.audit_ledger).ok)
 
 
 class TestCampaignCrashRecovery(unittest.TestCase):

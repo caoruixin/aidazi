@@ -79,6 +79,28 @@ SPAWN_PAYLOAD_FIELDS: tuple[str, ...] = (
     "run_mode",
     "tokens",
     "cost",
+    # WP-0 (context/token-optimization measurement baseline) — observation-only
+    # per-spawn volume fields. APPEND-ONLY: never remove or reorder a property while
+    # ledgers carrying it exist — the audit-event $defs/spawn_payload is
+    # additionalProperties:false, so dropping a field would orphan historical
+    # payloads (deprecate, don't delete). All three are nullable for back-compat.
+    "prompt_bytes",      # len(as-dispatched prompt, utf-8 bytes)
+    "memory_bytes",      # bytes of the Loop-Memory lessons block injected for the role
+    "fix_round",         # fix-round index at dispatch (the fix-round cost multiplier)
+    # WP-7 (context/token-optimization) — per-spawn cold-start fingerprint. Same
+    # APPEND-ONLY / nullable / deprecate-don't-delete rule as the WP-0 fields above.
+    "load_graph_hash",   # content fingerprint of the role's cold-start governance/kernel
+                         # load set (load_sizer.cold_start_load_graph_hash). AUDIT-ONLY —
+                         # records which governance/kernel VERSION an otherwise audit-neutral
+                         # (prompt-only input_hash) Dev/Review/Close/Research spawn loaded;
+                         # NOT the Acceptance §3.5b reuse hash (design spec §E).
+    # WP-6 (lessons tiering) — bounded Loop-Memory ingress. Same APPEND-ONLY /
+    # nullable / deprecate-don't-delete rule as the WP-0/WP-7 fields above.
+    "suppressed_lesson_ids",  # list[str]: ids the tier-aware budget suppressed (never
+                              # silent — companion to memory_injected = the injected ids)
+    "lesson_selection",       # object: full selection audit (selected, suppressed[{id,reason,
+                              # tier}], tiers, bytes/tokens before&after, version). None when
+                              # no lessons block was injected (e.g. Acceptance).
 )
 
 
@@ -135,6 +157,12 @@ def make_spawn_payload(
     run_mode: Optional[str] = None,
     tokens: Optional[int] = None,
     cost: Optional[float] = None,
+    prompt_bytes: Optional[int] = None,
+    memory_bytes: Optional[int] = None,
+    fix_round: Optional[int] = None,
+    load_graph_hash: Optional[str] = None,
+    suppressed_lesson_ids: Optional[list[str]] = None,
+    lesson_selection: Optional[dict] = None,
 ) -> dict:
     """Convenience constructor for the per-spawn execution-context payload
     (plan §4.5 G3). Returns a plain dict; the ledger stores it verbatim.
@@ -145,7 +173,26 @@ def make_spawn_payload(
     every prompt and every output auditable from the ledger — not just a hash —
     while ``input_hash`` stays the tamper-evidence anchor over the prompt bytes.
     Both default to None so a caller that does not materialize transcripts (or an
-    older ledger) is byte-identical to before."""
+    older ledger) is byte-identical to before.
+
+    ``prompt_bytes`` / ``memory_bytes`` / ``fix_round`` are WP-0 observation-only
+    measurement fields (the context/token-optimization baseline). All default to
+    None so an older callsite need not pass them and an existing on-disk ledger
+    (written without these keys) still verifies unchanged; they record the
+    as-dispatched prompt size, the injected Loop-Memory lessons-block size, and the
+    fix-round index, so per-spawn token volume becomes auditable.
+
+    ``load_graph_hash`` (WP-7) is the same kind of nullable, forward-only field: a
+    content fingerprint of the role's cold-start governance/kernel load set, so which
+    governance VERSION a spawn loaded is ledger-recorded even for the roles whose
+    ``input_hash`` is prompt-only. AUDIT-ONLY — not the Acceptance reuse hash.
+
+    ``suppressed_lesson_ids`` / ``lesson_selection`` (WP-6) record the tier-aware
+    bounding of the Loop-Memory ingress block: the ids the budget suppressed (so
+    suppression is never silent — the companion to ``memory_injected`` = the injected
+    ids) and the full selection audit (tiers, suppression reasons, bytes/tokens before
+    and after, selection version). Both default to None so an older callsite / a spawn
+    that injects no lessons block (e.g. Acceptance) is byte-identical to before."""
     return {
         "role": role,
         "harness": harness,
@@ -160,6 +207,13 @@ def make_spawn_payload(
         "run_mode": run_mode,
         "tokens": tokens,
         "cost": cost,
+        "prompt_bytes": prompt_bytes,
+        "memory_bytes": memory_bytes,
+        "fix_round": fix_round,
+        "load_graph_hash": load_graph_hash,
+        "suppressed_lesson_ids": (list(suppressed_lesson_ids)
+                                  if suppressed_lesson_ids is not None else None),
+        "lesson_selection": lesson_selection,
     }
 
 

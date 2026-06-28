@@ -181,6 +181,96 @@ class HappyPath(unittest.TestCase):
             self.assertEqual(ev["payload"]["manifest_sha256"], final.e2e_manifest_hash)
 
 
+class HybridAcceptanceOwnedExecution(unittest.TestCase):
+    def _hybrid_charter(self, *, cleanup_exit=0):
+        charter = _browser_charter()
+        charter["tooling"]["acceptance"]["functional"].update({
+            "interaction_mode": "hybrid",
+            "target_environment": "local",
+            "browser": {
+                "allowed_origins": ["http://127.0.0.1"],
+                "allowed_actions": [
+                    "navigate", "click", "fill", "select", "upload",
+                    "download", "screenshot", "read_console", "read_network",
+                ],
+            },
+        })
+        charter["tooling"]["e2e"]["lifecycle_operations"] = [
+            {
+                "id": "seed-user", "phase": "setup",
+                "command": [sys.executable, "-c",
+                            "open(r'{store}.setup','w').write('ok')"],
+                "environments": ["local"], "side_effect": "test_data",
+            },
+            {
+                "id": "cleanup-user", "phase": "cleanup",
+                "command": [sys.executable, "-c",
+                            f"import sys; sys.exit({cleanup_exit})"],
+                "environments": ["local"], "side_effect": "test_data",
+                "failure_policy": "record",
+            },
+        ]
+        return charter
+
+    @staticmethod
+    def _hybrid_adapters(run_dir):
+        adapters = _acceptance_adapters({})
+        plan = {
+            "interaction_mode": "hybrid",
+            "setup_operations": ["seed-user"],
+            "journeys": [],
+            "cleanup_operations": ["cleanup-user"],
+            "rationale": "run signed journeys plus lifecycle preparation",
+        }
+        adapters["acceptance"] = MockAdapter(
+            {
+                ("acceptance", 0): plan,
+                ("acceptance",): _browser_judge(run_dir),
+            },
+            harness="claude_code", provider="anthropic",
+            model="claude-opus-4-8",
+        )
+        return adapters
+
+    def test_hybrid_acceptance_plans_setup_and_cleanup_then_judges(self):
+        with tempfile.TemporaryDirectory() as d:
+            _prep(d)
+            adapters = self._hybrid_adapters(d)
+            drv = _driver(
+                d, charter=self._hybrid_charter(), adapters=adapters)
+            final = drv.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, D.STATE_HALTED)
+            self.assertEqual(len(adapters["acceptance"].history), 2)
+            self.assertIn("advisory_acceptance_pass_signoff", _checkpoints(d))
+            base = os.path.join(d, ".orchestrator", "audit", "browser")
+            loop = os.listdir(base)[0]
+            rid = os.listdir(os.path.join(base, loop))[0]
+            evid = os.path.join(base, loop, rid)
+            for rel in (
+                "acceptance-execution-plan.json",
+                "lifecycle/setup-seed-user.log",
+                "lifecycle/cleanup-cleanup-user.log",
+                "cleanup-status.json",
+            ):
+                self.assertTrue(os.path.isfile(os.path.join(evid, rel)), rel)
+            with open(os.path.join(evid, "cleanup-status.json"),
+                      encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["status"], "clean")
+
+    def test_cleanup_failure_preserves_verdict_but_halts_shipping(self):
+        with tempfile.TemporaryDirectory() as d:
+            _prep(d)
+            adapters = self._hybrid_adapters(d)
+            drv = _driver(
+                d, charter=self._hybrid_charter(cleanup_exit=3),
+                adapters=adapters)
+            final = drv.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, D.STATE_HALTED)
+            self.assertIn("acceptance_cleanup_required", _checkpoints(d))
+            self.assertNotIn(
+                "advisory_acceptance_pass_signoff", _checkpoints(d))
+
+
 class CapturedDefectsNeverPass(unittest.TestCase):
     """§3.2: a captured product defect (the executor observed a critical fail) can NEVER
     become a milestone PASS — even when the judge naively returns pass, the driver's
@@ -584,6 +674,159 @@ class ResolverGraphAdopterRoot(unittest.TestCase):
             h2 = es.acceptance_input_hash("PROMPT", graph2)
             self.assertNotEqual(h1, h2,
                                 "an adopter cold-start edit must change the input hash")
+
+    def test_framework_role_session_governance_is_bound_explicitly(self):
+        import e2e_stage as es
+        with tempfile.TemporaryDirectory() as fw, tempfile.TemporaryDirectory() as d:
+            _prep(d)
+            for rel, body in (
+                ("AGENTS.md", "# framework control plane entry\n"),
+                ("schemas/compact/acceptance-verdict.compact.schema.json", "{}\n"),
+                ("role-cards/acceptance-agent.md", "# acceptance role\n"),
+                ("governance/constitution-core.md", "# constitution-core kernel v1\n"),
+                ("governance/constitution.md", "# constitution v1\n"),
+                ("governance/authoring-kernel.md", "# authoring kernel v1\n"),
+                ("governance/doc_governance.md", "# doc governance\n"),
+                ("governance/context_briefing.md", "# context briefing\n"),
+            ):
+                path = os.path.join(fw, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as fh:
+                    fh.write(body)
+
+            drv = D.Driver(
+                _browser_charter(),
+                d,
+                _acceptance_adapters(),
+                loop_id="loop-governance",
+                clock=_clock(),
+                verdict_schemas=D.load_verdict_schemas(),
+            )
+            drv.state = D.RunState(loop_id=drv.loop_id, subsprint_id="sprint-001")
+
+            orig = D._find_schemas_dir
+            D._find_schemas_dir = lambda start=D._ENGINE_KIT_DIR: os.path.join(
+                fw, "schemas")
+            try:
+                graph1, _missing = drv._acceptance_resolver_graph(
+                    "eval/runs/x/out.txt", None)
+                purposes = {g["purpose"] for g in graph1}
+                self.assertIn("framework_role_session_governance", purposes)
+                bound_paths = {g["path"] for g in graph1}
+                # WP-2: the cold-start constitution-CORE projection is bound, AND the canonical
+                # constitution.md stays bound (on-demand canonical — fail-closed).
+                self.assertIn("governance/constitution-core.md", bound_paths)
+                self.assertIn("governance/constitution.md", bound_paths)
+                self.assertIn("governance/authoring-kernel.md", bound_paths)
+                self.assertIn("governance/doc_governance.md", bound_paths)
+                self.assertIn("governance/context_briefing.md", bound_paths)
+
+                h1 = es.acceptance_input_hash("PROMPT", graph1)
+                with open(os.path.join(fw, "governance", "constitution.md"), "w") as fh:
+                    fh.write("# constitution v2\n")
+                graph2, _ = drv._acceptance_resolver_graph(
+                    "eval/runs/x/out.txt", None)
+                h2 = es.acceptance_input_hash("PROMPT", graph2)
+                self.assertNotEqual(
+                    h1, h2, "a canonical constitution edit must change the acceptance input hash")
+                # WP-3: the authoring-kernel binding is load-bearing too — editing this cold-start
+                # governance input must ALSO re-invalidate Acceptance §3.5b reuse (fail-closed).
+                with open(os.path.join(fw, "governance", "authoring-kernel.md"), "w") as fh:
+                    fh.write("# authoring kernel v2\n")
+                graph3, _ = drv._acceptance_resolver_graph(
+                    "eval/runs/x/out.txt", None)
+                h3 = es.acceptance_input_hash("PROMPT", graph3)
+            finally:
+                D._find_schemas_dir = orig
+            self.assertNotEqual(
+                h2, h3,
+                "a WP-3 authoring-kernel edit must change the acceptance input hash",
+            )
+
+    def test_acceptance_kernel_is_embedded_and_hash_coupled(self):
+        # WP-4B: the acceptance-kernel is EMBEDDED into the projected prompt (self-contained, so the
+        # whole-file delivery-loop / role-skill reads are retired). The embed feeds the prompt — and
+        # hence acceptance_input_hash — so a kernel edit re-invalidates §3.5b reuse.
+        with tempfile.TemporaryDirectory() as fw, tempfile.TemporaryDirectory() as d:
+            _prep(d)
+            for rel, body in (
+                ("schemas/compact/acceptance-verdict.compact.schema.json", "{}\n"),
+                ("governance/acceptance-kernel.md",
+                 "---\nfront: matter\n---\n\n# kernel\nKERNEL-SENTINEL-V1 binding judge rules.\n"),
+            ):
+                path = os.path.join(fw, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as fh:
+                    fh.write(body)
+            drv = D.Driver(
+                _browser_charter(), d, _acceptance_adapters(), loop_id="loop-kernel",
+                clock=_clock(), verdict_schemas=D.load_verdict_schemas())
+            drv.state = D.RunState(loop_id=drv.loop_id, subsprint_id="sprint-001")
+            orig = D._find_schemas_dir
+            D._find_schemas_dir = lambda start=D._ENGINE_KIT_DIR: os.path.join(fw, "schemas")
+            try:
+                sec1 = drv._acceptance_kernel_section()
+                self.assertIn("KERNEL-SENTINEL-V1", sec1)        # kernel body embedded
+                self.assertNotIn("front: matter", sec1)          # YAML front-matter stripped
+                self.assertIn("do NOT separately load", sec1)    # guard against loading the retired docs
+                with open(os.path.join(fw, "governance", "acceptance-kernel.md"), "w") as fh:
+                    fh.write("---\nfront: matter\n---\n\n# kernel\nKERNEL-SENTINEL-V2 changed rules.\n")
+                sec2 = drv._acceptance_kernel_section()
+                self.assertNotEqual(
+                    sec1, sec2, "a kernel edit must change the embedded section (→ prompt → hash)")
+                self.assertIn("KERNEL-SENTINEL-V2", sec2)
+            finally:
+                D._find_schemas_dir = orig
+
+    def test_acceptance_binds_compact_verdict_projection_not_canonical(self):
+        # WP-1b (§E LOAD-CLOSURE): the Acceptance judge READS the compact verdict projection
+        # (the agent-facing loaders point there), so the §3.5b resolver binds
+        # schemas/compact/acceptance-verdict.compact.schema.json — NOT the verbose canonical
+        # (which is the Python validator's input, not an agent input). An edit to the bound
+        # projection must change the acceptance input hash (fail-closed re-spawn).
+        import e2e_stage as es
+        with tempfile.TemporaryDirectory() as fw, tempfile.TemporaryDirectory() as d:
+            _prep(d)
+            for rel, body in (
+                ("AGENTS.md", "# fw control plane\n"),
+                ("schemas/compact/acceptance-verdict.compact.schema.json",
+                 '{"x-canonical-sha256":"v1"}\n'),
+                ("schemas/acceptance-verdict.schema.json",
+                 "# verbose canonical (validator only)\n"),
+                ("role-cards/acceptance-agent.md", "# acceptance role\n"),
+                ("governance/constitution.md", "# constitution\n"),
+                ("governance/doc_governance.md", "# doc governance\n"),
+                ("governance/context_briefing.md", "# context briefing\n"),
+            ):
+                path = os.path.join(fw, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as fh:
+                    fh.write(body)
+
+            drv = D.Driver(_browser_charter(), d, _acceptance_adapters(),
+                           loop_id="loop-compact-verdict", clock=_clock(),
+                           verdict_schemas=D.load_verdict_schemas())
+            drv.state = D.RunState(loop_id=drv.loop_id, subsprint_id="sprint-001")
+
+            orig = D._find_schemas_dir
+            D._find_schemas_dir = lambda start=D._ENGINE_KIT_DIR: os.path.join(fw, "schemas")
+            try:
+                graph1, _ = drv._acceptance_resolver_graph("eval/runs/x/out.txt", None)
+                bound = {g["path"] for g in graph1}
+                self.assertIn("schemas/compact/acceptance-verdict.compact.schema.json", bound)
+                self.assertNotIn("schemas/acceptance-verdict.schema.json", bound)  # canonical NOT bound
+                self.assertIn("verdict_schema", {g["purpose"] for g in graph1})
+                h1 = es.acceptance_input_hash("PROMPT", graph1)
+                with open(os.path.join(fw, "schemas", "compact",
+                                       "acceptance-verdict.compact.schema.json"), "w") as fh:
+                    fh.write('{"x-canonical-sha256":"v2"}\n')   # the agent-read input changed
+                graph2, _ = drv._acceptance_resolver_graph("eval/runs/x/out.txt", None)
+                h2 = es.acceptance_input_hash("PROMPT", graph2)
+            finally:
+                D._find_schemas_dir = orig
+            self.assertNotEqual(
+                h1, h2,
+                "editing the bound compact verdict projection must change the input hash")
 
 
 # A schema-VALID but browser-shaped verdict (acceptance_class browser_e2e + functional

@@ -25,8 +25,9 @@ REAL vs MOCK adapters: ``build_adapters(charter, allow_real=False)`` builds a
 MockAdapter per role with a clean-pass canned verdict set by DEFAULT (a safe
 offline dry-run / smoke test). With ``--allow-real`` it builds real adapters from
 ADAPTER_REGISTRY; those still refuse to touch the network/subprocess unless
-``AIDAZI_ALLOW_REAL_ADAPTER=1`` (the adapters' own gate). Artifacts always go to a
-RUN DIR outside the repo.
+``AIDAZI_ALLOW_REAL_ADAPTER=1`` (the adapters' own gate). Artifacts go to a RUN DIR
+that defaults to ``<repo>/.runs/<loop_id>`` — inside the repo for discoverability but
+gitignored (``.runs/``) so they never enter the delivered diff; ``--run-dir`` overrides.
 
 NORMATIVE SOURCE: archive/2026-06-15-v2-loop-engine-plan.md §4.4 / P5. The kit is
 a reference implementation; on any conflict the spec wins and this file is the bug.
@@ -38,7 +39,6 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 from typing import Callable, Dict, Optional
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))          # engine-kit/scheduling
@@ -264,6 +264,8 @@ def build_adapters(charter: dict, *, allow_real: bool = False,
                 base_url=base_url,
                 api_key_env=tooling.get("api_key_env", ""),
             )
+            if r.reasoning_effort:
+                kwargs["reasoning_effort"] = r.reasoning_effort
             # Per-spawn timeout is configurable per role (charter
             # tooling.<role>.timeout_seconds); absent ⇒ the adapter's own default
             # (600s). A real Dev coding session typically needs more than that. A
@@ -404,6 +406,27 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
         live_cpt = os.path.basename(checkpoint_path) if checkpoint_path else None
         if decision.get("checkpoint") != live_cpt:   # EXACT (no falsy coercion)
             return _reject("checkpoint", decision.get("checkpoint"), live_cpt)
+        if pause_reason == "milestone_merge":
+            # Campaign-tier merge gate: binds to milestone_id only (no subsprint).
+            try:
+                with open(os.path.join(campaign_home, "campaign-state.json"),
+                          encoding="utf-8") as fh:
+                    state = json.load(fh)
+            except (OSError, ValueError):
+                sys.stderr.write(
+                    "campaign decision: cannot read campaign-state for "
+                    "milestone_merge — refusing (fail-closed)\n")
+                return None
+            live_mid = (state.get("milestone_context") or {}).get("milestone_id")
+            if decision.get("milestone_id") != live_mid:
+                return _reject("milestone_id", decision.get("milestone_id"), live_mid)
+            if decision.get("subsprint_id") is not None:
+                sys.stderr.write(
+                    "campaign decision: milestone_merge must not carry "
+                    "subsprint_id — refusing (fail-closed)\n")
+                return None
+            out = {k: decision[k] for k in ("choice", "note") if k in decision}
+            return out or None
         if checkpoint_path is not None:
             # A checkpoint-bearing pause is ALWAYS on a unit: its milestone/sub-sprint
             # identity MUST be resolvable from campaign-state.json AND match. A missed
@@ -424,23 +447,36 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
                                unit.get("subsprint_id"))
         # else: checkpoint_path is None → a genuinely checkpoint-less pause (no unit,
         # e.g. campaign_budget_exhausted) → campaign_id + pause_reason + checkpoint:null.
-        # Pass through ONLY the runner's decision fields (choice for a dispatch gate;
-        # confirm/route for acceptance_fix_required; note for the audit).
-        out = {k: decision[k] for k in ("choice", "confirm", "route", "note")
+        # Pass through the runner's decision fields: choice for a dispatch gate;
+        # confirm/route for acceptance_fix_required; note for the audit; AND the
+        # acceptance_cleanup_required residue-waiver fields (residue/rationale/evidence/
+        # waiver/waiver_id) — WITHOUT these last five, a complete waiver authored in
+        # campaign-decision.json would be stripped here and never reach
+        # campaign.interpret_dispatch / residue_waiver, making accept_residue_and_ship
+        # dead on the real CLI (Codex blocking 1). The schema scopes the waiver fields to
+        # the cleanup gate, and the runtime ignores them on every other gate.
+        out = {k: decision[k]
+               for k in ("choice", "confirm", "route", "note",
+                         "residue", "rationale", "evidence", "waiver", "waiver_id")
                if k in decision}
         return out or None
     return resolve
 
 
-def campaign_home_for(campaign_id: str, override: Optional[str] = None) -> str:
+def campaign_home_for(campaign_id: str, override: Optional[str] = None,
+                      *, base: Optional[str] = None) -> str:
     """The STABLE home dir for a campaign's state/audit/units. It MUST persist
     across resume invocations — a fresh temp dir each run would lose the cursor and
     silently restart. ``override`` (--campaign-run-dir) wins; else a deterministic
-    per-campaign dir under the system temp (OUTSIDE the repo) so ``--resume`` finds
-    the same campaign-state.json."""
+    per-campaign dir under ``<base>/.runs/`` (``base`` defaults to the CWD — the
+    adopter repo root the runner is launched from) so ``--resume`` finds the same
+    campaign-state.json. Kept under the repo's gitignored ``.runs/`` (not the system
+    temp) so a paused campaign is easy to find and survives a /tmp sweep, while
+    ``.runs/`` in .gitignore keeps it out of git."""
     if override:
         return override
-    return os.path.join(tempfile.gettempdir(), f"aidazi-campaign-{campaign_id}")
+    root = os.path.abspath(base or os.getcwd())
+    return os.path.join(root, ".runs", f"campaign-{campaign_id}")
 
 
 def run_campaign_entry(plan: dict, charter: dict, *,
@@ -465,7 +501,8 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     campaign runner's guarantees (campaign.py); this only wires + reports them."""
     import campaign as _cp  # lazy (campaign imports run_loop)
     campaign_id = (plan or {}).get("campaign_id")
-    home = campaign_home_for(campaign_id or "unidentified", campaign_run_dir)
+    home = campaign_home_for(campaign_id or "unidentified", campaign_run_dir,
+                             base=repo_dir)
     units_dir = os.path.join(home, "units")
     run_loop_kwargs: Dict[str, object] = {}
     if repo_dir:
@@ -483,7 +520,8 @@ def run_campaign_entry(plan: dict, charter: dict, *,
                                      clock=clock, plan=plan, **run_loop_kwargs)
         resolver = make_campaign_decision_resolver(campaign_id, decision_path, home)
         st = _cp.run_campaign(plan, home, run_unit, clock=clock,
-                              resume=resume, decision_resolver=resolver)
+                              resume=resume, decision_resolver=resolver,
+                              repo_dir=repo_dir)
     except ValueError as exc:
         # invalid plan / state / schema / mismatched campaign id → fail-closed.
         return {**base, "status": "invalid", "error": str(exc),
@@ -502,6 +540,18 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         _cp.STATUS_PAUSED: CAMPAIGN_EXIT_PAUSED,
         _cp.STATUS_ENDED: CAMPAIGN_EXIT_ENDED,
     }.get(st.status, CAMPAIGN_EXIT_ERROR)  # a returned 'running' is unreachable → error
+    # Phase-0 scope-coverage projection (signed backlog vs delivered): a READ-ONLY
+    # reporting nicety that must NEVER break the run — any failure degrades to None.
+    # scope_report is a sibling of campaign on sys.path (same lazy-import contract);
+    # a baseline, if the human froze one at sign-off, lives in the campaign home.
+    scope_coverage = None
+    try:
+        import scope_report as _scope
+        scope_coverage = _scope.summary_line(
+            _scope.compute_coverage(plan, st.to_dict(),
+                                    baseline=_scope.load_baseline(home)))
+    except Exception:
+        scope_coverage = None
     return {
         **base,
         "status": st.status,
@@ -515,6 +565,7 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         "subsprints_run": st.subsprints_run,
         "total_spawns": st.total_spawns,
         "exit_code": exit_code,
+        "scope_coverage": scope_coverage,
     }
 
 
@@ -530,6 +581,10 @@ def _campaign_resume_hint(result: dict) -> str:
     if reason == "deliver_followup_required":
         return ("  -> Deliver inserts the follow-up sub-sprint into the milestone's "
                 "sequence, then re-run with --resume")
+    if reason == "milestone_merge":
+        return ("  -> author a campaign-decision.json with "
+                f'"choice": "merge_now"|"open_pr"|"keep_branch"|"abort" '
+                f'and milestone_id, then re-run with --resume --decision <file>')
     cpt = result.get("pause_checkpoint")
     base = os.path.basename(cpt) if cpt else None
     ident = (f'"campaign_id": {result.get("campaign_id")!r}, '
@@ -558,6 +613,18 @@ def print_campaign_result(result: dict) -> None:
               f"{result.get('milestones_total')} complete")
         print(f"spent          : subsprints={result.get('subsprints_run')} "
               f"spawns={result.get('total_spawns')}")
+        cov = result.get("scope_coverage")
+        if cov:
+            remaining = cov.get("remaining_milestones") or []
+            print(f"scope coverage : {cov.get('milestones_delivered')}/"
+                  f"{cov.get('milestones_total')} milestones delivered "
+                  f"({cov.get('pct_milestones_delivered')}%)"
+                  + (f"  remaining={remaining}" if remaining else ""))
+            if not cov.get("baseline_available"):
+                print("               : baseline not frozen — added/removed delta off "
+                      "(scope_report.py --freeze-baseline at campaign start)")
+            elif cov.get("added_milestones"):
+                print(f"               : added mid-flight={cov.get('added_milestones')}")
     if status == "paused":
         print(f"paused at      : {result.get('pause_reason')}")
         if result.get("pause_milestone_id"):
@@ -572,6 +639,10 @@ def print_campaign_result(result: dict) -> None:
         "milestone_index", "milestones_total", "subsprints_run", "total_spawns",
         "exit_code")}
     print("CAMPAIGN_STATUS=" + json.dumps(machine, sort_keys=True))
+    # Parallel, ADDITIVE parse contract (the CAMPAIGN_STATUS= line above stays
+    # byte-identical) — emitted only when the scope-coverage projection succeeded.
+    if result.get("scope_coverage"):
+        print("SCOPE_COVERAGE=" + json.dumps(result["scope_coverage"], sort_keys=True))
 
 
 def run_loop(
@@ -718,7 +789,8 @@ def main(argv=None) -> int:
                         help="loop_id (default: derived from mode + subsprint)")
     parser.add_argument("--subsprint-id", default="sprint-001")
     parser.add_argument("--run-dir", default=None,
-                        help="run-artifact dir (default: a fresh temp dir; never the repo)")
+                        help="run-artifact dir (default: <repo>/.runs/<loop_id>, "
+                             "in-repo but gitignored)")
     parser.add_argument("--repo-dir", default=None,
                         help="git repo for Loop Ingress (optional; off by default)")
     parser.add_argument("--memory-root", default=None,
@@ -736,7 +808,7 @@ def main(argv=None) -> int:
                              "backlog (continuous multi-milestone delivery), not one sub-sprint")
     parser.add_argument("--campaign-run-dir", default=None,
                         help="STABLE campaign home (state+audit+units); MUST be the same "
-                             "across --resume (default: a per-campaign dir under the temp dir)")
+                             "across --resume (default: <repo>/.runs/campaign-<id>)")
     parser.add_argument("--decision", default=None,
                         help="path to a campaign-decision.json resolving the current pause "
                              "(for --campaign --resume at a Mechanism-B gate)")
@@ -783,8 +855,15 @@ def main(argv=None) -> int:
             repo_dir=args.repo_dir, memory_root=effective_memory_root)
         print_campaign_result(result)
         return result["exit_code"]
-    run_dir = args.run_dir or tempfile.mkdtemp(prefix=f"aidazi-{args.mode}-")
     loop_id = args.loop_id or f"{args.mode}-{args.subsprint_id}"
+    # Default run dir: <repo>/.runs/<loop_id> — INSIDE the repo for discoverability
+    # (you can tail the live ledger/transcripts without hunting through /tmp) but
+    # gitignored via `.runs/`, so the loop's own state/audit/transcripts never enter
+    # the delivered diff. The base is --repo-dir when given (the adopter repo Loop
+    # Ingress isolates), else the CWD the runner is launched from. --run-dir still
+    # overrides with an explicit path. The Driver makedirs the tree on construction.
+    run_dir = args.run_dir or os.path.join(
+        os.path.abspath(args.repo_dir or os.getcwd()), ".runs", loop_id)
 
     # Real runs resolve provider base URLs / API keys from the environment. Load a
     # gitignored .env.local (then .env) from the charter's directory and the CWD so

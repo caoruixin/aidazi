@@ -33,6 +33,7 @@ import importlib.util
 import json
 import os
 import sys
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -63,6 +64,7 @@ _ENGINE_KIT_DIR = os.path.dirname(_THIS_DIR)  # engine-kit/
 if _ENGINE_KIT_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_KIT_DIR)
 import charter_compat  # noqa: E402  (engine-kit/charter_compat.py — shared normalizer)
+import effective_role_config as effective_roles  # noqa: E402
 
 
 def _find_schema_path() -> Optional[str]:
@@ -198,14 +200,20 @@ _TIER_ORDER: dict[str, int] = {"unsupported": 0, "low": 1, "medium": 2, "high": 
 
 # Provider lock reality (role-configuration-contract.md §1): native harnesses are
 # provider-locked; headless is the OpenAI-compatible adapter (any provider).
+# NOTE: `cursor` is intentionally ABSENT — the Cursor Agent CLI is built by
+# Anysphere but fronts multiple model providers (Anthropic / OpenAI / …) behind
+# the Cursor backend, so it is NOT locked to a single provider. Omitting it here
+# means the harness↔provider check is skipped for cursor (correct: any provider).
 _NATIVE_HARNESS_PROVIDER: dict[str, str] = {
     "claude_code": "anthropic",
     "codex": "openai",
     "kimi": "moonshot",        # Kimi Code agentic CLI (Moonshot AI)
 }
 # Harnesses that drive a file-editing coding agent (Dev requires one of these).
+# `cursor` = the Cursor Agent CLI (cursor-agent) in headless `-p` mode; it can
+# edit files + run shell tools, so it is a valid Dev backing (adapters/cursor.py).
 _CODING_AGENT_HARNESSES: frozenset[str] = frozenset(
-    {"claude_code", "codex", "kimi", "aider"})
+    {"claude_code", "codex", "kimi", "aider", "cursor"})
 
 # Roles whose output is a schema-valid verdict (structured-output floor applies).
 _VERDICT_ROLES: frozenset[str] = frozenset({"research", "deliver", "review", "acceptance"})
@@ -704,41 +712,15 @@ def _role_is_read_only(role: str, cfg: dict) -> bool:
 
 
 def _check_network_access(charter: dict, report: Report) -> None:
-    """The EXPLICIT, opt-in network grant (tooling.<role>.network_access).
+    """Validate the per-role network grant (tooling.<role>.network_access).
 
-    The framework invariant is Dev = NO network (process/delivery-loop.md §4.2.7;
-    role-skill-model.md). Granting it is a DELIBERATE privilege escalation, so ANY
-    ``network_access: true`` raises a WARNING — it is never silently green:
-      - on a write role: a caution that this opens the workspace-write sandbox to
-        the network (intended only for installing deps; the driver audits it);
-      - on a read-only role: additionally that the grant is a NO-OP and very likely
-        a mistake (codex un-blocks network only for a workspace_write sandbox).
-    ``network_access`` false/absent is the default-deny no-op (no finding). The
-    grant is a WARNING, never an ERROR: it is a legitimate, human-authored opt-in —
-    the gate's job is to make it loud + intentional, not to forbid it."""
-    for role, cfg in _iter_roles(charter):
-        if cfg.get("network_access") is not True:
-            continue  # default-deny: false/absent ⇒ no finding
-        path = f"tooling.{role}.network_access"
-        if _role_is_read_only(role, cfg):
-            report.warn(
-                "network_on_read_only_role",
-                f"role '{role}' sets network_access: true but is read-only — the "
-                f"grant is a NO-OP (the OS sandbox un-blocks network only for a "
-                f"workspace_write role) and is very likely a mistake. Remove it, or "
-                f"set sandbox: workspace_write if the role truly must write AND reach "
-                f"the network (delivery-loop §4.2.7).",
-                path)
-        else:
-            report.warn(
-                "network_access_granted",
-                f"role '{role}' sets network_access: true — this DELIBERATELY opens "
-                f"the workspace-write sandbox to the network, overriding the Dev=no-"
-                f"network invariant (delivery-loop §4.2.7). Intended ONLY for "
-                f"installing dependencies (pip/npm); the driver records a "
-                f"sandbox_network_granted escalation on the audit spine. Confirm it "
-                f"is necessary — prefer pre-provisioning deps outside the sandbox.",
-                path)
+    ``network_access: true`` is now part of the shipped role defaults for the five
+    LLM roles, so the validator does not warn on the declaration itself. Runtime
+    enforcement remains sandbox-specific: codex can only toggle network for a
+    workspace_write sandbox, and the driver records a sandbox_network_granted audit
+    event when the grant is routed. ``false`` or absent remains a valid explicit
+    denial/no-op."""
+    return
 
 
 def _effective_harness(cfg: dict) -> Optional[str]:
@@ -809,7 +791,7 @@ def _check_capability_gate(charter: dict, report: Report, *, model_registry_path
         if role == "dev" and isinstance(eff_harness, str) and eff_harness not in _CODING_AGENT_HARNESSES:
             report.error(
                 "dev_needs_coding_agent",
-                f"Dev needs a coding-agent harness (claude_code/codex/kimi/aider) "
+                f"Dev needs a coding-agent harness (claude_code/codex/kimi/cursor/aider) "
                 f"that can edit files; effective harness '{eff_harness}' cannot "
                 f"(role-configuration-contract.md §4)",
                 f"{base}.harness",
@@ -993,17 +975,33 @@ def _check_skill_integrity(
       - whitelist: the skill's tool_requirements ⊆ the role's tools.allow (or a
         read-only role's {Read,Grep,Glob} default) ⇒ exceed ERROR.
     """
-    # Gather every bound skill across roles first; if none, this check is a no-op.
+    # Gather explicit bindings first (legacy behaviour), then add inherited /
+    # structured effective bindings resolved from skills/registry.yaml.
     bindings: list[tuple[str, str, Any, dict]] = []  # (role, skill_id, binding, role_cfg)
     for role, cfg in _iter_roles(charter):
         skills = cfg.get("skills")
         if not isinstance(skills, list):
-            continue
-        for entry in skills:
-            if isinstance(entry, str):
-                bindings.append((role, entry, entry, cfg))
-            elif isinstance(entry, dict) and isinstance(entry.get("id"), str):
-                bindings.append((role, entry["id"], entry, cfg))
+            # Omitted skills inherit role_defaults; the structured object form
+            # performs inherit/extend/replace/disable. Resolve both through the
+            # same runtime module so validation and execution cannot disagree.
+            try:
+                eff = effective_roles.resolve_role_config(
+                    charter, role, framework_root=repo_root or _REPO_ROOT)
+            except effective_roles.EffectiveConfigError as exc:
+                report.error(
+                    "effective_skill_resolution",
+                    f"role '{role}' effective skills cannot be resolved: {exc}",
+                    f"tooling.{role}.skills",
+                )
+                continue
+            for skill in eff.skills:
+                bindings.append((role, skill.id, skill.id, cfg))
+        else:
+            for entry in skills:
+                if isinstance(entry, str):
+                    bindings.append((role, entry, entry, cfg))
+                elif isinstance(entry, dict) and isinstance(entry.get("id"), str):
+                    bindings.append((role, entry["id"], entry, cfg))
     if not bindings:
         return  # NO-OP — no skills bound.
 
@@ -1114,6 +1112,15 @@ def _check_skill_integrity(
                         f"role-configuration-contract.md §2)",
                         base,
                     )
+        compat = cat_entry.get("harness_compat") if cat_entry else None
+        harness = cfg.get("harness") or cfg.get("agent_kind")
+        if isinstance(compat, list) and compat and harness and harness not in compat:
+            report.error(
+                "skill_harness_incompatible",
+                f"role '{role}' skill '{sid}' is not compatible with harness "
+                f"{harness!r}; supported={sorted(map(str, compat))}",
+                base,
+            )
 
 
 @dataclass
@@ -1137,7 +1144,7 @@ def _check_functional_e2e(charter: dict, report: Report) -> None:
         ALSO hard-fails browser_e2e+mode:off at construction (run_loop only validates
         on allow_real) — this is the static, fail-closed counterpart.
       - tooling.e2e, when present, must validate against executor-contract.schema.json,
-        and its base_url must sit under one of its allowed_origins (local-only).
+        and its base_url origin must be explicitly listed in allowed_origins.
     """
     tooling = charter.get("tooling")
     if not isinstance(tooling, dict):
@@ -1179,12 +1186,88 @@ def _check_functional_e2e(charter: dict, report: Report) -> None:
                     "tooling.e2e." + ".".join(str(p) for p in err.absolute_path))
         base = e2e.get("base_url")
         origins = e2e.get("allowed_origins") or []
-        if isinstance(base, str) and isinstance(origins, list) and origins and not any(
-                isinstance(o, str) and base.startswith(o) for o in origins):
+        parsed = urllib.parse.urlparse(base) if isinstance(base, str) else None
+        base_origin = (f"{parsed.scheme}://{parsed.netloc}"
+                       if parsed and parsed.scheme and parsed.netloc else None)
+        if base_origin and isinstance(origins, list) and base_origin not in origins:
             report.error(
                 "functional_e2e",
-                f"tooling.e2e.base_url ({base!r}) is not under any allowed_origins entry",
+                f"tooling.e2e.base_url origin ({base_origin!r}) is not explicitly "
+                "listed in allowed_origins",
                 "tooling.e2e.base_url")
+
+    interaction = (functional or {}).get("interaction_mode")
+    if interaction in ("agentic", "hybrid"):
+        if acc.get("sandbox", "read_only") != "read_only":
+            report.error(
+                "acceptance_repository_write_forbidden",
+                "agentic/hybrid Acceptance must keep repository sandbox read_only; "
+                "application/environment operation is configured separately",
+                "tooling.acceptance.sandbox",
+            )
+        if e2e is not None and e2e.get("executor_kind") != "playwright":
+            report.error(
+                "agentic_acceptance_requires_playwright",
+                "agentic/hybrid Acceptance requires tooling.e2e.executor_kind=playwright "
+                "for real user interaction",
+                "tooling.e2e.executor_kind",
+            )
+
+    target = (functional or {}).get("target_environment", "local")
+    browser_policy = (functional or {}).get("browser") or {}
+    browser_origins = browser_policy.get("allowed_origins") or (
+        e2e.get("allowed_origins") if e2e else []) or []
+    if target == "production":
+        if not browser_origins:
+            report.error(
+                "production_acceptance_origins_required",
+                "production Acceptance requires an explicit browser.allowed_origins "
+                "allowlist",
+                "tooling.acceptance.functional.browser.allowed_origins",
+            )
+        if isinstance((e2e or {}).get("base_url"), str) and not (
+                e2e["base_url"].startswith("https://")):
+            report.error(
+                "production_acceptance_https_required",
+                "production Acceptance base_url must use HTTPS",
+                "tooling.e2e.base_url",
+            )
+        production = (functional or {}).get("production") or {}
+        allowed = set(production.get("allowed_side_effects") or [])
+        denied = set(production.get("denied_side_effects") or [])
+        policy = production.get("side_effect_policy", "explicit_allow")
+        setup_effects: set[str] = set()
+        cleanup_effects: set[str] = set()
+        for index, op in enumerate((e2e or {}).get("lifecycle_operations") or []):
+            if not isinstance(op, dict):
+                continue
+            effect = op.get("side_effect")
+            if not effect:
+                report.error(
+                    "production_lifecycle_side_effect_required",
+                    "every production lifecycle operation must classify side_effect",
+                    f"tooling.e2e.lifecycle_operations[{index}].side_effect",
+                )
+                continue
+            if effect in denied or (
+                    policy == "explicit_allow" and effect not in allowed):
+                report.error(
+                    "production_side_effect_not_authorized",
+                    f"production lifecycle side effect {effect!r} is not authorized",
+                    f"tooling.e2e.lifecycle_operations[{index}].side_effect",
+                )
+            if op.get("phase") == "setup":
+                setup_effects.add(str(effect))
+            elif op.get("phase") == "cleanup":
+                cleanup_effects.add(str(effect))
+        missing_cleanup = sorted(setup_effects - cleanup_effects)
+        if missing_cleanup:
+            report.error(
+                "production_cleanup_missing",
+                "production setup side effects require matching cleanup operations: "
+                f"{missing_cleanup}",
+                "tooling.e2e.lifecycle_operations",
+            )
 
 
 def validate_semantics(charter: Any, report: Report, overrides: Optional[Overrides] = None) -> None:

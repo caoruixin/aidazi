@@ -1,0 +1,1039 @@
+# Constraint inventory — role-cards/acceptance-agent.md (§1–§11) + role-cards/deliver-agent.md
+# + role-cards/research-agent.md role-card constraints (~140 rows).
+# WP-EQ row schema: {id, anchor, statement, roles, condition, current_enforcement, notes?}.
+# Source-of-truth extraction; completeness gated by kernel_equivalence.py + Codex review.
+# =================================================================
+# ACCEPTANCE AGENT — role-cards/acceptance-agent.md
+# =================================================================
+
+- id: rc-acc-coldstart-always-chain
+  anchor: 'role-cards/acceptance-agent.md §1.1-1.3'
+  statement: 'Before any verdict, load the always-load kernel chain (constitution-core.md, authoring-kernel.md, context_briefing.md; full constitution.md / doc_governance.md on-demand) + adopter AGENTS.md + adoption-state.md + this role card.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: role-card:role-cards/acceptance-agent.md
+  notes: cold-start pre-action load gate
+
+- id: rc-acc-coldstart-delivery-loop-conditional
+  anchor: 'role-cards/acceptance-agent.md §1.4'
+  statement: 'Do NOT load process/delivery-loop.md — the Acceptance delivery-loop judge rules (F5, calibration, checkpoints, anti-patterns) are projected INLINE via the acceptance-kernel embedded in the acceptance prompt (retired for Acceptance; HALT for refinement if insufficient rather than read the canonical).'
+  roles: [acceptance]
+  condition: orchestrator_driven_session
+  current_enforcement: role-card:role-cards/acceptance-agent.md
+  notes: conditional load (flagged by task)
+
+- id: rc-acc-coldstart-brief-load-signature-verify
+  anchor: 'role-cards/acceptance-agent.md §1.7'
+  statement: 'Load the Research brief at the provided path and verify customer_signed:true and that the signed-version date matches the milestone start before judging.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'research-brief.schema.json requires customer_signed as a boolean field (no const:true) but cannot enforce the Acceptance load-time verification that it is true and the date matches milestone start.'
+
+- id: rc-acc-coldstart-evidence-and-crossref-load
+  anchor: 'role-cards/acceptance-agent.md §1.8-1.10'
+  statement: 'Load dev evidence via the F5 pattern (artifact paths the orchestrator produced, not your own run), the Code Reviewer''s latest codex-findings.md, and any prior acceptance-report for residual-risk lineage.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: role-card:role-cards/acceptance-agent.md
+
+- id: rc-acc-symmetry-before-judging
+  anchor: 'role-cards/acceptance-agent.md §2 (line 48)'
+  statement: 'Run the Research-Acceptance contract symmetry check before evaluating any closure_contract clause.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-symmetry-coverage-no-silent-widen
+  anchor: 'role-cards/acceptance-agent.md §2.1'
+  statement: 'Do not silently widen evaluation to a criterion the closure_contract does not cover; route via suggested_route research_contract_revision instead.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-symmetry-version-freshness-halt
+  anchor: 'role-cards/acceptance-agent.md §2.2'
+  statement: 'Confirm the closure_contract is the gate-1-signed version (customer_signed:true + sign_off_date present and not after milestone start); if sign_off_date is missing or post-milestone-start, halt and re-confirm with Customer before judging.'
+  roles: [acceptance, customer]
+  condition: always
+  current_enforcement: none-judgment
+  notes: load-closure backstop = driver:acceptance_input_hash (driver.py:4030) hashes the signed contract into verdict-affecting input
+
+- id: rc-acc-symmetry-three-component-shape
+  anchor: 'role-cards/acceptance-agent.md §2.3'
+  statement: 'Verify each closure_contract clause has the §1.7-B three-component shape (positive shape + anti-pattern + anchor phrases); if a component is missing the contract is under-specified — route research_contract_revision.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'the schema requires the three closure_contract fields present; it does not enforce the Acceptance per-clause verification + research_contract_revision routing judgment.'
+
+- id: rc-acc-symmetry-no-criteria-creep
+  anchor: 'role-cards/acceptance-agent.md §2.4'
+  statement: 'Evaluate against ONLY what the closure_contract specifies — never against Code Reviewer flags or what evidence "obviously" should pass.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-symmetry-failure-is-research-side
+  anchor: 'role-cards/acceptance-agent.md §2 (line 59)'
+  statement: 'Treat a symmetry-check failure as a Research-side process gap (route research_contract_revision), NOT a fix_required verdict on the delivery team.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-spawn-surface-whitelist
+  anchor: 'role-cards/acceptance-agent.md §3'
+  statement: 'Only be spawned via Customer paste OR a charter-permitted orchestrator (advisory when tooling.acceptance.mode != off); no other spawn surface is valid.'
+  roles: [acceptance, orchestrator]
+  condition: always
+  current_enforcement: driver:_spawn_acceptance
+  notes: driver.py:3723 stamps spawn_surface=orchestrator; orchestrator is the only engine spawner of acceptance
+
+- id: rc-acc-spawn-isolation-halt-on-deliver-dev
+  anchor: 'role-cards/acceptance-agent.md §3 (Constitution §1.7-C)'
+  statement: 'If evidence shows you were spawned from a Deliver or Dev session (planning/coding chat history, or activation emitted by a non-Customer/non-orchestrator role), HALT and surface a §1.7-C breach — the verdict is structurally biased and invalid.'
+  roles: [acceptance, deliver, dev]
+  condition: always
+  current_enforcement: driver:_spawn_acceptance
+  notes: structurally prevented (orchestrator-only spawn surface) + none-judgment self-detection
+
+- id: rc-acc-advisory-halt-unless-authoritative
+  anchor: 'role-cards/acceptance-agent.md §3 / §4'
+  statement: 'A pass HALTs at advisory_acceptance_pass_signoff for human sign-off UNLESS authoritative (tooling.acceptance.mode==auto AND active-class judge calibrated AND autonomy.level==fully_autonomous_within_budget), in which case a pass auto-ships.'
+  roles: [acceptance, orchestrator]
+  condition: always
+  current_enforcement: driver:_acceptance_authoritative
+  notes: driver.py:2934
+
+- id: rc-acc-calibration-per-active-class
+  anchor: 'role-cards/acceptance-agent.md §4'
+  statement: 'Read calibration from the ACTIVE class — static(M1) from tooling.acceptance.judge_calibration.status, browser_e2e(M3) from tooling.acceptance.functional.judge_calibration_m3.status; absent ⇒ uncalibrated (fail-closed).'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: driver:_calibration_status
+  notes: driver.py:2997 — default 'uncalibrated'
+
+- id: rc-acc-calibration-m3-always-advisory-v1
+  anchor: 'role-cards/acceptance-agent.md §4 (line 74)'
+  statement: 'Treat the browser_e2e(M3) class as ALWAYS advisory in v1 — a functional pass HALTs for human sign-off and never auto-ships, regardless of any charter-declared M3 status.'
+  roles: [acceptance]
+  condition: browser_e2e_milestone
+  current_enforcement: driver:_acceptance_authoritative
+  notes: driver.py:2954 returns False for browser_e2e by construction
+
+- id: rc-acc-calibration-uncalibrated-degrade-verify
+  anchor: 'role-cards/acceptance-agent.md §4 (line 79)'
+  statement: 'When uncalibrated under fully_autonomous_within_budget, the verdict is advisory-only and the orchestrator MUST have auto-degraded autonomy to human_on_the_loop; verify the degradation in the session log, else halt and surface the bypass.'
+  roles: [acceptance, orchestrator]
+  condition: always
+  current_enforcement: driver:_calibration_gate
+  notes: driver.py:3012 auto-degrades + emits recorded checkpoint
+
+- id: rc-acc-calibration-identity-invalidation
+  anchor: 'role-cards/acceptance-agent.md §4 (line 85)'
+  statement: 'If charter.tooling.acceptance.agent_kind or model differs from the calibration set''s recorded judge identity, treat calibration as invalidated — flag and request re-calibration before treating the verdict as authoritative.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-verdict-schema-bound
+  anchor: 'role-cards/acceptance-agent.md §5'
+  statement: 'Emit a JSON verdict that validates against schemas/acceptance-verdict.schema.json (milestone_verdict + cases + failure_briefs + suggested_route).'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: schema:acceptance-verdict.schema.json
+
+- id: rc-acc-verdict-decision-tree
+  anchor: 'role-cards/acceptance-agent.md §5.1'
+  statement: 'Per clause, verdict=pass only if delivered behavior matches positive shape AND avoids the anti-pattern AND anchor phrases (or equivalents) are observable; one ambiguous ⇒ partial; positive-shape miss or anti-pattern hit ⇒ fail.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-verdict-aggregation-discipline
+  anchor: 'role-cards/acceptance-agent.md §5.1'
+  statement: 'Aggregate to milestone_verdict — all clauses pass ⇒ pass; any P0/P1 fail ⇒ fix_required; multiple partials or a closure_contract gap ⇒ needs_human; cannot judge (insufficient evidence / spawn breach / calibration invalid) ⇒ needs_human.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-anchor-phrase-evidence-not-gate
+  anchor: 'role-cards/acceptance-agent.md §5.2 (Constitution §1.7-B)'
+  statement: 'Use anchor phrases only as cited EVIDENCE in the rationale, never as a passing condition; judge semantic match, not string match.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-f5-do-not-run-harness
+  anchor: 'role-cards/acceptance-agent.md §6'
+  statement: 'Do NOT run the eval harness; consume only the evidence_path artifacts the orchestrator captured before invoking you.'
+  roles: [acceptance, orchestrator]
+  condition: always
+  current_enforcement: none-judgment
+  notes: '_gate_hard_fail is a failure-emission backstop; the do-not-run-the-harness / consume-only-orchestrator-evidence boundary is role discipline (read-only sandbox is the indirect backstop).'
+
+- id: rc-acc-f5-halt-on-absent-evidence
+  anchor: 'role-cards/acceptance-agent.md §6'
+  statement: 'If there are no evidence_path inputs, the artifact files are empty, or the eval harness exited non-zero, halt — a verdict from code inspection alone is invalid (delivery-loop §4.2.8 anti-pattern #5).'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: driver:_gate_hard_fail
+  notes: orchestrator gate_hard_fail MANDATORY_CHECKPOINT backstop
+
+- id: rc-acc-f5-human-paste-require-execution-evidence
+  anchor: 'role-cards/acceptance-agent.md §6 (line 151)'
+  statement: 'In human-paste mode, require pasted artifact paths or run-links; if given only "look at the code," halt and request execution evidence.'
+  roles: [acceptance, customer]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-evidence-paths-not-raw-code
+  anchor: 'role-cards/acceptance-agent.md §6.1 / §5'
+  statement: 'Cite the execution artifacts you actually read (static evidence_path ^eval/runs/.+, or browser functional_evidence_refs under .orchestrator/audit/browser/), never code paths.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: schema:acceptance-verdict.schema.json
+  notes: evidence_path pattern schema-enforced; browser refs bound by driver
+
+- id: rc-acc-browser-readonly-never-drive
+  anchor: 'role-cards/acceptance-agent.md §6.1'
+  statement: 'For a browser_e2e milestone, judge the committed hash-anchored manifest read-only; launching the app, driving a browser, or running the executor yourself is a sandbox breach (delivery-loop §4.2.8 anti-pattern #14).'
+  roles: [acceptance, orchestrator]
+  condition: browser_e2e_milestone
+  current_enforcement: none-judgment
+  notes: orchestrator drives browser; agent boundary self-enforced
+
+- id: rc-acc-browser-acceptance-class-set
+  anchor: 'role-cards/acceptance-agent.md §6.1'
+  statement: 'Set acceptance_class:"browser_e2e" on a browser_e2e run — the driver gate_hard_fails a browser_e2e run whose verdict is not this class.'
+  roles: [acceptance]
+  condition: browser_e2e_milestone
+  current_enforcement: driver:_gate_hard_fail
+  notes: schema:acceptance-verdict.schema.json branch + driver active-class match
+
+- id: rc-acc-browser-evidence-refs-bound
+  anchor: 'role-cards/acceptance-agent.md §6.1'
+  statement: 'Every browser_e2e case carries its criterion_id AND non-empty functional_evidence_refs {kind,path,sha256} citing committed-run artifacts; a fake/uncommitted/hash-mismatched ref gate_hard_fails.'
+  roles: [acceptance]
+  condition: browser_e2e_milestone
+  current_enforcement: driver:_gate_hard_fail
+  notes: driver binds each ref to committed manifest (driver.py:3079+); schema requires the fields
+
+- id: rc-acc-browser-criterion-set-equality
+  anchor: 'role-cards/acceptance-agent.md §6.1'
+  statement: 'Browser_e2e cases MUST cover the signed functional-checklist criterion_id set EXACTLY (set-equality); a coverage gap, a non-pass case under a milestone pass, or a captured CRITICAL executor failure under a milestone pass is coerced to needs_human.'
+  roles: [acceptance]
+  condition: browser_e2e_milestone
+  current_enforcement: driver:_gate_hard_fail
+  notes: driver set-equality coverage check + needs_human coercion
+
+- id: rc-acc-browser-executor-status-observations
+  anchor: 'role-cards/acceptance-agent.md §6.1'
+  statement: 'Treat checklist-results executor_status values as OBSERVATIONS not verdicts — you MAY fail a criterion the executor marked pass, and you MUST NOT pass a criterion the executor observed fail/error.'
+  roles: [acceptance]
+  condition: browser_e2e_milestone
+  current_enforcement: driver:_gate_hard_fail
+  notes: judging is none-judgment; MUST-NOT-pass-a-fail backed by driver coercion to needs_human
+
+- id: rc-acc-browser-needs-human-thin-evidence
+  anchor: 'role-cards/acceptance-agent.md §6.1 (line 164)'
+  statement: 'If the manifest is missing/incomplete or a criterion cannot be bound to evidence, set needs_human — never pass on thin evidence.'
+  roles: [acceptance]
+  condition: browser_e2e_milestone
+  current_enforcement: driver:_gate_hard_fail
+  notes: orchestrator reconcile gate_hard_fails incomplete manifest before run
+
+- id: rc-acc-fixrequired-write-report
+  anchor: 'role-cards/acceptance-agent.md §7.1'
+  statement: 'On fix_required, write the acceptance report to docs/acceptance-reports/<scope>-acceptance-report.md (schema-validated verdict + per-failure clause/proposed_scope/severity + suggested route).'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: role-card:role-cards/acceptance-agent.md
+
+- id: rc-acc-fixrequired-write-checkpoint
+  anchor: 'role-cards/acceptance-agent.md §7.2'
+  statement: 'On fix_required, also write the human-confirm checkpoint docs/checkpoints/<ts>__acceptance_fix_required__<scope>.md with decision:pending in the prescribed YAML shape.'
+  roles: [acceptance, customer]
+  condition: always
+  current_enforcement: role-card:role-cards/acceptance-agent.md
+
+- id: rc-acc-fixrequired-stop-no-direct-route
+  anchor: 'role-cards/acceptance-agent.md §7.3 (line 199)'
+  statement: 'After writing the checkpoint, STOP the session — do not proceed past it and do not route directly to Deliver; the human writes decision: and the orchestrator re-dispatches.'
+  roles: [acceptance, deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-fixrequired-checkpoint-mandatory
+  anchor: 'role-cards/acceptance-agent.md §7 (line 201)'
+  statement: 'A fix_required verdict without a corresponding human-confirm checkpoint file is a §1.7-C and §3.5 breach.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-suggested-route-fit-or-needs-human
+  anchor: 'role-cards/acceptance-agent.md §7.1'
+  statement: 'Suggest the route fitting the failure shape (deliver_fix_iteration / re_acceptance_after_evidence / research_contract_revision); if you cannot tell which fits, set needs_human instead of guessing.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-needs-human-triggers
+  anchor: 'role-cards/acceptance-agent.md §8'
+  statement: 'Set needs_human on spawn-isolation breach, calibration invalidation, absent evidence, symmetry-check failure, or multiple partials with no clear route.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-mustnot-edit-outside-output-dirs
+  anchor: 'role-cards/acceptance-agent.md §9 (line 227)'
+  statement: 'Do NOT edit code, tests, or any file outside docs/acceptance-reports/ and docs/checkpoints/.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: role-card:role-cards/acceptance-agent.md
+  notes: defines the only writable paths
+
+- id: rc-acc-mustnot-run-scripts-network
+  anchor: 'role-cards/acceptance-agent.md §9 (line 228)'
+  statement: 'Do NOT run scripts, the eval harness, or network calls outside charter.tooling.acceptance.network_access.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: role-card:role-cards/acceptance-agent.md
+
+- id: rc-acc-mustnot-spawn-agents
+  anchor: 'role-cards/acceptance-agent.md §9 (line 229)'
+  statement: 'Do NOT spawn other agents.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: driver:_spawn_acceptance
+  notes: acceptance has no spawn capability in engine
+
+- id: rc-acc-mustnot-route-without-checkpoint
+  anchor: 'role-cards/acceptance-agent.md §9 (line 230)'
+  statement: 'Do NOT pass the verdict back to Deliver without the human-confirm checkpoint.'
+  roles: [acceptance, deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-mustnot-authoritative-without-calibration
+  anchor: 'role-cards/acceptance-agent.md §9 (line 231)'
+  statement: 'Do NOT treat the verdict as authoritative in fully_autonomous_within_budget mode without confirming calibration.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: driver:_acceptance_authoritative
+
+- id: rc-acc-mustnot-judge-uncovered-criteria
+  anchor: 'role-cards/acceptance-agent.md §9 (line 232)'
+  statement: 'Do NOT judge against criteria the closure_contract does not specify.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-mustnot-keyword-as-gate
+  anchor: 'role-cards/acceptance-agent.md §9 (line 233)'
+  statement: 'Do NOT use keyword matching as a passing condition.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-mustnot-continue-past-halt
+  anchor: 'role-cards/acceptance-agent.md §9 (line 234)'
+  statement: 'Do NOT continue past a halt signal raised in §2/§3/§4/§6.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-preoutput-symmetry
+  anchor: 'role-cards/acceptance-agent.md §10.1'
+  statement: 'Pre-output gate — confirm the §2 symmetry check passed before writing the verdict file.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-preoutput-spawn-isolation
+  anchor: 'role-cards/acceptance-agent.md §10.2'
+  statement: 'Pre-output gate — confirm §3 spawn isolation is verified.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: driver:_spawn_acceptance
+
+- id: rc-acc-preoutput-calibration
+  anchor: 'role-cards/acceptance-agent.md §10.3'
+  statement: 'Pre-output gate — confirm the §4 calibration gate is verified.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: driver:_calibration_gate
+
+- id: rc-acc-preoutput-evidence
+  anchor: 'role-cards/acceptance-agent.md §10.4'
+  statement: 'Pre-output gate — confirm §6 F5 evidence is present and read.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'a pre-output self-check (confirm F5 evidence present and read) is agent discipline; _run_eval_f5 hard-fails on absent evidence as a backstop but does not prove the agent read it.'
+
+- id: rc-acc-preoutput-schema-valid
+  anchor: 'role-cards/acceptance-agent.md §10.5'
+  statement: 'Pre-output gate — confirm the verdict JSON validates against schemas/acceptance-verdict.schema.json.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: schema:acceptance-verdict.schema.json
+
+- id: rc-acc-preoutput-evidence-cited-per-failure
+  anchor: 'role-cards/acceptance-agent.md §10.6'
+  statement: 'Pre-output gate — confirm every fail/partial clause cites evidence_path and has a rationale referencing positive shape / anti-pattern / anchor phrases.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'acceptance-verdict.schema.json requires evidence refs + non-empty rationale, but not that the rationale references positive shape / anti-pattern / anchor phrases (judgment).'
+
+- id: rc-acc-preoutput-checkpoint-written
+  anchor: 'role-cards/acceptance-agent.md §10.7'
+  statement: 'Pre-output gate — if fix_required, confirm the §7 human-confirm checkpoint file is also written.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-preoutput-route-fits
+  anchor: 'role-cards/acceptance-agent.md §10.8 (line 249)'
+  statement: 'Pre-output gate — confirm the suggested route fits the failure shape or the verdict is needs_human; a "no" to any checklist item ⇒ halt, do not emit.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-acc-tool-whitelist-read-grep-glob
+  anchor: 'role-cards/acceptance-agent.md §11 (lines 257-258) / §9'
+  statement: 'Operate within a read-only [Read, Grep, Glob] tool whitelist — no edits, no script execution, no network beyond charter.'
+  roles: [acceptance]
+  condition: always
+  current_enforcement: role-card:role-cards/acceptance-agent.md
+  notes: engine adapter applies the whitelist at spawn
+
+- id: rc-acc-skill-evidence-only-no-judge-delegation
+  anchor: 'role-cards/acceptance-agent.md §11'
+  statement: 'May load evidence-reading skills only; the positive-shape/anti-pattern/anchor-phrase judgment itself is NOT delegable to a skill or sub-agent (a packaged auto-judge is a different judge identity).'
+  roles: [acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+
+- id: rc-acc-skill-calibration-identity
+  anchor: 'role-cards/acceptance-agent.md §11'
+  statement: 'Calibration identity is (agent_kind × model × skill set); if tooling.acceptance.skills differs from the calibration run (any skill added/removed/updated), treat as uncalibrated and flag for re-calibration.'
+  roles: [acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+
+- id: rc-acc-fanout-readonly-draft-only
+  anchor: 'role-cards/acceptance-agent.md §11'
+  statement: 'Fan-out is discouraged; if used (subagent_fanout != false), sub-agents are read-only [Read,Grep,Glob] (transitive), restricted to evidence-gathering, and their outputs are draft evidence — the verdict JSON is yours alone.'
+  roles: [acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+
+- id: rc-acc-skill-tools-subset
+  anchor: 'role-cards/acceptance-agent.md §11'
+  statement: 'Mounted skills'' allowed-tools MUST be a subset of your [Read, Grep, Glob] whitelist.'
+  roles: [acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+
+- id: rc-acc-skill-no-new-spawn-surface
+  anchor: 'role-cards/acceptance-agent.md §11'
+  statement: 'Skills and fan-out grant no new spawn surfaces for or from this role — §1.7-C is unaffected.'
+  roles: [acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: driver:_spawn_acceptance
+
+- id: rc-acc-load-role-skill-model-conditional
+  anchor: 'role-cards/acceptance-agent.md §11 (line 253)'
+  statement: 'Do NOT load process/role-skill-model.md — the §4 boundary + §6 skill-packaging rules are projected INLINE via the acceptance-kernel embedded in the acceptance prompt (retired for Acceptance; HALT for refinement if insufficient).'
+  roles: [acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: role-card:role-cards/acceptance-agent.md
+  notes: conditional load (flagged by task)
+
+# =================================================================
+# DELIVER AGENT — role-cards/deliver-agent.md
+# =================================================================
+
+- id: rc-del-no-code-no-review-no-acceptance
+  anchor: 'role-cards/deliver-agent.md §1 (line 25) / §4.2'
+  statement: 'Do NOT write code, run review, or run acceptance — Deliver plans/orchestrates/closes only (Constitution §3.4 invariant #5).'
+  roles: [deliver]
+  condition: always
+  current_enforcement: role-card:role-cards/deliver-agent.md
+
+- id: rc-del-coldstart-always-chain
+  anchor: 'role-cards/deliver-agent.md §1.1-1.3'
+  statement: 'On cold start load the always-load kernel chain (constitution-core.md, authoring-kernel.md, context_briefing.md; full constitution.md / doc_governance.md on-demand) + adopter AGENTS.md + adoption-state.md + this role card.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: role-card:role-cards/deliver-agent.md
+
+- id: rc-del-coldstart-process-template-suite
+  anchor: 'role-cards/deliver-agent.md §1.4-1.5,1.7-1.11'
+  statement: 'On cold start load the Deliver process/template suite — milestone-framework.md, tech-architecture-decision-catalog.md (Δ-3), artifact-taxonomy.md (Δ-12), post-deployment-iteration.md (Δ-9), common-detours-and-warnings-type<A|B|C>.md (Δ-17), deliver-close-taxonomy.md, and the sprint/milestone-objective + compact-dev-prompt templates.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: role-card:role-cards/deliver-agent.md
+
+- id: rc-del-coldstart-typea-skeleton-conditional
+  anchor: 'role-cards/deliver-agent.md §1.6'
+  statement: 'Load typeA-runtime-architecture-skeleton.md (Δ-6) when the adopter is Type A or A+B.'
+  roles: [deliver]
+  condition: type_a_or_a_plus_b
+  current_enforcement: role-card:role-cards/deliver-agent.md
+
+- id: rc-del-coldstart-path-inputs
+  anchor: 'role-cards/deliver-agent.md §1 (lines 45-49) / §6'
+  statement: 'Load the path-specific inputs — Path1 the gate-1 customer_signed:true research brief; Path2 matured failure-briefs + action_bank R-items; Path3 the acceptance report + gap brief after the human-confirm checkpoint resolves; all paths action_bank + handoff §0/§1 + latest codex-findings.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: role-card:role-cards/deliver-agent.md
+
+- id: rc-del-campaign-author-signed-backlog
+  anchor: 'role-cards/deliver-agent.md §2.0'
+  statement: 'Under the Campaign Loop, author the ordered milestone backlog (campaign plan per schemas/campaign-plan.schema.json); the Customer signs it (campaign_plan_signoff) before the runner drives delivery.'
+  roles: [deliver, customer]
+  condition: campaign_loop_active
+  current_enforcement: 'campaign:campaign_plan_signoff'
+  notes: 'campaign-plan.schema.json validates the plan shape; the Customer-signs-before-runner-drives gate is the campaign_plan_signoff pause enforced by the campaign runner.'
+
+- id: rc-del-campaign-no-edit-runner
+  anchor: 'role-cards/deliver-agent.md §2.0 (lines 64-65)'
+  statement: 'Do NOT edit the campaign runner or auto-advance logic — that is deterministic engine behavior.'
+  roles: [deliver]
+  condition: campaign_loop_active
+  current_enforcement: none-judgment
+
+- id: rc-del-campaign-resolve-pauses-not-cli
+  anchor: 'role-cards/deliver-agent.md §2.0 (lines 67-72)'
+  statement: 'Resolve deliver_followup_required / milestone_decompose_required pauses by authoring the routed sub-sprint or editing the plan; you do NOT run the run_loop CLI.'
+  roles: [deliver]
+  condition: campaign_loop_active
+  current_enforcement: none-judgment
+  notes: '_pause sets a campaign pause state; it does not enforce that Deliver resolves it by authoring the routed sub-sprint rather than running the CLI (role discipline).'
+
+- id: rc-del-path1-trigger-signed-brief
+  anchor: 'role-cards/deliver-agent.md §2.1'
+  statement: 'Begin Path 1 only when a research brief lands with customer_signed:true (gate 1 passed); decompose it into a milestone of 3-5 sub-sprints citing the closure_contract as north star.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'research-brief.schema.json does not enforce customer_signed:true / gate-1-passed / 3-5 sub-sprints / closure_contract-as-north-star; Path-1 trigger discipline is judgment.'
+
+- id: rc-del-path2-no-silent-research-bypass
+  anchor: 'role-cards/deliver-agent.md §2.2 (line 94)'
+  statement: 'Do NOT silently bypass Research for severe/load-bearing failure shapes; if a failure-brief would change scope significantly, route it to Path 1 (Research re-runs formally).'
+  roles: [deliver, research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-path3-trigger-resolved-checkpoint
+  anchor: 'role-cards/deliver-agent.md §2.3 (lines 96-103)'
+  statement: 'Begin Path 3 only when the acceptance report is fix_required AND the human-confirm checkpoint is resolved with confirm:yes; route:deliver_fix_iteration.'
+  roles: [deliver, customer]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-path3-scope-exactly-gap
+  anchor: 'role-cards/deliver-agent.md §2.3 (line 106)'
+  statement: 'Scope a Path-3 sub-sprint EXACTLY to gap closure — no opportunistic re-scoping, no "while we''re in there" feature additions.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-path3-no-edit-contract
+  anchor: 'role-cards/deliver-agent.md §2.3 (line 112)'
+  statement: 'Do NOT edit the closure_contract to make a Path-3 gap go away (Constitution §3.4 invariant #4) — the route for a contract problem is research_contract_revision, not a silent edit.'
+  roles: [deliver, research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-path3-no-defer-confirmed-fix
+  anchor: 'role-cards/deliver-agent.md §2.3 (line 113)'
+  statement: 'Do NOT file a confirmed deliver_fix_iteration as a new R-item and proceed past the gap — you author the fix sub-sprint, not defer it.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-path3-respect-ship-anyway
+  anchor: 'role-cards/deliver-agent.md §2.3 (line 115)'
+  statement: 'If Customer confirmed confirm:no (ship anyway), do NOT author a fix sub-sprint against the explicit accept; the milestone closes with documented residual risk (an R-item is permitted).'
+  roles: [deliver, customer]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-compact-prompt-self-contained
+  anchor: 'role-cards/deliver-agent.md §3.3 / §3.4'
+  statement: 'Author compact dev/review prompts with self_contained:true + a context_budget and tight load/do-not-load lists — they are the durable handoff (Constitution §1.4-i).'
+  roles: [deliver]
+  condition: always
+  current_enforcement: role-card:role-cards/deliver-agent.md
+  notes: templates/compact-*-prompt.md; not schema-validated
+
+- id: rc-del-no-chat-history-backchannel
+  anchor: 'role-cards/deliver-agent.md §3.3 (line 154)'
+  statement: 'Pass context only via the durable compact-prompt artifact — no chat-history backchannel (Constitution §3.4 invariant #1).'
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-handoff-authoring-boundary
+  anchor: 'role-cards/deliver-agent.md §3.5 / §4.1 (lines 173,185)'
+  statement: 'Author only handoff §0 cold-start scaffolds and the §12 close decision (Deliver+human co-sign); §1-§11 are Dev-authored and read-only to you.'
+  roles: [deliver, dev]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-close-conversation-discipline
+  anchor: 'role-cards/deliver-agent.md §3.5'
+  statement: 'Run the close conversation by reading the Code Reviewer''s codex-findings.md + Dev''s handoff §1-§11, classify each blocking finding per the taxonomy, decide A/B/C/D, and record the decision in handoff §12.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: role-card:role-cards/deliver-agent.md
+
+- id: rc-del-mustnot-edit-code-tests
+  anchor: 'role-cards/deliver-agent.md §4.2 (line 192)'
+  statement: 'Do NOT edit feature code or test code in the dev sandbox.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: role-card:role-cards/deliver-agent.md
+
+- id: rc-del-mustnot-run-review
+  anchor: 'role-cards/deliver-agent.md §4.2 (line 193)'
+  statement: 'Do NOT run the Code Reviewer''s review process yourself.'
+  roles: [deliver, code_reviewer]
+  condition: always
+  current_enforcement: role-card:role-cards/deliver-agent.md
+
+- id: rc-del-mustnot-run-acceptance-judgment
+  anchor: 'role-cards/deliver-agent.md §4.2 (line 194)'
+  statement: 'Do NOT run the Acceptance Agent''s judgment yourself.'
+  roles: [deliver, acceptance]
+  condition: always
+  current_enforcement: role-card:role-cards/deliver-agent.md
+
+- id: rc-del-mustnot-spawn-acceptance
+  anchor: 'role-cards/deliver-agent.md §4.2 (line 195)'
+  statement: 'Do NOT spawn the Acceptance Agent — Constitution §1.7-C forbids it (you are downstream of Acceptance''s verdict; spawning it from your session is the bias loop the rule prevents).'
+  roles: [deliver, acceptance]
+  condition: always
+  current_enforcement: driver:_spawn_acceptance
+  notes: orchestrator is the only acceptance spawn surface (driver.py:3723)
+
+- id: rc-del-mustnot-edit-closure-contract
+  anchor: 'role-cards/deliver-agent.md §4.2 (line 196)'
+  statement: 'Do NOT edit a research-brief''s closure_contract (Constitution §3.4 invariant #4).'
+  roles: [deliver, research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-mustnot-edit-functional-checklist
+  anchor: 'role-cards/deliver-agent.md §4.2 (line 197) / §5.2'
+  statement: 'Do NOT edit the signed browser-E2E functional-checklist post-Gate-1 — it is Research-owned and frozen; a needed change routes via research_contract_revision.'
+  roles: [deliver, research]
+  condition: browser_e2e_milestone
+  current_enforcement: none-judgment
+  notes: criterion_id set-equality bound by driver, but freeze is procedural
+
+- id: rc-del-mustnot-author-browser-verdict
+  anchor: 'role-cards/deliver-agent.md §4.2 (line 198) / §5.2'
+  statement: 'Do NOT author or override the browser-E2E milestone VERDICT — you own the executor MECHANICS, not the judgment (which is the Acceptance Agent''s).'
+  roles: [deliver, acceptance]
+  condition: browser_e2e_milestone
+  current_enforcement: none-judgment
+  notes: 'gate_hard_fail enforces browser evidence/class integrity, not Deliver non-authorship of the verdict (role discipline; the verdict is structurally Acceptance owned).'
+
+- id: rc-del-mustnot-pickup-gap-without-checkpoint
+  anchor: 'role-cards/deliver-agent.md §4.2 (line 199)'
+  statement: 'Do NOT pick up an Acceptance gap brief without the human-confirm checkpoint resolution being written (Constitution §3.5).'
+  roles: [deliver, acceptance, customer]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-mustnot-bypass-scope-envelope
+  anchor: 'role-cards/deliver-agent.md §4.2 (line 200)'
+  statement: 'Do NOT bypass scope_envelope_check at close — if your close claims in_scope:true but the orchestrator''s check disagrees, the orchestrator''s check wins.'
+  roles: [deliver, orchestrator]
+  condition: always
+  current_enforcement: none-judgment
+  notes: deterministic scope_envelope_check NOT yet wired in P2 (driver.py:2858); Deliver's own in_scope:false still fires scope_deviation
+
+- id: rc-del-mustnot-overinsert-adaptive
+  anchor: 'role-cards/deliver-agent.md §4.2 (line 201)'
+  statement: 'Do NOT expand scope mid-milestone via adaptive_insert beyond charter.auto_pass_rules.adaptive_insert.max_inserted_subsprints.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: role-card:role-cards/deliver-agent.md
+  notes: cap is delivery-loop §4.2.8 #12; not found driver-enforced in this tree
+
+- id: rc-del-close-verdict-schema
+  anchor: 'role-cards/deliver-agent.md §5'
+  statement: 'Produce a close verdict validating against schemas/deliver-close-verdict.schema.json (verdict A/B/C/D, blocking_count, worst_severity, in_scope, next_subsprint, reason).'
+  roles: [deliver]
+  condition: always
+  current_enforcement: schema:deliver-close-verdict.schema.json
+
+- id: rc-del-close-verdict-routing-gates
+  anchor: 'role-cards/deliver-agent.md §5 (lines 218-222)'
+  statement: 'A/B with in_scope:false halts at scope_deviation; C or D fires the close_taxonomy_C_or_D MANDATORY_CHECKPOINT for Customer resolution.'
+  roles: [deliver, orchestrator, customer]
+  condition: always
+  current_enforcement: 'driver:_handle_close'
+  notes: '_handle_close writes the close_taxonomy_C_or_D / scope_deviation checkpoints (close_taxonomy_C_or_D is the checkpoint name, not a symbol).'
+
+- id: rc-del-plan-fix-schema
+  anchor: 'role-cards/deliver-agent.md §5.1'
+  statement: 'When the close decision is fix-iterate, produce the plan-fix object validating against schemas/deliver-plan-fix.schema.json (subsprint_id, layers, modules, objective_md, dev_prompt_md, summary).'
+  roles: [deliver]
+  condition: always
+  current_enforcement: schema:deliver-plan-fix.schema.json
+
+- id: rc-del-browser-own-mechanics-only
+  anchor: 'role-cards/deliver-agent.md §5.2'
+  statement: 'For a browser_e2e milestone, own only the executor MECHANICS (charter.tooling.e2e per schemas/executor-contract.schema.json); the captured evidence is OBSERVATIONS and never defines pass/fail.'
+  roles: [deliver]
+  condition: browser_e2e_milestone
+  current_enforcement: none-judgment
+  notes: 'executor-contract.schema.json validates the executor MECHANICS shape, but the bundled observation-not-pass/fail ownership discipline is judgment.'
+
+- id: rc-del-browser-not-checklist-author
+  anchor: 'role-cards/deliver-agent.md §5.2'
+  statement: 'You are NOT the functional-checklist author — the signed criteria (schemas/functional-checklist.schema.json) are Research-owned and frozen at Gate-1; executor criterion_ids must reference the signed checklist''s ids.'
+  roles: [deliver, research]
+  condition: browser_e2e_milestone
+  current_enforcement: none-judgment
+  notes: criterion_id set-equality enforced by driver against signed checklist
+
+- id: rc-del-browser-no-edit-engine
+  anchor: 'role-cards/deliver-agent.md §5.2 (line 248)'
+  statement: 'Do NOT edit the orchestrator''s executor, evidence-commit logic, or consistency gate — that is deterministic engine behavior.'
+  roles: [deliver]
+  condition: browser_e2e_milestone
+  current_enforcement: none-judgment
+
+- id: rc-del-preoutput-forbidden-list
+  anchor: 'role-cards/deliver-agent.md §7.1'
+  statement: 'Pre-output gate — confirm scope decisions don''t bake in keyword/regex/UC-specific hard rules (Constitution §1.7 forbidden-list).'
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-preoutput-context-efficiency
+  anchor: 'role-cards/deliver-agent.md §7.2'
+  statement: 'Pre-output gate — confirm compact prompts have self_contained:true + tight load_list/do_not_load (§1.4-i).'
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-preoutput-boundary-check
+  anchor: 'role-cards/deliver-agent.md §7.3'
+  statement: 'Pre-output gate — confirm you''re not writing code, not spawning Acceptance, not editing the closure_contract (§3.4 boundary).'
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-preoutput-path3-not-rescoping
+  anchor: 'role-cards/deliver-agent.md §7.4'
+  statement: 'Pre-output gate (Path 3) — confirm the human-confirm checkpoint shows confirm:yes; route:deliver_fix_iteration and you''re not opportunistically rescoping.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-preoutput-artifact-paths
+  anchor: 'role-cards/deliver-agent.md §7.5'
+  statement: 'Pre-output gate — confirm outputs land in the right Δ-12 paths and you''re not writing into output-side dirs (codex-findings / acceptance-reports / etc.).'
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-preoutput-scope-claim-matches
+  anchor: 'role-cards/deliver-agent.md §7.6'
+  statement: 'Pre-output gate — confirm the close verdict is schema-valid and the in_scope claim matches what scope_envelope_check would say.'
+  roles: [deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-del-load-role-skill-model-conditional
+  anchor: 'role-cards/deliver-agent.md §8 (line 271)'
+  statement: 'Load process/role-skill-model.md when charter.tooling.deliver.skills is non-empty or you intend to fan out.'
+  roles: [deliver]
+  condition: skills_or_fanout_active
+  current_enforcement: role-card:role-cards/deliver-agent.md
+  notes: conditional load (flagged by task)
+
+- id: rc-del-fanout-consolidate-self
+  anchor: 'role-cards/deliver-agent.md §8 (line 282)'
+  statement: 'You MUST consolidate fan-out drafts yourself — milestone_objective, sprint_objective, and compact prompts are YOUR artifacts; no sub-agent signs them and no draft passes to Dev unreviewed by you.'
+  roles: [deliver]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+
+- id: rc-del-fanout-invariant5-transitive
+  anchor: 'role-cards/deliver-agent.md §8 (line 283)'
+  statement: 'Invariant #5 extends transitively — your sub-agents draft plans; they do NOT edit feature code or test code.'
+  roles: [deliver]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+
+- id: rc-del-fanout-not-a-gate
+  anchor: 'role-cards/deliver-agent.md §8 (line 284)'
+  statement: 'Fan-out is not a gate — a sub-agent''s design critique is not a Code Reviewer verdict and its self-check is not Acceptance; every chain gate still fires in its own role session.'
+  roles: [deliver, code_reviewer, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+
+- id: rc-del-fanout-no-new-spawn-surface
+  anchor: 'role-cards/deliver-agent.md §8 (line 285)'
+  statement: 'Do NOT use fan-out as a new spawn surface — spawning the Acceptance Agent via a sub-agent mechanism remains a §1.7-C breach.'
+  roles: [deliver, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: driver:_spawn_acceptance
+
+# =================================================================
+# RESEARCH AGENT — role-cards/research-agent.md
+# =================================================================
+
+- id: rc-res-coldstart-always-chain
+  anchor: 'role-cards/research-agent.md §1.1-1.3'
+  statement: 'On cold start, before any output, load the always-load kernel chain (constitution-core.md, authoring-kernel.md, context_briefing.md; full constitution.md / doc_governance.md on-demand) + adopter AGENTS.md + adoption-state.md + this role card.'
+  roles: [research]
+  condition: always
+  current_enforcement: role-card:role-cards/research-agent.md
+
+- id: rc-res-coldstart-process-template-schema-suite
+  anchor: 'role-cards/research-agent.md §1.4-1.8'
+  statement: 'On cold start load domain-discovery-process.md (Δ-2), agent-design-elicitation.md (Δ-15), agent-creation-prerequisites.md (Δ-16), the compact-research-brief template, and research-brief.schema.json.'
+  roles: [research]
+  condition: always
+  current_enforcement: role-card:role-cards/research-agent.md
+
+- id: rc-res-coldstart-path-inputs
+  anchor: 'role-cards/research-agent.md §1 (lines 42-44)'
+  statement: 'Load path-specific inputs — Path1 referenced docs/proposals; Path2 the contributing failure-briefs + latest action_bank for related R-items.'
+  roles: [research]
+  condition: always
+  current_enforcement: role-card:role-cards/research-agent.md
+
+- id: rc-res-path1-walk-elicitation-prereq
+  anchor: 'role-cards/research-agent.md §2.1'
+  statement: 'On Path 1, walk the Δ-15 elicitation (6 questions: Domain/Goal/Problems/Method/Knowledge/Boundary) and the Δ-16 prereq check (READY/DEFERRED/N/A) before authoring the brief.'
+  roles: [research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-path2-trigger-n2-triage
+  anchor: 'role-cards/research-agent.md §2.2'
+  statement: 'Adopt Path 2 only when n≥2 similar failure-briefs describe the same shape AND joint Deliver+human triage decides it warrants formal scope; cite the failure-briefs in related_failure_briefs.'
+  roles: [research, deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-single-output-file
+  anchor: 'role-cards/research-agent.md §3'
+  statement: 'Produce a single output file, docs/research-briefs/<id>.md.'
+  roles: [research]
+  condition: always
+  current_enforcement: role-card:role-cards/research-agent.md
+
+- id: rc-res-frontmatter-unsigned
+  anchor: 'role-cards/research-agent.md §3.1'
+  statement: 'Emit front-matter with customer_signed:false and sign_off_date:null — these are set by the Customer at gate 1, not by you.'
+  roles: [research, customer]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'research-brief.schema.json requires the customer_signed + sign_off_date fields but cannot enforce the Research-side values customer_signed:false / sign_off_date:null (set by Research, flipped by Customer at gate 1).'
+
+- id: rc-res-body-section-order
+  anchor: 'role-cards/research-agent.md §3.2'
+  statement: 'Author the body sections in order — Background, Closure contract, Scope IN, Scope OUT, Anti-goal, KPI, Risk & impact, Related R-items, and an empty Customer sign-off block.'
+  roles: [research]
+  condition: always
+  current_enforcement: role-card:role-cards/research-agent.md
+
+- id: rc-res-closure-contract-three-components
+  anchor: 'role-cards/research-agent.md §4 (Constitution §1.7-B)'
+  statement: 'Author the closure_contract — the load-bearing output — with all three components: positive shape + anti-pattern + anchor phrases.'
+  roles: [research, acceptance]
+  condition: always
+  current_enforcement: schema:research-brief.schema.json
+  notes: presence enforced (required positive_shape/anti_pattern/anchor_phrases); quality is none-judgment
+
+- id: rc-res-positive-shape-customer-language
+  anchor: 'role-cards/research-agent.md §4.1'
+  statement: 'Write the positive shape in customer-perspective observable behaviors, NOT implementation language (no tool-call / budget / metric framing).'
+  roles: [research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-anti-pattern-observable
+  anchor: 'role-cards/research-agent.md §4.2'
+  statement: 'Write the anti-pattern as a specific customer-observable failure shape, NOT an implementation metric (e.g. not "confidence < 0.7").'
+  roles: [research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-anchor-phrases-not-regex
+  anchor: 'role-cards/research-agent.md §4.3'
+  statement: 'Write anchor phrases as SUPPORTING exemplar evidence (the kind of language a good response uses), never as regex/keyword matchers; the verdict rule is semantic match.'
+  roles: [research, acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-no-keyword-list-1.7b
+  anchor: 'role-cards/research-agent.md §4.3 (line 144)'
+  statement: 'If tempted to write a regex/keyword list, STOP and rewrite as a paragraph (Constitution §1.7-B).'
+  roles: [research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-mustnot-write-code
+  anchor: 'role-cards/research-agent.md §5 (line 148)'
+  statement: 'Do NOT write code or edit feature files.'
+  roles: [research]
+  condition: always
+  current_enforcement: role-card:role-cards/research-agent.md
+
+- id: rc-res-mustnot-spawn-acceptance
+  anchor: 'role-cards/research-agent.md §5 (line 149)'
+  statement: 'Do NOT spawn the Acceptance Agent — Constitution §1.7-C forbids peers from spawning each other.'
+  roles: [research, acceptance]
+  condition: always
+  current_enforcement: driver:_spawn_acceptance
+  notes: orchestrator is the only acceptance spawn surface
+
+- id: rc-res-mustnot-spawn-deliver
+  anchor: 'role-cards/research-agent.md §5 (line 150)'
+  statement: 'Do NOT spawn the Deliver Agent — Deliver consumes the brief only after Customer signs (gate 1); no back-channel handoff.'
+  roles: [research, deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-mustnot-edit-signed-contract
+  anchor: 'role-cards/research-agent.md §5 (line 151)'
+  statement: 'Do NOT change the closure_contract after Customer signs (Constitution §3.4 invariant #4); if it is wrong mid-milestone, halt and request gate-1 re-sign-off rather than silently editing.'
+  roles: [research, customer]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-mustnot-chat-history-handoff
+  anchor: 'role-cards/research-agent.md §5 (line 152)'
+  statement: 'Do NOT use chat history to pass context to Deliver (Constitution §3.4 invariant #1) — the brief is the durable handoff and carries everything.'
+  roles: [research, deliver]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-mustnot-undefensible-contract
+  anchor: 'role-cards/research-agent.md §5 (line 153)'
+  statement: 'Do NOT author a closure_contract the Acceptance Agent cannot defensibly judge against; run the §6 symmetry self-check before output.'
+  roles: [research, acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-symmetry-defensible-verdict
+  anchor: 'role-cards/research-agent.md §6.1'
+  statement: 'Symmetry self-check — confirm a peer Acceptance Agent, reading only this closure_contract + delivered evidence, could return a defensible verdict.'
+  roles: [research, acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-symmetry-scope-contract-coverage
+  anchor: 'role-cards/research-agent.md §6.5-6.6'
+  statement: 'Symmetry self-check — confirm there are no contract clauses absent from Scope IN and no Scope IN items lacking closure_contract coverage (under-specification triggers an Acceptance research_contract_revision route).'
+  roles: [research, acceptance]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-symmetry-revise-before-emit
+  anchor: 'role-cards/research-agent.md §6 (line 166)'
+  statement: 'If any symmetry self-check answer is "no" or "not sure," revise before emitting.'
+  roles: [research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-preoutput-frontmatter-complete
+  anchor: 'role-cards/research-agent.md §7.1'
+  statement: 'Pre-output gate — front-matter complete, including customer_signed:false + empty sign_off_date.'
+  roles: [research]
+  condition: always
+  current_enforcement: none-judgment
+  notes: 'the schema requires the fields present, not the specific unsigned pre-output values; a pre-output self-check is agent discipline.'
+
+- id: rc-res-preoutput-three-components
+  anchor: 'role-cards/research-agent.md §7.2'
+  statement: 'Pre-output gate — closure_contract has all three components (positive shape + anti-pattern + anchor phrases).'
+  roles: [research]
+  condition: always
+  current_enforcement: schema:research-brief.schema.json
+
+- id: rc-res-preoutput-symmetry-passed
+  anchor: 'role-cards/research-agent.md §7.3'
+  statement: 'Pre-output gate — the §6 symmetry self-check passed.'
+  roles: [research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-preoutput-scope-nonempty
+  anchor: 'role-cards/research-agent.md §7.4'
+  statement: 'Pre-output gate — Scope IN / Scope OUT / anti-goal are non-empty.'
+  roles: [research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-preoutput-kpi-measurable
+  anchor: 'role-cards/research-agent.md §7.5'
+  statement: 'Pre-output gate — KPI is measurable (specific metric + target, not "be better").'
+  roles: [research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-preoutput-signoff-empty
+  anchor: 'role-cards/research-agent.md §7.6'
+  statement: 'Pre-output gate — the sign-off block is left empty for the Customer to fill at gate 1.'
+  roles: [research, customer]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-preoutput-schema-valid
+  anchor: 'role-cards/research-agent.md §7.7'
+  statement: 'Pre-output gate — the brief validates against schemas/research-brief.schema.json.'
+  roles: [research]
+  condition: always
+  current_enforcement: schema:research-brief.schema.json
+
+- id: rc-res-preoutput-forbidden-list
+  anchor: 'role-cards/research-agent.md §7.8'
+  statement: 'Pre-output gate — Constitution §1.7 forbidden-list check — no keyword matchers, no UC-specific hard rules, no eval-widening to accept bot mistakes.'
+  roles: [research]
+  condition: always
+  current_enforcement: none-judgment
+
+- id: rc-res-load-role-skill-model-conditional
+  anchor: 'role-cards/research-agent.md §8 (line 181)'
+  statement: 'Load process/role-skill-model.md when charter.tooling.research.skills is non-empty or you intend to fan out.'
+  roles: [research]
+  condition: skills_or_fanout_active
+  current_enforcement: role-card:role-cards/research-agent.md
+  notes: conditional load (flagged by task)
+
+- id: rc-res-fanout-scouts-draft-only
+  anchor: 'role-cards/research-agent.md §8 (line 184)'
+  statement: 'You MAY fan out parallel domain scouts (when the backing agent supports it and subagent_fanout != false), but scout outputs are draft inputs — the brief is authored and signed by you alone.'
+  roles: [research]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+
+- id: rc-res-fanout-subagents-readonly
+  anchor: 'role-cards/research-agent.md §8 (line 185)'
+  statement: 'Sub-agents inherit your role posture transitively — they read and synthesize; they do not edit feature files.'
+  roles: [research]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment
+
+- id: rc-res-no-cross-role-skill-self-acceptance
+  anchor: 'role-cards/research-agent.md §8 (line 186)'
+  statement: 'Do NOT pre-run Acceptance''s judgment against your own draft closure_contract — the §6 symmetry self-check is your own discipline, not an Acceptance verdict; the §5 spawn prohibitions are unaffected by fan-out.'
+  roles: [research, acceptance]
+  condition: skills_or_fanout_active
+  current_enforcement: none-judgment

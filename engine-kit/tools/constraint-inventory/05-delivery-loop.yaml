@@ -1,0 +1,503 @@
+# Constraint inventory — process/delivery-loop.md (§4.2.x gates, the 9 MANDATORY_CHECKPOINTS
+# §4.2.3 #1-#9, the 14 anti-patterns §4.2.8 #1-#14, F5 evidence, spawn/verdict, transcripts, auto-fix).
+- id: dl-checkpoint-mission-start
+  anchor: 'process/delivery-loop.md §4.2.3 #1'
+  statement: At boot the human MUST verify mission.goal + autonomy.level + tooling.*.agent_kind before the orchestrator proceeds, and this checkpoint MUST NOT be bypassed.
+  roles: [customer, all]
+  condition: orchestrator_boot
+  current_enforcement: none-judgment
+  notes: 'checkpoint 1 of 9; _check_mandatory_checkpoints enforces charter non-bypass only — it does not emit this checkpoint or prove the human verified mission/autonomy/agent_kind (runtime/human firing).'
+- id: dl-checkpoint-research-proposal-selection
+  anchor: 'process/delivery-loop.md §4.2.3 #2'
+  statement: On a research-driven milestone the human MUST select a research proposal before Deliver consumes it (bypassable only when the charter names one signed brief id), and this checkpoint MUST NOT otherwise be bypassed.
+  roles: [customer, research, deliver]
+  condition: path1_before_deliver
+  current_enforcement: none-judgment
+  notes: 'checkpoint 2 of 9; validator enforces non-bypass only, not the human proposal selection (runtime/human firing). full_chain_guided substitutes customer_gate1_signoff (driver:_step_gate1).'
+- id: dl-checkpoint-bad-case-manual-review
+  anchor: 'process/delivery-loop.md §4.2.3 #3'
+  statement: The human MUST read per-turn bad-case traces before milestone close and this gate cannot be skipped at milestone close.
+  roles: [customer, acceptance]
+  condition: milestone_close
+  current_enforcement: none-judgment
+  notes: 'checkpoint 3 of 9; validator enforces non-bypass only, not the human bad-case review (runtime/human firing; implementation_status partial).'
+- id: dl-checkpoint-new-tier0-candidate
+  anchor: 'process/delivery-loop.md §4.2.3 #4'
+  statement: Whenever a Code Reviewer or Deliver proposes a new Tier-0 invariant the human MUST approve it before adoption, and this checkpoint MUST NOT be bypassed.
+  roles: [customer, review, deliver]
+  condition: new_tier0_proposed
+  current_enforcement: none-judgment
+  notes: 'checkpoint 4 of 9; validator enforces non-bypass only, not the human Tier-0 approval (runtime/human firing).'
+- id: dl-checkpoint-forbidden-list-redline
+  anchor: 'process/delivery-loop.md §4.2.3 #5'
+  statement: Any change touching Constitution §1.7 forbidden-list semantics MUST be reviewed by the human, and this checkpoint MUST NOT be bypassed.
+  roles: [customer, review, deliver]
+  condition: touches_1.7_semantics
+  current_enforcement: none-judgment
+  notes: 'checkpoint 5 of 9; validator enforces non-bypass only, not the human §1.7-semantics review (runtime/human firing).'
+- id: dl-checkpoint-scope-deviation
+  anchor: 'process/delivery-loop.md §4.2.3 #6'
+  statement: When the deterministic scope_envelope_check fails the orchestrator MUST halt and write a scope_deviation checkpoint for human resolution before resume.
+  roles: [customer, deliver]
+  condition: scope_envelope_fail
+  current_enforcement: none-judgment
+  notes: 'deterministic scope_envelope_check NOT wired in P2 (driver.py:2858); _handle_close writes scope_deviation only on a Deliver in_scope:false self-claim. The checkpoint NON-bypass is separately validator-enforced.'
+- id: dl-checkpoint-close-taxonomy-c-or-d
+  anchor: 'process/delivery-loop.md §4.2.3 #7'
+  statement: When a Deliver close verdict is C (scope-broadening) or D (non-convergent) the orchestrator MUST halt and write a close_taxonomy_C_or_D checkpoint for the human.
+  roles: [customer, deliver]
+  condition: close_verdict_c_or_d
+  current_enforcement: 'driver:_handle_close'
+- id: dl-checkpoint-gate-hard-fail
+  anchor: 'process/delivery-loop.md §4.2.3 #8'
+  statement: When any deterministic gate (tests/handoff/trace/safety/grounding/schema) fails and auto_fix_iteration is not eligible the orchestrator MUST emit a gate_hard_fail checkpoint and MUST NOT proceed.
+  roles: [all]
+  condition: gate_fail_no_autofix
+  current_enforcement: 'driver:_gate_hard_fail'
+- id: dl-checkpoint-advisory-acceptance-pass-signoff
+  anchor: 'process/delivery-loop.md §4.2.3 #9'
+  statement: When Acceptance produces an ADVISORY pass the orchestrator MUST write an advisory_acceptance_pass_signoff checkpoint and HALT for a human confirm before the milestone ships.
+  roles: [customer, acceptance]
+  condition: advisory_acceptance_pass
+  current_enforcement: 'driver:_handle_acceptance_verdict'
+- id: dl-charter-mission-frozen
+  anchor: 'process/delivery-loop.md §4.2.2'
+  statement: mission.id and mission.goal MUST be frozen at boot and only mission_end may revisit them.
+  roles: [all]
+  condition: post_boot
+  current_enforcement: none-judgment
+  notes: 'immutable charter-snapshot taken at boot (§4.2.9).'
+- id: dl-charter-subsprint-sequence-revision
+  anchor: 'process/delivery-loop.md §4.2.2'
+  statement: autonomy.approved_scope.subsprint_sequence MUST only be revised mid-run through a scope_deviation checkpoint resolution.
+  roles: [customer, deliver]
+  condition: midrun_sequence_change
+  current_enforcement: none-judgment
+  notes: '_handle_close writes scope_deviation only on a Deliver in_scope:false self-claim and never touches subsprint_sequence; the revise-only-via-scope_deviation rule is judgment.'
+- id: dl-charter-adaptive-insert-bound
+  anchor: 'process/delivery-loop.md §4.2.2'
+  statement: The orchestrator MUST refuse to insert adaptive sub-sprints past autonomy.auto_pass_rules.adaptive_insert.max_inserted_subsprints.
+  roles: [all]
+  condition: adaptive_insert
+  current_enforcement: none-judgment
+  notes: '_check_adaptive_insert_bound validates the charter DECLARES the bound; runtime refusal to insert past it is not enforced (same as anti-pattern #12).'
+- id: dl-charter-acceptance-mode-enabled-agreement
+  anchor: 'process/delivery-loop.md §4.2.2'
+  statement: When both tooling.acceptance.mode and the deprecated enabled alias are present they MUST agree; a disagreement is a hard validation error.
+  roles: [acceptance]
+  condition: mode_and_enabled_present
+  current_enforcement: 'driver:normalize_acceptance'
+  notes: 'the mode/enabled-must-agree-else-fatal check is in normalize_acceptance, invoked as a hard gate at driver construction (raises on conflict).'
+- id: dl-charter-calibration-flip-only-after-run
+  anchor: 'process/delivery-loop.md §4.2.2'
+  statement: tooling.acceptance.judge_calibration.status MUST only flip to calibrated after an actual calibration run; flipping it by hand is a framework breach.
+  roles: [acceptance]
+  condition: calibration_status_change
+  current_enforcement: none-judgment
+  notes: '_check_calibration_corollary warns on skills-while-calibrated; it does not enforce that status flips to calibrated only after a real calibration run (hand-flip is judgment).'
+- id: dl-charter-route-options-nonempty
+  anchor: 'process/delivery-loop.md §4.2.2'
+  statement: tooling.acceptance.on_fix_required.route_options MAY be narrowed by the adopter but MUST NOT be empty.
+  roles: [acceptance]
+  condition: always
+  current_enforcement: 'validator:_check_acceptance_on_fix_required'
+- id: dl-charter-human-confirm-required-true
+  anchor: 'process/delivery-loop.md §4.2.2'
+  statement: tooling.acceptance.on_fix_required.human_confirm_required MUST be true and the charter validator MUST reject false.
+  roles: [acceptance]
+  condition: always
+  current_enforcement: 'validator:_check_acceptance_on_fix_required'
+- id: dl-charter-skills-invalidate-calibration
+  anchor: 'process/delivery-loop.md §4.2.2'
+  statement: A change to tooling.acceptance.skills MUST invalidate judge_calibration.status and the validator SHOULD warn when skills changed while status calibrated persists.
+  roles: [acceptance]
+  condition: skills_changed_while_calibrated
+  current_enforcement: none-judgment
+  notes: '_check_calibration_corollary only WARNS when tooling.acceptance.skills is present while status:calibrated; it cannot detect a skills CHANGE or invalidate calibration — that is judgment.'
+- id: dl-charter-checkpoint-nonbypass-four-shapes
+  anchor: 'process/delivery-loop.md §4.2.2'
+  statement: The charter validator MUST reject bypass of any of the 9 default checkpoints in all four shapes — omitted, emptied, disabled, or semantically overridden.
+  roles: [all]
+  condition: charter_validation
+  current_enforcement: 'validator:_check_mandatory_checkpoints'
+- id: dl-state-acceptance-pass-authority-split
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: An Acceptance pass MUST auto-ship only when AUTHORITATIVE (mode auto AND judge calibrated for the active class AND fully_autonomous_within_budget); otherwise it is ADVISORY and MUST HALT at advisory_acceptance_pass_signoff.
+  roles: [acceptance, customer]
+  condition: acceptance_pass
+  current_enforcement: 'driver:_acceptance_authoritative'
+- id: dl-state-acceptance-runs-when-mode-not-off
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: Acceptance MUST run whenever tooling.acceptance.mode != off (advisory runs even uncalibrated after the §3.6 auto-degrade); mode off skips Acceptance byte-identically.
+  roles: [acceptance]
+  condition: milestone_close
+  current_enforcement: 'driver:_acceptance_enabled'
+- id: dl-state-needs-human-surface-approve
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: An Acceptance needs_human verdict MUST write a surface_approve checkpoint and HALT for the human decision.
+  roles: [acceptance, customer]
+  condition: verdict_needs_human
+  current_enforcement: 'driver:_handle_acceptance_verdict'
+- id: dl-state-e2e-self-smoke-gate
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: A browser_e2e milestone MUST present a Dev self-smoke attestation (docs/self-smoke.json) before the out-of-band e2e_evidence stage; absence/malformation is a resumable gate_hard_fail.
+  roles: [dev, acceptance]
+  condition: browser_e2e_before_evidence
+  current_enforcement: 'driver:_check_dev_self_smoke'
+- id: dl-state-browser-evidence-orchestrator-driven
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: For a browser_e2e milestone the orchestrator (never Acceptance) MUST drive the running app, commit hash-anchored evidence, and anchor it with a browser_e2e_evidence Audit Spine event before acceptance_pending.
+  roles: [acceptance]
+  condition: browser_e2e
+  current_enforcement: 'driver:_run_e2e_evidence'
+- id: dl-state-browser-evidence-integrity-before-judge
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: Acceptance MUST NOT run on incomplete or unanchored browser evidence — a failed reconcile (dir/hash/ledger-event mismatch) is a gate_hard_fail and Acceptance never spawns.
+  roles: [acceptance]
+  condition: browser_e2e_acceptance_entry
+  current_enforcement: 'driver:_acceptance_browser_evidence'
+- id: dl-state-browser-consistency-gate
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: For a browser_e2e run a pass that contradicts the committed evidence MUST be coerced to needs_human (never shipped) and an integrity breach MUST be a gate_hard_fail.
+  roles: [acceptance]
+  condition: browser_e2e_verdict
+  current_enforcement: 'driver:check_acceptance_consistency'
+- id: dl-state-skipped-gate-not-passed
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: A skipped-but-required gate MUST be treated as NOT passed and the orchestrator MUST emit gate_hard_fail rather than silently skip.
+  roles: [all]
+  condition: required_gate_not_run
+  current_enforcement: 'driver:_gate_hard_fail'
+- id: dl-state-gate-pending-eval-blocks-review
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: gate_pending MUST require a Dev handoff artifact and, when tooling.eval.cmd is configured, run it before Review; a non-zero exit/timeout emits gate_hard_fail and Review/Close MUST NOT run.
+  roles: [dev, review, deliver]
+  condition: gate_pending_eval
+  current_enforcement: 'driver:_run_gates'
+- id: dl-state-no-midrun-scope-widen
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: The charter MUST NOT widen scope mid-run; only a scope_deviation checkpoint resolution may.
+  roles: [all]
+  condition: midrun
+  current_enforcement: none-judgment
+  notes: 'detecting an actual mid-run scope-widen needs the deterministic scope_envelope_check that is NOT wired (driver.py:2858); same family as the scope-envelope rows.'
+- id: dl-state-envelope-check-before-llm-close
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: close_pending's deterministic scope_envelope_check MUST run BEFORE the LLM close verdict is trusted.
+  roles: [deliver]
+  condition: close_pending
+  current_enforcement: none-judgment
+  notes: 'deterministic scope_envelope_check NOT wired in P2 (driver.py:2858).'
+- id: dl-state-clean-rereview-still-needs-close
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: A clean re-review after an auto-fix round MUST NOT skip close_pending — Review pass is necessary but not sufficient; only Deliver close emits the clean advance.
+  roles: [review, deliver]
+  condition: clean_rereview
+  current_enforcement: 'driver:_handle_fix_required'
+- id: dl-state-all-decisions-checkpointed
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: All loop decisions MUST be checkpointed to the docs/checkpoints/ filesystem so the human can audit them.
+  roles: [all]
+  condition: always
+  current_enforcement: 'driver:_write_checkpoint'
+- id: dl-state-fix-round-bounded
+  anchor: 'process/delivery-loop.md §4.2.4'
+  statement: The fix-round counter MUST be bounded by charter.budget.max_fix_rounds_total and exceeding it MUST halt.
+  roles: [dev, review, deliver]
+  condition: fix_round_vs_budget
+  current_enforcement: 'driver:_check_budget'
+- id: dl-gate1-never-auto-confirm
+  anchor: 'process/delivery-loop.md §4.2.4-G #2'
+  statement: The engine MUST NEVER auto-confirm Customer Gate-1 — it proceeds to decompose ONLY on an explicit human choice sign; an absent resolver / None / non-sign choice MUST HALT.
+  roles: [customer]
+  condition: full_chain_guided_gate1
+  current_enforcement: 'driver:_step_gate1'
+- id: dl-decompose-invalid-plan-gate-hard-fail
+  anchor: 'process/delivery-loop.md §4.2.4-G #3'
+  statement: The decompose step MUST validate the Deliver sub-sprint plan against deliver-plan-verdict.schema.json and an invalid plan is a gate_hard_fail.
+  roles: [deliver]
+  condition: decompose_pending
+  current_enforcement: 'driver:_step_decompose'
+- id: dl-post-gate1-scope-expansion-guard
+  anchor: 'process/delivery-loop.md §4.2.4-G'
+  statement: After decompose, any plan module/layer outside the human-signed Gate-1 envelope MUST fire a post_gate1_scope_expansion checkpoint and HALT.
+  roles: [customer, deliver]
+  condition: plan_outside_signed_scope
+  current_enforcement: 'driver:_scope_expansion_halts'
+- id: dl-prestates-out-of-band-resumable
+  anchor: 'process/delivery-loop.md §4.2.4-G'
+  statement: Every bootstrap pre-state transition MUST persist to state.json, emit an audit event, and re-enter at the persisted pre-state on resume with the hash chain intact across the halt-resume boundary.
+  roles: [all]
+  condition: full_chain_guided_prestates
+  current_enforcement: 'driver:_drive_guided_prestates'
+- id: dl-scope-envelope-deterministic-every-close
+  anchor: 'process/delivery-loop.md §4.2.5'
+  statement: scope_envelope_check MUST be a static boolean pure function (no LLM judgment) and MUST run at every close_pending.
+  roles: [deliver]
+  condition: close_pending
+  current_enforcement: none-judgment
+  notes: 'deterministic scope_envelope_check NOT wired in P2 (driver.py:2858).'
+- id: dl-scope-envelope-four-checks-fire-deviation
+  anchor: 'process/delivery-loop.md §4.2.5'
+  statement: Any failure of the four envelope checks (subsprint_id in sequence; layers in layers_allowed; modules in modules_in_scope and not out-of-scope; no undeclared module) MUST fire the scope_deviation checkpoint and halt.
+  roles: [deliver, customer]
+  condition: envelope_check_fail
+  current_enforcement: none-judgment
+  notes: 'deterministic four-check scope_envelope_check NOT wired in P2 (driver.py:2858).'
+- id: dl-f5-orchestrator-runs-eval
+  anchor: 'process/delivery-loop.md §4.2.6'
+  statement: When Acceptance needs execution evidence the orchestrator MUST run the eval harness and feed only artifact paths to Acceptance as read-only context.
+  roles: [acceptance]
+  condition: acceptance_needs_evidence
+  current_enforcement: 'driver:_run_eval_f5'
+- id: dl-f5-evidence-paths-separate-on-disk
+  anchor: 'process/delivery-loop.md §4.2.6'
+  statement: Sub-sprint gate evidence and Acceptance F5 evidence from the same eval.cmd MUST be kept in separate on-disk locations.
+  roles: [acceptance, dev]
+  condition: eval_cmd_both_stages
+  current_enforcement: 'driver:_run_eval_cmd'
+- id: dl-f5-gate-eval-fail-blocks-review-close
+  anchor: 'process/delivery-loop.md §4.2.6'
+  statement: A gate_pending eval failure MUST emit gate_hard_fail and MUST NOT run Review or Deliver close.
+  roles: [review, deliver]
+  condition: gate_eval_fail
+  current_enforcement: 'driver:_run_gates'
+- id: dl-f5-acceptance-eval-fail-gate-hard-fail
+  anchor: 'process/delivery-loop.md §4.2.6'
+  statement: An acceptance_pending eval failure MUST emit gate_hard_fail for human resolution (re-run / accept-failure-and-route / abort).
+  roles: [acceptance, customer]
+  condition: acceptance_eval_fail
+  current_enforcement: 'driver:_run_eval_f5'
+- id: dl-f5-acceptance-read-only-sandbox
+  anchor: 'process/delivery-loop.md §4.2.6'
+  statement: Acceptance MUST judge from a read-only sandbox — it cannot run scripts or mutate the repo and reads evidence + closure_contract to produce a JSON verdict.
+  roles: [acceptance]
+  condition: run_acceptance
+  current_enforcement: 'driver:route_for_role'
+- id: dl-spawn-each-has-verdict-schema
+  anchor: 'process/delivery-loop.md §4.2.7'
+  statement: Every verdict-producing spawn function MUST emit a published JSON-schema verdict shape so the orchestrator parses deterministically without LLM string-matching.
+  roles: [deliver, research, review, acceptance]
+  condition: verdict_producing_spawn
+  current_enforcement: 'driver:_spawn'
+- id: dl-spawn-dev-tools-no-push
+  anchor: 'process/delivery-loop.md §4.2.7'
+  statement: spawn_dev MUST run workspace-write with network following tooling.dev.network_access and MUST NOT git push.
+  roles: [dev]
+  condition: spawn_dev
+  current_enforcement: 'driver:route_for_role'
+- id: dl-spawn-review-tools-whitelist
+  anchor: 'process/delivery-loop.md §4.2.7'
+  statement: run_review MUST be confined to the Read, Grep, Glob tool whitelist.
+  roles: [review]
+  condition: run_review
+  current_enforcement: 'driver:route_for_role'
+- id: dl-spawn-acceptance-tools-whitelist
+  anchor: 'process/delivery-loop.md §4.2.7'
+  statement: run_acceptance MUST be confined to the Read, Grep, Glob tool whitelist.
+  roles: [acceptance]
+  condition: run_acceptance
+  current_enforcement: 'driver:route_for_role'
+- id: dl-spawn-invalid-verdict-gate-hard-fail
+  anchor: 'process/delivery-loop.md §4.2.7'
+  statement: An invalid/schema-violating verdict MUST become a gate_hard_fail and MUST NOT silently default to a permissive verdict.
+  roles: [deliver, research, review, acceptance]
+  condition: verdict_invalid
+  current_enforcement: 'driver:_spawn'
+- id: dl-spawn-dev-strict-prompt-halt
+  anchor: 'process/delivery-loop.md §4.2.7'
+  statement: In strict mode spawn_dev MUST resolve a self-contained prompt from the decompose-plan entry (or adopter compact dev-prompt) and persist a resumable refinement HALT rather than dispatching a one-line request when the source is missing/incomplete.
+  roles: [dev]
+  condition: strict_mode_spawn_dev
+  current_enforcement: 'driver:_dev_spec_refine_halt'
+- id: dl-spawn-review-strict-prompt-halt
+  anchor: 'process/delivery-loop.md §4.2.7'
+  statement: In strict mode run_review MUST resolve a self-contained sub-sprint-scoped prompt and persist a resumable refinement HALT when the source is missing/incomplete.
+  roles: [review]
+  condition: strict_mode_run_review
+  current_enforcement: 'driver:_resolve_review_spec'
+- id: dl-spawn-acceptance-strict-prompt-unsigned-halt
+  anchor: 'process/delivery-loop.md §4.2.7'
+  statement: In strict mode run_acceptance MUST project a self-contained prompt from the human-signed intent_contract + closure_contract + F5 evidence + Reviewer refs, run only AFTER the calibration gate and F5 eval, only REPORT calibration/authority, and HALT on an unsigned/incomplete contract.
+  roles: [acceptance]
+  condition: strict_mode_run_acceptance
+  current_enforcement: 'driver:_resolve_acceptance_spec'
+- id: dl-spawn-two-distinct-prompt-contracts
+  anchor: 'process/delivery-loop.md §4.2.7'
+  statement: The Review and Acceptance prompt projections MUST remain two distinct contracts (no generic role projector) and whatever is dispatched MUST be materialized through the per-spawn transcript.
+  roles: [review, acceptance]
+  condition: strict_mode_projection
+  current_enforcement: 'driver:_spawn'
+- id: dl-antipattern-01-checkpoint-bypass
+  anchor: 'process/delivery-loop.md §4.2.8 #1'
+  statement: A charter MUST NOT bypass a default MANDATORY_CHECKPOINT in any of the four shapes (omitted/emptied/disabled/overridden); semantic override counts as bypass.
+  roles: [all]
+  condition: charter_validation
+  current_enforcement: 'validator:_check_mandatory_checkpoints'
+- id: dl-antipattern-02-uncalibrated-ship-must-degrade
+  anchor: 'process/delivery-loop.md §4.2.8 #2'
+  statement: An uncalibrated run_acceptance MUST NOT ship or auto-iterate without human sign-off — in fully_autonomous mode without calibration the orchestrator MUST auto-degrade autonomy to human_on_the_loop and run advisory.
+  roles: [acceptance]
+  condition: fully_autonomous_uncalibrated
+  current_enforcement: 'driver:_calibration_gate'
+- id: dl-antipattern-03-bypass-scope-envelope-check
+  anchor: 'process/delivery-loop.md §4.2.8 #3'
+  statement: The orchestrator MUST NOT bypass scope_envelope_check on close — even an LLM close verdict claiming in_scope true does not override the deterministic check.
+  roles: [deliver]
+  condition: every_close
+  current_enforcement: none-judgment
+  notes: 'anti-pattern #3 of 14; deterministic scope_envelope_check NOT wired in P2 (driver.py:2858).'
+- id: dl-antipattern-04-dev-no-holdout-access
+  anchor: 'process/delivery-loop.md §4.2.8 #4'
+  statement: The Dev sandbox MUST NOT be given read access to case_specs_shadow/ or any equivalent holdout (eval contamination).
+  roles: [dev]
+  condition: dev_sandbox_provisioning
+  current_enforcement: none-judgment
+  notes: 'anti-pattern #4 of 14; route_for_role sets role sandbox/network only — there is NO path-level denial of case_specs_shadow/, so the no-holdout-read rule is judgment (cf. con-10-dev-shadow-eval-access).'
+- id: dl-antipattern-05-acceptance-code-inspection-verdict
+  anchor: 'process/delivery-loop.md §4.2.8 #5'
+  statement: An Acceptance verdict MUST NOT claim pass/fail from code inspection alone — a verdict citing only code paths and no execution artifact in evidence_path is invalid.
+  roles: [acceptance]
+  condition: acceptance_verdict
+  current_enforcement: 'schema:acceptance-verdict.schema.json'
+- id: dl-antipattern-06-unattended-uncalibrated-auto-ship
+  anchor: 'process/delivery-loop.md §4.2.8 #6'
+  statement: The orchestrator MUST NOT unattended auto-iterate/auto-ship on an uncalibrated verdict; degradation must be automatic and recorded, never opaque.
+  roles: [acceptance]
+  condition: mode_auto_uncalibrated
+  current_enforcement: 'driver:_calibration_gate'
+- id: dl-antipattern-07-acceptance-spawned-from-dev-deliver
+  anchor: 'process/delivery-loop.md §4.2.8 #7'
+  statement: The Acceptance Agent MUST NOT be spawned from a Deliver or Dev session (Constitution §1.7-C spawn isolation).
+  roles: [acceptance, deliver, dev]
+  condition: any_acceptance_spawn
+  current_enforcement: 'driver:_run_acceptance'
+- id: dl-antipattern-08-fix-required-route-needs-checkpoint
+  anchor: 'process/delivery-loop.md §4.2.8 #8'
+  statement: Acceptance MUST NOT route fix_required to Deliver without a written human-confirm checkpoint decision (Constitution §3.5).
+  roles: [acceptance, deliver, customer]
+  condition: verdict_fix_required
+  current_enforcement: 'driver:_handle_acceptance_verdict'
+- id: dl-antipattern-09-human-confirm-required-false
+  anchor: 'process/delivery-loop.md §4.2.8 #9'
+  statement: A charter MUST NOT set tooling.acceptance.on_fix_required.human_confirm_required false (direct violation of Constitution §1.7-C).
+  roles: [acceptance]
+  condition: charter_validation
+  current_enforcement: 'validator:_check_acceptance_on_fix_required'
+- id: dl-antipattern-10-empty-route-options
+  anchor: 'process/delivery-loop.md §4.2.8 #10'
+  statement: The charter validator MUST NOT accept an empty route_options list — at least one option must be present.
+  roles: [acceptance]
+  condition: charter_validation
+  current_enforcement: 'validator:_check_acceptance_on_fix_required'
+- id: dl-antipattern-11-obs-to-r-item-needs-human
+  anchor: 'process/delivery-loop.md §4.2.8 #11'
+  statement: An OBS-item MUST NOT be auto-promoted to an R-item without human review; the orchestrator may surface a candidate but promotion is human.
+  roles: [all]
+  condition: obs_to_r_promotion
+  current_enforcement: none-judgment
+- id: dl-antipattern-12-adaptive-insert-over-limit
+  anchor: 'process/delivery-loop.md §4.2.8 #12'
+  statement: Mid-milestone scope expansion via adaptive_insert beyond max_inserted_subsprints MUST halt (the bound is hard).
+  roles: [all]
+  condition: adaptive_insert_over_limit
+  current_enforcement: none-judgment
+  notes: 'anti-pattern #12 of 14; _check_adaptive_insert_bound only requires max_inserted_subsprints to be DECLARED in the charter — the runtime over-limit=halt rule is not enforced.'
+- id: dl-antipattern-13-skill-exceeds-tool-whitelist
+  anchor: 'process/delivery-loop.md §4.2.8 #13'
+  statement: A role skill or intra-role sub-agent MUST NOT exceed the role's tool whitelist or sandbox (inheritance is transitive; the spawning role's session owns the breach).
+  roles: [review, acceptance, dev]
+  condition: skill_or_subagent_active
+  current_enforcement: none-judgment
+  notes: 'anti-pattern #13 of 14; _check_skill_integrity covers bound skill-pin/integrity/tool-subset only — it does not enforce intra-role sub-agent sandbox inheritance or the full transitive whitelist rule.'
+- id: dl-antipattern-14-acceptance-drives-browser
+  anchor: 'process/delivery-loop.md §4.2.8 #14'
+  statement: Acceptance MUST NOT drive the browser/app itself — the browser-E2E evidence run is orchestrator-executed and Acceptance stays read-only and judges the committed hash-anchored manifest.
+  roles: [acceptance]
+  condition: browser_e2e
+  current_enforcement: none-judgment
+  notes: 'anti-pattern #14; _run_e2e_evidence enforces the orchestrator-driven evidence path, not the role-discipline that Acceptance must not launch/drive the browser (read-only sandbox is the indirect backstop).'
+- id: dl-transcript-every-spawn-materialized
+  anchor: 'process/delivery-loop.md §4.2.10'
+  statement: EVERY orchestrator spawn (Dev, Review, Deliver/close, Research, Acceptance, each fix-round re-run) MUST materialize its exact dispatched prompt verbatim and, whenever the adapter returns output, the captured output, referenced as prompt_ref/output_ref on the single Audit Spine event.
+  roles: [all]
+  condition: every_spawn
+  current_enforcement: 'driver:_write_transcript'
+- id: dl-transcript-transport-error-null-output
+  anchor: 'process/delivery-loop.md §4.2.10'
+  statement: An adapter transport error (no output produced) MUST record prompt_ref with output_ref null and verdict_ref adapter_error.
+  roles: [all]
+  condition: adapter_error_no_output
+  current_enforcement: 'driver:_spawn'
+- id: dl-transcript-output-before-validation
+  anchor: 'process/delivery-loop.md §4.2.10'
+  statement: The output transcript MUST be written BEFORE verdict-schema validation so even a schema-invalid verdict leaves its output on disk to audit.
+  roles: [all]
+  condition: verdict_producing_spawn
+  current_enforcement: 'driver:_spawn'
+- id: dl-autofix-p0p1-block-p2-record-only
+  anchor: 'process/delivery-loop.md §4.4'
+  statement: Only P0/P1 findings are blocking (drive fix_required, count toward blocking_count, get injected into the Dev fix brief); P2 is strictly record-only and MUST never be fixed, counted, or block close.
+  roles: [review, deliver, dev]
+  condition: review_severity_classification
+  current_enforcement: 'driver:_handle_fix_required'
+- id: dl-autofix-p2only-normalize-fail-closed
+  anchor: 'process/delivery-loop.md §4.4'
+  statement: A fix_required whose findings are ALL known-severity P2 MUST be normalized to a clean pass, fail-closed (only when findings is non-empty, schema-valid, and every entry is exactly P2), auditing the normalization.
+  roles: [review, deliver]
+  condition: fix_required_all_p2
+  current_enforcement: 'driver:_maybe_normalize_record_only'
+- id: dl-autofix-max-rounds-halt
+  anchor: 'process/delivery-loop.md §4.4'
+  statement: When fix_round exceeds auto_fix_iteration.max_rounds the orchestrator MUST halt and emit gate_hard_fail.
+  roles: [dev, review, deliver]
+  condition: fix_round_over_max
+  current_enforcement: 'driver:_handle_fix_required'
+- id: dl-autofix-severity-ceiling-escalate
+  anchor: 'process/delivery-loop.md §4.4'
+  statement: When any finding severity exceeds only_if_findings_severity_at_most the orchestrator MUST halt and emit a needs-human MANDATORY_CHECKPOINT.
+  roles: [dev, review, customer]
+  condition: severity_over_ceiling
+  current_enforcement: 'driver:_handle_fix_required'
+- id: dl-autofix-only-blocking-in-fix-brief
+  anchor: 'process/delivery-loop.md §4.4'
+  statement: spawn_deliver_plan_fix MUST be given only the blocking P0/P1 review findings (P2 findings MUST NOT be injected into the fix brief).
+  roles: [deliver, dev]
+  condition: autofix_eligible
+  current_enforcement: 'driver:_handle_fix_required'
+- id: dl-autofix-clean-rereview-needs-deliver-close
+  anchor: 'process/delivery-loop.md §4.4'
+  statement: A clean re-review MUST re-enter close_pending and run spawn_deliver_close — only a clean Deliver close can emit advance.
+  roles: [review, deliver]
+  condition: clean_rereview_after_autofix
+  current_enforcement: 'driver:_handle_fix_required'
+- id: dl-resume-spawn-input-hash-cache
+  anchor: 'process/delivery-loop.md §4.5'
+  statement: Each spawn MUST persist its input hash + verdict, and a spawn re-called with the same input hash MUST return the cached verdict (idempotency cache).
+  roles: [research, acceptance, all]
+  condition: spawn_reinvocation
+  current_enforcement: 'driver:_spawn'
+- id: dl-resume-reenter-from-state
+  anchor: 'process/delivery-loop.md §4.5'
+  statement: On restart the orchestrator MUST read state.json and re-enter from the current persisted state.
+  roles: [all]
+  condition: orchestrator_resume
+  current_enforcement: 'driver:run'
+- id: dl-resume-registry-close-not-authority
+  anchor: 'process/delivery-loop.md §4.5'
+  statement: Loop-registry close is bookkeeping, not delivery authority — a successful terminal loop with a missing registry row MUST be repaired and marked done, never failing the already-completed delivery chain.
+  roles: [all]
+  condition: terminal_close_missing_row
+  current_enforcement: 'driver:_loop_close_ingress'
+- id: dl-review-fires-at-subsprint-close
+  anchor: 'process/delivery-loop.md §4.3'
+  statement: run_review MUST fire at sub-sprint close by default.
+  roles: [review]
+  condition: subsprint_close
+  current_enforcement: 'driver:_step_review'
+- id: dl-review-fires-fine-grained-triggers
+  anchor: 'process/delivery-loop.md §4.3'
+  statement: run_review MUST also fire mid-sprint when a diff touches a semantic-decision surface or a declared Tier-0 invariant, when a prior verdict was out_of_scope_review and Deliver claims resolution, or when the bad-case suite surfaces a new failure shape.
+  roles: [review]
+  condition: fine_grained_review_trigger
+  current_enforcement: none-judgment

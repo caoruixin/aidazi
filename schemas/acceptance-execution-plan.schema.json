@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/acceptance-execution-plan.schema.json",
+  "title": "Acceptance-owned browser execution plan",
+  "description": "Produced by the Acceptance role before browser execution in agentic/hybrid mode. It selects pre-authorized lifecycle operations and defines exploratory user journeys. It never contains arbitrary shell commands or credentials.",
+  "type": "object",
+  "required": ["interaction_mode", "setup_operations", "journeys", "cleanup_operations"],
+  "additionalProperties": false,
+  "properties": {
+    "interaction_mode": {
+      "type": "string",
+      "enum": ["agentic", "hybrid"]
+    },
+    "setup_operations": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "journeys": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/journey"}
+    },
+    "cleanup_operations": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "rationale": {"type": "string"}
+  },
+  "$defs": {
+    "journey": {
+      "type": "object",
+      "required": ["id", "steps"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "purpose": {"type": "string"},
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/step"}
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "required": ["action"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["navigate", "fill", "click", "select", "upload", "download", "screenshot", "assert_text", "assert_selector", "assert_state", "assert_no_console_error", "assert_request_ok"]
+        },
+        "id": {"type": "string"},
+        "url": {"type": "string"},
+        "selector": {"type": "string"},
+        "value": {"type": "string"},
+        "values": {"type": "array", "items": {"type": "string"}},
+        "text": {"type": "string"},
+        "expected": {},
+        "key": {"type": "string"},
+        "criterion_id": {"type": "string"},
+        "critical": {"type": "boolean"},
+        "side_effect": {"type": "string"}
+      }
+    }
+  }
+}
