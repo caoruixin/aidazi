@@ -1,15 +1,11 @@
 # AGENTS.md — consumer-side template (aidazi v4.0.0)
 
-This file is the **consumer template**. Copy it to your adopter repo's root as `AGENTS.md` and replace `<placeholders>` with project-specific values.
+The **consumer template**: copy to your adopter repo root as `AGENTS.md`, replace `<placeholders>`. A fresh coding-agent session reads it FIRST at cold-start and defaults to a lightweight **Control Plane Session** (natural-language command surface), not one of the five delivery roles — a role session starts only on explicit role activation or orchestrator/runner spawn.
 
-**Harness root-file wiring (normative source: `aidazi/governance/context_briefing.md` §1.1).** Which root file a harness auto-loads differs, so wire per harness — `AGENTS.md` and `CLAUDE.md` are **not** interchangeable copies:
-- **Claude Code** auto-loads `CLAUDE.md`, not a bare `AGENTS.md`. Add a one-line root `CLAUDE.md` containing exactly `@AGENTS.md` so Claude Code imports this entry. Never duplicate the governance chain into `CLAUDE.md` — the two entry points drift; `CLAUDE.md` only imports `AGENTS.md`.
+**Harness root-file wiring** (normative: `aidazi/governance/context_briefing.md` §1.1; `AGENTS.md` and `CLAUDE.md` are **not** interchangeable copies). Wire per harness, then validate: `engine-kit/validators/adopter_wiring_validator.py <root> --harness claude_code`.
+- **Claude Code** auto-loads `CLAUDE.md`, not a bare `AGENTS.md` → ship a one-line root `CLAUDE.md` of exactly `@AGENTS.md` (never duplicate the governance chain into it — the two entry points drift; `CLAUDE.md` only imports `AGENTS.md`).
 - **OpenAI Codex** auto-loads this `AGENTS.md` directly — no `CLAUDE.md` needed.
 - **Cursor** needs its own `.cursor/rules` entry; a bare `AGENTS.md` is not Cursor wiring.
-
-Because Claude Code and Codex can be used alternately, the canonical scaffold ships **both** root files (`AGENTS.md` + a `CLAUDE.md` of `@AGENTS.md`). Validate with `engine-kit/validators/adopter_wiring_validator.py <root> --harness claude_code`.
-
-The file's purpose: a fresh coding-agent session reads this file FIRST at cold-start. By default that fresh session is a lightweight **Control Plane Session** (natural-language command surface), not one of the five delivery roles. A role session starts only after explicit role activation or orchestrator/runner spawn.
 
 ---
 
@@ -135,23 +131,11 @@ Suggested defaults (override with rationale in adoption-state.md):
 
 ## §7 Cold-start read order for new contributors
 
-A fresh person joining this project reads:
-
-1. This file (`AGENTS.md`).
-2. `aidazi/README.md` (framework elevator).
-3. `aidazi/docs/adoption-overview.md` (mental model).
-4. `aidazi/docs/two-loops-explainer.md` (Auto vs Delivery loop naming).
-5. `aidazi/governance/constitution-core.md` (the always-load constraint kernel; read the full `aidazi/governance/constitution.md` on-demand for rationale).
-6. `<adopter>/docs/current/adoption-state.md` (this project's overrides).
-7. `aidazi/docs/greenfield-guide.md` (if onboarding to a fresh project) OR `aidazi/docs/brownfield-guide.md` (if joining an in-flight project).
-8. Per-track guide: `aidazi/process/profile-aware-maturity.md` Δ-14.
-9. Adopter's `docs/foundational/business-need.md` + `docs/foundational/product-service-design.md` + `docs/foundational/technical-plan.md` for project specifics.
+Human onboarding (NOT a session load — agent sessions follow §2/§3A). A new human contributor reads the framework read order in `aidazi/README.md` (§Read order) + `aidazi/docs/adoption-overview.md` + `aidazi/docs/two-loops-explainer.md`, then this project's `docs/current/adoption-state.md` (overrides) and `docs/foundational/` (business-need / product-service-design / technical-plan). Per track: `aidazi/docs/greenfield-guide.md` or `brownfield-guide.md` + `aidazi/process/profile-aware-maturity.md` (Δ-14). Constraints come from the §2 kernel trio (full `constitution.md` on-demand for rationale).
 
 ## §8 Sessions read this for context
 
-Every default Control Plane Session loads §2 + §3A + the minimal §3 entries above. Every role session loads §2 + §3 plus the relevant role card and per-role briefing list. The specific compact prompt (Dev / Review / Acceptance) carries the per-session `load_list` enumerating additional files; this AGENTS.md establishes the baseline without turning the default session into a role.
-
-The framework-side governance kernels (`aidazi/governance/constitution-core.md` + `authoring-kernel.md` + `context_briefing.md`, per §2) are the always-load role-session chain — the full canonical `constitution.md` / `doc_governance.md` load on-demand — but they are not part of the default Control Plane load graph. The adopter-side files referenced in the `control-plane-load` block are the default Control Plane load graph; larger `docs/current/*` files are role/on-demand context unless explicitly listed.
+A default Control Plane Session loads §2 + §3A + the minimal §3 entries; a role session loads §2 + §3 plus its role card and per-role briefing list, and the compact Dev / Review / Acceptance prompt carries the per-session `load_list` for any additional files. This file establishes the baseline without turning the default session into a role. The governance kernels named in §2 are the always-load role-session chain (the full canonical `constitution.md` / `doc_governance.md` load on-demand); they are NOT in the default Control Plane load graph — the adopter-side files in the `control-plane-load` `allow` list are, and larger `docs/current/*` files are role/on-demand context unless explicitly listed.
 
 ---
 
