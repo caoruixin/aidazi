@@ -1,0 +1,16 @@
+# Context-budget lint (WP-9, ADVISORY — warn + waiver, NOT a hard ceiling)
+
+| key | bytes | ~tok | baseline | drift | status |
+|---|---:|---:|---:|---:|---|
+| governance-floor | 59533 | 14883 | 59533 | +0.0% | ok |
+| research | 102200 | 25550 | 102200 | +0.0% | ok |
+| deliver | 168017 | 42004 | 168017 | +0.0% | ok |
+| deliver:close | 87243 | 21810 | 87243 | +0.0% | ok |
+| dev | 92875 | 23218 | 92875 | +0.0% | ok |
+| review | 82414 | 20603 | 82414 | +0.0% | ok |
+| acceptance | 137730 | 34432 | 137730 | +0.0% | ok |
+| __lesson_bound__ | - | - | - | - | ok |
+
+drift warn threshold: +10% vs checked-in baseline · absolute anomaly ceiling: 400000 B (~100000 tok).
+ADVISORY: a drift WARN is cleared by a reviewed baseline bump OR a waiver-with-rationale — never by shrinking sufficient context. Only structural anomalies hard-stop.
+result: OK (ok=True, anomaly=False, unwaived_warning=False).

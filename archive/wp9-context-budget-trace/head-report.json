@@ -1,0 +1,166 @@
+{
+  "config": {
+    "anomaly_abs_ceiling_bytes": 400000,
+    "bytes_per_token_est": 4,
+    "drift_warn_fraction": 0.1
+  },
+  "has_anomaly": false,
+  "has_unwaived_warning": false,
+  "ok": true,
+  "rows": [
+    {
+      "attribution": null,
+      "baseline_bytes": 59533,
+      "by_purpose": {
+        "governance": 59533
+      },
+      "current_bytes": 59533,
+      "current_tokens": 14883,
+      "detail": null,
+      "drift_fraction": 0.0,
+      "key": "governance-floor",
+      "kind": "floor",
+      "reason": null,
+      "role": null,
+      "status": "ok",
+      "task_kind": null,
+      "waiver_rationale": null
+    },
+    {
+      "attribution": null,
+      "baseline_bytes": 102200,
+      "by_purpose": {
+        "briefing": 30900,
+        "governance": 59533,
+        "role_card": 11767
+      },
+      "current_bytes": 102200,
+      "current_tokens": 25550,
+      "detail": null,
+      "drift_fraction": 0.0,
+      "key": "research",
+      "kind": "role",
+      "reason": null,
+      "role": "research",
+      "status": "ok",
+      "task_kind": null,
+      "waiver_rationale": null
+    },
+    {
+      "attribution": null,
+      "baseline_bytes": 168017,
+      "by_purpose": {
+        "briefing": 89697,
+        "governance": 59533,
+        "role_card": 18787
+      },
+      "current_bytes": 168017,
+      "current_tokens": 42004,
+      "detail": null,
+      "drift_fraction": 0.0,
+      "key": "deliver",
+      "kind": "role",
+      "reason": null,
+      "role": "deliver",
+      "status": "ok",
+      "task_kind": null,
+      "waiver_rationale": null
+    },
+    {
+      "attribution": null,
+      "baseline_bytes": 87243,
+      "by_purpose": {
+        "briefing": 8923,
+        "governance": 59533,
+        "role_card": 18787
+      },
+      "current_bytes": 87243,
+      "current_tokens": 21810,
+      "detail": null,
+      "drift_fraction": 0.0,
+      "key": "deliver:close",
+      "kind": "role",
+      "reason": null,
+      "role": "deliver",
+      "status": "ok",
+      "task_kind": "close",
+      "waiver_rationale": null
+    },
+    {
+      "attribution": null,
+      "baseline_bytes": 92875,
+      "by_purpose": {
+        "briefing": 22004,
+        "governance": 59533,
+        "role_card": 11338
+      },
+      "current_bytes": 92875,
+      "current_tokens": 23218,
+      "detail": null,
+      "drift_fraction": 0.0,
+      "key": "dev",
+      "kind": "role",
+      "reason": null,
+      "role": "dev",
+      "status": "ok",
+      "task_kind": null,
+      "waiver_rationale": null
+    },
+    {
+      "attribution": null,
+      "baseline_bytes": 82414,
+      "by_purpose": {
+        "briefing": 9548,
+        "governance": 59533,
+        "role_card": 13333
+      },
+      "current_bytes": 82414,
+      "current_tokens": 20603,
+      "detail": null,
+      "drift_fraction": 0.0,
+      "key": "review",
+      "kind": "role",
+      "reason": null,
+      "role": "review",
+      "status": "ok",
+      "task_kind": null,
+      "waiver_rationale": null
+    },
+    {
+      "attribution": null,
+      "baseline_bytes": 137730,
+      "by_purpose": {
+        "briefing": 58653,
+        "governance": 59533,
+        "role_card": 19544
+      },
+      "current_bytes": 137730,
+      "current_tokens": 34432,
+      "detail": null,
+      "drift_fraction": 0.0,
+      "key": "acceptance",
+      "kind": "role",
+      "reason": null,
+      "role": "acceptance",
+      "status": "ok",
+      "task_kind": null,
+      "waiver_rationale": null
+    },
+    {
+      "attribution": null,
+      "baseline_bytes": null,
+      "current_bytes": null,
+      "current_tokens": null,
+      "detail": "LessonBudget(max_l1_count=8, max_l1_bytes=4096)",
+      "drift_fraction": null,
+      "key": "__lesson_bound__",
+      "kind": "lesson_bound",
+      "reason": null,
+      "role": null,
+      "status": "ok",
+      "task_kind": null,
+      "waiver_rationale": null
+    }
+  ],
+  "structural_issues": []
+}

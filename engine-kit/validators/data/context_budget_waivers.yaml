@@ -1,0 +1,21 @@
+# WP-9 context-budget lint — waiver registry (deterministic, auditable, never silent).
+#
+# A waiver downgrades a single budget key's DRIFT warning (current_bytes over the
+# baseline + drift threshold) to status `waived` AND records its rationale in the report.
+# A waiver can ONLY downgrade a drift warning — it can NEVER hide a structural anomaly
+# (absolute-ceiling / missing-baseline / missing-root / disabled-lesson-bound), and a
+# waived row is still fully reported (bytes + attribution + rationale). A waiver entry
+# with no non-empty `rationale` is ignored (a waiver must record WHY).
+#
+# To accept a legitimate, reviewed cold-start growth, PREFER regenerating the baseline
+# (`context_budget_report.py --emit-baseline`) — a waiver is for an intentional, justified
+# overage you do not want to bake into the baseline yet.
+#
+# Format:
+#   waivers:
+#     - key: deliver            # a key from BUDGET_ENTRIES in context_budget_report.py
+#       rationale: "why this cold-start legitimately exceeds its baseline + threshold"
+#
+# At HEAD every budget key is `ok` (current == baseline ⇒ drift 0), so no waiver is needed.
+version: 1
+waivers: []
