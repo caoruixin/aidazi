@@ -128,14 +128,14 @@
     },
     {
       "attribution": null,
-      "baseline_bytes": 137730,
+      "baseline_bytes": 90173,
       "by_purpose": {
-        "briefing": 58653,
+        "briefing": 11096,
         "governance": 59533,
         "role_card": 19544
       },
-      "current_bytes": 137730,
-      "current_tokens": 34432,
+      "current_bytes": 90173,
+      "current_tokens": 22543,
       "detail": null,
       "drift_fraction": 0.0,
       "key": "acceptance",

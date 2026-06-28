@@ -128,18 +128,22 @@ ROLE_COLD_START: dict = {
         # schemas/review-verdict.schema.json stays the Python validator's input, not loaded).
         ("schemas/compact/review-verdict.compact.schema.json", "briefing"),
     ],
-    "acceptance": [  # §2.5 (role card mandates process/delivery-loop.md, acceptance-agent.md:40)
+    "acceptance": [  # §2.5
         ("role-cards/acceptance-agent.md", "role_card"),
         ("templates/compact-acceptance-prompt.md", "briefing"),
         # WP-1b: the agent cold-starts the COMPACT verdict projection (the verbose canonical
         # schemas/acceptance-verdict.schema.json stays the validator's + resolver-bound here).
         ("schemas/compact/acceptance-verdict.compact.schema.json", "briefing"),
-        # delivery-loop.md is loaded by every orchestrator-driven Acceptance session
-        # (acceptance-agent.md:40 + context_briefing.md §6) → part of the baseline.
-        # process/role-skill-model.md is FEATURE-GATED (loaded only when
-        # tooling.acceptance.skills is non-empty, acceptance-agent.md:253) → excluded
-        # from this skills-off baseline; a skills-on adopter would add it.
-        ("process/delivery-loop.md", "briefing"),
+        # WP-4B RETIRED the per-spawn whole-file process/delivery-loop.md read at Acceptance
+        # cold-start: its judge-relevant content is projected INLINE via the acceptance-kernel,
+        # which the driver EMBEDS in the dispatched acceptance prompt (→ counted in the WP-0
+        # prompt_bytes audit, NOT a cold-start file read), and acceptance-agent.md §1 step-4 +
+        # context_briefing.md §6 NEGATE the load. So delivery-loop.md is no longer part of the
+        # Acceptance cold-start READ set (a stale entry until the WP-9 comparative eval surfaced
+        # it — it had over-stated this baseline by ~47.5 KB while the read-trace canary proved
+        # the agent never reads it). process/role-skill-model.md is likewise NOT cold-started by
+        # Acceptance (WP-4B inlined its §4/§6 into the kernel); role_cold_start_roots excludes
+        # it for acceptance even when skills are active.
     ],
 }
 

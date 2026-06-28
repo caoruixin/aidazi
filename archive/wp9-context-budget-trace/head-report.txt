@@ -8,7 +8,7 @@
 | deliver:close | 87243 | 21810 | 87243 | +0.0% | ok |
 | dev | 92875 | 23218 | 92875 | +0.0% | ok |
 | review | 82414 | 20603 | 82414 | +0.0% | ok |
-| acceptance | 137730 | 34432 | 137730 | +0.0% | ok |
+| acceptance | 90173 | 22543 | 90173 | +0.0% | ok |
 | __lesson_bound__ | - | - | - | - | ok |
 
 drift warn threshold: +10% vs checked-in baseline · absolute anomaly ceiling: 400000 B (~100000 tok).

@@ -104,21 +104,20 @@ entries:
   task_kind: null
   total_bytes: 82414
 - by_purpose:
-    briefing: 58653
+    briefing: 11096
     governance: 59533
     role_card: 19544
-  est_tokens: 34432
+  est_tokens: 22543
   files:
     governance/authoring-kernel.md: 12328
     governance/constitution-core.md: 22611
     governance/context_briefing.md: 24594
-    process/delivery-loop.md: 47557
     role-cards/acceptance-agent.md: 19544
     schemas/compact/acceptance-verdict.compact.schema.json: 5579
     templates/compact-acceptance-prompt.md: 5517
   key: acceptance
   role: acceptance
   task_kind: null
-  total_bytes: 137730
+  total_bytes: 90173
 generated_from: load_sizer framework-static cold-start sizing (WP-9)
 version: 1
