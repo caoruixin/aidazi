@@ -1,11 +1,12 @@
 ---
 name: 2026-06-29-track1-skill-mounting-design
 doc_category: intermediate
-status: draft-for-review-and-human-signoff
+status: codex-revise-incorporated-pending-human-signoff
 created: 2026-06-29
 base_commit: main @ 297350f (post Track 3+4)
 builds_on:
   - archive/2026-06-29-four-area-optimization-plan.md   # Track 1 (Codex R1/R2/R3 approved-with-nits)
+reviewer: codex gpt-5.5 xhigh — R-T1 VERDICT REVISE (1 blocking + 9 confirmations + 1 factual), incorporated 2026-06-29; current-state/additive/determinism/acceptance-exclusion/in-house-skills all CONFIRMED accurate
 gate: REQUIRES the human to choose WHICH UI/frontend skills to vendor/author (no UI skills exist today)
 ---
 
@@ -44,11 +45,19 @@ generic). So this track reaches a gate: *which UI skills to author/vendor, and f
    `select_skills_for_task(role, task_signals, catalog)` maps signals → candidate skill ids via §2.1
    tags, intersects with **present-and-locked** skills, and feeds survivors as *optional extend*
    bindings on the role defaults; absent candidates drop via §2.2 skip with an audit note.
-4. **Hash / cache / budget (R2/R3)** — re-key `_effective_role_cache` from `role` to
-   `(role, task_kind/sub-sprint)`; surface the resolved skill-set identity in a dedicated spawn/audit
-   field (do NOT silently overload `load_graph_hash`, `audit-event.schema.json:68`, R2 NB-2). **Add
-   skill-active budget rows** to `context_budget_report.py` (today its rows are skills-OFF, R3 NB-3)
-   so task-skill body growth is actually measured under `--strict`.
+4. **Hash / cache / budget (R2/R3 + Codex R-T1).** Re-key `_effective_role_cache` from `role` to
+   `(role, <signed sub-sprint / task-unit identity>)`. **NOT `(role, schema_key)`** — Dev spawns pass
+   `schema_key=None` (`driver.py:1985`, R-T1 NB-7), so `schema_key` alone would collapse distinct Dev
+   task selections; the key must carry the signed `task_signals`/sub-sprint identity. Surface the
+   resolved skill-set identity in a dedicated spawn/audit field (do NOT overload `load_graph_hash`,
+   `audit-event.schema.json:68`, R2 NB-2).
+   **Budget — must SIZE the selected skill BODIES, not just toggle `skills_active` (Codex R-T1 B1 +
+   factual-1).** Adding rows that call the existing sizer with `skills_active=True` does NOT close the
+   hole: today `skills_active` only adds `process/role-skill-model.md`, it does **not** size any
+   `SKILL.md` body (`load_sizer.py:246,267,271`). So the design requires a NEW sizing path that sizes
+   the **resolved selected skill-body files/directories themselves**, with tracked
+   `context_budget_report.py` baseline rows **per default + per task-signal set**, so `--strict`
+   actually catches task-skill body growth.
 5. **Exclude Acceptance** from task-aware selection — `effective_skill_set_hash` is in the acceptance
    `authority_fingerprint`, so per-task acceptance skills would thrash §3.6 calibration. Restrict to
    Dev/Deliver/Research/Reviewer.
