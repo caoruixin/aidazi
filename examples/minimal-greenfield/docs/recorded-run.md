@@ -38,16 +38,23 @@ this file **byte-for-byte**. (`tests/test_recorded_run.py` enforces that.)
 - **State trace:** `idle -> dev_pending -> gate_pending -> review_pending -> close_pending -> advance`
 - **Final state:** `advance`
 - **Spawn count:** 3  (**fix rounds:** 0)
-- **Audit chain:** audit_log: chain intact (5 event(s)).
+- **Audit chain:** audit_log: chain intact (12 event(s)).
 - **Audit verifies:** True
 
 ### Audit event types (in order)
 
 0. `loop_start`
-1. `spawn`
-2. `spawn`
+1. `sandbox_network_granted`
+2. `effective_role_config`
 3. `spawn`
-4. `advance`
+4. `subsprint_gate_run`
+5. `sandbox_network_granted`
+6. `effective_role_config`
+7. `spawn`
+8. `sandbox_network_granted`
+9. `effective_role_config`
+10. `spawn`
+11. `advance`
 
 ### Checkpoint files produced
 

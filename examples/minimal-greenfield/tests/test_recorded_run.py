@@ -60,11 +60,19 @@ class RecordedRunTest(unittest.TestCase):
         self.assertEqual(info["routing"]["dev"], "claude_code")
         self.assertEqual(info["routing"]["review"], "headless")
         self.assertEqual(info["routing"]["deliver"], "claude_code")
-        # Ordered audit spine: loop_start, 3 spawns, advance. Clean path => no
-        # checkpoint files.
+        # Ordered audit spine: loop_start, then per sub-sprint a
+        # (sandbox_network_granted, effective_role_config, spawn) triple — with a
+        # subsprint_gate_run after the first spawn — then advance. Clean path => no
+        # checkpoint files. (Refreshed to the current engine spine: the network-grant
+        # + effective-role-config audit events landed after the original proof.)
         self.assertEqual(
             info["audit_event_types"],
-            ["loop_start", "spawn", "spawn", "spawn", "advance"])
+            ["loop_start",
+             "sandbox_network_granted", "effective_role_config", "spawn",
+             "subsprint_gate_run",
+             "sandbox_network_granted", "effective_role_config", "spawn",
+             "sandbox_network_granted", "effective_role_config", "spawn",
+             "advance"])
         self.assertEqual(info["checkpoints"], [])
         # The run dir is under the system temp, NOT the repo (asserted below too).
         self.assertTrue(run_dir.startswith(tempfile.gettempdir()))
