@@ -76,6 +76,16 @@
       "items": {"type": "string"},
       "description": "[[wiki-style]] links to related memory entries / docs."
     },
+    "promoted_to": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "WP-6 lessons tiering: durable-mechanism references this lesson has been folded into (e.g. 'test:test_foo', 'validator:bar', 'kernel:constitution-core§1.7', 'governance:…', 'role_contract:…'). A non-empty list marks the entry PROMOTED — at ingress it injects a COMPACT reference, not full historical prose. Set by a human / propose-only feedback, never inferred from prompt text. Optional/back-compatible (absent ⇒ not promoted)."
+    },
+    "supersedes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "WP-6 lessons tiering: ids of entries this ACTIVE entry explicitly replaces. At ingress every superseded id is suppressed (deterministic, auditable) — the only sanctioned removal of an L2/MATURED lesson. Optional/back-compatible (absent ⇒ supersedes nothing)."
+    },
     "created": {"type": "string", "format": "date"},
     "last_reviewed": {"type": "string", "format": "date"}
   }

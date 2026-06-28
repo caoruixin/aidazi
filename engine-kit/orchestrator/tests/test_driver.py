@@ -41,6 +41,7 @@ from driver import (  # noqa: E402
     STATE_REVIEW_PENDING, STATE_CLOSE_PENDING,
 )
 import memory_store as ms  # noqa: E402  (driver put engine-kit/memory on sys.path)
+import lesson_selection as ls  # noqa: E402  (WP-6 bounded ingress)
 
 CHARTER_PATH = os.path.join(_ORCH_DIR, "examples", "p2-charter.yaml")
 _FIXTURES_DIR = os.path.join(_TESTS_DIR, "fixtures")
@@ -1541,6 +1542,175 @@ class TestLoopMemoryIngressAndClose(unittest.TestCase):
                     self.assertEqual(e["payload"]["memory_injected"], [])
             types = [e["type"] for e in events]
             self.assertNotIn("memory_observation_recorded", types)
+
+    # ----- WP-6: tier-aware bounded ingress wiring ------------------------- #
+    def _seed_many_dev_l1(self, root, n):
+        """Seed n DISTINCT dev-scoped L1 singletons (occurrences=1)."""
+        store = ms.MemoryStore(root)
+        for i in range(n):
+            store.record_observation(
+                f"dev singleton lesson number {i:03d}",
+                ts="2026-06-15", loop_id=f"loop-seed-{i}",
+                type="heuristic", scope={"role": ["dev"], "module": ["m"]},
+                body=(f"Singleton observation {i:03d}: under condition C{i}, prefer "
+                      f"approach A{i} because of rationale R{i}."))
+        return store
+
+    def _dev_spawn_payload(self, ledger):
+        return next(e for e in audit.read_events(ledger)
+                    if e["type"] == "spawn" and e["payload"]["role"] == "dev")["payload"]
+
+    def test_wp6_l1_budget_bounds_injection_and_records_suppression(self):
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            self._seed_many_dev_l1(mem, 12)
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-wp6-budget", clock=_clock(),
+                          memory_root=mem,
+                          lesson_budget=ls.LessonBudget(max_l1_count=3,
+                                                        max_l1_bytes=10_000))
+            drv_.run(subsprint_id="sprint-001")
+            p = self._dev_spawn_payload(drv_.audit_ledger)
+            # exactly 3 injected, 9 suppressed (all L1 over the count budget).
+            self.assertEqual(len(p["memory_injected"]), 3)
+            self.assertEqual(len(p["suppressed_lesson_ids"]), 9)
+            self.assertEqual(set(p["memory_injected"]) & set(p["suppressed_lesson_ids"]),
+                             set())
+            seldata = p["lesson_selection"]
+            self.assertEqual(seldata["version"], ls.SELECTION_VERSION)
+            self.assertTrue(all(s["reason"] == "l1_count_budget"
+                                for s in seldata["suppressed"]))
+            self.assertTrue(all(t == "L1" for t in seldata["tiers"].values()))
+            self.assertLess(seldata["bytes_after"], seldata["bytes_before"])
+            # Non-silent: the bounded block carries the footer + the audit chain holds.
+            self.assertIn("Loop Memory bounded", drv_._lessons_block("dev"))
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_wp6_matured_l2_preserved_over_budget(self):
+        # An L2 + a MATURED lesson must survive even a budget of 1, alongside L1s.
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            store = self._seed_many_dev_l1(mem, 8)
+            # promote two distinct keys to L2 / MATURED by re-observation.
+            store.record_observation("dev validated lesson", ts="2026-06-16",
+                                     loop_id="lp-v1", type="failure",
+                                     scope={"role": ["dev"], "module": ["m"]},
+                                     body="Validated: always re-check the guard.")
+            store.record_observation("dev validated lesson", ts="2026-06-16",
+                                     loop_id="lp-v2", type="failure",
+                                     scope={"role": ["dev"], "module": ["m"]},
+                                     body="Validated: always re-check the guard.")  # occ2→L2
+            for k in range(3):
+                store.record_observation("dev matured lesson", ts="2026-06-17",
+                                         loop_id=f"lp-m{k}", type="failure",
+                                         scope={"role": ["dev"], "module": ["m"]},
+                                         body="Matured: never collapse the branch.")
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-wp6-mat", clock=_clock(), memory_root=mem,
+                          lesson_budget=ls.LessonBudget(max_l1_count=1,
+                                                        max_l1_bytes=10_000))
+            drv_.run(subsprint_id="sprint-001")
+            p = self._dev_spawn_payload(drv_.audit_ledger)
+            tiers = p["lesson_selection"]["tiers"]
+            l2_id = ms.slug("dev validated lesson")
+            mat_id = ms.slug("dev matured lesson")
+            self.assertEqual(tiers[l2_id], "L2")
+            self.assertEqual(tiers[mat_id], "MATURED")
+            self.assertIn(l2_id, p["memory_injected"])
+            self.assertIn(mat_id, p["memory_injected"])
+            self.assertNotIn(l2_id, p["suppressed_lesson_ids"])
+            self.assertNotIn(mat_id, p["suppressed_lesson_ids"])
+            # No non-L1 ever suppressed.
+            for s in p["lesson_selection"]["suppressed"]:
+                self.assertEqual(s["tier"], "L1")
+
+    def test_wp6_input_hash_and_block_deterministic_across_runs(self):
+        # Same store + same budget → identical injected block → identical input_hash
+        # (retry/reuse determinism). Acceptance is untouched (it injects no lessons).
+        with tempfile.TemporaryDirectory() as mem:
+            self._seed_many_dev_l1(mem, 10)
+            budget = ls.LessonBudget(max_l1_count=4, max_l1_bytes=10_000)
+            hashes, blocks = [], []
+            for run_i in range(2):
+                with tempfile.TemporaryDirectory() as d:
+                    drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                                  loop_id=f"loop-wp6-det-{run_i}", clock=_clock(),
+                                  memory_root=mem, lesson_budget=budget)
+                    drv_.run(subsprint_id="sprint-001")
+                    p = self._dev_spawn_payload(drv_.audit_ledger)
+                    hashes.append(p["input_hash"])
+                    blocks.append(drv_._lessons_block("dev"))
+            self.assertEqual(hashes[0], hashes[1])
+            self.assertEqual(blocks[0], blocks[1])
+
+    def test_wp6_acceptance_plan_shape_records_no_lesson_audit(self):
+        # A spawn that injects NO lessons block (lessons_block=None) records
+        # suppressed_lesson_ids=None + lesson_selection=None — Acceptance-neutral.
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            self._seed_many_dev_l1(mem, 5)
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-wp6-acc", clock=_clock(), memory_root=mem)
+            drv_.run(subsprint_id="sprint-001")
+            drv_._spawn("dev", "PLAN PROMPT (no lessons block)", schema_key=None,
+                        lessons_block=None)
+            p = [e for e in audit.read_events(drv_.audit_ledger)
+                 if e["type"] == "spawn"][-1]["payload"]
+            self.assertEqual(p["memory_injected"], [])
+            self.assertEqual(p["memory_bytes"], 0)
+            self.assertIsNone(p["suppressed_lesson_ids"])
+            self.assertIsNone(p["lesson_selection"])
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    def test_wp6_explicit_supersession_through_driver(self):
+        # An active entry that supersedes an L2 lesson removes it at ingress.
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            store = ms.MemoryStore(mem)
+            old = ms.MemoryEntry(id="old-lesson", type="failure",
+                                 scope={"role": ["dev"], "module": ["m"]},
+                                 maturity="L2", occurrences=4, status="active",
+                                 body="Old matured guidance.")
+            store.write_entry(old, ts="2026-06-15", loop_id="lp-old")
+            new = ms.MemoryEntry(id="new-lesson", type="failure",
+                                 scope={"role": ["dev"], "module": ["m"]},
+                                 maturity="L2", occurrences=2, status="active",
+                                 supersedes=["old-lesson"],
+                                 body="New replacement guidance.")
+            store.write_entry(new, ts="2026-06-16", loop_id="lp-new")
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-wp6-sup", clock=_clock(), memory_root=mem)
+            drv_.run(subsprint_id="sprint-001")
+            p = self._dev_spawn_payload(drv_.audit_ledger)
+            self.assertIn("new-lesson", p["memory_injected"])
+            self.assertNotIn("old-lesson", p["memory_injected"])
+            self.assertIn("old-lesson", p["suppressed_lesson_ids"])
+            sup = [s for s in p["lesson_selection"]["suppressed"]
+                   if s["id"] == "old-lesson"][0]
+            self.assertEqual(sup["reason"], "superseded")
+            self.assertEqual(sup["tier"], "MATURED")
+
+    def test_wp6_malformed_entry_failsafe_preserved_through_driver(self):
+        # A store with a contradictory entry (maturity L1, occurrences>=2 — written
+        # via write_entry which does not re-derive maturity) classifies UNKNOWN and
+        # is PRESERVED even under a zero-room L1 budget — never dropped as L1.
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as mem:
+            store = self._seed_many_dev_l1(mem, 6)
+            bad = ms.MemoryEntry(id="contradictory", type="heuristic",
+                                 scope={"role": ["dev"], "module": ["m"]},
+                                 maturity="L1", occurrences=5, status="active",
+                                 body="Contradictory metadata lesson.")
+            store.write_entry(bad, ts="2026-06-15", loop_id="lp-bad")
+            drv_ = Driver(load_charter(CHARTER_PATH), d, _adapters(),
+                          loop_id="loop-wp6-bad", clock=_clock(), memory_root=mem,
+                          lesson_budget=ls.LessonBudget(max_l1_count=1,
+                                                        max_l1_bytes=10_000))
+            drv_.run(subsprint_id="sprint-001")
+            p = self._dev_spawn_payload(drv_.audit_ledger)
+            self.assertEqual(p["lesson_selection"]["tiers"]["contradictory"], "UNKNOWN")
+            self.assertIn("contradictory", p["memory_injected"])
+            self.assertNotIn("contradictory", p["suppressed_lesson_ids"])
 
 
 class TestRunStateResumeRoundTrip(unittest.TestCase):

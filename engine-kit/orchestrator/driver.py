@@ -149,9 +149,11 @@ if _MEMORY_DIR not in sys.path:
 try:
     from memory_store import MemoryStore  # noqa: E402
     from memory_store import MemoryError as _MemoryError  # noqa: E402
+    import lesson_selection as _lesson_selection  # noqa: E402  (WP-6 bounded ingress)
 except Exception:  # pragma: no cover - memory is optional; absence must not break
     MemoryStore = None  # type: ignore
     _MemoryError = Exception  # type: ignore
+    _lesson_selection = None  # type: ignore
 
 # P5 — the Loop Memory FEEDBACK engine (engine-kit/memory/feedback.py). Optional,
 # read-only, PROPOSE-ONLY: at a successful milestone close (memory enabled) it
@@ -582,8 +584,16 @@ class Driver:
         loop_mode: Optional[str] = None,
         gate_resolver: Optional[Callable[[str, dict, Sequence[str]],
                                          Optional[dict]]] = None,
+        lesson_budget: Optional["object"] = None,
     ):
         self.charter = charter
+        # WP-6 (lessons tiering): the bound applied to the L1 (singleton) tier of the
+        # Loop-Memory ingress block. Defaults to lesson_selection.DEFAULT_BUDGET; only
+        # L1 is ever constrained (L2/MATURED/PROMOTED/UNKNOWN are preserved). Optional
+        # so existing callers are unchanged; configurable per-Driver for tests/adopters.
+        if lesson_budget is None and _lesson_selection is not None:
+            lesson_budget = _lesson_selection.DEFAULT_BUDGET
+        self._lesson_budget = lesson_budget
         # P-A: normalize the acceptance namespace + mode IN PLACE so every read
         # below is canonical (tooling.acceptance.mode) with NO per-read fallback
         # (design §1.4). A genuine config conflict (e.g. enabled vs mode disagree)
@@ -935,10 +945,20 @@ class Driver:
         # execution-plan spawn — for which both are empty); when a block was injected,
         # its ids come from the same deterministic scope select. The cold-start volume
         # (the agent's own mid-session reads) is sized statically by load_sizer.py.
+        # WP-6 (lessons tiering): derive the injected ids, the SUPPRESSED ids, and
+        # the full selection audit from the SAME deterministic selection that built
+        # ``lessons_block`` (no drift). When no block was injected (lessons_block is
+        # None — e.g. the Acceptance execution-plan spawn — or memory disabled →
+        # selection None) all three are empty/None, byte-identical to before.
         if lessons_block is None:
             injected, memory_bytes = [], 0
+            suppressed_lesson_ids = None
+            lesson_selection_audit = None
         else:
-            injected = self._injected_ids(role)
+            _sel = self._lesson_selection(role)
+            injected = list(_sel.selected_ids) if _sel is not None else []
+            suppressed_lesson_ids = _sel.suppressed_ids if _sel is not None else None
+            lesson_selection_audit = _sel.audit_dict() if _sel is not None else None
             memory_bytes = len(lessons_block.encode("utf-8"))
         prompt_bytes = len(prompt.encode("utf-8"))
         fix_round = self.state.fix_round
@@ -997,6 +1017,8 @@ class Driver:
                 role=role, harness=adapter.harness, provider=adapter.provider,
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
+                suppressed_lesson_ids=suppressed_lesson_ids,
+                lesson_selection=lesson_selection_audit,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
                 prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
                 fix_round=fix_round, load_graph_hash=load_graph_hash,
@@ -1019,6 +1041,8 @@ class Driver:
                 role=role, harness=adapter.harness, provider=adapter.provider,
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
+                suppressed_lesson_ids=suppressed_lesson_ids,
+                lesson_selection=lesson_selection_audit,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
                 prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
                 fix_round=fix_round, load_graph_hash=load_graph_hash,
@@ -1034,6 +1058,8 @@ class Driver:
                 role=role, harness=adapter.harness, provider=adapter.provider,
                 model=adapter.model, input_hash=input_hash,
                 memory_injected=injected,
+                suppressed_lesson_ids=suppressed_lesson_ids,
+                lesson_selection=lesson_selection_audit,
                 run_mode=self.autonomy.get("level", "human_in_the_loop"),
                 prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
                 fix_round=fix_round, load_graph_hash=load_graph_hash,
@@ -1148,37 +1174,45 @@ class Driver:
         scope = (self.autonomy.get("approved_scope") or {})
         return list(scope.get("modules_in_scope") or [])
 
-    def _lessons_block(self, role: str) -> str:
-        """Build the "Relevant prior lessons" ingress block for ``role`` from
-        Loop Memory, or "" when memory is disabled or has nothing relevant.
+    def _lesson_selection(self, role: str):
+        """The deterministic, BOUNDED Loop-Memory ingress selection for ``role``
+        (WP-6). Single source of truth for both the injected block and the spawn
+        audit — recomputing it is pure (no store mutation between calls within a
+        spawn step), so the block, ``memory_injected``, ``suppressed_lesson_ids``
+        and the ``lesson_selection`` audit never drift.
 
-        Selection is the store's deterministic scope match on {role, module};
-        the block injected into the prompt is short + generalizable (the entry
-        BODIES, never case-specific input→output — that is guarded at write).
-        Returns the entry ids it injected too, so the spawn audit can record
-        ``memory_injected`` (Audit Spine §4.5 G3)."""
-        if self.memory is None:
-            return ""
+        Returns a ``lesson_selection.LessonSelection`` or None when memory is
+        disabled. Scope is the store's deterministic match on {role, module}; the
+        tier-aware budget bounds only the L1 (singleton) tail — every validated
+        (L2/MATURED), promoted, or uncertain (UNKNOWN) lesson is preserved, and
+        any suppression is recorded (never silent)."""
+        if self.memory is None or _lesson_selection is None:
+            return None
         scope = {"role": [role], "module": self._modules_in_scope()}
-        entries = self.memory.select(scope)
-        if not entries:
-            return ""
-        lines = ["## Relevant prior lessons (Loop Memory)",
-                 "(generalizable heuristics from earlier loops — not rules to "
-                 "memorize; apply judgement)"]
-        for e in entries:
-            body = (e.body or "").strip().splitlines()
-            first = body[0].strip() if body else ""
-            lines.append(f"- [{e.maturity}] {first}")
-        return "\n".join(lines) + "\n\n"
+        candidates = self.memory.select(scope)
+        budget = self._lesson_budget or _lesson_selection.DEFAULT_BUDGET
+        return _lesson_selection.select_for_injection(
+            candidates,
+            superseded_ids=self.memory.superseded_ids(),
+            budget=budget,
+        )
+
+    def _lessons_block(self, role: str) -> str:
+        """Build the bounded "Relevant prior lessons" ingress block for ``role``
+        from Loop Memory, or "" when memory is disabled or has nothing relevant.
+
+        The block injected into the prompt is short + generalizable (the entry
+        BODIES, never case-specific input→output — that is guarded at write) and
+        TIER-BOUNDED (WP-6): only low-confidence L1 singletons are budget-limited;
+        an under-budget store renders byte-identically to the pre-WP-6 block."""
+        sel = self._lesson_selection(role)
+        return sel.block if sel is not None else ""
 
     def _injected_ids(self, role: str) -> list[str]:
-        """The entry ids Loop Memory would inject for ``role`` (for the spawn
-        audit's ``memory_injected`` field). [] when memory disabled."""
-        if self.memory is None:
-            return []
-        scope = {"role": [role], "module": self._modules_in_scope()}
-        return [e.id for e in self.memory.select(scope)]
+        """The entry ids Loop Memory ACTUALLY injects for ``role`` (post-budget; for
+        the spawn audit's ``memory_injected`` field). [] when memory disabled."""
+        sel = self._lesson_selection(role)
+        return list(sel.selected_ids) if sel is not None else []
 
     # ----- P4 INTEGRATION: Loop Ingress (git isolation + loop registry) ----- #
     def _ingress_enabled(self) -> bool:
