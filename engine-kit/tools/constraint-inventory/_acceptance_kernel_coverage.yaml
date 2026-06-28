@@ -1,0 +1,284 @@
+# WP-4 acceptance-kernel coverage map (build-time only; the `_` prefix excludes it from the
+# inventory row glob, like _sources.yaml / _kernel_coverage.yaml / _authoring_kernel_coverage.yaml).
+#
+# Unlike the WP-2/WP-3 kernels (which replace a WHOLE governance file, so completeness = every row of
+# that file), the acceptance-kernel is a TARGETED judge-instruction projection. Its COMPLETENESS scope
+# is the set of inventory rows ANCHORED in the two whole-file reads WP-4B retires for Acceptance
+# (process/delivery-loop.md + process/role-skill-model.md) AND tagged roles ⊇ acceptance. Retiring
+# those reads must drop NO Acceptance-verdict-affecting constraint, so EVERY such row MUST be
+# classified in `closure_rows` as exactly one of:
+#   - kernel-clause   : the acceptance-kernel carries a meaning-preserving phrase (or LIST of phrases —
+#                       every phrase must resolve, so a compound constraint cannot pass on one fragment
+#                       while a mandatory subpart is dropped). This is the catch.
+#   - bound-elsewhere : the constraint governs the orchestrator / charter validator / verdict schema —
+#                       NOT the Acceptance judge — so retiring the judge's whole-file read loses
+#                       nothing. `enforced_by` MUST equal the inventory row's `current_enforcement`,
+#                       which MUST be a real programmatic symbol; a row whose current_enforcement is
+#                       `none-judgment` (no backstop) CANNOT be bound-elsewhere and MUST be kernel-clause.
+# `supplemental_rows` are the six judge-instruction gaps from role-cards/acceptance-agent.md (which
+# stays resolver-bound + cold-started). They are NOT completeness-scoped — their canonical is not
+# retired — but the kernel inlines them so the projected prompt is self-contained, and the gate proves
+# each phrase resolves in the kernel.
+# Matching is over the kernel's NORMATIVE BODY only (front-matter + the trailing "## Deferred to the
+# canonical" section stripped), whitespace-normalized, markdown-stripped. The merged
+# --acceptance-kernel-coverage CLI ALSO runs the inventory/source-hash gate, so a change to a canonical
+# source fails this projection stale.
+kernel: governance/acceptance-kernel.md
+role: acceptance
+inlined_files:
+  - process/delivery-loop.md
+  - process/role-skill-model.md
+inventory_files:
+  - 05-delivery-loop.yaml
+  - 06-role-cards-dev-review.yaml
+
+closure_rows:
+  # ===== process/delivery-loop.md — Acceptance-tagged rows (33) =====
+
+  # --- §4.2.3 checkpoints (Acceptance-relevant) ---
+  dl-checkpoint-bad-case-manual-review:
+    disposition: kernel-clause
+    phrase:
+      - "the human MUST have read the per-turn bad-case traces before milestone close"
+      - "MUST have happened before milestone close"
+      - "is not skippable at close"
+  dl-checkpoint-advisory-acceptance-pass-signoff:
+    disposition: kernel-clause
+    phrase: "MUST HALT at the advisory_acceptance_pass_signoff checkpoint for a human confirm"
+
+  # --- §4.2.2 charter validation (orchestrator/validator-enforced; not a judge instruction) ---
+  dl-charter-acceptance-mode-enabled-agreement:
+    disposition: bound-elsewhere
+    enforced_by: "driver:normalize_acceptance"
+  dl-charter-calibration-flip-only-after-run:
+    disposition: kernel-clause
+    phrase: "MUST only flip to calibrated after an actual calibration run"
+  dl-charter-route-options-nonempty:
+    disposition: bound-elsewhere
+    enforced_by: "validator:_check_acceptance_on_fix_required"
+  dl-charter-human-confirm-required-true:
+    disposition: bound-elsewhere
+    enforced_by: "validator:_check_acceptance_on_fix_required"
+  dl-charter-skills-invalidate-calibration:
+    disposition: kernel-clause
+    phrase: "A change to tooling.acceptance.skills MUST invalidate judge_calibration.status"
+
+  # --- §4.2.4 state machine ---
+  dl-state-acceptance-pass-authority-split:
+    disposition: kernel-clause
+    phrase:
+      - "auto-ships ONLY when AUTHORITATIVE"
+      - "mode is auto AND the judge is calibrated for the ACTIVE acceptance class AND autonomy is fully_autonomous_within_budget"
+      - "otherwise the pass is ADVISORY and MUST HALT"
+  dl-state-acceptance-runs-when-mode-not-off:
+    disposition: bound-elsewhere
+    enforced_by: "driver:_acceptance_enabled"
+  dl-state-needs-human-surface-approve:
+    disposition: kernel-clause
+    phrase: "writes a surface_approve checkpoint and HALTs for the human decision"
+  dl-state-e2e-self-smoke-gate:
+    disposition: bound-elsewhere
+    enforced_by: "driver:_check_dev_self_smoke"
+  dl-state-browser-evidence-orchestrator-driven:
+    # The orchestrator's positive duty (drive + commit + anchor a browser_e2e_evidence Audit Spine
+    # event before acceptance_pending) is orchestrator mechanics enforced by driver:_run_e2e_evidence;
+    # the judge has no agency over it. The judge-facing flip side ("never Acceptance drives") is
+    # carried by dl-antipattern-14 (kernel-clause). So this row is bound-elsewhere, not a judge clause.
+    disposition: bound-elsewhere
+    enforced_by: "driver:_run_e2e_evidence"
+  dl-state-browser-evidence-integrity-before-judge:
+    disposition: bound-elsewhere
+    enforced_by: "driver:_acceptance_browser_evidence"
+  dl-state-browser-consistency-gate:
+    disposition: bound-elsewhere
+    enforced_by: "driver:check_acceptance_consistency"
+
+  # --- §4.2.6 F5 evidence pattern ---
+  dl-f5-orchestrator-runs-eval:
+    disposition: kernel-clause
+    phrase: "runs the eval harness and feeds you only artifact PATHS as read-only context"
+  dl-f5-evidence-paths-separate-on-disk:
+    disposition: bound-elsewhere
+    enforced_by: "driver:_run_eval_cmd"
+  dl-f5-acceptance-eval-fail-gate-hard-fail:
+    disposition: bound-elsewhere
+    enforced_by: "driver:_run_eval_f5"
+  dl-f5-acceptance-read-only-sandbox:
+    disposition: kernel-clause
+    phrase:
+      - "You judge from a READ-ONLY sandbox: you cannot run scripts or mutate the repo"
+      - "you read evidence paths + the closure_contract and produce a JSON verdict"
+
+  # --- §4.2.7 spawn plumbing ---
+  dl-spawn-each-has-verdict-schema:
+    disposition: bound-elsewhere
+    enforced_by: "driver:_spawn"
+  dl-spawn-acceptance-tools-whitelist:
+    disposition: kernel-clause
+    phrase: "confined to the [Read, Grep, Glob] tool whitelist"
+  dl-spawn-invalid-verdict-gate-hard-fail:
+    disposition: bound-elsewhere
+    enforced_by: "driver:_spawn"
+  dl-spawn-acceptance-strict-prompt-unsigned-halt:
+    disposition: kernel-clause
+    phrase:
+      - "projects a self-contained prompt from the human-signed intent_contract + closure_contract + F5 evidence + Reviewer refs"
+      - "runs ONLY after the calibration gate and the F5 eval, and only REPORTS"
+      - "An unsigned/incomplete/missing contract HALTs"
+  dl-spawn-two-distinct-prompt-contracts:
+    disposition: bound-elsewhere
+    enforced_by: "driver:_spawn"
+
+  # --- §4.2.8 anti-patterns (Acceptance-relevant) ---
+  dl-antipattern-02-uncalibrated-ship-must-degrade:
+    disposition: kernel-clause
+    phrase:
+      - "An uncalibrated run_acceptance MUST NOT ship or auto-iterate without human sign-off"
+      - "auto-degrade autonomy to human_on_the_loop and run advisory"
+  dl-antipattern-05-acceptance-code-inspection-verdict:
+    disposition: kernel-clause
+    phrase:
+      - "MUST NOT claim pass/fail from CODE INSPECTION alone"
+      - "with no execution artifact is invalid"
+      # class-aware execution-artifact requirement (NOT the over-broad "every case cites eval/runs/")
+      - "a static-class case an evidence_path under eval/runs/"
+      - "a browser_e2e case its functional_evidence_refs"
+  dl-antipattern-06-unattended-uncalibrated-auto-ship:
+    disposition: kernel-clause
+    phrase:
+      - "MUST NOT unattended auto-iterate/auto-ship on an uncalibrated verdict"
+      - "degradation must be automatic and recorded, never opaque"
+  dl-antipattern-07-acceptance-spawned-from-dev-deliver:
+    disposition: kernel-clause
+    phrase: "MUST NOT be spawned from a Deliver or Dev session"
+  dl-antipattern-08-fix-required-route-needs-checkpoint:
+    disposition: kernel-clause
+    phrase:
+      - "MUST ALSO write the human-confirm checkpoint"
+      - "do not route directly to Deliver"
+  dl-antipattern-09-human-confirm-required-false:
+    disposition: bound-elsewhere
+    enforced_by: "validator:_check_acceptance_on_fix_required"
+  dl-antipattern-10-empty-route-options:
+    disposition: bound-elsewhere
+    enforced_by: "validator:_check_acceptance_on_fix_required"
+  dl-antipattern-13-skill-exceeds-tool-whitelist:
+    disposition: kernel-clause
+    phrase: "MUST operate transitively within the spawning role's tool whitelist and sandbox"
+  dl-antipattern-14-acceptance-drives-browser:
+    disposition: kernel-clause
+    phrase: "MUST NOT launch the app, drive a browser, or run the executor yourself"
+
+  # --- §4.5 resume ---
+  dl-resume-spawn-input-hash-cache:
+    disposition: bound-elsewhere
+    enforced_by: "driver:_spawn"
+
+  # ===== process/role-skill-model.md — Acceptance-tagged rows (11; all none-judgment ⇒ kernel-clause) =====
+  rsm-4-1-whitelist-sandbox-inheritance:
+    disposition: kernel-clause
+    phrase: "MUST operate transitively within the spawning role's tool whitelist and sandbox"
+  rsm-4-1a-reviewer-acceptance-skills-readonly:
+    disposition: kernel-clause
+    phrase: "exceeds the read-only [Read, Grep, Glob] whitelist MUST NOT be mounted on Acceptance"
+  rsm-4-2-fanout-not-a-gate:
+    disposition: kernel-clause
+    phrase:
+      - "A sub-agent's output is a DRAFT input only and MUST NOT substitute for a chain gate"
+      - "every Constitution §3 gate still fires in its own role session"
+  rsm-4-3-single-author-signer:
+    disposition: kernel-clause
+    phrase: "sign your verdict alone — no artifact is attributed to a sub-agent"
+  rsm-4-4-no-cross-role-skill:
+    disposition: kernel-clause
+    phrase: "MUST NOT load a skill or spawn a sub-agent that performs another role's gate function"
+  rsm-4-5-no-new-spawn-surface:
+    disposition: kernel-clause
+    phrase:
+      - "Intra-role fan-out grants NO new spawn surface"
+      - "no role's sub-agent mechanism may spawn the Acceptance Agent"
+  rsm-4-corollary-acceptance-calibration:
+    disposition: kernel-clause
+    phrase: "Adding, removing, or updating any mounted Acceptance skill MUST invalidate judge calibration and force a re-run"
+  rsm-6-allowed-tools-subset:
+    disposition: kernel-clause
+    phrase: "A skill's allowed-tools MUST be a subset of the target role's tool whitelist"
+  rsm-6-skillmd-frontmatter-name-description:
+    disposition: kernel-clause
+    phrase:
+      - "A skill SKILL.md MUST carry YAML front-matter with a required name"
+      - "lowercase alphanumeric + hyphens"
+      - "matching the directory name"
+      - "≤64 chars"
+      - "a required non-empty description"
+      - "≤1024 chars"
+      - "saying what it does AND when to use it"
+  rsm-6-skillmd-body-progressive-disclosure:
+    disposition: kernel-clause
+    phrase: "A skill SKILL.md body MUST stay under 500 lines, moving detail to references/"
+  rsm-6-framework-skill-thin-packaging:
+    disposition: kernel-clause
+    phrase:
+      - "A framework-procedure skill MUST be thin packaging"
+      - "declare trigger + constraints"
+      - "pointer to the normative source via front-matter metadata.normative_source"
+      - "NOT duplicate the procedure body"
+      - "a change to that source obligates a same-sprint review of the skill wrapper"
+
+# The six judge-instruction gaps (role-cards/acceptance-agent.md). The role card stays
+# resolver-bound + cold-started; these are inlined so the projected prompt is self-contained.
+supplemental_rows:
+  # G7 — Research–Acceptance contract symmetry (§2)
+  rc-acc-symmetry-before-judging: "Run this symmetry check BEFORE you evaluate ANY closure_contract clause"
+  rc-acc-symmetry-coverage-no-silent-widen: "do NOT silently widen evaluation to a criterion the contract does not specify"
+  rc-acc-symmetry-version-freshness-halt:
+    - "confirm the closure_contract is the gate-1-signed version"
+    - "if sign_off_date is missing or after the milestone start, HALT"
+  rc-acc-symmetry-three-component-shape:
+    - "each clause MUST have the §1.7-B shape (positive shape + anti-pattern + anchor phrases)"
+    - "a missing component means the contract is under-specified"
+    - "route research_contract_revision"
+  rc-acc-symmetry-no-criteria-creep: "evaluate against ONLY what the closure_contract specifies, NEVER against Code Reviewer flags"
+  rc-acc-symmetry-failure-is-research-side:
+    - "A failure here is a Research-side process gap, NOT a fix_required verdict"
+    - "route via research_contract_revision"
+  # G18 — verdict decision tree + aggregation (§5.1)
+  rc-acc-verdict-decision-tree:
+    - "verdict is pass ONLY if delivered behavior matches the positive shape AND avoids the anti-pattern AND the anchor phrases (or equivalents) are observable"
+    - "if any one of those three checks is ambiguous ⇒ partial"
+    - "a positive-shape miss OR an anti-pattern hit ⇒ fail"
+  rc-acc-verdict-aggregation-discipline:
+    - "every clause pass ⇒ pass; any clause fail at severity P0/P1 ⇒ fix_required; multiple clauses partial OR a closure_contract gap ⇒ needs_human"
+    - "cannot judge (insufficient evidence, a spawn-isolation breach, or calibration invalidated) ⇒ needs_human"
+  rc-acc-anchor-phrase-evidence-not-gate:
+    - "Use anchor phrases only as cited EVIDENCE in the rationale, never as a passing condition"
+    - "judge semantic match, not string match"
+  # G21 — fix_required → report + human-confirm checkpoint (§7)
+  rc-acc-fixrequired-write-report: "you MUST write the acceptance report to docs/acceptance-reports/<scope>-acceptance-report.md"
+  rc-acc-fixrequired-write-checkpoint: "docs/checkpoints/<ts>__acceptance_fix_required__<scope>.md with decision: pending"
+  rc-acc-fixrequired-stop-no-direct-route:
+    - "After writing the checkpoint you MUST STOP the session"
+    - "do not route directly to Deliver"
+  rc-acc-fixrequired-checkpoint-mandatory: "A fix_required verdict WITHOUT a corresponding human-confirm checkpoint file is a §1.7-C breach AND a §3.5 breach"
+  # G22 — suggested_route selection (§7.1)
+  rc-acc-suggested-route-fit-or-needs-human:
+    - "suggest the route fitting the failure shape"
+    - "If you cannot tell which route fits, set milestone_verdict: needs_human"
+  # G23 — needs_human triggers (§8)
+  rc-acc-needs-human-triggers: "Set needs_human on a spawn-isolation breach, calibration invalidation, absent evidence, a symmetry-check failure, or multiple partials with no clear route"
+  # G13 — calibration-identity drift (§4 + §11 corollary)
+  rc-acc-calibration-per-active-class:
+    - "Read calibration from the ACTIVE class: static (M1) from charter.tooling.acceptance.judge_calibration.status"
+    - "browser_e2e (M3) from"
+    - "(absent ⇒ uncalibrated)"
+  rc-acc-calibration-m3-always-advisory-v1:
+    - "the browser_e2e (M3) class is ALWAYS advisory"
+    - "a functional pass HALTs for human sign-off"
+    - "never auto-ships, regardless of any charter-declared M3 status"
+  rc-acc-calibration-uncalibrated-degrade-verify:
+    - "If you are uncalibrated on an autonomous run, verify that auto-degrade already happened"
+    - "if it did not, HALT and surface the bypass"
+  rc-acc-calibration-identity-invalidation:
+    - "Calibration identity is (agent_kind × model × skill set)"
+    - "differs from the calibration set's recorded judge identity, calibration is invalidated"
+    - "request re-calibration before treating the verdict as authoritative"

@@ -341,12 +341,29 @@ def check(repo_root=REPO_ROOT_DEFAULT) -> dict:
 
 KERNEL_COVERAGE_NAME = "_kernel_coverage.yaml"
 AUTHORING_KERNEL_COVERAGE_NAME = "_authoring_kernel_coverage.yaml"
+ACCEPTANCE_KERNEL_COVERAGE_NAME = "_acceptance_kernel_coverage.yaml"
 
 
 def _normalize_for_match(text: str) -> str:
     """Collapse whitespace + strip markdown emphasis (`` ` `` and ``*``) so a coverage phrase
     matches the kernel regardless of line-wrapping or `code`/**bold** decoration."""
     return re.sub(r"\s+", " ", re.sub(r"[`*]", "", text)).strip()
+
+
+def _kernel_normative_body(kernel_path: Path) -> str:
+    """Return a kernel's NORMATIVE BODY, normalized for phrase matching: the YAML front-matter
+    (first ``---`` … ``---``) and the trailing non-normative sections (from the "## Deferred to the
+    canonical" heading on) are stripped, so a phrase cannot resolve against metadata / the deferred
+    list. Same extraction ``_kernel_coverage_for`` performs inline (kept identical)."""
+    body = kernel_path.read_text(encoding="utf-8")
+    if body.startswith("---"):
+        fm_end = body.find("\n---", 3)
+        if fm_end != -1:
+            body = body[fm_end + 4:]
+    cut = body.find("## Deferred to the canonical")
+    if cut != -1:
+        body = body[:cut]
+    return _normalize_for_match(body)
 
 
 def _kernel_coverage_for(cov_name: str, repo_root=REPO_ROOT_DEFAULT) -> dict:
@@ -447,6 +464,183 @@ def check_authoring_kernel_coverage(repo_root=REPO_ROOT_DEFAULT) -> dict:
     return _kernel_coverage_for(AUTHORING_KERNEL_COVERAGE_NAME, repo_root=repo_root)
 
 
+def _enforcement_resolves(ce: str, repo_root: Path, _cache: dict) -> bool:
+    """True iff a ``current_enforcement`` string resolves to a REAL backstop — a schema:/role-card:
+    file that exists, or a driver:/validator:/adapter:/campaign: symbol present in the engine-kit
+    corpus (same resolution check() performs, but treated as a HARD requirement here). ``none-judgment``
+    is not a backstop (False). This is what makes ``bound-elsewhere`` airtight: a constraint may be
+    excused from the kernel ONLY against an enforcement that actually exists, so a fabricated inventory
+    ``current_enforcement`` (which check() only WARNS about) cannot launder a dropped constraint."""
+    if not isinstance(ce, str) or ce == "none-judgment":
+        return False
+    if ce.startswith("schema:"):
+        return (repo_root / "schemas" / ce.split(":", 1)[1]).exists()
+    if ce.startswith("role-card:"):
+        return (repo_root / ce.split(":", 1)[1]).exists()
+    if ce.startswith(GREP_PREFIXES):
+        m = _IDENT_RE.match(ce.split(":", 1)[1])
+        sym = m.group(0) if m else ""
+        if not sym:
+            return False
+        if "corpus" not in _cache:
+            _cache["corpus"] = _build_corpus(
+                repo_root / "engine-kit",
+                repo_root / "engine-kit" / "tools" / "constraint-inventory")
+        # Require an actual DEFINITION (``def <sym>(``), not a bare substring: a bare ``sym in corpus``
+        # would let a fabricated ``driver:_acceptance`` launder past (it is a substring of
+        # ``_acceptance_authoritative``). Every bound-elsewhere enforcement is a driver/validator
+        # method, so a def-site match is both correct and airtight (Codex R6-B1).
+        return re.search(r"\bdef\s+" + re.escape(sym) + r"\s*\(", _cache["corpus"]) is not None
+    return False
+
+
+def check_acceptance_kernel_coverage(repo_root=REPO_ROOT_DEFAULT) -> dict:
+    """WP-4: prove the acceptance-kernel carries every Acceptance-verdict-affecting constraint
+    anchored in the two whole-file reads WP-4B retires (process/delivery-loop.md +
+    process/role-skill-model.md), so retiring those reads drops nothing.
+
+    Unlike WP-2/WP-3 (whole-file kernels, completeness = every row of the replaced file), the
+    acceptance-kernel is a TARGETED judge-instruction projection. Its COMPLETENESS scope is the set
+    of inventory rows ANCHORED in ``inlined_files`` AND tagged ``role``; each MUST be classified in
+    ``closure_rows`` as exactly one disposition:
+      - ``kernel-clause``   : every mapped phrase resolves in the kernel normative body (the catch);
+      - ``bound-elsewhere`` : ``enforced_by`` MUST equal the inventory row's ``current_enforcement``
+                              AND that enforcement MUST be a real programmatic symbol — a
+                              ``none-judgment`` row (no backstop) CANNOT be bound-elsewhere and MUST
+                              be kernel-clause. This is what makes "INLINED" sound: a constraint is
+                              dropped from the kernel ONLY when an independent driver/validator/schema
+                              symbol (recorded in the Codex-gated, source-hash-bound inventory) catches
+                              it regardless of the judge's read.
+    ``supplemental_rows`` (the six judge-instruction gaps from the still-resolver-bound
+    role-cards/acceptance-agent.md) are NOT completeness-scoped — their canonical is not retired — but
+    each mapped phrase MUST resolve in the kernel so the projected prompt is proven self-contained.
+
+    Asserts: (a) completeness — every scoped row classified; (b) no-dangling — every classified row is
+    a real scoped row; (c) resolution / binding per the rules above; (d) supplemental rows are real
+    ``role`` inventory ids whose phrases resolve. Returns ``{ok, errors, kernel, stats}``."""
+    repo_root = Path(repo_root)
+    inv_dir = repo_root / "engine-kit" / "tools" / "constraint-inventory"
+    cov_path = inv_dir / ACCEPTANCE_KERNEL_COVERAGE_NAME
+    if yaml is None:
+        return {"ok": False, "errors": ["PyYAML is required but not installed"], "stats": {}}
+    if not cov_path.is_file():
+        return {"ok": False, "errors": [f"acceptance-kernel-coverage map not found: {cov_path}"],
+                "stats": {}}
+    cov = yaml.safe_load(cov_path.read_text(encoding="utf-8")) or {}
+    kernel_rel = cov.get("kernel")
+    role = cov.get("role")
+    inlined_files = tuple(cov.get("inlined_files") or [])
+    inventory_files = set(cov.get("inventory_files") or [])
+    closure_rows = cov.get("closure_rows") or {}
+    supplemental_rows = cov.get("supplemental_rows") or {}
+    if not (kernel_rel and role and inlined_files and inventory_files
+            and isinstance(closure_rows, dict) and isinstance(supplemental_rows, dict)):
+        return {"ok": False, "stats": {}, "errors": [
+            "coverage map must define 'kernel', 'role', 'inlined_files', 'inventory_files', "
+            "'closure_rows', and 'supplemental_rows'"]}
+    kernel_path = repo_root / kernel_rel
+    if not kernel_path.is_file():
+        return {"ok": False, "kernel": kernel_rel, "stats": {},
+                "errors": [f"kernel not found: {kernel_rel} (draft not present — nothing to check)"]}
+    kernel_norm = _kernel_normative_body(kernel_path)
+
+    # Inventory rows: full index (for supplemental id validity) + per-id row dicts.
+    inv_by_id: dict[str, dict] = {}
+    for name, rows in _load_inventory(inv_dir):
+        if isinstance(rows, list):
+            for r in rows:
+                if isinstance(r, dict) and isinstance(r.get("id"), str):
+                    inv_by_id[r["id"]] = {**r, "_inv_file": name}
+    # COMPLETENESS scope: rows anchored in an inlined file AND tagged `role`, restricted to the
+    # declared inventory_files (so a re-homed row is caught by no-dangling, not silently scoped out).
+    scope = {
+        rid: r for rid, r in inv_by_id.items()
+        if r.get("_inv_file") in inventory_files
+        and str(r.get("anchor", "")).startswith(inlined_files)
+        and role in (r.get("roles") or [])
+    }
+
+    errors: list[str] = []
+
+    def _resolve_phrases(rid, raw, where):
+        phrases = raw if isinstance(raw, list) else [raw]
+        norm = [(p, _normalize_for_match(str(p))) for p in phrases]
+        if not norm or any(not n for _, n in norm):
+            errors.append(f"empty coverage phrase for {where} {rid}")
+            return False
+        absent = [orig for orig, n in norm if n not in kernel_norm]
+        if absent:
+            errors.append(f"kernel missing clause for {where} {rid} (subpart not carried): {absent!r}")
+            return False
+        return True
+
+    # (a) completeness + (b) no-dangling over the closure scope.
+    for rid in sorted(set(scope) - set(closure_rows)):
+        errors.append(f"uncovered Acceptance constraint (no closure_rows entry): {rid} "
+                      f"[{scope[rid].get('anchor')}]")
+    for rid in sorted(set(closure_rows) - set(scope)):
+        why = ("unknown inventory id" if rid not in inv_by_id else
+               "not in completeness scope (anchor not in inlined_files, role absent, or wrong "
+               "inventory_file)")
+        errors.append(f"closure_rows references a row that is not a scoped Acceptance constraint: "
+                      f"{rid} ({why})")
+
+    # (c) per-row disposition resolution / binding.
+    n_kernel_clause = n_bound = 0
+    enf_cache: dict = {}
+    for rid in sorted(set(closure_rows) & set(scope)):
+        entry = closure_rows[rid] or {}
+        disp = entry.get("disposition")
+        if disp == "kernel-clause":
+            n_kernel_clause += 1
+            if "phrase" not in entry:
+                errors.append(f"kernel-clause row {rid} has no 'phrase'")
+            else:
+                _resolve_phrases(rid, entry["phrase"], "closure")
+        elif disp == "bound-elsewhere":
+            n_bound += 1
+            ce = scope[rid].get("current_enforcement")
+            declared = entry.get("enforced_by")
+            if ce == "none-judgment":
+                errors.append(f"bound-elsewhere row {rid} has current_enforcement 'none-judgment' "
+                              f"(no backstop) — it MUST be kernel-clause")
+            elif not declared:
+                errors.append(f"bound-elsewhere row {rid} has no 'enforced_by'")
+            elif declared != ce:
+                errors.append(f"bound-elsewhere row {rid}: enforced_by {declared!r} != inventory "
+                              f"current_enforcement {ce!r}")
+            elif not _enforcement_resolves(ce, repo_root, enf_cache):
+                # The enforcement must actually EXIST — a fabricated current_enforcement (which the
+                # base inventory gate only WARNS about) cannot launder a dropped constraint here.
+                errors.append(f"bound-elsewhere row {rid}: enforcement {ce!r} does not resolve to a "
+                              f"real schema/role-card file or engine-kit symbol — cannot excuse it "
+                              f"from the kernel")
+        else:
+            errors.append(f"closure row {rid} has invalid disposition {disp!r} "
+                          f"(expected kernel-clause | bound-elsewhere)")
+
+    # (d) supplemental rows: real `role` inventory ids whose phrases resolve (no completeness).
+    for rid in sorted(supplemental_rows):
+        row = inv_by_id.get(rid)
+        if row is None:
+            errors.append(f"supplemental_rows references unknown inventory id: {rid}")
+            continue
+        if role not in (row.get("roles") or []):
+            errors.append(f"supplemental row {rid} is not tagged role {role!r}")
+            continue
+        _resolve_phrases(rid, supplemental_rows[rid], "supplemental")
+
+    stats = {
+        "closure_scope": len(scope),
+        "closure_mapped": len(set(closure_rows) & set(scope)),
+        "kernel_clause": n_kernel_clause,
+        "bound_elsewhere": n_bound,
+        "supplemental": len(supplemental_rows),
+        "inlined_files": list(inlined_files),
+    }
+    return {"ok": not errors, "errors": errors, "kernel": kernel_rel, "stats": stats}
+
+
 def _merged_coverage(repo_root, cov_fn) -> dict:
     """Run a kernel-coverage check MERGED with the inventory/source-hash gate, failing if either
     fails. The kernel is a projection of the inventory, which is bound to the canonical source
@@ -468,7 +662,13 @@ def _print_kernel_coverage(result: dict) -> None:
     stats = result.get("stats", {})
     print(f"kernel_coverage ({result.get('kernel', '?')}): "
           f"{'OK' if result['ok'] else 'NOT OK'}")
-    if stats:
+    if "closure_scope" in stats:  # WP-4 acceptance-kernel (disposition-based) stats shape
+        print(f"  closure scope     : {stats.get('closure_scope')} "
+              f"(mapped {stats.get('closure_mapped')})")
+        print(f"  kernel-clause     : {stats.get('kernel_clause')}")
+        print(f"  bound-elsewhere   : {stats.get('bound_elsewhere')}")
+        print(f"  supplemental      : {stats.get('supplemental')}")
+    elif stats:                   # WP-2/WP-3 whole-file coverage stats shape
         print(f"  inventory rows    : {stats.get('total')}")
         print(f"  covered           : {stats.get('covered')} ({stats.get('coverage_pct')}%)")
     for e in result.get("errors", []):
@@ -510,14 +710,22 @@ def main(argv=None) -> int:
     parser.add_argument("--authoring-kernel-coverage", action="store_true",
                         help="WP-3: report authoring-kernel coverage vs the doc-governance "
                              "inventory (MERGED with the inventory/source-hash gate)")
+    parser.add_argument("--acceptance-kernel-coverage", action="store_true",
+                        help="WP-4: report acceptance-kernel coverage vs the Acceptance-tagged "
+                             "delivery-loop + role-skill inventory rows (MERGED with the "
+                             "inventory/source-hash gate)")
     args = parser.parse_args(argv)
-    if args.kernel_coverage or args.authoring_kernel_coverage:
+    if args.kernel_coverage or args.authoring_kernel_coverage or args.acceptance_kernel_coverage:
         # Each kernel is a projection of the inventory, bound to the canonical source hashes. A
         # coverage pass is meaningful only if the inventory gate (source-hash freshness, well-
         # formedness, row floors) ALSO passes — a stale canonical means a stale kernel. So the
-        # coverage CLIs run BOTH and fail if either fails (Codex WP-2/WP-3 fidelity gate).
-        cov_fn = (check_authoring_kernel_coverage if args.authoring_kernel_coverage
-                  else check_kernel_coverage)
+        # coverage CLIs run BOTH and fail if either fails (Codex WP-2/WP-3/WP-4 fidelity gate).
+        if args.acceptance_kernel_coverage:
+            cov_fn = check_acceptance_kernel_coverage
+        elif args.authoring_kernel_coverage:
+            cov_fn = check_authoring_kernel_coverage
+        else:
+            cov_fn = check_kernel_coverage
         merged = _merged_coverage(args.repo_root, cov_fn)
         if args.json:
             print(json.dumps(merged, indent=2, ensure_ascii=False, sort_keys=True))

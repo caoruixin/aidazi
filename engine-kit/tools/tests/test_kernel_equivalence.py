@@ -460,5 +460,202 @@ class AuthoringKernelCoverageTests(_RepoBuilderMixin):
                             for e in merged["errors"]), msg=str(merged["errors"]))
 
 
+@unittest.skipIf(yaml is None, "PyYAML not installed")
+class AcceptanceKernelCoverageTests(_RepoBuilderMixin):
+    """WP-4: check_acceptance_kernel_coverage proves the acceptance-kernel carries every
+    Acceptance-verdict-affecting constraint anchored in the two whole-file reads WP-4B retires
+    (process/delivery-loop.md + process/role-skill-model.md), with a per-row disposition —
+    completeness over the anchored+role-tagged scope; kernel-clause phrases resolve; bound-elsewhere
+    matches the inventory enforcement (and a none-judgment row may NOT be bound-elsewhere)."""
+
+    DL = "process/delivery-loop.md §4.2.4"
+    RC = "role-cards/acceptance-agent.md §2"
+
+    def _acc_cov_repo(self, kernel_text, closure_rows, source_rows,
+                      supplemental_rows=None, supplemental_src=None, symbols=("_spawn",)):
+        inv_files = {
+            "05-delivery-loop.yaml": source_rows,
+            "_acceptance_kernel_coverage.yaml": {
+                "kernel": "governance/acceptance-kernel.md",
+                "role": "acceptance",
+                "inlined_files": ["process/delivery-loop.md", "process/role-skill-model.md"],
+                "inventory_files": ["05-delivery-loop.yaml"],
+                "closure_rows": closure_rows,
+                "supplemental_rows": supplemental_rows or {},
+            },
+        }
+        if supplemental_src is not None:
+            inv_files["07-roles.yaml"] = supplemental_src
+        # A stub engine-kit source so bound-elsewhere `driver:`/`validator:` symbols RESOLVE in the
+        # corpus (the real resolution check, hermetically) — a symbol NOT listed here will not resolve.
+        stub = "\n".join(f"def {s}(): ..." for s in symbols).encode("utf-8")
+        extra = {"governance/acceptance-kernel.md": kernel_text.encode("utf-8"),
+                 "engine-kit/orchestrator/_stub.py": stub}
+        return self._make_repo(inv_files=inv_files, extra_files=extra)
+
+    def test_real_acceptance_kernel_coverage_is_complete(self):
+        # The real acceptance-kernel draft classifies all 44 Acceptance-anchored delivery-loop +
+        # role-skill rows and carries every kernel-clause phrase + the 6-gap supplemental phrases.
+        result = ke.check_acceptance_kernel_coverage()
+        self.assertTrue(result["ok"], msg=str(result.get("errors")))
+        st = result["stats"]
+        self.assertEqual(st["closure_scope"], 44)
+        self.assertEqual(st["closure_mapped"], 44)
+        self.assertEqual(st["kernel_clause"] + st["bound_elsewhere"], 44)
+        self.assertGreater(st["supplemental"], 0)
+
+    def test_merged_acceptance_coverage_on_real_tree_passes(self):
+        merged = ke._merged_coverage(str(ke.REPO_ROOT_DEFAULT),
+                                     ke.check_acceptance_kernel_coverage)
+        self.assertTrue(merged["ok"], msg=str(merged.get("errors")))
+
+    def test_complete_classification_passes(self):
+        root = self._acc_cov_repo(
+            "Clause A: you cannot run scripts. Clause B is orchestrator wiring.",
+            {"dl-a": {"disposition": "kernel-clause", "phrase": "you cannot run scripts"},
+             "dl-b": {"disposition": "bound-elsewhere", "enforced_by": "driver:_spawn"}},
+            [_good_row("dl-a", anchor=self.DL, roles=["acceptance"]),
+             _good_row("dl-b", anchor=self.DL, enforcement="driver:_spawn", roles=["acceptance"])])
+        result = ke.check_acceptance_kernel_coverage(repo_root=root)
+        self.assertTrue(result["ok"], msg=str(result["errors"]))
+
+    def test_uncovered_scoped_row_is_caught(self):
+        # dl-b is anchored in an inlined file + role acceptance but unmapped → completeness fails.
+        root = self._acc_cov_repo(
+            "Clause A: you cannot run scripts.",
+            {"dl-a": {"disposition": "kernel-clause", "phrase": "you cannot run scripts"}},
+            [_good_row("dl-a", anchor=self.DL, roles=["acceptance"]),
+             _good_row("dl-b", anchor=self.DL, roles=["acceptance"])])
+        result = ke.check_acceptance_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("uncovered Acceptance constraint" in e and "dl-b" in e
+                            for e in result["errors"]), msg=str(result["errors"]))
+
+    def test_out_of_scope_row_not_required(self):
+        # A delivery-loop row NOT tagged acceptance (or not anchored in an inlined file) is out of
+        # scope — it need not be classified.
+        root = self._acc_cov_repo(
+            "Clause A: you cannot run scripts.",
+            {"dl-a": {"disposition": "kernel-clause", "phrase": "you cannot run scripts"}},
+            [_good_row("dl-a", anchor=self.DL, roles=["acceptance"]),
+             _good_row("dl-rev", anchor=self.DL, roles=["review"]),
+             _good_row("dl-other", anchor="process/other.md §1", roles=["acceptance"])])
+        result = ke.check_acceptance_kernel_coverage(repo_root=root)
+        self.assertTrue(result["ok"], msg=str(result["errors"]))
+
+    def test_dangling_closure_row_is_caught(self):
+        root = self._acc_cov_repo(
+            "Clause A: you cannot run scripts.",
+            {"dl-a": {"disposition": "kernel-clause", "phrase": "you cannot run scripts"},
+             "dl-ghost": {"disposition": "kernel-clause", "phrase": "x"}},
+            [_good_row("dl-a", anchor=self.DL, roles=["acceptance"])])
+        result = ke.check_acceptance_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("not a scoped Acceptance constraint" in e and "dl-ghost" in e
+                            for e in result["errors"]), msg=str(result["errors"]))
+
+    def test_kernel_clause_missing_phrase_is_caught(self):
+        root = self._acc_cov_repo(
+            "Clause A present.",   # the mapped phrase is NOT in the kernel
+            {"dl-a": {"disposition": "kernel-clause", "phrase": "this phrase is absent"}},
+            [_good_row("dl-a", anchor=self.DL, roles=["acceptance"])])
+        result = ke.check_acceptance_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("missing clause" in e and "dl-a" in e for e in result["errors"]))
+
+    def test_none_judgment_row_cannot_be_bound_elsewhere(self):
+        # The airtight rule: a row with no programmatic backstop (none-judgment) MUST be carried by
+        # the kernel — it cannot be excused as bound-elsewhere.
+        root = self._acc_cov_repo(
+            "Clause A present.",
+            {"dl-a": {"disposition": "bound-elsewhere", "enforced_by": "none-judgment"}},
+            [_good_row("dl-a", anchor=self.DL, enforcement="none-judgment", roles=["acceptance"])])
+        result = ke.check_acceptance_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("none-judgment" in e and "MUST be kernel-clause" in e
+                            for e in result["errors"]), msg=str(result["errors"]))
+
+    def test_bound_elsewhere_symbol_must_match_inventory(self):
+        # bound-elsewhere cannot claim an enforcement the inventory does not record (no faking a
+        # backstop to drop a constraint).
+        root = self._acc_cov_repo(
+            "Clause A present.",
+            {"dl-a": {"disposition": "bound-elsewhere", "enforced_by": "driver:_made_up"}},
+            [_good_row("dl-a", anchor=self.DL, enforcement="driver:_spawn", roles=["acceptance"])])
+        result = ke.check_acceptance_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("enforced_by" in e and "!= inventory" in e for e in result["errors"]))
+
+    def test_bound_elsewhere_unresolved_symbol_is_caught(self):
+        # The airtight half of bound-elsewhere: enforced_by matches the inventory, but the symbol does
+        # NOT exist in the engine-kit corpus — a fabricated backstop cannot excuse a constraint from
+        # the kernel (the base inventory gate only WARNS on this; here it is a hard error).
+        root = self._acc_cov_repo(
+            "Clause A present.",
+            {"dl-a": {"disposition": "bound-elsewhere", "enforced_by": "driver:_ghost_symbol"}},
+            [_good_row("dl-a", anchor=self.DL, enforcement="driver:_ghost_symbol",
+                       roles=["acceptance"])],
+            symbols=("_spawn",))   # _ghost_symbol is NOT in the stub corpus
+        result = ke.check_acceptance_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("does not resolve" in e and "dl-a" in e for e in result["errors"]),
+                        msg=str(result["errors"]))
+
+    def test_bound_elsewhere_substring_of_real_symbol_is_caught(self):
+        # Codex R6-B1: a fabricated symbol that is a SUBSTRING of a real one (no own def-site) must
+        # NOT resolve — the check requires `def <sym>(`, not a bare substring. Stub defines `_spawn`;
+        # the fabricated `_spaw` is a substring of it but has no `def _spaw(`.
+        root = self._acc_cov_repo(
+            "Clause A present.",
+            {"dl-a": {"disposition": "bound-elsewhere", "enforced_by": "driver:_spaw"}},
+            [_good_row("dl-a", anchor=self.DL, enforcement="driver:_spaw", roles=["acceptance"])],
+            symbols=("_spawn",))
+        result = ke.check_acceptance_kernel_coverage(repo_root=root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("does not resolve" in e and "dl-a" in e for e in result["errors"]),
+                        msg=str(result["errors"]))
+
+    def test_supplemental_phrase_and_id_validity(self):
+        # A supplemental row must be a real acceptance inventory id AND its phrase must resolve.
+        src = [_good_row("dl-a", anchor=self.DL, roles=["acceptance"])]
+        sup_src = [_good_row("rc-g7", anchor=self.RC, roles=["acceptance"])]
+        closure = {"dl-a": {"disposition": "kernel-clause", "phrase": "you cannot run scripts"}}
+        # phrase present → ok
+        ok_root = self._acc_cov_repo(
+            "Clause A: you cannot run scripts. Symmetry check before judging.",
+            closure, src, supplemental_rows={"rc-g7": "Symmetry check before judging"},
+            supplemental_src=sup_src)
+        self.assertTrue(ke.check_acceptance_kernel_coverage(repo_root=ok_root)["ok"])
+        # phrase absent → caught
+        bad_root = self._acc_cov_repo(
+            "Clause A: you cannot run scripts.",
+            closure, src, supplemental_rows={"rc-g7": "this gap text is absent"},
+            supplemental_src=sup_src)
+        bad = ke.check_acceptance_kernel_coverage(repo_root=bad_root)
+        self.assertFalse(bad["ok"])
+        self.assertTrue(any("supplemental rc-g7" in e for e in bad["errors"]))
+        # unknown supplemental id → caught
+        ghost_root = self._acc_cov_repo(
+            "Clause A: you cannot run scripts. Symmetry check before judging.",
+            closure, src, supplemental_rows={"rc-ghost": "Symmetry check before judging"},
+            supplemental_src=sup_src)
+        ghost = ke.check_acceptance_kernel_coverage(repo_root=ghost_root)
+        self.assertFalse(ghost["ok"])
+        self.assertTrue(any("unknown inventory id: rc-ghost" in e for e in ghost["errors"]))
+
+    def test_merged_fails_closed_when_source_hash_gate_fails(self):
+        orig_check = ke.check
+        ke.check = lambda repo_root=None: {
+            "ok": False, "errors": ["source process/delivery-loop.md changed (inventory stale)"],
+            "warnings": [], "stats": {}}
+        try:
+            merged = ke._merged_coverage(str(ke.REPO_ROOT_DEFAULT),
+                                         ke.check_acceptance_kernel_coverage)
+        finally:
+            ke.check = orig_check
+        self.assertFalse(merged["ok"])
+        self.assertTrue(any(e.startswith("[inventory/source-hash gate]") for e in merged["errors"]))
+
+
 if __name__ == "__main__":
     unittest.main()
