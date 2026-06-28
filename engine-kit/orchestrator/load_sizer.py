@@ -143,6 +143,25 @@ ROLE_COLD_START: dict = {
     ],
 }
 
+#: WP-5A — TASK-SCOPED cold-start narrowing. The SAME spawn-role can serve more than one
+#: task (the ``deliver`` role runs both a Close spawn ``schema_key="close"`` and a
+#: Deliver-plan spawn ``schema_key="deliver_plan"``). A ``(role, task_kind)`` listed here
+#: gets a NARROWER cold-start set than the role's full ``ROLE_COLD_START`` — the task_kind
+#: is the spawn's stable ``schema_key`` literal (never inferred from prompt text). FAIL-CLOSED:
+#: any ``(role, task_kind)`` NOT listed — including unknown task_kinds, ``None``, and
+#: ``deliver_plan`` — falls through to the FULL role set; nothing defaults into a narrow path.
+#: The Close set carries the role card + ``deliver-close-taxonomy.md`` (the A/B/C/D verdict
+#: taxonomy); the 9 Deliver-plan-only briefing docs (plan decomposition, Δ process briefings,
+#: author-time templates) are dropped — each adversarially proven Close-irrelevant + Codex-
+#: APPROVED (WP-5A matrix). The governance trio is prepended by ``role_cold_start_roots`` for
+#: every role/task, so it is NOT repeated here.
+TASK_SCOPED_COLD_START: dict = {
+    ("deliver", "close"): [  # emit a deliver-close-verdict (no plan-authoring needed)
+        ("role-cards/deliver-agent.md", "role_card"),
+        ("templates/deliver-close-taxonomy.md", "briefing"),
+    ],
+}
+
 #: CONDITIONAL hard-constraint source (NOT in the skills-off baseline above). All five
 #: role cards mandate loading ``process/role-skill-model.md`` when the role's skills are
 #: active (acceptance-agent.md:253, dev-agent.md:156, research-agent.md:181,
@@ -220,18 +239,27 @@ def size_load_set(roots: list, *, repo_root: str) -> dict:
     }
 
 
-def role_cold_start_roots(role: str, *, skills_active: bool = False) -> list:
+def role_cold_start_roots(role: str, task_kind: str = None, *,
+                          skills_active: bool = False) -> list:
     """The FRAMEWORK-STATIC cold-start roots for ``role`` as ``(rel, purpose)`` pairs:
     the governance trio (§1.2 steps 1-3) + role card (step 6) + per-role §2 briefing list.
     When ``skills_active`` (the role's effective skill set is non-empty) the CONDITIONAL
     constraint source ``process/role-skill-model.md`` (§4 boundary constraints) is appended.
 
-    SINGLE SOURCE OF TRUTH for both the WP-0 sizer and the WP-7 ``load_graph_hash`` — so a
-    future cold-start swap (e.g. WP-2's constitution-core) is edited in ONE place and BOTH
-    the byte baseline and the audit fingerprint track it together (no drift)."""
+    ``task_kind`` (WP-5A) is the spawn's stable ``schema_key`` literal. When ``(role,
+    task_kind)`` is in ``TASK_SCOPED_COLD_START`` the role's briefing set is REPLACED by the
+    narrower task-scoped set (the governance trio is still prepended). FAIL-CLOSED: ``None``,
+    an unknown task_kind, or a known-but-unscoped one (e.g. ``deliver_plan``) falls through to
+    the FULL ``ROLE_COLD_START[role]`` — a task NEVER defaults into a narrow path.
+
+    SINGLE SOURCE OF TRUTH for the WP-0 sizer, the WP-7 ``load_graph_hash``, AND the driver's
+    Close cold-start directive — so a cold-start change is edited in ONE place and the byte
+    baseline, the audit fingerprint, and the dispatched directive track it together (no drift)."""
     if role not in ROLE_COLD_START:
         raise KeyError(f"unknown role {role!r}; known: {', '.join(ROLES)}")
-    roots = list(GOVERNANCE_TRIO) + list(ROLE_COLD_START[role])
+    scoped = TASK_SCOPED_COLD_START.get((role, task_kind))
+    role_set = scoped if scoped is not None else ROLE_COLD_START[role]
+    roots = list(GOVERNANCE_TRIO) + list(role_set)
     # WP-4B: Acceptance no longer cold-starts process/role-skill-model.md — its §4 boundary + §6
     # skill-packaging rules are projected INLINE via the acceptance-kernel (embedded in the projected
     # acceptance prompt), and the §11 conditional load is retired. Other roles still load it when
@@ -241,7 +269,8 @@ def role_cold_start_roots(role: str, *, skills_active: bool = False) -> list:
     return roots
 
 
-def cold_start_load_graph_hash(role: str, *, repo_root: str = REPO_ROOT_DEFAULT,
+def cold_start_load_graph_hash(role: str, task_kind: str = None, *,
+                               repo_root: str = REPO_ROOT_DEFAULT,
                                skills_active: bool = False) -> tuple:
     """WP-7: a content fingerprint of ``role``'s framework-static cold-start governance/
     kernel set. Resolves the cold-start roots (``role_cold_start_roots``) via the SAME
@@ -251,6 +280,12 @@ def cold_start_load_graph_hash(role: str, *, repo_root: str = REPO_ROOT_DEFAULT,
     otherwise audit-NEUTRAL Dev/Review/Close/Research spawn's governance version
     ledger-recordable (their per-spawn ``input_hash`` is prompt-only).
 
+    ``task_kind`` (WP-5A) is the spawn's stable ``schema_key`` literal; it (a) selects the
+    task-scoped cold-start roots (Close loads a NARROWER set than Deliver-plan) and (b) is
+    BOUND into the hash basis when present, so the fingerprint binds role + task_kind + the
+    actual cold-start roots + content (HARD-CONSTRAINT C). ``None`` (an unscoped/full load)
+    is the pre-WP-5A behavior and leaves the basis — and the hash — byte-identical.
+
     Returns ``(load_graph_hash, missing)`` where ``load_graph_hash`` is
     ``"sha256:" + sha256(...)[:16]`` (the same shape as the per-spawn ``input_hash`` it
     sits beside) and ``missing`` is the list of absent MANDATORY cold-start roots (drift).
@@ -258,31 +293,37 @@ def cold_start_load_graph_hash(role: str, *, repo_root: str = REPO_ROOT_DEFAULT,
     AUDIT-ONLY: this is NOT the Acceptance §3.5b reuse hash. Acceptance reuse is governed
     by ``acceptance_input_hash`` + the resolver graph; ``load_graph_hash`` NEVER substitutes
     for resolver binding on any verdict-affecting input (design spec §E LOAD-CLOSURE)."""
-    roots = role_cold_start_roots(role, skills_active=skills_active)
+    roots = role_cold_start_roots(role, task_kind, skills_active=skills_active)
     res = size_load_set(roots, repo_root=repo_root)
     identity = [{k: v for k, v in g.items() if k != "bytes"} for g in res["files"]]
-    basis = json.dumps({"role": role, "cold_start_graph": identity},
-                       sort_keys=True, separators=(",", ":"))
+    basis_obj = {"role": role, "cold_start_graph": identity}
+    if task_kind is not None:
+        basis_obj["task_kind"] = task_kind
+    basis = json.dumps(basis_obj, sort_keys=True, separators=(",", ":"))
     h = "sha256:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
     return h, res["missing"]
 
 
-def size_role(role: str, *, repo_root: str = REPO_ROOT_DEFAULT,
+def size_role(role: str, task_kind: str = None, *, repo_root: str = REPO_ROOT_DEFAULT,
               adopter_root: str = None, skills_active: bool = False) -> dict:
     """Cold-start size for ``role``. ALWAYS sizes the FRAMEWORK-static set (governance
     trio §1.2 1-3 + role card §1.2 step 6 + per-role briefing §2). When ``adopter_root``
     is given, ALSO sizes the ADOPTER-static set (§1.2 steps 4-5). The RUN-DYNAMIC members
     (§2, no fixed path) are enumerated in ``dynamic_unsized`` — declared, never dropped.
     ``skills_active`` additionally counts the CONDITIONAL ``role-skill-model.md`` (default
-    False keeps the skills-off baseline byte-identical). Read-only.
+    False keeps the skills-off baseline byte-identical). ``task_kind`` (WP-5A) sizes the
+    TASK-SCOPED set for a task that gets a narrower cold-start (e.g. ``size_role("deliver",
+    "close")`` is the Close-scoped size); ``None`` sizes the full role set (default,
+    byte-identical to pre-WP-5A). Read-only.
 
-    Returns ``{role, files, by_purpose, framework_bytes, adopter_bytes, total_bytes,
-    est_tokens, missing, dynamic_unsized}``. ``adopter_bytes`` is None when no
+    Returns ``{role, task_kind, files, by_purpose, framework_bytes, adopter_bytes,
+    total_bytes, est_tokens, missing, dynamic_unsized}``. ``adopter_bytes`` is None when no
     ``adopter_root`` was supplied (= adopter-static not measured, not zero)."""
-    fw = size_load_set(role_cold_start_roots(role, skills_active=skills_active),
+    fw = size_load_set(role_cold_start_roots(role, task_kind, skills_active=skills_active),
                        repo_root=repo_root)
     out = {
         "role": role,
+        "task_kind": task_kind,
         "files": list(fw["files"]),
         "by_purpose": dict(fw["by_purpose"]),
         "framework_bytes": fw["total_bytes"],
@@ -356,12 +397,17 @@ def main(argv=None) -> int:
                          "docs/current/adoption-state.md (§1.2 steps 4-5)")
     ap.add_argument("--role", choices=ROLES,
                     help="size a single role (default: all roles)")
+    ap.add_argument("--task-kind", default=None,
+                    help="WP-5A: size a task-scoped cold-start set (e.g. --role deliver "
+                         "--task-kind close); requires --role. Unknown/omitted = full role set.")
     ap.add_argument("--json", action="store_true",
                     help="emit JSON instead of the text table")
     args = ap.parse_args(argv)
 
+    if args.task_kind and not args.role:
+        ap.error("--task-kind requires --role")
     if args.role:
-        sizes = {args.role: size_role(args.role, repo_root=args.repo_root,
+        sizes = {args.role: size_role(args.role, args.task_kind, repo_root=args.repo_root,
                                       adopter_root=args.adopter_root)}
     else:
         sizes = size_all_roles(repo_root=args.repo_root, adopter_root=args.adopter_root)

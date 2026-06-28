@@ -841,14 +841,17 @@ class Driver:
             )
 
     # ----- the spawn boundary (driver → adapter → schema-valid verdict) ----- #
-    def _cold_start_load_graph_hash(self, role: str,
-                                    skills_active: bool) -> Optional[str]:
+    def _cold_start_load_graph_hash(self, role: str, skills_active: bool,
+                                    task_kind: Optional[str] = None) -> Optional[str]:
         """WP-7 (observation-only): the ``load_graph_hash`` for ``role``'s cold-start
         governance/kernel set, resolved against the FRAMEWORK root (where governance/,
         role-cards/, process/ live — the same root ``_acceptance_resolver_graph`` derives).
         ``skills_active`` (the role's effective skills are non-empty) folds in the
         CONDITIONAL ``process/role-skill-model.md`` so a change to a conditionally-loaded
-        constraint source is still fingerprinted.
+        constraint source is still fingerprinted. ``task_kind`` (WP-5A, the spawn's stable
+        ``schema_key``) selects the task-scoped cold-start set (Close loads a narrower set
+        than Deliver-plan) AND is bound into the hash, so the fingerprint binds role +
+        task_kind + the actual cold-start roots + content (HARD-CONSTRAINT C).
 
         BEST-EFFORT + AUDIT-ONLY: a sizing problem must NEVER block a spawn, so any failure
         — no framework root, an unknown role, an unreadable/missing MANDATORY cold-start
@@ -859,10 +862,48 @@ class Driver:
             return None
         try:
             h, missing = load_sizer.cold_start_load_graph_hash(
-                role, repo_root=self.framework_root, skills_active=skills_active)
+                role, task_kind, repo_root=self.framework_root,
+                skills_active=skills_active)
         except (KeyError, OSError, ValueError):
             return None
         return None if missing else h
+
+    def _task_scoped_coldstart_directive(self, role: str, task_kind: str) -> str:
+        """WP-5A: an authoritative TASK-SCOPED COLD-START directive for a task whose
+        cold-start set is NARROWER than the role's full set (currently only deliver/close).
+        RENDERED from load_sizer — the SAME single source the byte sizer and the WP-7
+        ``load_graph_hash`` use — so the dispatched directive can never drift from the
+        measured/fingerprinted set. The task identity is the stable ``schema_key``; the
+        directive is NEVER derived from prompt text.
+
+        FAIL-CLOSED: returns "" when ``(role, task_kind)`` is NOT task-scoped (an unknown/
+        ``None``/unscoped task — e.g. ``deliver_plan``) so the agent simply follows its full
+        role-card cold-start. A directive is emitted ONLY when there is a genuine narrowing,
+        and it routes any insufficiency to a HALT (no silent on-demand fallback)."""
+        try:
+            scoped = load_sizer.role_cold_start_roots(role, task_kind)
+            full = load_sizer.role_cold_start_roots(role, None)
+        except (KeyError, ValueError):
+            return ""
+        scoped_paths = {p for p, _ in scoped}
+        dropped = [p for p, _ in full if p not in scoped_paths]
+        if not dropped:
+            return ""  # not narrowed ⇒ no directive ⇒ full role-card cold-start
+        retained = [p for p, purpose in scoped if purpose == "briefing"]
+        lines = [f"[TASK-SCOPED COLD-START — this is a `{task_kind}` task]",
+                 "Your cold-start load set is SCOPED to this task. Beyond the always-load "
+                 "kernel trio (constitution-core + authoring-kernel + context_briefing), this "
+                 "role card, and the adopter AGENTS.md + docs/current/adoption-state.md, load "
+                 "ONLY these briefing docs:"]
+        lines += [f"  - {p}" for p in retained]
+        lines.append(f"Do NOT load these — they are Deliver-plan/decompose-only briefing docs, "
+                     f"not needed for this `{task_kind}` task:")
+        lines += [f"  - {p}" for p in dropped]
+        lines.append("If you find you GENUINELY need one of the not-loaded docs to render a "
+                     "correct, honest verdict, do NOT guess — HALT and report the insufficiency. "
+                     "(The full constitution.md / doc_governance.md remain available on-demand "
+                     "per their existing triggers.)")
+        return "\n".join(lines) + "\n\n"
 
     def _spawn(self, role: str, prompt: str, schema_key: Optional[str],
                *, lessons_block: Optional[str] = None) -> dict:
@@ -905,9 +946,12 @@ class Driver:
         # set (the agent's own mid-session reads — invisible to the prompt-only input_hash),
         # so a kernel/governance swap on an otherwise audit-NEUTRAL Dev/Review/Close/Research
         # spawn is recorded on the Audit Spine. CONDITIONAL role-skill-model.md is folded in
-        # when the role's effective skills are active. Best-effort (None on any read problem);
+        # when the role's effective skills are active. WP-5A: the spawn's stable ``schema_key``
+        # is the task_kind, so a task-scoped cold-start (e.g. Close loads a narrower set than
+        # Deliver-plan) is fingerprinted distinctly. Best-effort (None on any read problem);
         # AUDIT-ONLY — not the Acceptance §3.5b reuse hash.
-        load_graph_hash = self._cold_start_load_graph_hash(role, bool(effective.skills))
+        load_graph_hash = self._cold_start_load_graph_hash(
+            role, bool(effective.skills), task_kind=schema_key)
 
         # A network grant is explicit role configuration. Record it on the Audit
         # Spine BEFORE the spawn so it is never silent, even if the spawn then
@@ -1941,7 +1985,13 @@ class Driver:
 
     def _step_close(self) -> dict:
         lessons = self._lessons_block("deliver")
-        prompt = (lessons
+        # WP-5A: Close is the same `deliver` role as Deliver-plan but a distinct task
+        # (schema_key="close"). Inject the authoritative task-scoped cold-start directive
+        # so the live agent skips the 9 Deliver-plan-only briefing docs (the directive is
+        # part of the prompt → recorded in input_hash; the matching narrowed load set is
+        # what the WP-7 load_graph_hash fingerprints). HALT-on-insufficiency, never guess.
+        directive = self._task_scoped_coldstart_directive("deliver", "close")
+        prompt = (lessons + directive
                   + f"Close sub-sprint {self.state.subsprint_id}. "
                     f"Emit a deliver-close-verdict.")
         verdict = self._spawn("deliver", prompt, schema_key="close",
@@ -3822,7 +3872,8 @@ class Driver:
         # §3.5b reuse hash, computed separately over prompt + resolver graph); it never
         # substitutes for resolver binding on a verdict-affecting input (design §E).
         load_graph_hash = self._cold_start_load_graph_hash(
-            "acceptance", bool(self._effective_role("acceptance").skills))
+            "acceptance", bool(self._effective_role("acceptance").skills),
+            task_kind="acceptance")
         self.state.spawn_count += 1
         # PERSIST the bumped spawn_count NOW (see _spawn): a resume after a mid-spawn
         # halt must not rewind it and clobber a referenced transcript.

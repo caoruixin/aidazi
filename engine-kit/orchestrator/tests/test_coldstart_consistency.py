@@ -160,6 +160,29 @@ class ColdStartConsistencyTests(unittest.TestCase):
                          "cold-start/load_list still loads a full canonical (use the kernel trio; "
                          "name the full canonical only as on-demand):\n" + "\n".join(offenders))
 
+    # ---- WP-5A: the Close task-scoped cold-start is coherent with the prose ----
+    def test_close_scoped_roots_still_lead_with_kernel_trio(self):
+        # Task-scoping narrows the BRIEFING set only; the governance prefix invariant
+        # (kernel trio, never the full canonical) must hold for the Close set too.
+        roots = ls.role_cold_start_roots("deliver", "close")
+        govs = [os.path.basename(r) for r, p in roots if p == "governance"]
+        self.assertEqual(govs, KERNEL_TRIO, "Close governance prefix drifted from kernel trio")
+        for r, _p in roots:
+            self.assertNotIn(os.path.basename(r), CANONICAL_FULL,
+                             f"Close cold-start must NOT load full canonical {r}")
+
+    def test_deliver_rolecard_acknowledges_task_scoping(self):
+        # The shared deliver role card must NOT silently contradict the orchestrator's Close
+        # directive: it carries a task-scoping note naming the retained close taxonomy.
+        text = _read("role-cards/deliver-agent.md")
+        self.assertIn("TASK-SCOPED COLD-START", text)
+        self.assertIn("deliver-close-taxonomy.md", text)
+
+    def test_context_briefing_deliver_acknowledges_task_scoping(self):
+        text = _read("governance/context_briefing.md")
+        self.assertIn("TASK-SCOPED COLD-START", text)
+        self.assertIn("deliver-close-taxonomy.md", text)
+
     # ---- cross-check: the prose trio and the structural trio are the SAME set ----
     def test_prose_and_structural_trio_are_identical(self):
         structural = set(KERNEL_TRIO)

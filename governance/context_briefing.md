@@ -147,6 +147,7 @@ For producing milestone / sub-sprint plans + close decisions.
 - `aidazi/process/common-detours-and-warnings-typeA.md` (or typeB/typeC) — pitfalls per track.
 - `aidazi/templates/deliver-close-taxonomy.md` — A/B/C/D verdict + subclasses.
 - `aidazi/templates/sprint-objective.md` + `aidazi/templates/milestone-objective.md` + `aidazi/templates/compact-dev-prompt.md` — output templates.
+- **Task-scoping (WP-5A):** a **Close** spawn (`schema_key=close`) follows an authoritative `[TASK-SCOPED COLD-START]` dispatch directive narrowing this to the kernel trio + role card + `deliver-close-taxonomy.md`; Deliver-plan loads the full list (role card §1).
 - Adopter inputs: research brief from gate 1; action_bank.md; handoff.md §0/§1; recent codex-findings.md; if Path 3 — acceptance report + gap brief.
 
 ### §2.3 Dev Agent

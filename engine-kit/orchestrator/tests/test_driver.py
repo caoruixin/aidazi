@@ -459,6 +459,89 @@ class TestCloseTaxonomyCheckpoints(unittest.TestCase):
             self.assertTrue(any("scope_deviation" in c for c in cps), cps)
 
 
+class TestCloseTaskScopedColdStart(unittest.TestCase):
+    """WP-5A: the Close spawn (deliver / schema_key="close") gets a task-scoped cold-start —
+    an authoritative directive injected into the dispatched prompt that drops the 9
+    Deliver-plan-only briefing docs, plus a load_graph_hash fingerprinting the narrowed set.
+    FAIL-CLOSED: no directive for Deliver-plan / unknown / None tasks."""
+
+    DROPPED_9 = {
+        "process/milestone-framework.md", "process/tech-architecture-decision-catalog.md",
+        "process/typeA-runtime-architecture-skeleton.md", "process/artifact-taxonomy.md",
+        "process/post-deployment-iteration.md",
+        "process/common-detours-and-warnings-typeA.md",
+        "templates/sprint-objective.md", "templates/milestone-objective.md",
+        "templates/compact-dev-prompt.md",
+    }
+
+    def test_directive_lists_retained_dropped_and_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            directive = _driver(d)._task_scoped_coldstart_directive("deliver", "close")
+            self.assertIn("TASK-SCOPED COLD-START", directive)
+            self.assertIn("templates/deliver-close-taxonomy.md", directive)  # retained
+            for doc in self.DROPPED_9:
+                self.assertIn(doc, directive)
+            self.assertIn("HALT", directive)
+
+    def test_directive_dropped_set_matches_load_sizer_single_source(self):
+        # The directive is RENDERED from load_sizer, so the dispatched "do not load" set
+        # cannot drift from the measured/fingerprinted narrowing.
+        with tempfile.TemporaryDirectory() as d:
+            directive = _driver(d)._task_scoped_coldstart_directive("deliver", "close")
+            full = {r for r, _ in drv.load_sizer.role_cold_start_roots("deliver")}
+            close = {r for r, _ in drv.load_sizer.role_cold_start_roots("deliver", "close")}
+            self.assertEqual(full - close, self.DROPPED_9)
+            for doc in (full - close):
+                self.assertIn(doc, directive)
+
+    def test_directive_fail_closed_for_plan_none_unknown_and_other_roles(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            self.assertEqual(drv_._task_scoped_coldstart_directive("deliver", "deliver_plan"), "")
+            self.assertEqual(drv_._task_scoped_coldstart_directive("deliver", None), "")
+            self.assertEqual(drv_._task_scoped_coldstart_directive("deliver", "bogus-task"), "")
+            self.assertEqual(drv_._task_scoped_coldstart_directive("review", "close"), "")
+
+    def test_close_prompt_carries_directive_other_roles_do_not(self):
+        # The REAL dispatched close prompt (the as-dispatched transcript) carries the
+        # directive + the 9 drops; dev/review prompts carry NO close directive.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            spawns = [e for e in audit.read_events(drv_.audit_ledger)
+                      if e["type"] == "spawn"]
+            dlv = next(e for e in spawns if e["payload"]["role"] == "deliver")
+            prompt = open(os.path.join(d, dlv["payload"]["prompt_ref"]),
+                          encoding="utf-8").read()
+            self.assertIn("TASK-SCOPED COLD-START", prompt)
+            self.assertIn("deliver-close-taxonomy.md", prompt)
+            for doc in self.DROPPED_9:
+                self.assertIn(doc, prompt)
+            for e in spawns:
+                if e["payload"]["role"] != "deliver":
+                    p = open(os.path.join(d, e["payload"]["prompt_ref"]),
+                             encoding="utf-8").read()
+                    self.assertNotIn("TASK-SCOPED COLD-START", p)
+
+    def test_close_spawn_load_graph_hash_is_close_scoped(self):
+        # The recorded WP-7 fingerprint on the close spawn = the Close-scoped hash, and is
+        # DISTINCT from the full/deliver_plan hash (proving the narrowing is fingerprinted).
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            dlv = next(e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                       if e["type"] == "spawn" and e["payload"]["role"] == "deliver")
+            # Task-scoping composes with the (independent) skills gate — compute the
+            # expected hashes with the SAME skills_active the driver used for deliver.
+            skills_on = bool(drv_._effective_role("deliver").skills)
+            expected_close, _ = drv.load_sizer.cold_start_load_graph_hash(
+                "deliver", "close", repo_root=drv_.framework_root, skills_active=skills_on)
+            full_hash, _ = drv.load_sizer.cold_start_load_graph_hash(
+                "deliver", "deliver_plan", repo_root=drv_.framework_root, skills_active=skills_on)
+            self.assertEqual(dlv["load_graph_hash"], expected_close)
+            self.assertNotEqual(dlv["load_graph_hash"], full_hash)
+
+
 class TestRealAdaptersGatedOff(unittest.TestCase):
     """The real claude_code / headless I/O paths must refuse to run unless
     explicitly enabled — confirming tests never touch network/subprocess."""

@@ -358,5 +358,110 @@ class ColdStartLoadGraphHashTests(unittest.TestCase):
         self.assertGreater(s_on["framework_bytes"], s_off["framework_bytes"])
 
 
+class TaskScopedColdStartTests(unittest.TestCase):
+    """WP-5A: the deliver role serves two tasks (Close / Deliver-plan). Close gets a
+    NARROWER cold-start set keyed on the stable schema_key; Deliver-plan / unknown / None
+    fall through FAIL-CLOSED to the full set; the WP-7 hash binds task_kind + the actual
+    narrowed roots."""
+
+    CLOSE_SET = {  # governance trio + role card + the A/B/C/D close taxonomy ONLY
+        "governance/constitution-core.md", "governance/authoring-kernel.md",
+        "governance/context_briefing.md", "role-cards/deliver-agent.md",
+        "templates/deliver-close-taxonomy.md",
+    }
+    DROPPED_9 = {  # the Deliver-plan-only docs Close stops force-loading (matrix-locked)
+        "process/milestone-framework.md", "process/tech-architecture-decision-catalog.md",
+        "process/typeA-runtime-architecture-skeleton.md", "process/artifact-taxonomy.md",
+        "process/post-deployment-iteration.md",
+        "process/common-detours-and-warnings-typeA.md",
+        "templates/sprint-objective.md", "templates/milestone-objective.md",
+        "templates/compact-dev-prompt.md",
+    }
+
+    def test_close_set_is_exactly_kernel_rolecard_closetaxonomy(self):
+        close = ls.role_cold_start_roots("deliver", "close")
+        self.assertEqual({r for r, _ in close}, self.CLOSE_SET)
+        # governance prefix order preserved (the consistency-gate invariant).
+        self.assertEqual([os.path.basename(r) for r, p in close if p == "governance"],
+                         ["constitution-core.md", "authoring-kernel.md", "context_briefing.md"])
+
+    def test_close_is_strict_subset_and_drops_exactly_the_nine(self):
+        full = ls.role_cold_start_roots("deliver")
+        close = ls.role_cold_start_roots("deliver", "close")
+        full_paths, close_paths = {r for r, _ in full}, {r for r, _ in close}
+        self.assertTrue(close_paths < full_paths)
+        self.assertEqual(full_paths - close_paths, self.DROPPED_9)
+
+    def test_fail_closed_unscoped_and_unknown_get_full_set(self):
+        full = ls.role_cold_start_roots("deliver")
+        self.assertEqual(ls.role_cold_start_roots("deliver", "deliver_plan"), full)
+        self.assertEqual(ls.role_cold_start_roots("deliver", None), full)
+        self.assertEqual(ls.role_cold_start_roots("deliver", "totally-unknown-task"), full)
+        # A non-deliver role is unaffected by any task_kind (no scoping entry).
+        self.assertEqual(ls.role_cold_start_roots("review", "close"),
+                         ls.role_cold_start_roots("review"))
+
+    def test_close_still_appends_role_skill_model_when_skills_active(self):
+        # Task-scoping narrows the briefing set; it does NOT touch the skills gate.
+        close_on = ls.role_cold_start_roots("deliver", "close", skills_active=True)
+        self.assertIn(ls.ROLE_SKILL_MODEL, close_on)
+
+    def _stub_full_deliver(self, root):
+        for rel, _ in ls.role_cold_start_roots("deliver"):
+            _write(root, rel, (rel + " v1\n").encode("utf-8"))
+
+    def test_hash_binds_task_kind_close_distinct_from_plan(self):
+        with tempfile.TemporaryDirectory() as root:
+            self._stub_full_deliver(root)
+            h_close, m1 = ls.cold_start_load_graph_hash("deliver", "close", repo_root=root)
+            h_plan, m2 = ls.cold_start_load_graph_hash("deliver", "deliver_plan", repo_root=root)
+            h_none, _ = ls.cold_start_load_graph_hash("deliver", repo_root=root)
+            self.assertEqual(m1, []); self.assertEqual(m2, [])
+            self.assertNotEqual(h_close, h_plan)         # narrower roots + bound task_kind
+            self.assertNotEqual(h_plan, h_none)          # task_kind binds even at full roots
+
+    def test_none_task_kind_hash_byte_identical_to_pre_wp5a(self):
+        # Conditional binding: a None/unscoped spawn (dev/research) omits task_kind from the
+        # basis, so its hash is byte-identical to the pre-WP-5A value (no churn for them).
+        with tempfile.TemporaryDirectory() as root:
+            for rel, _ in ls.role_cold_start_roots("dev"):
+                _write(root, rel, (rel + " v1\n").encode("utf-8"))
+            res = ls.size_load_set(ls.role_cold_start_roots("dev"), repo_root=root)
+            identity = [{k: v for k, v in g.items() if k != "bytes"} for g in res["files"]]
+            import json as _json
+            import hashlib as _hl
+            legacy = "sha256:" + _hl.sha256(_json.dumps(
+                {"role": "dev", "cold_start_graph": identity},
+                sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+            h_dev, _ = ls.cold_start_load_graph_hash("dev", repo_root=root)
+            self.assertEqual(h_dev, legacy)
+
+    def test_close_hash_excludes_dropped_docs(self):
+        # THE proof the close set genuinely excludes the 9: mutating a dropped doc moves the
+        # FULL (deliver_plan) hash but NOT the Close hash; mutating the retained close taxonomy
+        # moves the Close hash.
+        with tempfile.TemporaryDirectory() as root:
+            self._stub_full_deliver(root)
+            h_close1, _ = ls.cold_start_load_graph_hash("deliver", "close", repo_root=root)
+            h_full1, _ = ls.cold_start_load_graph_hash("deliver", "deliver_plan", repo_root=root)
+            _write(root, "process/milestone-framework.md", b"MUTATED plan doc\n")
+            h_close2, _ = ls.cold_start_load_graph_hash("deliver", "close", repo_root=root)
+            h_full2, _ = ls.cold_start_load_graph_hash("deliver", "deliver_plan", repo_root=root)
+            self.assertEqual(h_close1, h_close2, "Close hash must ignore a dropped doc")
+            self.assertNotEqual(h_full1, h_full2, "full set must track the dropped doc")
+            _write(root, "templates/deliver-close-taxonomy.md", b"MUTATED close taxonomy\n")
+            h_close3, _ = ls.cold_start_load_graph_hash("deliver", "close", repo_root=root)
+            self.assertNotEqual(h_close2, h_close3, "Close hash must track the close taxonomy")
+
+    def test_size_role_close_saving_equals_dropped_nine(self):
+        full = ls.size_role("deliver")
+        close = ls.size_role("deliver", "close")
+        self.assertEqual(close["task_kind"], "close")
+        self.assertLess(close["framework_bytes"], full["framework_bytes"])
+        dropped_bytes = sum(g["bytes"] for g in full["files"]
+                            if g["path"] in self.DROPPED_9)
+        self.assertEqual(full["framework_bytes"] - close["framework_bytes"], dropped_bytes)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
