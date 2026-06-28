@@ -28,6 +28,16 @@
         }
       }
     },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ledger_path": {
+          "type": "string",
+          "default": "docs/requirements-ledger.json"
+        }
+      }
+    },
     "autonomy": {
       "type": "object",
       "required": [
@@ -967,5 +977,5 @@
     }
   },
   "x-canonical-source": "mission-charter.schema.json",
-  "x-canonical-sha256": "cdb52d61fb230ce3cf0ab26af2d189a5459cbfa6c857994ea8df103d4cae7e52"
+  "x-canonical-sha256": "8d039693207590040c093d9d7e572993d04d77c3fcf8c9d44c4a2ea1635f99fd"
 }

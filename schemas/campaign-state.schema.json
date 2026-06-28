@@ -27,6 +27,21 @@
       }
     },
     "pending_milestone_advance": {"type": "boolean", "default": false, "description": "Internal: the current milestone is DONE but the cursor has NOT advanced yet — waiting at milestone_merge."},
+    "milestone_outcomes": {
+      "type": "array",
+      "description": "Δ-19 F3 (design §3.5.1). The runner stamps each milestone's TERMINAL close outcome here so scope_report can derive delivery_status deterministically (delivered vs waived-with-reason) — 'delivered' is NOT inferable from cursor position alone (a campaign can advance past a milestone that shipped without an Acceptance pass). Additive; absent ⇒ today's behavior.",
+      "items": {
+        "type": "object",
+        "required": ["milestone_id", "terminal"],
+        "additionalProperties": false,
+        "properties": {
+          "milestone_id": {"type": "string", "description": "The milestone whose terminal outcome this records."},
+          "terminal": {"type": "string", "enum": ["acceptance_pass_authoritative", "acceptance_pass_advisory_ship", "fix_required_ship", "surface_approve_ship", "acceptance_off", "out_of_scope_advance", "not_shipped"], "description": "The terminal close path (design §3.5.1 table). delivered ⟸ acceptance_pass_*; waived ⟸ fix_required_ship/surface_approve_ship/acceptance_off/out_of_scope_advance; not_shipped ⟸ rejected/aborted."},
+          "pause_reason": {"type": "string", "description": "The last unit's pause_reason that produced this terminal outcome (audit linkage)."},
+          "decision_ref": {"type": "string", "description": "Pointer to the recorded human decision (checkpoint/decision file) when the close required one."}
+        }
+      }
+    },
     "cursor": {
       "type": "object",
       "additionalProperties": false,

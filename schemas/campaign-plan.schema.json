@@ -10,7 +10,48 @@
     "campaign_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "description": "Path-safe id (no separators, no leading dot) — interpolated into the campaign audit ledger filename; the runner rejects an unsafe value fail-closed."},
     "goal": {"type": "string", "minLength": 1, "description": "The top-level user-facing goal (以终为始) the campaign decomposes into the milestone backlog."},
     "delivery_mode": {"type": "string", "const": "campaign", "description": "Explicit topology marker. Campaign plans are executable only when the adopter has opted into delivery_mode=campaign; default human-facing delivery remains single_milestone through the Control Plane + charter.yaml."},
-    "signed_by_human": {"type": "boolean", "default": false, "description": "P-B campaign-tier gate (campaign_plan_signoff): the Customer signs the milestone backlog before the runner drives it (design §5.1). The runner PAUSES at campaign_plan_signoff until this is true. Enforced by the campaign runner, not the charter validator."},
+    "signed_by_human": {"type": "boolean", "default": false, "description": "P-B campaign-tier gate (campaign_plan_signoff): the Customer signs the milestone backlog before the runner drives it (design §5.1). The runner PAUSES at campaign_plan_signoff until this is true. Enforced by the campaign runner, not the charter validator. LEGACY/pre-F1: a bare top-level signed_by_human:true with NO `signoff` block is treated as pre-F1 (missing snapshot) ⇒ one re-sign required (Δ-19 §3.3.1). When a `signoff` block is present it is authoritative and this flag is ignored."},
+    "signoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Δ-19 F1/G1/G4 (design §3.3.1). The signed RESOLVED-scope SNAPSHOT that gives campaign_plan_signoff integrity, so a plan cannot be edited after signoff (remove a milestone, change a future covers_req_ids, or flip an inheriting milestone's resolved acceptance via a charter-default change) while staying 'signed'. OPTIONAL so pre-F1 plans still validate. The runner recomputes the LIVE resolved scope-envelope + hash at load and honors 'signed' ONLY when stored signed_scope_hash == the live hash; a mismatch ⇒ stale ⇒ re-pause at campaign_plan_signoff (re-sign). It adds NO new checkpoint id (B5).",
+      "properties": {
+        "signed_by_human": {"type": "boolean", "default": false, "description": "Customer signed THIS snapshot."},
+        "signer": {"type": "string", "description": "Who signed."},
+        "signed_at": {"type": "string", "description": "ISO-8601 sign time."},
+        "charter_ref": {"type": "string", "description": "Path/ref of the charter resolved against at sign time."},
+        "charter_hash": {"type": "string", "description": "Hash of the charter at sign time (G1: a charter-default change that flips an inheriting milestone's resolved acceptance mode changes the envelope ⇒ stale)."},
+        "scope_envelope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["goal", "milestones"],
+          "description": "The RESOLVED scope at sign time (G4: stored, not just hashed, so prior signed coverage is reconstructable for stale-signoff rendering).",
+          "properties": {
+            "goal": {"type": "string"},
+            "milestones": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "objective", "covers_req_ids", "subsprint_sequence", "depends_on", "resolved_functional_acceptance", "acceptance_bar"],
+                "properties": {
+                  "id": {"type": "string"},
+                  "objective": {"type": "string"},
+                  "covers_req_ids": {"type": "array", "items": {"type": "string"}},
+                  "subsprint_sequence": {"type": "array", "items": {"type": "string"}},
+                  "depends_on": {"type": "array", "items": {"type": "string"}},
+                  "resolved_functional_acceptance": {"type": "object", "additionalProperties": false, "required": ["mode", "source"], "properties": {"mode": {"type": "string"}, "source": {"type": "string"}}, "description": "The RESOLVED acceptance class {mode, source} (not the literal functional_acceptance which may be absent and inherit the charter default)."},
+                  "acceptance_bar": {"type": ["string", "null"]}
+                }
+              }
+            }
+          }
+        },
+        "signed_scope_hash": {"type": "string", "description": "sha256(canonical_json(H)) per the exact hash spec in design §3.3.1 (H = {version:'v1', campaign_id, goal, charter_ref, charter_hash, milestones:[{id,objective,covers_req_ids,subsprint_sequence,depends_on,resolved_functional_acceptance:{mode,source},acceptance_bar},…]}; canonical JSON = UTF-8, sorted keys, no insignificant whitespace, absent arrays normalized to [])."}
+      },
+      "if": {"required": ["signed_by_human"], "properties": {"signed_by_human": {"const": true}}},
+      "then": {"required": ["signed_by_human", "signer", "signed_at", "charter_ref", "charter_hash", "scope_envelope", "signed_scope_hash"]}
+    },
     "budget": {
       "type": "object",
       "additionalProperties": false,
@@ -65,6 +106,7 @@
         "properties": {
           "id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "description": "Path-safe milestone id (it + the sub-sprint id form the per-unit Driver run dir/loop_id)."},
           "objective": {"type": "string", "minLength": 1},
+          "covers_req_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^REQ-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"}, "description": "Δ-19 (design §3.4). The ONLY writable requirement->milestone coverage map: the Deliver Agent fills it, campaign_plan_signoff signs it. OPTIONAL (every existing plan still validates). Entries are unique + REQ-id-patterned; in Phase 1 a REQ is covered by at-most-one milestone (cross-milestone uniqueness enforced by campaign.py semantic check, not JSON Schema). scope_report derives delivery_status from this signed map joined with the ledger + campaign-state; the ledger never stores coverage."},
           "acceptance_bar": {"type": "string", "description": "One-line statement of what Acceptance must confirm at this milestone's close."},
           "functional_acceptance": {"type": "string", "enum": ["static", "browser_e2e"], "description": "P-C. Per-milestone acceptance class. NO schema default (absence stays distinguishable from explicit static). Precedence in campaign.derive_milestone_context: an explicit value (incl. 'static') OVERRIDES; absent ⇒ INHERITS charter tooling.acceptance.functional.mode; else static. browser_e2e fires the orchestrator-owned browser evidence gate at this milestone's close. The projected {mode, source} is recorded in derived-context.json. archive/2026-06-20-pc-browser-e2e-design.md §4.2."},
           "subsprint_sequence": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}, "description": "Ordered (path-safe) sub-sprint ids, UNIQUE within a milestone (the follow-up id-novelty check + per-unit loop_id require it). May be authored up front (Deliver) or filled by the per-milestone full_chain_guided decompose (delivery-loop §4.2.4-G)."},
