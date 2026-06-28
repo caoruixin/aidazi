@@ -28,7 +28,14 @@ mission:
   goal: <one-line user-facing goal — what Customer reads at gate 2>
 
 autonomy:
-  level: human_in_the_loop  # human_in_the_loop | human_on_the_loop | fully_autonomous_within_budget
+  # DEFAULT = human_on_the_loop (autonomous-close preset, 2026-06-29). The loop runs itself
+  # — dev -> review -> close -> advance — with bounded auto-fix (auto_fix_iteration below), and
+  # HALTs only at fail-closed boundaries + the human authority gates. With acceptance.mode:
+  # advisory (below) an Acceptance pass still HALTs once at advisory_acceptance_pass_signoff for a
+  # single human ship sign-off; it does NOT auto-ship (authoritative auto-ship additionally needs
+  # acceptance.mode: auto + a calibrated judge + level: fully_autonomous_within_budget).
+  # Dial back to human_in_the_loop for fully manual / paste-driven gating.
+  level: human_on_the_loop  # human_in_the_loop | human_on_the_loop | fully_autonomous_within_budget
   approved_scope:
     subsprint_sequence:
       - <sprint-id-1>
@@ -45,10 +52,17 @@ autonomy:
       - <repo-path-A>
   auto_pass_rules:
     clean_pass_auto_advance: false
+    # Bounded auto dev<->review fix iteration — part of the human_on_the_loop autonomous-close
+    # default (2026-06-29). Removes the most common mid-loop human halt while staying bounded
+    # (max_rounds + severity cap). Set enabled: false to require a human confirm on every Review
+    # fix_required.
     auto_fix_iteration:
-      enabled: false
-      max_rounds: 0
+      enabled: true
+      max_rounds: 2
       only_if_findings_severity_at_most: P2
+    # adaptive_insert stays DISABLED here: gap-driven Acceptance->Deliver follow-up (Track 2 P2.0)
+    # is a separate, pre-authorized in-envelope path that requires its own Constitution amendment
+    # before it may be enabled. Do not enable adaptive_insert as part of the autonomy default.
     adaptive_insert:
       enabled: false
       max_inserted_subsprints: 0
