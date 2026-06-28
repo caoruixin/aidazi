@@ -202,7 +202,7 @@
   notes: 'doc-LOAD instruction; the schema validates charter content, not that the session loaded delivery-loop.md.'
 - id: cb-6-load-delivery-loop-acceptance-mode-on
   anchor: 'governance/context_briefing.md §6'
-  statement: An Acceptance Agent session MUST load process/delivery-loop.md whenever tooling.acceptance.mode != off.
+  statement: An Acceptance verdict session does NOT load process/delivery-loop.md — its delivery-loop judge rules are projected INLINE via the acceptance-kernel (embedded in the acceptance prompt); the §6 delivery-loop trigger is carved out for Acceptance (the Acceptance Agent EXCEPTION).
   roles: [acceptance]
   condition: acceptance_mode_on
   current_enforcement: none-judgment

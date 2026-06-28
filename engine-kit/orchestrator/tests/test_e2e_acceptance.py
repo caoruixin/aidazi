@@ -743,6 +743,41 @@ class ResolverGraphAdopterRoot(unittest.TestCase):
                 "a WP-3 authoring-kernel edit must change the acceptance input hash",
             )
 
+    def test_acceptance_kernel_is_embedded_and_hash_coupled(self):
+        # WP-4B: the acceptance-kernel is EMBEDDED into the projected prompt (self-contained, so the
+        # whole-file delivery-loop / role-skill reads are retired). The embed feeds the prompt — and
+        # hence acceptance_input_hash — so a kernel edit re-invalidates §3.5b reuse.
+        with tempfile.TemporaryDirectory() as fw, tempfile.TemporaryDirectory() as d:
+            _prep(d)
+            for rel, body in (
+                ("schemas/compact/acceptance-verdict.compact.schema.json", "{}\n"),
+                ("governance/acceptance-kernel.md",
+                 "---\nfront: matter\n---\n\n# kernel\nKERNEL-SENTINEL-V1 binding judge rules.\n"),
+            ):
+                path = os.path.join(fw, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as fh:
+                    fh.write(body)
+            drv = D.Driver(
+                _browser_charter(), d, _acceptance_adapters(), loop_id="loop-kernel",
+                clock=_clock(), verdict_schemas=D.load_verdict_schemas())
+            drv.state = D.RunState(loop_id=drv.loop_id, subsprint_id="sprint-001")
+            orig = D._find_schemas_dir
+            D._find_schemas_dir = lambda start=D._ENGINE_KIT_DIR: os.path.join(fw, "schemas")
+            try:
+                sec1 = drv._acceptance_kernel_section()
+                self.assertIn("KERNEL-SENTINEL-V1", sec1)        # kernel body embedded
+                self.assertNotIn("front: matter", sec1)          # YAML front-matter stripped
+                self.assertIn("do NOT separately load", sec1)    # guard against loading the retired docs
+                with open(os.path.join(fw, "governance", "acceptance-kernel.md"), "w") as fh:
+                    fh.write("---\nfront: matter\n---\n\n# kernel\nKERNEL-SENTINEL-V2 changed rules.\n")
+                sec2 = drv._acceptance_kernel_section()
+                self.assertNotEqual(
+                    sec1, sec2, "a kernel edit must change the embedded section (→ prompt → hash)")
+                self.assertIn("KERNEL-SENTINEL-V2", sec2)
+            finally:
+                D._find_schemas_dir = orig
+
     def test_acceptance_binds_compact_verdict_projection_not_canonical(self):
         # WP-1b (§E LOAD-CLOSURE): the Acceptance judge READS the compact verdict projection
         # (the agent-facing loaders point there), so the §3.5b resolver binds

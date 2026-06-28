@@ -333,10 +333,11 @@ Load `process/delivery-loop.md` when ANY of these is true for your session:
 
 - The adopter's charter exists at `<adopter>/charter.yaml` (or path declared in `adoption-state.md`).
 - The task involves authoring, editing, or reasoning about a `mission-charter.yaml`.
-- Your role is Acceptance Agent AND `tooling.acceptance.mode ≠ off`.
 - The task involves resolving a MANDATORY_CHECKPOINT.
 - The task involves scope_envelope_check, F5 evidence pattern, or calibration.
 - A previous step surfaced a §1.7-D breach risk (charter editing MANDATORY_CHECKPOINTS).
+
+**Acceptance Agent EXCEPTION:** an Acceptance verdict session does NOT load `process/delivery-loop.md` — its delivery-loop judge rules (F5 evidence, calibration/authority, the mandatory checkpoints, the anti-patterns) are projected INLINE via the acceptance-kernel (see `role-cards/acceptance-agent.md` §1). None of the triggers above route an Acceptance verdict session to the whole doc; if the projection is insufficient it HALTs for refinement rather than reading the canonical.
 
 If none of the above is true, you are in pure human-paste mode (manual flow). The 5-role chain still applies; the orchestrator implementation does not. `process/delivery-loop.md` §4.2.1 explains this conditional adoption.
 

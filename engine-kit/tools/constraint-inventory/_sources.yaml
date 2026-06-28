@@ -7,7 +7,7 @@ sources:
 - path: governance/doc_governance.md
   sha256: 0df5b552f21f2b5474c5daec0bc579a9c97e895b5b7a4672e60b04e5502b65cb
 - path: governance/context_briefing.md
-  sha256: 40a84a82eb6d0657b2cc3c2f5c5b5f71ea2d7d910b05b3309cd99f1b0680cbd3
+  sha256: e9dadeed06ac9cddd07fcb2959a8f0774e9649eb3afd0e5a79ed0f18e5f9b28e
 - path: process/delivery-loop.md
   sha256: b1d25ba98c783cae57e9f2c60071829db499a22db656ec40d8d29265162a2dee
 - path: process/role-skill-model.md
@@ -21,4 +21,4 @@ sources:
 - path: role-cards/code-reviewer-agent.md
   sha256: 293a094e032c40f5fe9dd88cde9b203f1126f7a7aab59babd6120de0447fc551
 - path: role-cards/acceptance-agent.md
-  sha256: d7b74fd695d25024db43929181e2cd023ccba727eba8ed25e5ee2837f979572e
+  sha256: 9e3961475dc24a1a91386602e9a599ba9cf7dfd9dc7ac9fb2d2114f128464dbf

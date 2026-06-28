@@ -37,7 +37,7 @@ When invoked, before any verdict:
 1. Load `aidazi/governance/constitution-core.md`, `aidazi/governance/authoring-kernel.md`, `aidazi/governance/context_briefing.md` (the always-load chain; load the full `constitution.md` / `doc_governance.md` on-demand per their triggers).
 2. Load `<adopter>/AGENTS.md` and `<adopter>/docs/current/adoption-state.md`.
 3. Load this role card.
-4. Load `aidazi/process/delivery-loop.md` if your session is orchestrator-driven (the orchestrator's spawn function will have set this expectation).
+4. Do NOT load `aidazi/process/delivery-loop.md` — its Acceptance judge rules (F5 evidence, calibration/authority, the mandatory checkpoints, and the anti-patterns) are projected INLINE into your acceptance prompt via the acceptance-kernel (retired for Acceptance). If that projection is insufficient, HALT for prompt refinement rather than read the canonical.
 5. Verify your spawn isolation (§3 below).
 6. Verify your calibration status (§4 below).
 7. Load the Research brief at the path the orchestrator (or the human pasting your activation) provided. Verify the `customer_signed: true` front-matter; verify the signed-version date matches the milestone start.
@@ -250,7 +250,7 @@ A "no" to any of the above = halt; do not emit.
 
 ## §11 Role skills & intra-role delegation (Constitution §3.4 invariant #6)
 
-Per `process/role-skill-model.md` (load it if `charter.tooling.acceptance.skills` is non-empty):
+The Constitution §3.4 invariant #6 boundary (role-skill §4) and the §6 skill-packaging rules are projected INLINE into your acceptance prompt via the acceptance-kernel; do NOT load `process/role-skill-model.md` (retired for Acceptance — if the projection is insufficient, HALT for refinement rather than read it):
 
 - You MAY load **evidence-reading skills only** — trace parsing, eval-artifact navigation, log summarization. The judgment itself (positive shape / anti-pattern / anchor-phrase reasoning per §5) is NOT delegable to a skill or sub-agent; a packaged "auto-judge" that returns verdicts is a different judge identity, not a skill.
 - **Calibration covers your skill set** (Constitution §3.6 + §3.4 invariant #6): the calibration identity is (agent_kind × model × skill set). If `charter.tooling.acceptance.skills` differs from what the calibration run recorded — any skill added, removed, or updated — calibration is invalidated; treat as §4 `uncalibrated` and flag for re-calibration.

@@ -64,6 +64,37 @@ Load `{dl}` when ANY of these is true for your session:
 """
 
 
+_CTX_FULL_TMPL = """## §2 Briefing
+
+### §2.5 Acceptance Agent
+
+For producing `docs/acceptance-reports/<scope>-acceptance-report.md`.
+
+- `aidazi/role-cards/acceptance-agent.md` — your activation prompt.
+- `aidazi/templates/compact-acceptance-prompt.md` — output template + judging discipline.
+- Adopter inputs: dev evidence (trace artifacts per `process/delivery-loop.md` §4.2.6).
+{s25_extra}
+Tool whitelist: Read, Grep, Glob.
+
+### §2.6 Deliver Agent
+
+body
+
+## §6 Δ-18 Delivery Loop trigger
+
+Load `{dl}` when ANY of these is true for your session:
+
+- The task involves resolving a MANDATORY_CHECKPOINT.
+{carveout}{s6_extra}
+
+## §7 next
+"""
+
+_CARVEOUT_LINE = ("\n**Acceptance Agent EXCEPTION:** an Acceptance verdict session does NOT load "
+                  "`process/delivery-loop.md` — projected INLINE via the acceptance-kernel (see "
+                  "`role-cards/acceptance-agent.md` §1).\n")
+
+
 @unittest.skipIf(yaml is None, "PyYAML not installed")
 class _SrcRepoMixin(unittest.TestCase):
     def _src_repo(self, *, step_paths, dl="process/delivery-loop.md"):
@@ -76,6 +107,17 @@ class _SrcRepoMixin(unittest.TestCase):
             _ROLE_CARD_TMPL.format(steps=steps), encoding="utf-8")
         (root / "governance" / "context_briefing.md").write_text(
             _CTX_TMPL.format(dl=dl), encoding="utf-8")
+        return root
+
+    def _src_repo_full(self, *, step_paths=("aidazi/process/delivery-loop.md",),
+                       s25_extra="", s6_extra="", carveout=True, dl="process/delivery-loop.md"):
+        """A richer fixture whose context_briefing.md carries BOTH a §2.5 Acceptance per-role briefing
+        list AND a §6 delivery-loop trigger with the WP-4B Acceptance carve-out — so the §2.5 / §6
+        non-vacuity of the drift-guard can be exercised."""
+        root = self._src_repo(step_paths=list(step_paths), dl=dl)
+        (root / "governance" / "context_briefing.md").write_text(
+            _CTX_FULL_TMPL.format(dl=dl, s25_extra=s25_extra, s6_extra=s6_extra,
+                                  carveout=_CARVEOUT_LINE if carveout else ""), encoding="utf-8")
         return root
 
 
@@ -104,32 +146,26 @@ class RealTreeTests(unittest.TestCase):
 
 @unittest.skipIf(yaml is None, "PyYAML not installed")
 class ClosureStateTests(unittest.TestCase):
-    """WP-4A is UNWIRED: assert the EXACT pending set, and that strict closure is not yet satisfiable."""
+    """WP-4B WIRED: the Acceptance LOAD-CLOSURE invariant now HOLDS — every Acceptance-reachable load
+    is inlined (kernel embedded in the projected prompt) / resolver-bound / HALT-routed, with no
+    unbound verdict-affecting read and no pending transition."""
 
-    def test_known_pending_set_is_exactly_as_expected(self):
-        cs = alc.closure_state(REPO)
-        self.assertFalse(cs["closed"])
-        self.assertFalse(cs["kernel_embedded"])
-        targets = sorted(p["target"] for p in cs["pending"])
-        self.assertEqual(targets, sorted([
-            "data:prior_acceptance_report",          # harness-surfaced gap (bind in WP-4B)
-            "templates/compact-acceptance-prompt.md",  # §2.5 harness-surfaced gap (bind in WP-4B)
-            "process/delivery-loop.md",              # §1 step 4 trigger (INLINED target)
-            "process/delivery-loop.md",              # §6 trigger (INLINED target)
-            "process/role-skill-model.md",           # §11 conditional trigger (INLINED target)
-            "governance/acceptance-kernel.md",       # not embedded into the projected prompt yet
-        ]))
-        # Both retired files: trigger still live AND not resolver-bound today (unbound on-demand read).
-        for f in alc.RETIRED_FILES:
-            self.assertTrue(cs["retired_files"][f]["trigger_live"])
-            self.assertFalse(cs["retired_files"][f]["resolver_bound"])
-
-    @unittest.expectedFailure
     def test_strict_closure_holds(self):
-        # WP-4B target: every Acceptance-reachable load is inlined / resolver-bound / HALT-routed and
-        # the kernel is embedded. NOT satisfiable in WP-4A (kernel unwired) — expectedFailure keeps the
-        # suite honest without mutating runtime to force green.
-        self.assertTrue(alc.closure_state(REPO)["closed"])
+        cs = alc.closure_state(REPO)
+        self.assertTrue(cs["closed"], msg=f"unexpected pending: {cs['pending']}")
+        self.assertTrue(cs["kernel_embedded"])
+        self.assertEqual(cs["pending"], [])
+
+    def test_retired_files_are_inlined_not_unbound(self):
+        # The two retired whole-file reads: their load triggers are GONE (negated / §6 carve-out) and
+        # they are correctly NOT resolver-bound (their content is inlined into the embedded kernel, so
+        # there is nothing to bind). This is the proof they are not unbound on-demand reads.
+        cs = alc.closure_state(REPO)
+        for f in alc.RETIRED_FILES:
+            self.assertFalse(cs["retired_files"][f]["trigger_live"],
+                             msg=f"{f} load trigger should be retired")
+            self.assertFalse(cs["retired_files"][f]["resolver_bound"],
+                             msg=f"{f} is INLINED, so it should NOT be resolver-bound")
 
 
 @unittest.skipIf(yaml is None, "PyYAML not installed")
@@ -179,6 +215,109 @@ class BidirectionalGuardTests(_SrcRepoMixin):
         errs = alc.check_bidirectional(manifest, root)
         self.assertTrue(any("process/sneaked-in.md" in e and "NOT in the manifest" in e for e in errs),
                         msg=str(errs))
+
+    def test_new_positive_load_in_s25_is_caught(self):
+        # Codex WP-4B-R1 BLOCKING: a NON-bullet-leading positive "Load `X`" added to context_briefing
+        # §2.5 must be caught (the §2.5 parser previously only saw bullet-leading backtick paths, so a
+        # new positive load escaped the drift-guard).
+        root = self._src_repo_full(
+            s25_extra="Load `process/new-s25-positive.md` as an extra Acceptance input.\n")
+        parsed = alc.parse_reachable_loads(root)
+        self.assertIn(("context_briefing_acceptance_role", "process/new-s25-positive.md"), parsed)
+        # A manifest that does not declare it → bidirectional guard fails on the new token.
+        errs = alc.check_bidirectional({"entries": []}, root)
+        self.assertTrue(
+            any("process/new-s25-positive.md" in e and "NOT in the manifest" in e for e in errs),
+            msg=str(errs))
+
+    def test_new_positive_load_in_s6_is_caught_despite_carveout(self):
+        # Codex WP-4B-R1 BLOCKING: the §6 Acceptance carve-out must suppress ONLY the carved token
+        # (process/delivery-loop.md), NOT the whole section — a genuinely NEW positive "Load `Y`" in
+        # §6 must STILL be caught even with the carve-out present.
+        root = self._src_repo_full(
+            carveout=True,
+            s6_extra="Load `process/new-s6-positive.md` for a brand-new reason.\n")
+        parsed = alc.parse_reachable_loads(root)
+        self.assertIn(("context_briefing_delivery_loop", "process/new-s6-positive.md"), parsed)
+        # the carved delivery-loop token is correctly NOT routed to Acceptance
+        self.assertNotIn(("context_briefing_delivery_loop", "process/delivery-loop.md"), parsed)
+        errs = alc.check_bidirectional({"entries": []}, root)
+        self.assertTrue(
+            any("process/new-s6-positive.md" in e and "NOT in the manifest" in e for e in errs),
+            msg=str(errs))
+
+    def test_positive_load_mentioning_retired_word_is_still_caught(self):
+        # Codex WP-4B-R2 BLOCKING: negation is tied to negative-load SYNTAX, not a bare "retired"
+        # word — a POSITIVE "Load `X` ... retired ..." line must NOT be mistaken for a negated load
+        # and must still reach check_bidirectional.
+        root = self._src_repo_full(
+            s6_extra="Load `process/new-s6-retiredword.md` for retired-source compatibility.\n",
+            s25_extra="Load `process/new-s25-retiredword.md` (the legacy reader is retired).\n")
+        parsed = alc.parse_reachable_loads(root)
+        self.assertIn(("context_briefing_delivery_loop", "process/new-s6-retiredword.md"), parsed)
+        self.assertIn(("context_briefing_acceptance_role", "process/new-s25-retiredword.md"), parsed)
+        errs = alc.check_bidirectional({"entries": []}, root)
+        for tok in ("process/new-s6-retiredword.md", "process/new-s25-retiredword.md"):
+            self.assertTrue(any(tok in e and "NOT in the manifest" in e for e in errs), msg=str(errs))
+
+    def test_is_negated_load_requires_negative_syntax_not_just_retired_word(self):
+        # Unit-level proof of the R2 fix: negative-load SYNTAX is negation; a bare "retired" mention
+        # on an otherwise-positive load line is NOT.
+        self.assertTrue(alc._is_negated_load("Do NOT load `x.md`"))
+        self.assertTrue(alc._is_negated_load("an Acceptance session does NOT load `x.md`"))
+        self.assertTrue(alc._is_negated_load("- never load `x.md` here"))
+        self.assertTrue(alc._is_negated_load("you must not load `x.md`"))
+        self.assertFalse(alc._is_negated_load("Load `x.md` for retired-source compatibility."))
+        self.assertFalse(alc._is_negated_load("Load `x.md` (the old reader was retired)."))
+
+    def test_token_load_polarity_is_per_token(self):
+        # Codex WP-4B-R3: negation is PER-TOKEN, not whole-line. A mixed line classifies each token by
+        # its nearest governing 'load' keyword, in either order.
+        self.assertEqual(
+            alc._token_load_polarity("Load `process/new.md`; do NOT load `process/delivery-loop.md`"),
+            {"process/new.md": "positive", "process/delivery-loop.md": "negative"})
+        self.assertEqual(
+            alc._token_load_polarity("do NOT load `process/delivery-loop.md`; Load `process/new2.md`"),
+            {"process/delivery-loop.md": "negative", "process/new2.md": "positive"})
+        # a bullet-leading path / a prose §-citation has no governing 'load' keyword -> None
+        self.assertEqual(alc._token_load_polarity("- `aidazi/x.md` — desc"), {"aidazi/x.md": None})
+        self.assertEqual(alc._token_load_polarity("see `process/y.md` §4.2.6"), {"process/y.md": None})
+
+    def test_mixed_positive_and_negative_load_in_s25_surfaces_positive(self):
+        # Codex WP-4B-R3 BLOCKING: a §2.5 line with BOTH a positive and a negative load must still
+        # surface the positive one (whole-line suppression would drop it).
+        root = self._src_repo_full(
+            s25_extra="Load `process/new-s25-mixed.md`; do NOT load `process/delivery-loop.md`.\n")
+        parsed = alc.parse_reachable_loads(root)
+        self.assertIn(("context_briefing_acceptance_role", "process/new-s25-mixed.md"), parsed)
+        errs = alc.check_bidirectional({"entries": []}, root)
+        self.assertTrue(
+            any("process/new-s25-mixed.md" in e and "NOT in the manifest" in e for e in errs),
+            msg=str(errs))
+
+    def test_mixed_positive_and_negative_load_in_s6_surfaces_positive(self):
+        # Codex WP-4B-R3 BLOCKING: a §6 line carrying BOTH a new positive load AND the delivery-loop
+        # carve-out must surface the positive one; delivery-loop.md stays carved.
+        root = self._src_repo_full(
+            carveout=True,
+            s6_extra="Load `process/new-s6-mixed.md`; do NOT load `process/delivery-loop.md`.\n")
+        parsed = alc.parse_reachable_loads(root)
+        self.assertIn(("context_briefing_delivery_loop", "process/new-s6-mixed.md"), parsed)
+        self.assertNotIn(("context_briefing_delivery_loop", "process/delivery-loop.md"), parsed)
+        errs = alc.check_bidirectional({"entries": []}, root)
+        self.assertTrue(
+            any("process/new-s6-mixed.md" in e and "NOT in the manifest" in e for e in errs),
+            msg=str(errs))
+
+    def test_s6_carveout_is_a_real_per_token_suppression(self):
+        # Non-vacuity of the carve-out itself: WITH the Acceptance carve-out, delivery-loop.md is NOT
+        # an Acceptance-reachable §6 load; WITHOUT it, the §6 trigger header IS caught (proving the
+        # suppression is real and token-specific, not a blanket section drop).
+        with_carve = alc.parse_reachable_loads(self._src_repo_full(carveout=True))
+        without_carve = alc.parse_reachable_loads(self._src_repo_full(carveout=False))
+        key = ("context_briefing_delivery_loop", "process/delivery-loop.md")
+        self.assertNotIn(key, with_carve)
+        self.assertIn(key, without_carve)
 
     def test_stale_manifest_entry_is_caught(self):
         # The manifest declares a parse_token the parser no longer finds → caught.

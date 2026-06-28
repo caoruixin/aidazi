@@ -3566,6 +3566,42 @@ class Driver:
                 "ONLY a human-signed contract (Constitution §3.4 invariant #4)")
         return problems
 
+    def _acceptance_kernel_section(self) -> str:
+        """WP-4B: read the standalone ``governance/acceptance-kernel.md`` projection and return it as a
+        self-contained prompt section embedded into the projected Acceptance prompt. The judge gets the
+        delivery-loop §4.2.x (F5 / calibration / checkpoints / anti-patterns), the role-skill §4/§6
+        boundary, and the six judge-instruction gaps INLINE — so the prompt is self-contained and the
+        whole-file ``process/delivery-loop.md`` + ``process/role-skill-model.md`` reads are retired
+        (Acceptance LOAD-CLOSURE). The embedded text feeds ``acceptance_input_hash`` via the prompt, so
+        a kernel edit re-invalidates §3.5b reuse. Best-effort: a missing kernel (a broken framework
+        deployment) degrades to a marker; the shipped framework always carries the kernel."""
+        base = _find_schemas_dir()
+        repo_root = os.path.dirname(base) if base else None
+        if repo_root:
+            kpath = os.path.join(repo_root, "governance", "acceptance-kernel.md")
+            try:
+                with open(kpath, "r", encoding="utf-8") as fh:
+                    body = fh.read()
+            except OSError:
+                body = None
+            if body:
+                if body.startswith("---"):  # strip YAML front-matter; embed the normative body
+                    end = body.find("\n---", 3)
+                    if end != -1:
+                        body = body[end + 4:]
+                return (
+                    "## Acceptance governance kernel (binding — judge by these rules)\n"
+                    "The delivery-loop §4.2.x (F5 / calibration / checkpoints / anti-patterns), the "
+                    "role-skill §4/§6 boundary, and the judge-instruction discipline are projected "
+                    "INLINE below; do NOT separately load `process/delivery-loop.md` or "
+                    "`process/role-skill-model.md` (retired for Acceptance). If this projection is "
+                    "insufficient, HALT for prompt refinement — never read an unbound file.\n\n"
+                    + body.strip() + "\n\n")
+        return (  # degenerate: framework kernel unreadable (deployment error)
+            "## Acceptance governance kernel\n"
+            "(governance/acceptance-kernel.md is unreadable — surface this as a framework "
+            "deployment error rather than proceeding on an incomplete projection.)\n\n")
+
     def _project_acceptance_prompt(self, ic: dict, evidence_path: str,
                                    calibration_status: str) -> str:
         """Deterministically PROJECT the signed intent contract + milestone context
@@ -3613,7 +3649,10 @@ class Driver:
             "`tooling.acceptance.network_access`. Spawn surface: orchestrator (§1.7-C, "
             "calibration-gated). Cold-start the explicit role-session governance chain plus "
             "role-cards/acceptance-agent.md and "
-            "schemas/compact/acceptance-verdict.compact.schema.json.\n\n",
+            "schemas/compact/acceptance-verdict.compact.schema.json. The acceptance-kernel below "
+            "is self-contained for the delivery-loop / role-skill judge rules — do NOT load "
+            "`process/delivery-loop.md` or `process/role-skill-model.md`.\n\n",
+            self._acceptance_kernel_section(),
             "## Customer need (signed intent contract)\n"
             f"Goal (customer terms): {ic.get('goal','')}\n"
             f"Standard (the bar for 'good'): {ic.get('standard','')}\n"
@@ -3960,6 +3999,14 @@ class Driver:
                                 base, "compact", "acceptance-verdict.compact.schema.json"),
                             "rel": "schemas/compact/acceptance-verdict.compact.schema.json",
                             "purpose": "verdict_schema"})
+            # WP-4B: context_briefing §2.5 lists templates/compact-acceptance-prompt.md as an
+            # Acceptance input ("output template + judging discipline"). Its judging discipline is
+            # inlined into the embedded acceptance-kernel, but bind the template too so a discipline
+            # edit re-invalidates §3.5b reuse (LOAD-CLOSURE: no unbound verdict-affecting input).
+            entries.append({"path": os.path.join(repo_root, "templates",
+                                                 "compact-acceptance-prompt.md"),
+                            "rel": "templates/compact-acceptance-prompt.md",
+                            "purpose": "compact_acceptance_prompt_template"})
         entries.append({"path": os.path.join(repo_root, "role-cards",
                                              "acceptance-agent.md"),
                         "rel": "role-cards/acceptance-agent.md", "purpose": "role_card"})
@@ -3990,6 +4037,17 @@ class Driver:
                         entries.append({"path": os.path.join(cur, fn),
                                         "rel": f"docs/current/{fn}",
                                         "purpose": "adopter_ledger"})
+            # WP-4B: the judge reads a prior docs/acceptance-reports/<scope>-acceptance-report.md for
+            # residual-risk lineage (role card §1 step 10), which feeds the verdict's residual_risks —
+            # a verdict-affecting input. Bind it conditionally (like the closure_contract) so an edit
+            # to the prior report re-invalidates §3.5b reuse (LOAD-CLOSURE).
+            scope_id = self._acceptance_scope_id()
+            prior = os.path.join(adopter_root, "docs", "acceptance-reports",
+                                 f"{scope_id}-acceptance-report.md")
+            if os.path.isfile(prior):
+                entries.append({"path": prior,
+                                "rel": f"docs/acceptance-reports/{scope_id}-acceptance-report.md",
+                                "purpose": "prior_acceptance_report"})
         # The framework role-session governance chain is explicit. The default Control
         # Plane entry no longer @-includes these files, so do not rely on transitive
         # AGENTS.md closure here; an edit to any role-session governance input must

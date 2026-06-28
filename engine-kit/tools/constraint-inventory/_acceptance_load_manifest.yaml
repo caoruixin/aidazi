@@ -114,8 +114,7 @@ entries:
     parse_token: "docs/acceptance-reports/<scope>-acceptance-report.md"
     target: "data:prior_acceptance_report"
     disposition: RESOLVER_BOUND
-    status: pending_wp4b
-    evidence: "HARNESS-SURFACED GAP: the prior acceptance-report is read for residual-risk lineage (feeds the verdict residual_risks) but is NOT bound in _acceptance_resolver_graph today — bind it conditionally in WP-4B, exactly as the closure_contract (brief_draft_ref) is bound."
+    evidence: "WP-4B DONE: bound conditionally in _acceptance_resolver_graph (purpose prior_acceptance_report, docs/acceptance-reports/<scope>-acceptance-report.md under the adopter repo) exactly as the closure_contract is bound — an edit re-invalidates §3.5b reuse."
 
   # ===== Loaded via the projected prompt's cold-start line (no §1 literal path) =====
   - source: "projected prompt cold-start line — Acceptance role card"
@@ -149,31 +148,27 @@ entries:
     parse_token: "aidazi/templates/compact-acceptance-prompt.md"
     target: "templates/compact-acceptance-prompt.md"
     disposition: RESOLVER_BOUND
-    status: pending_wp4b
-    evidence: "HARNESS-SURFACED GAP (R5): §2.5 lists this template as an Acceptance input ('output template + judging discipline') but it is NOT bound in _acceptance_resolver_graph today. Its judging-discipline content is inlined into the kernel (§D/§E/§F); WP-4B binds the template in the resolver so any discipline edit re-invalidates reuse (belt-and-suspenders closure)."
+    evidence: "WP-4B DONE: bound in _acceptance_resolver_graph (purpose compact_acceptance_prompt_template, rel templates/compact-acceptance-prompt.md). Its judging-discipline is also inlined into the kernel (§D/§E/§F); binding the template means any discipline edit re-invalidates §3.5b reuse (belt-and-suspenders closure)."
 
   # ===== The two whole-file reads WP-4B retires → INLINED into the acceptance-kernel =====
-  - source: "acceptance-agent.md §1 step 4 — delivery-loop.md (orchestrator-driven)"
-    region: acceptance_cold_start
-    parse_token: "aidazi/process/delivery-loop.md"
+  - source: "acceptance-agent.md §1 step 4 — delivery-loop.md (RETIRED: negated in the doc)"
+    region: null
+    parse_token: null
     target: "process/delivery-loop.md"
     disposition: INLINED
-    status: pending_wp4b
-    evidence: "Acceptance content (§4.2.x: F5, calibration, checkpoints #3/#9, anti-patterns) inlined into governance/acceptance-kernel.md — proven by --acceptance-kernel-coverage (33 delivery-loop rows: kernel-clause or bound-elsewhere). WP-4B embeds the kernel + retires this trigger."
-  - source: "context_briefing.md §6 — Δ-18 delivery-loop trigger (Acceptance + F5/calibration bullets)"
-    region: context_briefing_delivery_loop
-    parse_token: "process/delivery-loop.md"
+    evidence: "WP-4B DONE: §1 step 4 now says 'Do NOT load process/delivery-loop.md' (the load instruction is retired). Its Acceptance content (§4.2.x: F5, calibration, checkpoints #3/#9, anti-patterns) is inlined into governance/acceptance-kernel.md (proven by --acceptance-kernel-coverage, 33 delivery-loop rows) and EMBEDDED into the projected prompt (driver:_acceptance_kernel_section). Not resolver-bound (correctly: no longer a separate input)."
+  - source: "context_briefing.md §6 — Δ-18 delivery-loop trigger (RETIRED for Acceptance: §6 carve-out)"
+    region: null
+    parse_token: null
     target: "process/delivery-loop.md"
     disposition: INLINED
-    status: pending_wp4b
-    evidence: "same kernel inlining; WP-4B retires the §6 Acceptance-applicable trigger bullets (acceptance-mode + F5/calibration + charter-exists) so §6 no longer routes Acceptance to the whole doc."
-  - source: "acceptance-agent.md §11 — role-skill-model.md (skills/fan-out active)"
-    region: acceptance_role_skill
-    parse_token: "process/role-skill-model.md"
+    evidence: "WP-4B DONE: context_briefing §6 now carries an 'Acceptance Agent EXCEPTION' carve-out (Acceptance does NOT load delivery-loop.md); the generic §6 triggers no longer route an Acceptance verdict session to the whole doc. Same kernel inlining + prompt embed."
+  - source: "acceptance-agent.md §11 — role-skill-model.md (RETIRED: negated in the doc)"
+    region: null
+    parse_token: null
     target: "process/role-skill-model.md"
     disposition: INLINED
-    status: pending_wp4b
-    evidence: "§4 boundary (rsm-4) + §6 skill packaging (rsm-6) Acceptance rows inlined into the kernel — proven by --acceptance-kernel-coverage (11 role-skill rows, all kernel-clause). WP-4B embeds the kernel + retires this conditional trigger."
+    evidence: "WP-4B DONE: §11 now says 'do NOT load process/role-skill-model.md'. Its §4 boundary (rsm-4) + §6 skill packaging (rsm-6) Acceptance rows are inlined into the kernel (proven by --acceptance-kernel-coverage, 11 role-skill rows) + embedded into the projected prompt. Not resolver-bound (correctly retired)."
 
   # ===== Enumeration completeness note (design §E sources) =====
   # The Acceptance-reachable load set is enumerated from: role-card §1 (cold-start) + §11 (role-skill

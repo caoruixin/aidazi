@@ -16,7 +16,7 @@
 
 - id: rc-acc-coldstart-delivery-loop-conditional
   anchor: 'role-cards/acceptance-agent.md §1.4'
-  statement: 'Load process/delivery-loop.md when the session is orchestrator-driven.'
+  statement: 'Do NOT load process/delivery-loop.md — the Acceptance delivery-loop judge rules (F5, calibration, checkpoints, anti-patterns) are projected INLINE via the acceptance-kernel embedded in the acceptance prompt (retired for Acceptance; HALT for refinement if insufficient rather than read the canonical).'
   roles: [acceptance]
   condition: orchestrator_driven_session
   current_enforcement: role-card:role-cards/acceptance-agent.md
@@ -446,7 +446,7 @@
 
 - id: rc-acc-load-role-skill-model-conditional
   anchor: 'role-cards/acceptance-agent.md §11 (line 253)'
-  statement: 'Load process/role-skill-model.md when charter.tooling.acceptance.skills is non-empty.'
+  statement: 'Do NOT load process/role-skill-model.md — the §4 boundary + §6 skill-packaging rules are projected INLINE via the acceptance-kernel embedded in the acceptance prompt (retired for Acceptance; HALT for refinement if insufficient).'
   roles: [acceptance]
   condition: skills_or_fanout_active
   current_enforcement: role-card:role-cards/acceptance-agent.md

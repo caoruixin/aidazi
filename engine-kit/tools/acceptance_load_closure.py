@@ -82,6 +82,46 @@ def _backtick_paths(seg: str) -> list:
     return out
 
 
+# The negative-load phrase prefixes ("do NOT load", "does not load", "never load", ...). Negation is
+# tied to actual NEGATIVE-LOAD SYNTAX (Codex WP-4B-R2): a bare "retired" mention is NOT negation.
+_NEG = r"(?:do\s+not|does\s+not|don'?t|never|must\s+not|not)"
+
+
+def _token_load_polarity(line: str) -> dict:
+    """Classify each backtick FILE-PATH token on ``line`` by its nearest governing ``load`` keyword:
+    ``"positive"`` (a load instruction loads it), ``"negative"`` (a "do/does NOT load" governs it),
+    or ``None`` (no governing load keyword — a bare list entry or a prose §-citation).
+
+    PER-TOKEN, not whole-line (Codex WP-4B-R3): a mixed line ``Load `X`; do NOT load `Y``` yields
+    ``{X: positive, Y: negative}`` so the positive new load ``X`` is never suppressed by the negation
+    of ``Y``. A token appearing both positively and negatively resolves to positive (fail-closed: the
+    drift-guard surfaces it for manifest classification rather than silently dropping it)."""
+    out: dict = {}
+    for m in re.finditer(r"`([^`]+)`", line):
+        tok = m.group(1).strip()
+        if not _backtick_paths("`" + tok + "`"):
+            continue
+        pre = line[:m.start()]
+        lm = None
+        for k in re.finditer(r"(?i)\bload\b", pre):
+            lm = k                                     # the nearest 'load' keyword GOVERNING this token
+        if lm is None:
+            out.setdefault(tok, None)
+            continue
+        negated = re.search(r"(?i)" + _NEG + r"\s*$", pre[:lm.start()]) is not None
+        if out.get(tok) != "positive":                # positive wins over negative / None
+            out[tok] = "negative" if negated else "positive"
+    return out
+
+
+def _is_negated_load(line: str) -> bool:
+    """True if ``line`` carries at least one NEGATIVE-load instruction (a backtick file-path token
+    whose governing ``load`` keyword is negated). A line-level convenience over
+    :func:`_token_load_polarity`; tied to negative-load SYNTAX only (a bare "retired" word is not
+    negation — Codex WP-4B-R2)."""
+    return any(p == "negative" for p in _token_load_polarity(line).values())
+
+
 def parse_reachable_loads(repo_root=REPO_ROOT_DEFAULT) -> set:
     """Re-parse the source files for the Acceptance session's "Load X" instructions and return a set
     of ``(region, token)`` pairs (verbatim backtick token). DETERMINISTIC; the manifest declares the
@@ -90,10 +130,16 @@ def parse_reachable_loads(repo_root=REPO_ROOT_DEFAULT) -> set:
     Regions:
       - ``acceptance_cold_start`` — every file-path backtick token in role-cards/acceptance-agent.md
         §1 (the cold-start load list is a pure list of files to load).
+      - ``acceptance_role_card_other`` — a "Load `X`" instruction added ANYWHERE else in the role card.
       - ``acceptance_role_skill`` — process/role-skill-model.md from §11 (the conditional skill load).
-      - ``context_briefing_delivery_loop`` — the OBJECT of the "Load X" instruction in
-        context_briefing §6 (the trigger header), NOT the trigger-condition file mentions in its
-        bullets.
+      - ``context_briefing_acceptance_role`` — context_briefing §2.5 (the Acceptance per-role briefing
+        list): a bullet-leading backtick load path OR an explicit "Load `X`" line in §2.5.
+      - ``context_briefing_delivery_loop`` — the OBJECT of each positive "Load `X`" line in
+        context_briefing §6 whose token is NOT explicitly carved out for Acceptance (the WP-4B §6
+        "Acceptance Agent EXCEPTION" carves out `process/delivery-loop.md` per-token), NOT the
+        trigger-condition file mentions in its bullets.
+    Negation is PER-TOKEN ("do/does NOT load `X`" suppresses only `X`, not a positive load on the same
+    line); prose §-citations (a path with no governing `load` keyword) are excluded from every region.
     """
     repo_root = Path(repo_root)
     rc = (repo_root / "role-cards" / "acceptance-agent.md").read_text(encoding="utf-8")
@@ -101,18 +147,24 @@ def parse_reachable_loads(repo_root=REPO_ROOT_DEFAULT) -> set:
     pairs = set()
 
     s1 = _section(rc, r"## §1 Cold-start activation", r"\n## §2")
-    for tok in _backtick_paths(s1):
-        pairs.add(("acceptance_cold_start", tok))
+    for line in s1.splitlines():
+        # §1 is a pure file-LIST to load: every backtick path is a live load EXCEPT a token the line
+        # explicitly negates. Per-TOKEN (Codex WP-4B-R3): "Load `A`; do NOT load `B`" yields A only.
+        pol = _token_load_polarity(line)
+        for tok in _backtick_paths(line):
+            if pol.get(tok) != "negative":
+                pairs.add(("acceptance_cold_start", tok))
 
     s11 = _section(rc, r"## §11 ", r"\nEnd of Acceptance")
     # Catch-all: a "Load `<path>`" instruction added ELSEWHERE in the role card (not the §1 cold-start
-    # list or the §11 skill load) must not escape the drift-guard. Scan the rest of the card for any
-    # line that instructs a load and names a backtick file path (Codex R8-B1). Empty today — its value
-    # is that adding such a line anywhere makes check_bidirectional fail until the manifest classifies it.
+    # list or the §11 skill load) must not escape the drift-guard. Any POSITIVELY-loaded backtick file
+    # path on a line outside §1/§11 is surfaced (Codex R8-B1; per-token negation, WP-4B-R3). Empty
+    # today — its value is that adding such a line makes check_bidirectional fail until the manifest
+    # classifies it.
     other = rc.replace(s1, "").replace(s11, "")
     for line in other.splitlines():
-        if re.search(r"[Ll]oad\b", line):
-            for tok in _backtick_paths(line):
+        for tok, p in _token_load_polarity(line).items():
+            if p == "positive":
                 pairs.add(("acceptance_role_card_other", tok))
     # §11 names the file once ("Per `process/role-skill-model.md` (load it if ...skills... non-empty)")
     # — a conditional load, captured only when the skills-gated load instruction is present.
@@ -122,19 +174,37 @@ def parse_reachable_loads(repo_root=REPO_ROOT_DEFAULT) -> set:
                 pairs.add(("acceptance_role_skill", tok))
 
     # context_briefing §2.5 is the SECOND Acceptance cold-start load region (a per-role briefing list
-    # parallel to role-card §1). Extract the load object of each bullet that STARTS with a backtick
-    # path ("- `aidazi/...` — desc"); prose §-citations like "per `process/delivery-loop.md` §4.2.6"
-    # are not bullet-leading load paths and are correctly excluded.
+    # parallel to role-card §1). Catch BOTH shapes so the drift-guard stays NON-VACUOUS (Codex
+    # WP-4B-R1): (i) a bullet that STARTS with a backtick load path ("- `aidazi/...` — desc"), AND
+    # (ii) any POSITIVELY-loaded token ("Load `X`") added ANYWHERE in §2.5. Negation is PER-TOKEN
+    # (Codex WP-4B-R3): a "Load `X`; do NOT load `Y`" line still surfaces X. A bullet-leading path is a
+    # load unless that token is itself negated; a prose §-citation has no load keyword and is excluded.
     s25 = _section(cb, r"### §2\.5 Acceptance Agent", r"\n### §2\.6")
     for line in s25.splitlines():
+        pol = _token_load_polarity(line)
         m = re.match(r"\s*-\s+`([^`]+)`", line)
-        if m and _backtick_paths("`" + m.group(1) + "`"):
+        if (m and _backtick_paths("`" + m.group(1) + "`")
+                and pol.get(m.group(1).strip()) != "negative"):
             pairs.add(("context_briefing_acceptance_role", m.group(1).strip()))
+        for tok, p in pol.items():
+            if p == "positive":
+                pairs.add(("context_briefing_acceptance_role", tok))
 
     s6 = _section(cb, r"## §6 .*Delivery Loop trigger", r"\n## §7")
-    m = re.search(r"Load\s+`([^`]+)`", s6)  # the trigger HEADER's load object only
-    if m:
-        pairs.add(("context_briefing_delivery_loop", m.group(1).strip()))
+    # §6 is a GENERIC delivery-loop trigger. WP-4B adds an Acceptance carve-out ("Acceptance ... do NOT
+    # load `process/delivery-loop.md`") so it no longer routes an Acceptance verdict session to the
+    # whole doc. Carve out PER-TOKEN, not the whole section (Codex WP-4B-R1): collect the tokens an
+    # Acceptance line explicitly NEGATES, then route every POSITIVELY-loaded token that is NOT carved
+    # out. Per-token negation (Codex WP-4B-R3) means a mixed "Load `Y`; do NOT load `delivery-loop.md`"
+    # line still surfaces the new positive Y while delivery-loop.md stays carved.
+    acc_carved = set()
+    for ln in s6.splitlines():
+        if re.search(r"(?i)acceptance", ln):
+            acc_carved |= {t for t, p in _token_load_polarity(ln).items() if p == "negative"}
+    for ln in s6.splitlines():
+        for tok, p in _token_load_polarity(ln).items():
+            if p == "positive" and tok not in acc_carved:
+                pairs.add(("context_briefing_delivery_loop", tok))
     return pairs
 
 

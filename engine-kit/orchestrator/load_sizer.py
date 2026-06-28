@@ -232,7 +232,11 @@ def role_cold_start_roots(role: str, *, skills_active: bool = False) -> list:
     if role not in ROLE_COLD_START:
         raise KeyError(f"unknown role {role!r}; known: {', '.join(ROLES)}")
     roots = list(GOVERNANCE_TRIO) + list(ROLE_COLD_START[role])
-    if skills_active and ROLE_SKILL_MODEL not in roots:
+    # WP-4B: Acceptance no longer cold-starts process/role-skill-model.md — its §4 boundary + §6
+    # skill-packaging rules are projected INLINE via the acceptance-kernel (embedded in the projected
+    # acceptance prompt), and the §11 conditional load is retired. Other roles still load it when
+    # skills / sub-agent fan-out are active.
+    if skills_active and role != "acceptance" and ROLE_SKILL_MODEL not in roots:
         roots.append(ROLE_SKILL_MODEL)
     return roots
 
