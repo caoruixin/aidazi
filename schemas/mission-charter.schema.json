@@ -467,7 +467,8 @@
         "path": {"type": "string"},
         "license": {"type": "string"},
         "provenance": {"type": "string", "enum": ["community", "authored", "vendor", "adopter"]},
-        "calibration_coupled": {"type": "boolean"}
+        "calibration_coupled": {"type": "boolean"},
+        "optional": {"type": "boolean", "description": "Track 1 §2.2 — skip-if-absent: true ⇒ an unresolvable binding is skipped (skipped_skills[] + audit footer) instead of hard-failing; absent/false = required (mirror of schemas/skill-binding.schema.json)."}
       }
     },
     "skills_config": {

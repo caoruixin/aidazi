@@ -114,6 +114,74 @@ class TestCleanTransitions(unittest.TestCase):
             self.assertEqual(reloaded.state, STATE_ADVANCE)
 
 
+class Track1SkillMountingDriverTests(unittest.TestCase):
+    """Track 1 §2.4 — the driver wiring is BEHAVIOR-NEUTRAL while dormant: the
+    effective_role_config audit event gains the dedicated task-aware skill-set surface, every
+    value is empty/benign (no sub-sprint authors task_signals yet), the cache is re-keyed by
+    (role, task_unit_id), and NO dispatched prompt gains a skip footer."""
+
+    def test_effective_role_config_event_carries_dormant_task_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            payloads = [e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                        if e["type"] == "effective_role_config"]
+            self.assertTrue(payloads)   # dev / review / deliver each emit one
+            for p in payloads:
+                for k in ("task_unit_id", "task_signals", "selected_skills", "skipped_skills"):
+                    self.assertIn(k, p)
+                # This minimal flow has NO decompose ⇒ no plan entry ⇒ task-UNAWARE (None).
+                self.assertIsNone(p["task_unit_id"])
+                self.assertEqual(p["task_signals"], [])
+                self.assertEqual(p["selected_skills"], [])
+                self.assertEqual(p["skipped_skills"], [])
+                # the resolved skill-set identity stays skill_set_hash; load_graph_hash is NOT
+                # overloaded — it lives on the spawn event, not here.
+                self.assertIn("skill_set_hash", p)
+                self.assertNotIn("load_graph_hash", p)
+
+    def test_no_prompt_carries_skip_footer_when_dormant(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            for e in audit.read_events(drv_.audit_ledger):
+                if e["type"] == "spawn":
+                    prompt = open(os.path.join(d, e["payload"]["prompt_ref"]),
+                                  encoding="utf-8").read()
+                    self.assertNotIn("Skipped optional skills", prompt)
+
+    def test_cache_is_keyed_by_role_and_task_unit(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            self.assertTrue(drv_._effective_role_cache)
+            self.assertTrue(all(isinstance(k, tuple) and len(k) == 2
+                                for k in drv_._effective_role_cache))
+            # No decompose plan in this flow ⇒ task-unaware key.
+            self.assertIn(("dev", None), drv_._effective_role_cache)
+
+    def test_task_context_keys_on_plan_existence_not_just_subsprint_id(self):
+        # Codex BLOCKING-2: the decompose `deliver` spawn (planned_subsprints empty) must NOT
+        # share a cache key with the later task-specific `close` spawn for the same sub-sprint id.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            st = drv_.state
+            st.subsprint_id = "sprint-001"
+            # No plan entry yet (decompose-time) ⇒ task-UNAWARE (None, ()).
+            st.planned_subsprints = []
+            self.assertEqual(drv_._task_context_for("deliver"), (None, ()))
+            # Plan entry present (post-decompose) ⇒ keyed by the sub-sprint id + its signals.
+            st.planned_subsprints = [{"id": "sprint-001", "objective": "o",
+                                      "task_signals": ["ui", "frontend"]}]
+            self.assertEqual(drv_._task_context_for("deliver"),
+                             ("sprint-001", ("ui", "frontend")))
+            self.assertEqual(drv_._task_context_for("dev"),
+                             ("sprint-001", ("ui", "frontend")))
+            # Acceptance is excluded (§2.5) regardless of the plan.
+            self.assertEqual(drv_._task_context_for("acceptance"), (None, ()))
+
+
 class TestSubSprintGate(unittest.TestCase):
     def test_eval_cmd_runs_before_review(self):
         with tempfile.TemporaryDirectory() as d:

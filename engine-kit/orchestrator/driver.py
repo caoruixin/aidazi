@@ -688,7 +688,11 @@ class Driver:
         self._gap_report_rel: Optional[str] = None
         schemas_dir = _find_schemas_dir()
         self.framework_root = os.path.dirname(schemas_dir) if schemas_dir else None
-        self._effective_role_cache: dict[str, effective_roles.EffectiveRoleConfig] = {}
+        # Track 1 §2.4 — keyed by (role, task_unit_id) NOT role: the SAME role can resolve
+        # distinct task-aware skill sets across sub-sprints, and Dev spawns pass schema_key=None,
+        # so schema_key alone would collapse distinct Dev selections. task_unit_id is the signed
+        # sub-sprint id (None for Acceptance — §2.5 exclusion — and pre-decompose roles).
+        self._effective_role_cache: dict[tuple, effective_roles.EffectiveRoleConfig] = {}
         # §2a runtime hard-fail (Codex MAJOR-1): browser_e2e functional acceptance with
         # acceptance OFF is incoherent (a browser-evidence run with no judge). Enforce at
         # CONSTRUCTION — independent of the charter validator, which run_loop invokes only
@@ -937,7 +941,10 @@ class Driver:
                 f"no adapter wired for role {role!r}", self.state.state)
         routing = route_for_role(self.charter, role)
         effective = self._effective_role(role)
-        prompt = prompt + effective_roles.skill_prompt_block(effective)
+        # Track 1 §2.2: the skip footer is "" unless an OPTIONAL binding failed to resolve, so the
+        # dispatched prompt is BYTE-IDENTICAL to the pre-Track-1 prompt when nothing was skipped.
+        prompt = (prompt + effective_roles.skill_prompt_block(effective)
+                  + effective_roles.skill_skip_footer(effective))
         input_hash = "sha256:" + hashlib.sha256(
             (role + "\x00" + prompt).encode("utf-8")).hexdigest()[:16]
         # P3 INTEGRATION 2 + WP-0 measurement (observation-only — does NOT alter the
@@ -984,12 +991,21 @@ class Driver:
             self._audit("sandbox_network_granted", {
                 "role": role, "harness": adapter.harness,
                 "sandbox": routing.sandbox})
+        _task_unit_id, _task_signals = self._task_context_for(role)
         self._audit("effective_role_config", {
             "role": role,
             "skill_mode": effective.skill_mode,
             "skills": [{"id": s.id, "sha256": s.content_hash}
                        for s in effective.skills],
             "skill_set_hash": effective.skill_set_hash,
+            # Track 1 §2.4 — the DEDICATED task-aware skill-set audit surface (distinct from the
+            # spawn event's load_graph_hash, which is NOT overloaded): the signed task-unit id that
+            # keyed selection, the signals that drove it, the §2.3 task-selected ids, and the §2.2
+            # skip-if-absent drops. All empty/benign while dormant (no sub-sprint carries signals).
+            "task_unit_id": _task_unit_id,
+            "task_signals": list(_task_signals),
+            "selected_skills": list(effective.selected_skills),
+            "skipped_skills": [dict(s) for s in effective.skipped_skills],
         })
 
         self.state.spawn_count += 1
@@ -1072,13 +1088,48 @@ class Driver:
         self.state.last_verdict = verdict
         return verdict
 
+    def _task_context_for(self, role: str) -> tuple:
+        """Track 1 §2.4 — the (task_unit_id, task_signals) driving task-aware skill mounting for
+        a ``role`` spawn. task_unit_id keys the cache's task dimension; task_signals are read from
+        the current sub-sprint's structured decompose-plan entry (deliver-plan-verdict
+        sub_sprints[].task_signals → state.planned_subsprints) — NEVER LLM-inferred (§2.3).
+
+        The task dimension is gated on the PLAN ENTRY EXISTING, not merely on ``subsprint_id``
+        being set: a spawn with no plan entry for the current sub-sprint resolves task-UNAWARE
+        — (None, ()). This is correct AND avoids a cache collision — the decompose ``deliver``
+        spawn runs while ``planned_subsprints`` is still empty (so it keys (deliver, None)),
+        leaving the later task-specific ``close`` spawn for that same sub-sprint id to key
+        (deliver, <id>) once the plan exists — they never share a cache entry.
+
+        Acceptance is EXCLUDED (§2.5): always task-UNAWARE (None, ()), so its
+        ``effective_skill_set_hash`` (in the acceptance authority fingerprint) never varies per
+        sub-sprint and §3.6 calibration is never thrashed. DORMANT today: no plan entry carries
+        ``task_signals``, so signals is () and selection adds nothing."""
+        if effective_roles.canonical_role(role) == "acceptance" or self.state is None:
+            return None, ()
+        plan = self._current_subsprint_plan()
+        if not isinstance(plan, dict):
+            # Pre-decompose / delivery-only / no plan entry for this sub-sprint → task-UNAWARE.
+            return None, ()
+        signals: tuple = ()
+        raw = plan.get("task_signals")
+        if isinstance(raw, list):
+            signals = tuple(str(s) for s in raw)
+        return self.state.subsprint_id, signals
+
     def _effective_role(self, role: str) -> effective_roles.EffectiveRoleConfig:
-        """Resolve framework defaults + adopter overrides once per role/run."""
-        if role not in self._effective_role_cache:
+        """Resolve framework defaults + adopter overrides + Track 1 §2.3 task-aware selection,
+        cached per (role, task_unit_id) for the run. DORMANT until a sub-sprint carries
+        ``task_signals`` (Phase 1-c): with empty signals the resolved config — and its
+        ``skill_set_hash`` — are byte-identical to the pre-Track-1 result."""
+        task_unit_id, task_signals = self._task_context_for(role)
+        key = (role, task_unit_id)
+        if key not in self._effective_role_cache:
             try:
-                self._effective_role_cache[role] = effective_roles.resolve_role_config(
+                self._effective_role_cache[key] = effective_roles.resolve_role_config(
                     self.charter,
                     role,
+                    task_signals=task_signals,
                     framework_root=self.framework_root,
                     adopter_root=self.repo_dir,
                 )
@@ -1086,7 +1137,7 @@ class Driver:
                 state = self.state.state if self.state is not None else STATE_IDLE
                 raise self._gate_hard_fail(
                     f"effective role configuration invalid for {role}: {exc}", state)
-        return self._effective_role_cache[role]
+        return self._effective_role_cache[key]
 
     # ----- the deterministic gate set (§4.2.4) ----------------------------- #
     def _run_eval_cmd(self, *, event_type: str, run_subdir: str,

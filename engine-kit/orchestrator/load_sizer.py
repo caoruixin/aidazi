@@ -392,6 +392,67 @@ def size_all_roles(*, repo_root: str = REPO_ROOT_DEFAULT,
 
 
 # --------------------------------------------------------------------------- #
+# Track 1 §2.4 — RESOLVED-SKILL-BODY sizing (the Codex R-T1 B1 budget path).
+#
+# A role's effective SKILL.md bodies are the agent's OWN mid-session reads (the
+# `skill_prompt_block` tells it "Load every SKILL.md below"), so they are INVISIBLE to the
+# per-spawn prompt audit AND are NOT in the governance/role-card/briefing cold-start floor
+# (toggling `skills_active=True` only adds the CONDITIONAL process/role-skill-model.md — it
+# sizes NO SKILL.md body). This path sizes the RESOLVED selected skill bodies themselves so
+# `context_budget_report.py --strict` can catch task-skill body growth PER DEFAULT + (Phase
+# 1-c) PER TASK-SIGNAL SET. Deterministic + framework-static (charter-less role defaults +
+# §2.3 task-signal selection); read-only.
+# --------------------------------------------------------------------------- #
+def _skill_md_rel(skill_path: str, real_repo_root: str) -> str:
+    """Repo-relative path of a resolved skill's SKILL.md (forward-slashed). ``real_repo_root``
+    MUST already be realpath-resolved: ``resolve_role_config`` returns realpath'd skill paths
+    (``_resolve_skill``), so the base must be realpath'd too or a symlinked checkout (e.g. a
+    macOS ``/var`` → ``/private/var`` tempdir) yields a bogus ``../..`` rel + a 0-byte size."""
+    md = os.path.join(skill_path, "SKILL.md")
+    return os.path.relpath(md, real_repo_root).replace(os.sep, "/")
+
+
+def resolve_role_skill_bodies(role: str, *, task_signals=(),
+                              repo_root: str = REPO_ROOT_DEFAULT,
+                              adopter_root: str = None) -> tuple:
+    """Resolve ``role``'s EFFECTIVE skill set (framework ``role_defaults`` + §2.3 task-signal
+    selection, charter-less) and return ``(skill_md_rels, effective_config, real_repo_root)``.
+    EXCLUDES Acceptance from task selection by virtue of ``resolve_role_config``'s own §2.5
+    exclusion. Deterministic. The erc import is LOCAL so the hot driver path (``size_role`` /
+    ``cold_start_load_graph_hash``) stays free of the skill-resolution dependency."""
+    import effective_role_config as erc  # noqa: E402  (engine-kit sibling on sys.path)
+    real_root = os.path.realpath(repo_root)
+    eff = erc.resolve_role_config({}, role, task_signals=task_signals,
+                                  framework_root=repo_root, adopter_root=adopter_root)
+    rels = [_skill_md_rel(s.path, real_root) for s in eff.skills]
+    return rels, eff, real_root
+
+
+def size_role_skills(role: str, *, task_signals=(),
+                     repo_root: str = REPO_ROOT_DEFAULT,
+                     adopter_root: str = None) -> dict:
+    """Cold-start size of ``role``'s effective SKILL.md BODIES (+ their ``@``-includes), sized
+    via the SAME ``resolve_load_graph`` machinery (deduped) as every other load set. ``task_signals``
+    (default ``()``) sizes the role-default set; a non-empty signal list sizes the §2.3 task-selected
+    superset (Phase 1-c). Read-only.
+
+    Returns ``size_load_set(...)`` augmented with ``{role, task_signals, skill_ids,
+    selected_skills, skipped_skills}`` so the budget report can attribute growth to a specific
+    skill. ``missing`` is normally empty (``resolve_role_config`` already verified each SKILL.md);
+    a task-selected candidate that is catalog-declared but absent on disk is dropped via the §2.2
+    skip (surfaced in ``skipped_skills``), NOT counted as missing."""
+    rels, eff, real_root = resolve_role_skill_bodies(
+        role, task_signals=task_signals, repo_root=repo_root, adopter_root=adopter_root)
+    res = size_load_set([(r, "skill_body") for r in rels], repo_root=real_root)
+    res["role"] = role
+    res["task_signals"] = list(task_signals or ())
+    res["skill_ids"] = [s.id for s in eff.skills]
+    res["selected_skills"] = list(eff.selected_skills)
+    res["skipped_skills"] = [dict(x) for x in eff.skipped_skills]
+    return res
+
+
+# --------------------------------------------------------------------------- #
 # Reporting / CLI.
 # --------------------------------------------------------------------------- #
 def render_report(sizes: dict, *, adopter_measured: bool = False) -> str:

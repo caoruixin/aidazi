@@ -827,6 +827,13 @@ def _role_tools_allow(cfg: dict) -> Optional[set[str]]:
     return None
 
 
+#: Track 1 §2.3 — the canonical chain roles select_skills_for_task can mount a task-selected skill
+#: on (everything except Acceptance, §2.5). The validator enumerates the task-selectable skill
+#: universe over EXACTLY this set so it mirrors the runtime selector and never binds a signal-tagged
+#: skill to a non-role tooling block. `review` canonicalizes to `code_reviewer`.
+_TASK_SELECTABLE_ROLES = frozenset({"research", "deliver", "dev", "code_reviewer"})
+
+
 def _role_is_read_only(role: str, cfg: dict) -> bool:
     """A role is read-only iff its sandbox is read_only, OR it is a role whose
     default sandbox is read_only (review/acceptance are read-only judges)."""
@@ -1129,11 +1136,40 @@ def _check_skill_integrity(
                     bindings.append((role, entry, entry, cfg))
                 elif isinstance(entry, dict) and isinstance(entry.get("id"), str):
                     bindings.append((role, entry["id"], entry, cfg))
-    if not bindings:
-        return  # NO-OP — no skills bound.
-
     catalog = load_skill_catalog(skill_catalog_path)
     catalog = _stringify_dates(catalog) if catalog else {}
+    cat_skills = (catalog.get("skills") or {}) if catalog else {}
+    cat_authored = (catalog.get("authored") or {}) if catalog else {}
+
+    # Track 1 §2.3 — the TASK-SELECTABLE universe. A catalog skill carrying a `signals` tag can be
+    # mounted at runtime on a non-acceptance CHAIN role whose sub-sprint declares a matching signal
+    # (select_skills_for_task feeds it as an optional-extend binding), so it MUST satisfy the SAME
+    # pin / integrity / whitelist / harness discipline as a default binding for EVERY such role —
+    # otherwise a signal-selected skill would bypass the §3.4 invariant #6 (tool_requirements ⊆ role
+    # whitelist) + the skills.lock integrity gate. These synthetic bindings flow through the identical
+    # per-binding checks below. Enumerated over EXACTLY the roles the selector targets (the four
+    # non-acceptance chain roles), NOT every tooling key — so a non-role tooling block (e.g. e2e) is
+    # never given a spurious skill binding. DORMANT while no catalog skill carries `signals` (the
+    # common case today ⇒ no synthetic bindings, byte-identical validation).
+    signal_tagged = sorted(
+        sid for section in (cat_skills, cat_authored)
+        for sid, e in section.items()
+        if isinstance(e, dict) and isinstance(e.get("signals"), list) and e["signals"])
+    if signal_tagged:
+        bound_pairs = {(r, s) for r, s, _, _ in bindings}
+        for role, cfg in _iter_roles(charter):
+            # Mirror select_skills_for_task's mount set: the four non-acceptance chain roles
+            # (research/deliver/dev/code_reviewer — `review` canonicalizes to code_reviewer).
+            # Acceptance is excluded (§2.5); non-role tooling (eval already skipped, e2e, …) too.
+            if effective_roles.canonical_role(role) not in _TASK_SELECTABLE_ROLES:
+                continue
+            for sid in signal_tagged:
+                if (role, sid) not in bound_pairs:
+                    bindings.append((role, sid, sid, cfg))
+                    bound_pairs.add((role, sid))
+
+    if not bindings:
+        return  # NO-OP — no skills bound and no task-selectable skills.
 
     # Validate the catalog against its schema (best-effort; absence ⇒ skip cleanly).
     cat_schema = _load_named_schema("skill-catalog.schema.json")
@@ -1145,9 +1181,6 @@ def _check_skill_integrity(
                 f"{err.message}",
                 ".".join(str(p) for p in err.absolute_path) or "<root>",
             )
-
-    cat_skills = (catalog.get("skills") or {}) if catalog else {}
-    cat_authored = (catalog.get("authored") or {}) if catalog else {}
 
     sv = skill_vendor if skill_vendor is not None else _import_skill_vendor()
     root = repo_root or _REPO_ROOT

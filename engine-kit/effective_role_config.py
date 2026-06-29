@@ -90,6 +90,17 @@ class EffectiveRoleConfig:
     skill_mode: str
     skills: tuple[EffectiveSkill, ...] = ()
     acceptance_functional: dict[str, Any] = field(default_factory=dict)
+    #: Track 1 §2.2 — optional bindings that did NOT resolve (skip-if-absent), each
+    #: ``{"id", "reason", "optional": True, "source"?}``. Additive + observation-only:
+    #: NOT part of ``skill_set_hash`` (the resolved identity hashes ``skills`` only), so
+    #: a skip never perturbs the acceptance authority fingerprint. The driver surfaces
+    #: these in the ``effective_role_config`` audit event + a non-silent prompt footer.
+    skipped_skills: tuple[dict[str, Any], ...] = ()
+    #: Track 1 §2.3 — the skill ids contributed by task-signal selection
+    #: (``select_skills_for_task``), in selection order. Empty unless the role is
+    #: Dev/Deliver/Research/Reviewer AND the sub-sprint carries ``task_signals`` that
+    #: match a catalog ``signals`` tag. Observation/audit only — not hashed.
+    selected_skills: tuple[str, ...] = ()
 
     @property
     def skill_set_hash(self) -> str:
@@ -107,6 +118,8 @@ class EffectiveRoleConfig:
             "skills": [s.as_dict() for s in self.skills],
             "skill_set_hash": self.skill_set_hash,
             "acceptance_functional": self.acceptance_functional,
+            "skipped_skills": [dict(s) for s in self.skipped_skills],
+            "selected_skills": list(self.selected_skills),
         }
 
 
@@ -271,7 +284,46 @@ def _resolve_skill(entry: Any, *, catalog: dict, framework_root: str,
     )
 
 
+def select_skills_for_task(role: str, task_signals: Any, catalog: dict) -> list[str]:
+    """Track 1 §2.3 — deterministic task-aware skill selection.
+
+    Map the sub-sprint's SIGNED ``task_signals`` (authored by Deliver at decompose into
+    deliver-plan-verdict ``sub_sprints[].task_signals`` → ``state.planned_subsprints``; the
+    ``sprint_stanza`` field is the docs projection) to candidate skill ids via each catalog
+    entry's §2.1 ``signals`` tags, intersected with the skills
+    PRESENT in the catalog (the ``skills`` vendored+locked + ``authored`` sections). Returns the
+    matching ids sorted by id (stable + reproducible — a build-time + audit invariant).
+
+    Acceptance is EXCLUDED (§2.5): ``effective_skill_set_hash`` sits in the acceptance authority
+    fingerprint, so per-task acceptance skills would thrash §3.6 calibration; an acceptance role
+    therefore always selects nothing. Empty/absent ``task_signals`` ⇒ ``[]`` — the dormant
+    default until skills carry ``signals`` tags and a sub-sprint carries ``task_signals``
+    (Track 1 Phase 1-c).
+
+    PURE + side-effect-free. On-disk resolvability and lock integrity are enforced DOWNSTREAM:
+    the caller feeds these ids as OPTIONAL-extend bindings, so a catalog-declared-but-absent
+    candidate drops via the §2.2 skip instead of hard-failing."""
+    if canonical_role(role) == "acceptance":
+        return []
+    wanted = {str(s).strip() for s in (task_signals or []) if str(s).strip()}
+    if not wanted:
+        return []
+    out: list[str] = []
+    for section in ("skills", "authored"):
+        entries = catalog.get(section) or {}
+        if not isinstance(entries, dict):
+            continue
+        for sid in sorted(entries):
+            entry = entries[sid]
+            sig = entry.get("signals") if isinstance(entry, dict) else None
+            if isinstance(sig, list) and wanted.intersection(str(x) for x in sig):
+                if sid not in out:
+                    out.append(sid)
+    return out
+
+
 def resolve_role_config(charter: dict, role: str, *,
+                        task_signals: Any = (),
                         framework_root: Optional[str] = None,
                         adopter_root: Optional[str] = None,
                         catalog: Optional[dict] = None) -> EffectiveRoleConfig:
@@ -285,12 +337,40 @@ def resolve_role_config(charter: dict, role: str, *,
     defaults = list((catalog.get("role_defaults") or {}).get(canonical) or [])
     mode, items = _skills_override(role_cfg.get("skills"))
     bindings = _effective_binding_entries(defaults, mode, items)
-    skills = tuple(
-        _resolve_skill(
-            entry, catalog=catalog, framework_root=framework_root,
-            adopter_root=adopter_root)
-        for entry in bindings
-    )
+
+    # §2.3 task-aware selection — append matching catalog skills as OPTIONAL-extend bindings.
+    # Acceptance is EXCLUDED (§2.5). DORMANT today: with empty task_signals (or no skill carrying
+    # a matching `signals` tag) this adds nothing, so `bindings` — and the resolved `skills` /
+    # `skill_set_hash` — are byte-identical to the pre-Track-1 result.
+    selected_ids: list[str] = []
+    if task_signals and canonical != "acceptance":
+        already = {_binding_id(b) for b in bindings}
+        for sid in select_skills_for_task(canonical, task_signals, catalog):
+            if sid not in already:
+                bindings.append({"id": sid, "optional": True})
+                already.add(sid)
+                selected_ids.append(sid)
+
+    # Resolve every binding. §2.2 skip-if-absent: an OPTIONAL binding that does not resolve is
+    # recorded in `skipped_skills` (audit + footer) instead of raising; a REQUIRED binding that
+    # fails still hard-fails (current-adopter misconfig is never masked).
+    resolved: list[EffectiveSkill] = []
+    skipped: list[dict[str, Any]] = []
+    for entry in bindings:
+        optional = isinstance(entry, dict) and bool(entry.get("optional"))
+        try:
+            resolved.append(_resolve_skill(
+                entry, catalog=catalog, framework_root=framework_root,
+                adopter_root=adopter_root))
+        except EffectiveConfigError as exc:
+            if not optional:
+                raise
+            try:
+                sid = _binding_id(entry)
+            except EffectiveConfigError:
+                sid = None
+            skipped.append({"id": sid, "reason": str(exc), "optional": True})
+    skills = tuple(resolved)
 
     functional: dict[str, Any] = {}
     if canonical == "acceptance":
@@ -310,6 +390,8 @@ def resolve_role_config(charter: dict, role: str, *,
         skill_mode=mode,
         skills=skills,
         acceptance_functional=functional,
+        skipped_skills=tuple(skipped),
+        selected_skills=tuple(selected_ids),
     )
 
 
@@ -326,6 +408,26 @@ def skill_prompt_block(config: EffectiveRoleConfig) -> str:
         "Load every SKILL.md below before role work. These are effective bindings "
         "after framework defaults and charter overrides; their instructions remain "
         "inside this role's existing authority, sandbox, and tool boundaries.\n"
+        f"{rows}\n"
+    )
+
+
+def skill_skip_footer(config: EffectiveRoleConfig) -> str:
+    """Track 1 §2.2 — a NON-SILENT footer naming the OPTIONAL skills that did not resolve
+    (skip-if-absent). Returns ``""`` when nothing was skipped, so the dispatched prompt is
+    BYTE-IDENTICAL to the pre-Track-1 prompt for the common case (no optional bindings / no
+    task selection). Mirrors the ``effective_role_config`` audit event so a skip is visible
+    both on the Audit Spine and in the agent's own context."""
+    if not config.skipped_skills:
+        return ""
+    rows = "\n".join(
+        f"- `{s.get('id')}`: skipped (optional, unresolved) — {s.get('reason')}"
+        for s in config.skipped_skills
+    )
+    return (
+        "\n\n## Skipped optional skills (not mounted)\n"
+        "These OPTIONAL skill bindings did not resolve and were SKIPPED (skip-if-absent); "
+        "proceed without them — they are not required for this role's work.\n"
         f"{rows}\n"
     )
 

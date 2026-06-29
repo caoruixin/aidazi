@@ -83,6 +83,12 @@
           "items": {"type": "string"},
           "description": "Tools the skill needs. MUST be ⊆ the bound role's tool whitelist (role-skill-model.md §4 constraint #1). [] = read-only safe."
         },
+        "signals": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true,
+          "description": "Track 1 §2.1 — OPTIONAL task-affinity tags (e.g. [ui, frontend, css, a11y]). PURE DATA: declares which task_signals (sprint_stanza.task_signals) this skill is a candidate for, consumed by select_skills_for_task for task-aware dynamic mounting. Absent ⇒ the skill is never task-selected (mounts only as a role default). Tagging a skill is behavior-neutral until a sub-sprint carries matching task_signals (Track 1 Phase 1-c)."
+        },
         "harness_compat": {
           "type": "array",
           "items": {"type": "string", "enum": ["claude_code", "codex", "cursor", "headless", "aider"]}

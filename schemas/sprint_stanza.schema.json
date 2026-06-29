@@ -60,6 +60,12 @@
       "uniqueItems": true,
       "items": {"type": "string", "pattern": "^REQ-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
       "description": "Δ-19 / Constitution §1.7-F clause 1. ONLY on a gap-followup remediation sub-sprint: the in-envelope requirement ids this sub-sprint closes. The Phase 2-γ runtime req_id-envelope check proves covered_req_ids ⊆ (F1 signed snapshot ∩ the milestone's signed covers_req_ids) — DISTINCT from the module/layer scope-expansion guard. OPTIONAL + additive: absent on normal sub-sprints; every existing stanza still validates."
+    },
+    "task_signals": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "description": "Track 1 §2.3 — SIGNED task-affinity signals for task-aware dynamic skill mounting (e.g. [ui, frontend]); the sub-sprint-doc PROJECTION of the same field. The AUTHORITATIVE Deliver-authored source the RUNTIME consumes is deliver-plan-verdict.schema.json sub_sprints[].task_signals (→ self.state.planned_subsprints → driver _current_subsprint_plan()); this stanza field mirrors it for the docs/sprint_objective.md contract and MUST agree. Authored by Deliver at decompose/sign-off — NEVER LLM-inferred from prompt text (determinism). select_skills_for_task maps these against skill-catalog `signals` tags to mount extra OPTIONAL skills for Dev/Deliver/Research/Reviewer (Acceptance is EXCLUDED — §2.5). OPTIONAL + additive: absent on every existing stanza (byte-identical); neither the stanza nor planned_subsprints enters the requirement-context sidecar → acceptance_input_hash is unaffected. Dormant until skills carry `signals` tags + Deliver authors task_signals (Track 1 Phase 1-c)."
     }
   }
 }

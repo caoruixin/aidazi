@@ -115,6 +115,23 @@ BUDGET_ENTRIES: list = [
     {"key": "dev", "role": "dev", "task_kind": None},
     {"key": "review", "role": "review", "task_kind": None},
     {"key": "acceptance", "role": "acceptance", "task_kind": None},
+    # Track 1 §2.4 (Codex R-T1 B1) — per-role DEFAULT skill-body budgets. These size the agent's
+    # OWN mid-session SKILL.md reads (resolve_role_config role_defaults), which are INVISIBLE to
+    # the per-spawn prompt audit AND absent from the cold-start floor rows above (skills_active
+    # sizes no SKILL.md body). Tracking them makes task-skill body growth a checkable regression.
+    # PER-TASK-SIGNAL-SET rows ("task_signals": [ui, ...]) are added in Track 1 Phase 1-c, once
+    # signal-tagged UI skills exist; the entry shape + _size_entry already support them (proven by
+    # the unit test that sizes a synthetic signal-tagged catalog).
+    {"key": "skills:research", "role": "research", "task_kind": None,
+     "kind": "skills", "task_signals": []},
+    {"key": "skills:deliver", "role": "deliver", "task_kind": None,
+     "kind": "skills", "task_signals": []},
+    {"key": "skills:dev", "role": "dev", "task_kind": None,
+     "kind": "skills", "task_signals": []},
+    {"key": "skills:review", "role": "review", "task_kind": None,
+     "kind": "skills", "task_signals": []},
+    {"key": "skills:acceptance", "role": "acceptance", "task_kind": None,
+     "kind": "skills", "task_signals": []},
 ]
 
 
@@ -133,7 +150,24 @@ def _size_entry(entry: dict, repo_root) -> dict:
     task_kind)``. Framework-static only (the baseline is framework-controlled + repo-local;
     adopter-static varies per deployment and is sized informationally via ``--adopter-root``,
     never against the baseline)."""
-    if entry["role"] is None:
+    if entry.get("kind") == "skills":
+        # Track 1 §2.4 — RESOLVED skill BODIES for this role's default (or, Phase 1-c, task-signal)
+        # set. Framework-static (charter-less role defaults); a catalog-declared-but-absent
+        # task-selected candidate drops via the §2.2 skip, never a 'missing' anomaly here.
+        # FAIL-CLOSED: if the skill set itself cannot be RESOLVED (no/empty registry.yaml, an
+        # unreadable framework root — EffectiveConfigError is a ValueError), the row degrades to a
+        # missing_root anomaly rather than crashing the lint (a structurally-broken tree, never ok).
+        try:
+            r = load_sizer.size_role_skills(
+                entry["role"], task_signals=entry.get("task_signals") or (), repo_root=repo_root)
+            total = r["total_bytes"]
+            by_purpose = dict(r["by_purpose"])
+            files = {g["path"]: g["bytes"] for g in r["files"]}
+            missing = list(r["missing"])
+        except (OSError, ValueError, KeyError) as exc:
+            total, by_purpose, files = 0, {}, {}
+            missing = [f"skills:{entry['role']} unresolvable: {exc}"]
+    elif entry["role"] is None:
         r = load_sizer.size_load_set(load_sizer.GOVERNANCE_TRIO, repo_root=repo_root)
         total = r["total_bytes"]
         by_purpose = dict(r["by_purpose"])
@@ -367,7 +401,7 @@ def check(repo_root=REPO_ROOT_DEFAULT, *, baseline_path=None, waiver_path=None) 
             "key": entry["key"],
             "role": entry["role"],
             "task_kind": entry["task_kind"],
-            "kind": "floor" if entry["role"] is None else "role",
+            "kind": entry.get("kind") or ("floor" if entry["role"] is None else "role"),
             "current_bytes": cur,
             "current_tokens": _est_tokens(cur),
             "baseline_bytes": base_bytes,
@@ -412,7 +446,7 @@ def build_baseline(repo_root=REPO_ROOT_DEFAULT, *,
     entries = []
     for e in BUDGET_ENTRIES:
         s = _size_entry(e, repo_root)
-        entries.append({
+        row = {
             "key": e["key"],
             "role": e["role"],
             "task_kind": e["task_kind"],
@@ -420,7 +454,14 @@ def build_baseline(repo_root=REPO_ROOT_DEFAULT, *,
             "est_tokens": _est_tokens(s["total_bytes"]),
             "by_purpose": s["by_purpose"],
             "files": s["files"],
-        })
+        }
+        # Track 1 §2.4 — record the entry kind + task-signal set for skill-body rows so the
+        # checked-in baseline is self-describing (and a Phase 1-c per-signal row is unambiguous).
+        if e.get("kind"):
+            row["kind"] = e["kind"]
+        if e.get("task_signals") is not None and e.get("kind") == "skills":
+            row["task_signals"] = list(e["task_signals"])
+        entries.append(row)
     return {
         "version": 1,
         "generated_from": "load_sizer framework-static cold-start sizing (WP-9)",
