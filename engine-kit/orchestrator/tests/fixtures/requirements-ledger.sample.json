@@ -1,0 +1,33 @@
+{
+  "version": "v1",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "statement": "A returning user can sign in with email + password.",
+      "source": {"channel": "prd", "ref": "proposals/prd.md#auth"},
+      "customer_disposition": "accepted"
+    },
+    {
+      "id": "REQ-002",
+      "statement": "The dashboard renders the user's most-recent activity.",
+      "source": {"channel": "prd", "ref": "proposals/prd.md#dashboard"},
+      "customer_disposition": "accepted"
+    },
+    {
+      "id": "REQ-003",
+      "statement": "Export the activity report as CSV.",
+      "source": {"channel": "requirement_point"},
+      "customer_disposition": "deferred",
+      "history": [
+        {"at": "2026-06-29T00:00:00Z", "disposition": "deferred", "by": "customer",
+         "note": "out of scope for v1; revisit next campaign"}
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "statement": "An admin can disable a user account.",
+      "source": {"channel": "customer_direct"},
+      "customer_disposition": "pending"
+    }
+  ]
+}

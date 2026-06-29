@@ -13,6 +13,7 @@
       "id": "m1-foundation",
       "objective": "Establish the foundational module and its public contracts.",
       "acceptance_bar": "Foundation module builds, its unit tests pass, and its contracts are documented.",
+      "covers_req_ids": ["REQ-001"],
       "subsprint_sequence": ["sprint-001", "sprint-002"]
     },
     {
@@ -20,6 +21,7 @@
       "objective": "Build the user-facing feature on top of the foundation.",
       "acceptance_bar": "The feature works end-to-end against the signed acceptance checklist.",
       "functional_acceptance": "static",
+      "covers_req_ids": ["REQ-002", "REQ-003"],
       "subsprint_sequence": ["sprint-003"]
     }
   ]

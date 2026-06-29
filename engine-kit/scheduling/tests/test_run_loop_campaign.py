@@ -651,5 +651,119 @@ class TestScopeCoverageWiring(unittest.TestCase):
             scope_report.compute_coverage = orig
 
 
+def _ledger(items):
+    return {"version": "v1", "requirements": [
+        {"id": i, "statement": f"req {i}", "source": {"channel": "prd"},
+         "customer_disposition": d} for (i, d) in items]}
+
+
+class TestRequirementCoverageWiring(unittest.TestCase):
+    """Δ-19: the production --campaign path loads+validates the wired ledger, computes
+    the requirement projection, and emits REQUIREMENT_COVERAGE= ONLY when a valid ledger
+    is present (CAMPAIGN_STATUS= / SCOPE_COVERAGE= stay byte-identical)."""
+
+    def _charter_with_ledger(self, ledger_abspath):
+        charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+        charter["requirements"] = {"ledger_path": ledger_abspath}
+        return charter
+
+    def test_no_ledger_is_byte_identical(self):
+        # No ledger wired ⇒ no requirement_coverage, no REQUIREMENT_COVERAGE= line.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            plan = _plan("reqA", [{"id": "m1", "objective": "x",
+                                   "subsprint_sequence": ["sprint-001"]}])
+            r = rl.run_campaign_entry(plan, charter, clock=_clock(),
+                                      campaign_run_dir=os.path.join(d, "h"),
+                                      adapters=_acceptance_adapters(ACC_PASS))
+            self.assertIsNone(r.get("requirement_coverage"))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rl.print_campaign_result(r)
+            out = buf.getvalue()
+            self.assertIn("CAMPAIGN_STATUS=", out)
+            self.assertNotIn("REQUIREMENT_COVERAGE=", out)
+
+    def test_valid_ledger_emits_requirement_coverage_and_derives_delivery(self):
+        with tempfile.TemporaryDirectory() as d:
+            led_path = os.path.join(d, "requirements-ledger.json")
+            with open(led_path, "w", encoding="utf-8") as fh:
+                json.dump(_ledger([("REQ-1", "accepted"), ("REQ-2", "accepted")]), fh)
+            charter = self._charter_with_ledger(led_path)
+            adapters = _acceptance_adapters(ACC_PASS)
+            clk = _clock()
+            home = os.path.join(d, "home")
+            # 1 milestone covering REQ-1; REQ-2 is in no milestone (a PRD gap). F1
+            # active (covers_req_ids) ⇒ stamp the signed snapshot so the runner proceeds.
+            plan = _plan("reqB", [{"id": "m1", "objective": "first",
+                                   "covers_req_ids": ["REQ-1"],
+                                   "subsprint_sequence": ["sprint-001"]}])
+            signed = cp.stamp_signoff(plan, charter, signed_at="2026", charter_ref="ch")
+
+            r1 = rl.run_campaign_entry(signed, charter, clock=clk,
+                                       campaign_run_dir=home, adapters=adapters)
+            self.assertEqual(r1["pause_reason"], "advisory_acceptance_pass_signoff")
+            rc1 = r1["requirement_coverage"]
+            self.assertIsNotNone(rc1)
+            self.assertEqual(rc1["signoff_status"], "signed")
+            self.assertEqual(rc1["requirements_total"], 2)
+            self.assertEqual(rc1["uncovered_requirements"], ["REQ-2"])  # REQ-2 PRD gap
+            self.assertEqual(rc1["delivered"], 0)                       # m1 in-flight
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rl.print_campaign_result(r1)
+            self.assertIn("REQUIREMENT_COVERAGE=", buf.getvalue())
+
+            dec = _write_decision(os.path.join(d, "dec.json"), r1, choice="ship")
+            r2 = rl.run_campaign_entry(signed, charter, clock=clk,
+                                       campaign_run_dir=home, resume=True,
+                                       decision_path=dec, adapters=adapters)
+            self.assertEqual(r2["status"], "done")
+            rc2 = r2["requirement_coverage"]
+            # REQ-1 DELIVERED via the milestone's terminal Acceptance ship (derived).
+            self.assertEqual(rc2["delivered"], 1)
+            self.assertEqual(rc2["uncovered_requirements"], ["REQ-2"])
+            self.assertEqual(r2["milestone_outcomes"][0]["terminal"],
+                             "acceptance_pass_advisory_ship")
+
+
+class TestSignPlanCli(unittest.TestCase):
+    """Δ-19 F1 --sign-plan: the re-sign action stamps the signed resolved-scope snapshot
+    into the plan file so the runner then honors campaign_plan_signoff."""
+
+    def test_sign_plan_stamps_then_status_is_signed(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan_path = os.path.join(d, "plan.json")
+            plan = _plan("signcli", [{"id": "m1", "objective": "x",
+                                      "covers_req_ids": ["REQ-1"],
+                                      "subsprint_sequence": ["sprint-001"]}],
+                         signed=True)  # bare flag → pre_f1 until --sign-plan stamps it
+            with open(plan_path, "w", encoding="utf-8") as fh:
+                json.dump(plan, fh)
+            charter = rl.load_charter(_EXAMPLE_CHARTER)
+            self.assertEqual(cp.signoff_status(plan, charter), "pre_f1")
+            rc = rl.main(["--charter", _EXAMPLE_CHARTER, "--campaign", plan_path,
+                          "--sign-plan"])
+            self.assertEqual(rc, 0)
+            with open(plan_path, encoding="utf-8") as fh:
+                stamped = json.load(fh)
+            self.assertIn("signoff", stamped)
+            self.assertTrue(stamped["signoff"]["signed_by_human"])
+            self.assertEqual(cp.signoff_status(stamped, charter), "signed")
+            # the stamped plan still validates against the formal schema.
+            cp._validate_or_raise(stamped, "campaign-plan.schema.json", "plan")
+
+
+class TestSamplePlanCoversReqIds(unittest.TestCase):
+    def test_example_plan_covers_req_ids_validate(self):
+        with open(_SAMPLE_PLAN, encoding="utf-8") as fh:
+            plan = json.load(fh)
+        cp._validate_or_raise(plan, "campaign-plan.schema.json", "plan")
+        covers = [c for m in plan["milestones"] for c in (m.get("covers_req_ids") or [])]
+        self.assertTrue(covers, "the example plan should demonstrate covers_req_ids")
+        # at-most-one covering milestone per REQ (no cross-milestone duplicates).
+        self.assertEqual(len(covers), len(set(covers)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -330,6 +330,11 @@ class CampaignState:
     followup_baseline_seq: Optional[List[str]] = None  # subsprint_sequence snapshot at a deliver_followup pause
     milestone_context: Optional[dict] = None   # active milestone git isolation (campaign-tier ingress)
     pending_milestone_advance: bool = False    # milestone DONE; cursor not advanced (at merge gate)
+    # Δ-19 F3 (design §3.5.1): one TERMINAL close outcome per milestone, stamped at
+    # close so scope_report can DERIVE delivery_status deterministically (delivered vs
+    # waived-with-reason) — never inferred from cursor position. Additive; absent ⇒
+    # today's behavior (a legacy state simply has no outcomes to project).
+    milestone_outcomes: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -346,6 +351,7 @@ class CampaignState:
             "followup_baseline_seq": self.followup_baseline_seq,
             "milestone_context": self.milestone_context,
             "pending_milestone_advance": self.pending_milestone_advance,
+            "milestone_outcomes": self.milestone_outcomes,
         }
 
     @classmethod
@@ -364,7 +370,8 @@ class CampaignState:
             units=list(d.get("units") or []),
             followup_baseline_seq=d.get("followup_baseline_seq"),
             milestone_context=d.get("milestone_context"),
-            pending_milestone_advance=bool(d.get("pending_milestone_advance", False)))
+            pending_milestone_advance=bool(d.get("pending_milestone_advance", False)),
+            milestone_outcomes=list(d.get("milestone_outcomes") or []))
 
 
 # --------------------------------------------------------------------------- #
@@ -430,6 +437,20 @@ RunUnit = Callable[..., dict]
 _ADVANCE_STATES = frozenset({"advance"})
 _MILESTONE_DONE_STATES = frozenset({"done"})
 
+# Δ-19 F3 (design §3.5.1): map a RESUME-dispatch milestone-advance (a human ship
+# decision at an Acceptance gate) to its terminal-close enum (campaign-state
+# milestone_outcomes[].terminal). delivered ⟸ acceptance_pass_*; waived ⟸ the rest.
+# acceptance_cleanup_required (accept_residue_and_ship) is reached only AFTER an
+# Acceptance PASS that needed a human ship-signoff (the residue waiver) — exactly the
+# advisory-pass+ship-signoff shape — so it maps to acceptance_pass_advisory_ship
+# (delivered: "delivered requires a recorded Acceptance pass + any required signoff").
+_RESUME_ADVANCE_TERMINAL: Dict[str, str] = {
+    "advisory_acceptance_pass_signoff": "acceptance_pass_advisory_ship",
+    "acceptance_fix_required": "fix_required_ship",
+    "acceptance_surface_approve": "surface_approve_ship",
+    "acceptance_cleanup_required": "acceptance_pass_advisory_ship",
+}
+
 
 class Campaign:
     """Deterministic outer loop over a campaign plan. Pure except for the injected
@@ -437,11 +458,19 @@ class Campaign:
 
     def __init__(self, plan: dict, run_dir: str, run_unit: RunUnit, *,
                  clock: Callable[[], str], audit_dir: Optional[str] = None,
-                 repo_dir: Optional[str] = None):
+                 repo_dir: Optional[str] = None,
+                 charter: Optional[dict] = None,
+                 ledger_path: Optional[str] = None):
         self.plan = plan
         self.run_dir = run_dir
         self.run_unit = run_unit
         self.clock = clock
+        # Δ-19 F1/G1: the resolved campaign charter is needed to recompute the LIVE
+        # signed scope-envelope (the resolved functional-acceptance {mode,source}
+        # inherits the charter default when the milestone is silent — design §3.3.1).
+        # OPTIONAL; absent ⇒ the F1 integrity check (only active when the plan opts in
+        # via a `signoff` block or any covers_req_ids) can't verify and fails closed.
+        self.charter = charter
         self.repo_dir = os.path.abspath(repo_dir) if repo_dir else None
         # Fail-closed plan ingress: validate the WHOLE plan against
         # schemas/campaign-plan.schema.json BEFORE any field access or dispatch, so a
@@ -467,6 +496,34 @@ class Campaign:
                 # sub-sprint ids unique within a milestone (Codex inc-2 round-4).
                 raise ValueError(
                     f"milestone {m['id']!r} has duplicate sub-sprint id(s): {dupes}")
+        # Δ-19 §3.4 cross-milestone coverage validator (JSON Schema enforces uniqueness
+        # only WITHIN a milestone's covers_req_ids array; the at-most-one-covering-
+        # milestone-per-REQ rule is a cross-array constraint it cannot express). A REQ
+        # named by two milestones is fail-closed at construction. Additive: a plan with
+        # no covers_req_ids never trips it (byte-identical to today).
+        _covering: Dict[str, str] = {}
+        for m in self.milestones:
+            for rid in (m.get("covers_req_ids") or []):
+                prior = _covering.get(rid)
+                if prior is not None:
+                    raise ValueError(
+                        f"requirement {rid!r} is covered by more than one milestone "
+                        f"({prior!r} and {m['id']!r}) — Phase-1 enforces at-most-one "
+                        f"covering milestone per REQ (Δ-19 §3.4)")
+                _covering[rid] = m["id"]
+        # Δ-19 §3.5/§5.4: validate the requirement ledger when one is wired (fail-closed
+        # ingress, mirroring the plan/state gates). Load + schema-validate ONLY; the
+        # engine NEVER writes the ledger back (delivery_status is a derived projection).
+        self.ledger_path = ledger_path
+        self.ledger: Optional[dict] = None
+        if ledger_path and os.path.isfile(ledger_path):
+            try:
+                with open(ledger_path, encoding="utf-8") as fh:
+                    led = json.load(fh)
+            except OSError as exc:
+                raise ValueError(f"campaign requirement ledger unreadable: {exc}")
+            _validate_or_raise(led, "requirement-ledger.schema.json", "ledger")
+            self.ledger = led
         self.budget = plan.get("budget") or {}
         iso = plan.get("milestone_isolation") or {}
         # Legacy top-level isolation_strategy (shared|worktree) → map when milestone_isolation absent.
@@ -856,10 +913,75 @@ class Campaign:
         self.state.pause_checkpoint = None
         self._save()
 
+    # ----- Δ-19 F1/G1 signed-scope integrity (design §3.3.1) -------------- #
+    def _signoff_status(self) -> str:
+        """The campaign_plan_signoff status of self.plan: one of
+        'signed' | 'stale' | 'pre_f1' | 'unsigned'.
+
+        F1 (the signed resolved-scope snapshot integrity check) is ACTIVE only when the
+        plan OPTS IN — it carries a `signoff` block OR any milestone declares
+        covers_req_ids (both are NEW fields, so a legacy plan stays byte-identical). When
+        F1 is inactive this collapses to today's bare-`signed_by_human` check. When
+        active, 'signed' requires the stored signed_scope_hash to MATCH the live
+        recomputed hash; a post-signoff edit (or a charter-default flip — G1) ⇒ 'stale';
+        a bare top-level signed_by_human with no signoff block ⇒ 'pre_f1' (one re-sign)."""
+        return signoff_status(self.plan, self.charter)
+
+    # ----- Δ-19 F3 terminal-outcome stamping (design §3.5.1) ------------- #
+    def _stamp_milestone_outcome(self, milestone_id: str, terminal: str, *,
+                                 pause_reason: Optional[str] = None,
+                                 decision_ref: Optional[str] = None) -> None:
+        """Record ONE terminal-close outcome per milestone (idempotent — a §3.5c crash
+        replay re-runs the close branch, so a second stamp for the same milestone is a
+        no-op). scope_report DERIVES delivery_status from these; the engine never writes
+        the ledger."""
+        for o in self.state.milestone_outcomes:
+            if isinstance(o, dict) and o.get("milestone_id") == milestone_id:
+                return
+        entry: dict = {"milestone_id": milestone_id, "terminal": terminal}
+        if pause_reason:
+            entry["pause_reason"] = pause_reason
+        if decision_ref:
+            entry["decision_ref"] = decision_ref
+        self.state.milestone_outcomes.append(entry)
+
+    def _derive_inner_loop_terminal(self, milestone: dict):
+        """Terminal close enum for a milestone that completed via the INNER dispatch loop
+        (not a resume ship), read from its LAST recorded unit (design §3.5.1):
+          * a terminal review_out_of_scope accept (the halted unit is last, advanced via
+            ACT_ADVANCE_SUBSPRINT, no new unit) ⇒ out_of_scope_advance (waived);
+          * final_state 'done' (an authoritative Acceptance pass auto-shipped) ⇒
+            acceptance_pass_authoritative (delivered);
+          * a terminal clean 'advance' (no milestone-close Acceptance gate ran —
+            acceptance mode off; driver.py:3007) ⇒ acceptance_off (waived).
+        Returns (terminal, pause_reason, decision_ref)."""
+        mid = milestone["id"]
+        last = None
+        for u in reversed(self.state.units):
+            if isinstance(u, dict) and u.get("milestone_id") == mid:
+                last = u
+                break
+        if last is None:
+            return "not_shipped", None, None
+        pr = last.get("pause_reason")
+        cpt = last.get("checkpoint_path")
+        if last.get("status") == "halted" and pr == "review_out_of_scope":
+            return "out_of_scope_advance", pr, cpt
+        fs = last.get("final_state")
+        if fs in _MILESTONE_DONE_STATES:
+            return "acceptance_pass_authoritative", pr, cpt
+        if fs in _ADVANCE_STATES:
+            return "acceptance_off", pr, cpt
+        return "not_shipped", pr, cpt
+
     def _complete_milestone(self, milestone: dict) -> Optional["CampaignState"]:
-        """After a milestone is accepted: optional merge gate, then advance cursor.
+        """After a milestone is accepted: stamp its terminal outcome (F3), then the
+        optional merge gate, then advance cursor.
 
         Returns a paused CampaignState when the merge gate fires; else None."""
+        terminal, pr, ref = self._derive_inner_loop_terminal(milestone)
+        self._stamp_milestone_outcome(milestone["id"], terminal,
+                                      pause_reason=pr, decision_ref=ref)
         if self._needs_milestone_merge_gate(milestone):
             return self._pause_milestone_merge(milestone)
         self._advance_milestone_cursor()
@@ -876,8 +998,11 @@ class Campaign:
 
         # Campaign-tier re-checks that depend on UPDATED PLAN state (not a decision):
         if reason == "campaign_plan_signoff":
-            return ("proceed" if self.plan.get("signed_by_human")
-                    else self._repause(reason, "still_unsigned"))
+            # Δ-19 F1: honor only a FRESH-signed plan (stored hash == live hash). A
+            # stale/pre-F1/unsigned plan re-pauses (the `why` carries the status so the
+            # CLI distinguishes "stale-signed / blocked pending re-sign" from "unsigned").
+            status = self._signoff_status()
+            return "proceed" if status == "signed" else self._repause(reason, status)
         if reason == "milestone_decompose_required":
             ms = self.milestones[self.state.milestone_index]
             return ("proceed" if ms.get("subsprint_sequence")
@@ -986,6 +1111,14 @@ class Campaign:
             if action == ACT_ADVANCE_SUBSPRINT:
                 self.state.subsprint_index += 1   # this sub-sprint accepted → next in milestone
             else:                                 # ACT_ADVANCE_MILESTONE
+                # Δ-19 F3: a human ship decision at an Acceptance gate CLOSES this
+                # milestone — stamp its terminal outcome (delivered vs waived-with-reason)
+                # from (pause_reason, decision) BEFORE the cursor advances. This path does
+                # NOT go through _complete_milestone, so it stamps here.
+                closing = self.milestones[self.state.milestone_index]["id"]
+                self._stamp_milestone_outcome(
+                    closing, _RESUME_ADVANCE_TERMINAL.get(reason, "not_shipped"),
+                    pause_reason=reason, decision_ref=self.state.pause_checkpoint)
                 self.state.milestone_index += 1   # milestone accepted → next milestone
                 self.state.subsprint_index = 0
             self._commit_dispatch_resolution()    # barrier: clear pause → RUNNING + save
@@ -1051,15 +1184,20 @@ class Campaign:
                         {"campaign_id": self.campaign_id,
                          "goal": self.plan.get("goal"),
                          "milestones": [m["id"] for m in self.milestones]})
-            if not self.plan.get("signed_by_human"):
+            status = self._signoff_status()
+            if status != "signed":
                 # The campaign plan (the milestone backlog) MUST be Customer-signed
                 # before the runner drives it — the campaign-tier human gate
                 # `campaign_plan_signoff` (design §5.1; 以终为始). Enforced HERE at the
                 # campaign tier (NOT the charter validator — that validates charters,
-                # not campaign plans). Resume once `signed_by_human: true` is set.
+                # not campaign plans). Δ-19 F1: when the plan opts into the signed
+                # resolved-scope snapshot (a `signoff` block or any covers_req_ids),
+                # signed ⟺ stored hash == live hash; a stale/pre-F1 plan re-pauses for a
+                # re-sign (NOT treated as plain "unsigned"). Resume once re-signed.
                 return self._pause("campaign_plan_signoff", None,
                                    "campaign_plan_signoff",
-                                   {"goal": self.plan.get("goal")})
+                                   {"goal": self.plan.get("goal"),
+                                    "signoff_status": status})
         # Accumulate wall-clock across resume: base = persisted total; we add only
         # THIS invocation's active delta (excludes human-wait while paused), so
         # max_wall_clock_minutes can't be evaded by pause/resume.
@@ -1197,11 +1335,14 @@ class Campaign:
 def run_campaign(plan: dict, run_dir: str, run_unit: RunUnit, *,
                  clock: Callable[[], str], audit_dir: Optional[str] = None,
                  resume: bool = False, decision_resolver=None,
-                 repo_dir: Optional[str] = None) -> CampaignState:
+                 repo_dir: Optional[str] = None,
+                 charter: Optional[dict] = None,
+                 ledger_path: Optional[str] = None) -> CampaignState:
     """Convenience entry point — construct a Campaign and run it."""
     return Campaign(plan, run_dir, run_unit, clock=clock,
-                    audit_dir=audit_dir, repo_dir=repo_dir).run(resume=resume,
-                                             decision_resolver=decision_resolver)
+                    audit_dir=audit_dir, repo_dir=repo_dir, charter=charter,
+                    ledger_path=ledger_path).run(
+                        resume=resume, decision_resolver=decision_resolver)
 
 
 # --------------------------------------------------------------------------- #
@@ -1245,9 +1386,149 @@ def latest_checkpoint(checkpoints_dir: str):
 def _canonical_sha256(obj: Any) -> str:
     """SHA-256 over a canonical (sorted-key) JSON encoding — a stable content
     fingerprint independent of dict ordering, for the derivation provenance."""
-    return hashlib.sha256(
-        json.dumps(obj, sort_keys=True, separators=(",", ":"),
-                   ensure_ascii=False).encode("utf-8")).hexdigest()
+    return hashlib.sha256(_canonical_json(obj).encode("utf-8")).hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# Δ-19 F1/G1 — the signed RESOLVED-scope SNAPSHOT + hash (design §3.3.1).
+#
+# This gives campaign_plan_signoff INTEGRITY: a plan cannot be edited after signoff
+# (remove a milestone, change a future covers_req_ids, or flip an inheriting
+# milestone's resolved acceptance via a charter-default change) while staying
+# "signed". The runner recomputes the LIVE resolved envelope + hash at load and
+# honors `signed` ONLY when the stored signed_scope_hash matches. It adds NO new
+# checkpoint id (B5) — it tightens the EXISTING campaign_plan_signoff gate.
+# --------------------------------------------------------------------------- #
+def _canonical_json(obj: Any) -> str:
+    """Canonical JSON for hashing/fingerprints: UTF-8, sorted keys, no insignificant
+    whitespace (design §3.3.1)."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def resolve_functional_acceptance(charter: Optional[dict],
+                                  functional_acceptance: Optional[str]):
+    """The RESOLVED per-milestone acceptance class (mode, source) — the SAME precedence
+    derive_milestone_context applies: an explicit milestone value (incl. 'static')
+    OVERRIDES (source='milestone'); absent INHERITS the charter
+    tooling.acceptance.functional.mode (source='charter'); else ('static','default')."""
+    charter_mode = ((((charter or {}).get("tooling") or {}).get("acceptance") or {})
+                    .get("functional") or {}).get("mode")
+    if functional_acceptance is not None:
+        return functional_acceptance, "milestone"
+    if charter_mode is not None:
+        return charter_mode, "charter"
+    return "static", "default"
+
+
+def _envelope_milestone(charter: Optional[dict], milestone: dict) -> dict:
+    """One milestone's RESOLVED scope-envelope entry (design §3.3.1): the scope-bearing
+    fields + the RESOLVED acceptance {mode,source} (not the literal, possibly-absent
+    functional_acceptance). Absent arrays normalize to [] so absent-vs-empty doesn't
+    churn the hash; acceptance_bar is the string or null."""
+    mode, source = resolve_functional_acceptance(
+        charter, milestone.get("functional_acceptance"))
+    return {
+        "id": milestone.get("id"),
+        "objective": milestone.get("objective"),
+        "covers_req_ids": list(milestone.get("covers_req_ids") or []),
+        "subsprint_sequence": list(milestone.get("subsprint_sequence") or []),
+        "depends_on": list(milestone.get("depends_on") or []),
+        "resolved_functional_acceptance": {"mode": mode, "source": source},
+        "acceptance_bar": milestone.get("acceptance_bar"),
+    }
+
+
+def compute_scope_envelope(plan: dict, charter: Optional[dict]) -> dict:
+    """The STORED signed scope-envelope snapshot {goal, milestones:[…]} (design §3.3.1,
+    G4: stored not just hashed, so prior signed coverage is reconstructable for
+    stale-signoff rendering). Milestones are in the plan's DECLARED order (reordering
+    is a scope change → a new hash → stale)."""
+    return {
+        "goal": plan.get("goal"),
+        "milestones": [_envelope_milestone(charter, m)
+                       for m in (plan.get("milestones") or [])],
+    }
+
+
+def _signed_scope_H(plan: dict, charter: Optional[dict], *,
+                    charter_ref: Optional[str], charter_hash: str) -> dict:
+    """The EXACT hash-input object H (design §3.3.1): goal/charter_hash live INSIDE H
+    (not concatenated alongside the envelope), so the input is unambiguous."""
+    return {
+        "version": "v1",
+        "campaign_id": plan.get("campaign_id"),
+        "goal": plan.get("goal"),
+        "charter_ref": charter_ref,
+        "charter_hash": charter_hash,
+        "milestones": [_envelope_milestone(charter, m)
+                       for m in (plan.get("milestones") or [])],
+    }
+
+
+def compute_signed_scope_hash(plan: dict, charter: Optional[dict], *,
+                              charter_ref: Optional[str] = None,
+                              charter_hash: Optional[str] = None) -> str:
+    """signed_scope_hash = sha256(canonical_json(H)) per design §3.3.1. charter_hash
+    defaults to the canonical hash of `charter` (the LIVE charter when the runner
+    recomputes; the sign-time charter when stamping)."""
+    ch = charter or {}
+    if charter_hash is None:
+        charter_hash = _canonical_sha256(ch)
+    H = _signed_scope_H(plan, ch, charter_ref=charter_ref, charter_hash=charter_hash)
+    return hashlib.sha256(_canonical_json(H).encode("utf-8")).hexdigest()
+
+
+def stamp_signoff(plan: dict, charter: Optional[dict], *, signer: str = "human",
+                  signed_at: str = "", charter_ref: str = "") -> dict:
+    """Return a DEEP COPY of `plan` with a freshly-stamped `signoff` block — the F1
+    "sign" action (the human can't hand-compute the hash). Used by the --sign-plan CLI
+    and tests. Re-running it after a scope edit RE-STAMPS the snapshot (a new signature
+    epoch)."""
+    out = copy.deepcopy(plan)
+    ch = charter or {}
+    charter_hash = _canonical_sha256(ch)
+    out["signoff"] = {
+        "signed_by_human": True,
+        "signer": signer,
+        "signed_at": signed_at,
+        "charter_ref": charter_ref,
+        "charter_hash": charter_hash,
+        "scope_envelope": compute_scope_envelope(out, ch),
+        "signed_scope_hash": compute_signed_scope_hash(
+            out, ch, charter_ref=charter_ref, charter_hash=charter_hash),
+    }
+    return out
+
+
+def f1_required(plan: Optional[dict]) -> bool:
+    """Whether the F1 integrity check is ACTIVE for this plan. F1 is OPT-IN — triggered
+    by a `signoff` block OR any milestone declaring covers_req_ids. Both are NEW fields,
+    so a legacy plan never triggers it (additivity: byte-identical to today)."""
+    plan = plan or {}
+    if isinstance(plan.get("signoff"), dict):
+        return True
+    return any(m.get("covers_req_ids") for m in (plan.get("milestones") or []))
+
+
+def signoff_status(plan: Optional[dict], charter: Optional[dict] = None) -> str:
+    """campaign_plan_signoff status: 'signed' | 'stale' | 'pre_f1' | 'unsigned'
+    (design §3.3.1). When F1 is inactive this is the legacy bare-`signed_by_human`
+    check. When active: a `signoff` block with signed_by_human:true is 'signed' ⟺ its
+    stored signed_scope_hash == the live recomputed hash, else 'stale'; a bare top-level
+    signed_by_human with no signoff block is 'pre_f1' (one re-sign); else 'unsigned'.
+    Legacy precedence: when a signoff block exists it is authoritative and the bare flag
+    is ignored."""
+    plan = plan or {}
+    if not f1_required(plan):
+        return "signed" if plan.get("signed_by_human") else "unsigned"
+    signoff = plan.get("signoff")
+    if isinstance(signoff, dict) and signoff.get("signed_by_human") is True:
+        live = compute_signed_scope_hash(
+            plan, charter or {}, charter_ref=signoff.get("charter_ref"))
+        return "signed" if signoff.get("signed_scope_hash") == live else "stale"
+    if plan.get("signed_by_human") is True:
+        return "pre_f1"
+    return "unsigned"
 
 
 def derive_milestone_context(charter: dict, milestone_id: str,
@@ -1276,14 +1557,8 @@ def derive_milestone_context(charter: dict, milestone_id: str,
     scope = derived.setdefault("autonomy", {}).setdefault("approved_scope", {})
     scope["subsprint_sequence"] = list(subsprint_sequence)
 
-    charter_mode = (((charter.get("tooling") or {}).get("acceptance") or {})
-                    .get("functional") or {}).get("mode")
-    if functional_acceptance is not None:
-        fmode, fsource = functional_acceptance, "milestone"
-    elif charter_mode is not None:
-        fmode, fsource = charter_mode, "charter"
-    else:
-        fmode, fsource = "static", "default"
+    # Same resolution the F1 signed envelope records (design §3.3.1 / §3.7).
+    fmode, fsource = resolve_functional_acceptance(charter, functional_acceptance)
     # Materialize the resolved mode onto the derived charter so the Driver's
     # _acceptance_class() reads it per milestone. Only touch the functional block when a
     # decision is needed (browser_e2e engages the gate; an explicit static neutralizes a

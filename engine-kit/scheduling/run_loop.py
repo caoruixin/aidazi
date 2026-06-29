@@ -463,6 +463,19 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
     return resolve
 
 
+def resolve_ledger_path(charter: dict, repo_dir: Optional[str]) -> str:
+    """The requirement-ledger path for this campaign (Δ-19). From
+    charter.requirements.ledger_path (default ``docs/requirements-ledger.json``),
+    resolved against ``repo_dir`` (else the CWD) when relative. Absent ledger file ⇒
+    the requirement projection stays dormant (additive)."""
+    req = (charter or {}).get("requirements") or {}
+    rel = req.get("ledger_path") or "docs/requirements-ledger.json"
+    if os.path.isabs(rel):
+        return rel
+    base = os.path.abspath(repo_dir) if repo_dir else os.getcwd()
+    return os.path.join(base, rel)
+
+
 def campaign_home_for(campaign_id: str, override: Optional[str] = None,
                       *, base: Optional[str] = None) -> str:
     """The STABLE home dir for a campaign's state/audit/units. It MUST persist
@@ -514,6 +527,10 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     else:
         run_loop_kwargs["allow_real"] = allow_real
 
+    # Δ-19: the requirement ledger (if the adopter wired one) — validated fail-closed by
+    # the campaign runner at construction; the requirement projection below reads it.
+    ledger_path = resolve_ledger_path(charter, repo_dir)
+
     base = {"campaign_id": campaign_id, "campaign_home": home, "units_dir": units_dir}
     try:
         run_unit = _cp.make_run_unit(charter, units_dir, campaign_id,
@@ -521,9 +538,11 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         resolver = make_campaign_decision_resolver(campaign_id, decision_path, home)
         st = _cp.run_campaign(plan, home, run_unit, clock=clock,
                               resume=resume, decision_resolver=resolver,
-                              repo_dir=repo_dir)
+                              repo_dir=repo_dir, charter=charter,
+                              ledger_path=ledger_path)
     except ValueError as exc:
-        # invalid plan / state / schema / mismatched campaign id → fail-closed.
+        # invalid plan / state / schema / mismatched campaign id / invalid ledger →
+        # fail-closed.
         return {**base, "status": "invalid", "error": str(exc),
                 "exit_code": CAMPAIGN_EXIT_INVALID}
 
@@ -552,6 +571,29 @@ def run_campaign_entry(plan: dict, charter: dict, *,
                                     baseline=_scope.load_baseline(home)))
     except Exception:
         scope_coverage = None
+
+    # Δ-19 requirement projection — emitted ONLY when a valid ledger is present (the
+    # campaign already validated it fail-closed; reaching here ⇒ valid or absent). Like
+    # scope_coverage it must NEVER break the run — any failure degrades to None.
+    requirement_coverage = None
+    if ledger_path and os.path.isfile(ledger_path):
+        try:
+            import scope_report as _scope
+            with open(ledger_path, encoding="utf-8") as fh:
+                ledger = json.load(fh)
+            requirement_coverage = _scope.requirement_summary_line(
+                _scope.compute_requirement_coverage(
+                    plan, st.to_dict(), ledger, charter=charter))
+        except Exception:
+            requirement_coverage = None
+
+    # F1: the live campaign_plan_signoff status (so a stale-signoff re-sign pause is
+    # actionable, distinct from plain "unsigned"). Best-effort.
+    try:
+        signoff_status = _cp.signoff_status(plan, charter)
+    except Exception:
+        signoff_status = None
+
     return {
         **base,
         "status": st.status,
@@ -566,6 +608,9 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         "total_spawns": st.total_spawns,
         "exit_code": exit_code,
         "scope_coverage": scope_coverage,
+        "requirement_coverage": requirement_coverage,
+        "signoff_status": signoff_status,
+        "milestone_outcomes": list(st.milestone_outcomes or []),
     }
 
 
@@ -573,8 +618,19 @@ def _campaign_resume_hint(result: dict) -> str:
     """One actionable line telling the human how to resolve THIS pause + resume."""
     reason = result.get("pause_reason")
     if reason == "campaign_plan_signoff":
-        return ('  -> sign the plan: set "signed_by_human": true, then re-run with '
-                "--resume")
+        sstatus = result.get("signoff_status")
+        if sstatus == "stale":
+            return ("  -> STALE SIGNOFF: the signed scope-envelope hash no longer matches "
+                    "the plan (a milestone/charter edit). Re-sign (re-stamp the snapshot): "
+                    "re-run with --campaign <plan> --charter <charter> --sign-plan, then "
+                    "--resume")
+        if sstatus == "pre_f1":
+            return ("  -> PRE-F1 plan (bare signed_by_human, no signoff snapshot). Stamp "
+                    "the F1 snapshot once: re-run with --campaign <plan> --charter "
+                    "<charter> --sign-plan, then --resume")
+        return ('  -> sign the plan: set "signed_by_human": true (or, with a ledger / '
+                'covers_req_ids, run --sign-plan to stamp the F1 snapshot), then re-run '
+                "with --resume")
     if reason == "milestone_decompose_required":
         return ("  -> fill this milestone's subsprint_sequence in the plan, then "
                 "re-run with --resume")
@@ -625,6 +681,21 @@ def print_campaign_result(result: dict) -> None:
                       "(scope_report.py --freeze-baseline at campaign start)")
             elif cov.get("added_milestones"):
                 print(f"               : added mid-flight={cov.get('added_milestones')}")
+        rcov = result.get("requirement_coverage")
+        if rcov:
+            print(f"requirement cov: {rcov.get('delivered')}/"
+                  f"{rcov.get('requirements_total')} requirements delivered  "
+                  f"waived={rcov.get('waived')}  uncovered={rcov.get('uncovered')}"
+                  f"  (signoff={rcov.get('signoff_status')})")
+            if rcov.get("uncovered_requirements"):
+                print(f"               : uncovered (PRD gap)="
+                      f"{rcov.get('uncovered_requirements')}")
+            if rcov.get("invalid_signed_disposition"):
+                print(f"               : invalid_signed_disposition="
+                      f"{rcov.get('invalid_signed_disposition')}")
+            if rcov.get("stale_signoff"):
+                print("               : STALE SIGNOFF — re-sign required "
+                      "(prior signed coverage preserved)")
     if status == "paused":
         print(f"paused at      : {result.get('pause_reason')}")
         if result.get("pause_milestone_id"):
@@ -643,6 +714,11 @@ def print_campaign_result(result: dict) -> None:
     # byte-identical) — emitted only when the scope-coverage projection succeeded.
     if result.get("scope_coverage"):
         print("SCOPE_COVERAGE=" + json.dumps(result["scope_coverage"], sort_keys=True))
+    # Δ-19 parallel, ADDITIVE parse contract — emitted ONLY when a valid ledger is
+    # present (CAMPAIGN_STATUS= / SCOPE_COVERAGE= stay byte-identical).
+    if result.get("requirement_coverage"):
+        print("REQUIREMENT_COVERAGE="
+              + json.dumps(result["requirement_coverage"], sort_keys=True))
 
 
 def run_loop(
@@ -812,6 +888,12 @@ def main(argv=None) -> int:
     parser.add_argument("--decision", default=None,
                         help="path to a campaign-decision.json resolving the current pause "
                              "(for --campaign --resume at a Mechanism-B gate)")
+    parser.add_argument("--sign-plan", action="store_true",
+                        help="Δ-19 F1: stamp the signed resolved-scope snapshot (signoff "
+                             "block + signed_scope_hash) INTO the --campaign plan file and "
+                             "exit. The campaign_plan_signoff re-sign action when a plan "
+                             "uses covers_req_ids / is stale (uses --charter for the "
+                             "resolved acceptance + charter hash).")
     parser.add_argument("--resume", action="store_true",
                         help="resume a paused run from its persisted state")
     args = parser.parse_args(argv)
@@ -841,6 +923,26 @@ def main(argv=None) -> int:
                       "exit_code": CAMPAIGN_EXIT_INVALID}
             print_campaign_result(result)
             return result["exit_code"]
+        # Δ-19 F1 re-sign action: stamp the signed resolved-scope snapshot into the plan
+        # file and exit. This is the human's voice at campaign_plan_signoff when the plan
+        # uses covers_req_ids / a signoff block (the human cannot hand-compute the hash).
+        if args.sign_plan:
+            import campaign as _cp  # lazy (campaign imports run_loop)
+            signed = _cp.stamp_signoff(plan, charter,
+                                       signed_at=_production_clock()(),
+                                       charter_ref=os.path.abspath(args.charter))
+            try:
+                _cp._validate_or_raise(signed, "campaign-plan.schema.json",
+                                       "signed plan")
+            except ValueError as exc:
+                print(f"--sign-plan ERROR: stamped plan is schema-invalid: {exc}")
+                return 2
+            with open(args.campaign, "w", encoding="utf-8") as fh:
+                json.dump(signed, fh, indent=2, sort_keys=True)
+            print(f"--sign-plan: stamped F1 signoff snapshot into {args.campaign}")
+            print(f"  signed_scope_hash={signed['signoff']['signed_scope_hash']}")
+            print("  re-run with --resume to drive the signed plan.")
+            return 0
         # Real runs resolve provider base URLs / API keys from .env.local (like the
         # single-loop path); mock dry-runs need none.
         if args.allow_real:

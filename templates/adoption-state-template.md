@@ -55,6 +55,7 @@ track: type_a | type_b | type_c | type_a_b_hybrid
 | Δ-16 Agent creation prereqs | T0 | <status> | — | — |
 | Δ-17 Common detours | T1 | <status> | — | — |
 | Δ-18 Delivery Loop | T1 (Type A) | <status> | — | — |
+| Δ-19 Requirement Ledger | T0 | <status> | additive backbone — set `not-applicable` until you wire `docs/requirements-ledger.json` + milestone `covers_req_ids`; once wired, an in-flight signed plan needs ONE F1 re-sign (`--sign-plan`) | — |
 
 # Drift reasons (for `divergent` rows)
 
