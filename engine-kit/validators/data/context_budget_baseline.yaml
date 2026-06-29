@@ -176,27 +176,23 @@ entries:
   task_signals: []
   total_bytes: 16988
 - by_purpose:
-    skill_body: 27615
-  est_tokens: 6903
+    skill_body: 18127
+  est_tokens: 4531
   files:
-    skills/vendored/a11y-checklist/SKILL.md: 2587
-    skills/vendored/front-end-design-checklist/SKILL.md: 2558
     skills/vendored/frontend-design/SKILL.md: 8260
     skills/vendored/test-driven-development/SKILL.md: 9867
-    skills/vendored/web-interface-guidelines/SKILL.md: 4343
   key: skills:dev:ui
   kind: skills
   role: dev
   task_kind: null
   task_signals:
   - ui
-  total_bytes: 27615
+  total_bytes: 18127
 - by_purpose:
-    skill_body: 25028
-  est_tokens: 6257
+    skill_body: 16768
+  est_tokens: 4192
   files:
     skills/vendored/front-end-design-checklist/SKILL.md: 2558
-    skills/vendored/frontend-design/SKILL.md: 8260
     skills/vendored/test-driven-development/SKILL.md: 9867
     skills/vendored/web-interface-guidelines/SKILL.md: 4343
   key: skills:dev:frontend
@@ -205,7 +201,7 @@ entries:
   task_kind: null
   task_signals:
   - frontend
-  total_bytes: 25028
+  total_bytes: 16768
 - by_purpose:
     skill_body: 20685
   est_tokens: 5171

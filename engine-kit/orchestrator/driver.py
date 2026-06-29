@@ -468,6 +468,12 @@ class RunState:
     e2e_manifest_hash: Optional[str] = None
     acceptance_evidence_hash: Optional[str] = None
     acceptance_snapshot: Optional[dict] = None
+    #: Track 1 1-c — integrity digest over the per-sub-sprint task_signals AUTHORED by Deliver at
+    #: decompose (set only when at least one sub-sprint carries task_signals). Bound here so a
+    #: post-decompose change to any task_signal is detected: the driver recomputes it before
+    #: task-aware skill selection and FAILS CLOSED on a mismatch (never silently mutates which
+    #: skills mount). None ⇒ no task_signals authored ⇒ no check (byte-identical to a pre-1-c run).
+    task_signals_digest: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -494,6 +500,10 @@ class RunState:
             "e2e_manifest_hash": self.e2e_manifest_hash,
             "acceptance_evidence_hash": self.acceptance_evidence_hash,
             "acceptance_snapshot": self.acceptance_snapshot,
+            # 1-c: emit ONLY when set, so a run that authored no task_signals round-trips
+            # byte-identically to a pre-1-c state.json (additive; from_dict tolerates absence).
+            **({"task_signals_digest": self.task_signals_digest}
+               if self.task_signals_digest is not None else {}),
         }
 
     @classmethod
@@ -522,6 +532,7 @@ class RunState:
             e2e_manifest_hash=d.get("e2e_manifest_hash"),
             acceptance_evidence_hash=d.get("acceptance_evidence_hash"),
             acceptance_snapshot=d.get("acceptance_snapshot"),
+            task_signals_digest=d.get("task_signals_digest"),
         )
 
 
@@ -1006,6 +1017,8 @@ class Driver:
             "task_signals": list(_task_signals),
             "selected_skills": list(effective.selected_skills),
             "skipped_skills": [dict(s) for s in effective.skipped_skills],
+            # 1-c — signals that matched NO registered skill (visible, never a silent fall-back).
+            "unmatched_signals": list(effective.unmatched_signals),
         })
 
         self.state.spawn_count += 1
@@ -1088,6 +1101,45 @@ class Driver:
         self.state.last_verdict = verdict
         return verdict
 
+    @staticmethod
+    def _task_signals_digest(planned_subsprints: list) -> Optional[str]:
+        """Track 1 1-c — a deterministic digest over the per-sub-sprint task_signals authored at
+        decompose. Returns None when NO sub-sprint carries task_signals (so a pre-1-c / no-signal
+        run stores no digest and stays byte-identical). Otherwise sha256 over the canonical
+        ``[(id, sorted(task_signals))]`` mapping for EVERY sub-sprint — so adding, removing, or
+        changing any sub-sprint's signals moves the digest (detected by ``_assert_task_signals_unmutated``)."""
+        any_signals = False
+        basis = []
+        for s in planned_subsprints or []:
+            if not isinstance(s, dict):
+                continue
+            raw = s.get("task_signals")
+            sig = sorted(str(x) for x in raw) if isinstance(raw, list) else []
+            if sig:
+                any_signals = True
+            basis.append([str(s.get("id")), sig])
+        if not any_signals:
+            return None
+        blob = json.dumps(basis, sort_keys=True, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
+
+    def _assert_task_signals_unmutated(self) -> None:
+        """Track 1 1-c — FAIL CLOSED if the live ``planned_subsprints`` task_signals no longer match
+        the digest stamped at decompose. Bound here because task_signals drives which skills mount,
+        is NOT covered by signed_scope_hash (sub-sprint IDs only) or acceptance_input_hash (excluded),
+        and ``planned_subsprints`` is otherwise restored from state.json with no integrity check — so
+        a post-decompose edit would silently change skill selection. No-op when no digest was stamped
+        (no task_signals authored)."""
+        if self.state is None or not self.state.task_signals_digest:
+            return
+        current = self._task_signals_digest(self.state.planned_subsprints)
+        if current != self.state.task_signals_digest:
+            raise self._gate_hard_fail(
+                "decompose task_signals changed after sign-off (digest stale: "
+                f"stamped={self.state.task_signals_digest} current={current}); the signed plan's "
+                "task-aware skill selection cannot be silently mutated",
+                self.state.state)
+
     def _task_context_for(self, role: str) -> tuple:
         """Track 1 §2.4 — the (task_unit_id, task_signals) driving task-aware skill mounting for
         a ``role`` spawn. task_unit_id keys the cache's task dimension; task_signals are read from
@@ -1107,6 +1159,10 @@ class Driver:
         ``task_signals``, so signals is () and selection adds nothing."""
         if effective_roles.canonical_role(role) == "acceptance" or self.state is None:
             return None, ()
+        # 1-c: a stamped digest means Deliver authored task_signals at decompose; FAIL CLOSED if they
+        # were changed afterward, BEFORE consuming them. Placed before the plan lookup so even
+        # removing the whole sub-sprint entry (→ current digest None) trips the stale-digest guard.
+        self._assert_task_signals_unmutated()
         plan = self._current_subsprint_plan()
         if not isinstance(plan, dict):
             # Pre-decompose / delivery-only / no plan entry for this sub-sprint → task-UNAWARE.
@@ -2308,7 +2364,16 @@ class Driver:
                     f"(`{self.state.brief_draft_ref}`) into an ordered list of "
                     f"sub-sprints. Emit a deliver-plan-verdict: each sub_sprint "
                     f"declares id, objective, scope_in, scope_out, modules, layers, "
-                    f"exit_criteria. Stay within the human-signed approved scope.")
+                    f"exit_criteria. Stay within the human-signed approved scope.\n"
+                    "TASK-SIGNALS (Track 1 — task-aware skill mounting): for a sub-sprint whose "
+                    "work involves UI/frontend/accessibility, ALSO set its OPTIONAL `task_signals` "
+                    "array using ONLY the closed vocabulary "
+                    "[a11y, design, frontend, interaction, performance, ui]; pick the FEW signals "
+                    "that genuinely apply (minimal — they each mount extra skills), and OMIT "
+                    "task_signals entirely for non-UI sub-sprints. Author them deliberately here in "
+                    "the signed plan — they are frozen at sign-off and MUST NOT be inferred later "
+                    "from prose, filenames, or changed files. An out-of-vocabulary signal is "
+                    "rejected (schema-invalid).")
         verdict = self._spawn("deliver", prompt, schema_key="deliver_plan",
                               lessons_block=lessons)
         sub_sprints = list(verdict.get("sub_sprints") or [])
@@ -2318,6 +2383,9 @@ class Driver:
         # Dev-spec source (resolved per sub-sprint in _resolve_dev_spec), not just
         # the ordered ids. compact/<id>-dev-prompt.md becomes an OPTIONAL projection.
         self.state.planned_subsprints = [s for s in sub_sprints if isinstance(s, dict)]
+        # 1-c: stamp the task_signals integrity digest (None when none authored) so a post-decompose
+        # change to which skills a sub-sprint mounts fails closed (_assert_task_signals_unmutated).
+        self.state.task_signals_digest = self._task_signals_digest(self.state.planned_subsprints)
 
         # Make _milestone_complete (terminality) see the plan: set the charter's
         # approved subsprint_sequence from the plan when none was supplied.
@@ -2335,7 +2403,8 @@ class Driver:
 
         self._audit("milestone_decomposed",
                     {"subsprint_count": len(sub_sprints),
-                     "subsprint_sequence": list(seq)})
+                     "subsprint_sequence": list(seq),
+                     "task_signals_digest": self.state.task_signals_digest})
 
     def _scope_expansion_guard(self, sub_sprints: Sequence[dict]) -> dict:
         """Pure: compute the union of plan modules+layers vs the human-signed

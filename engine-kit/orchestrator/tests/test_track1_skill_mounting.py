@@ -112,7 +112,7 @@ class SkipIfAbsentTests(unittest.TestCase):
         skipped = erc.resolve_role_config({"tooling": {"dev": {"skills": {
             "mode": "extend", "items": [{"id": "nope", "optional": True}]}}}}, "dev")
         footer = erc.skill_skip_footer(skipped)
-        self.assertIn("Skipped optional skills", footer)
+        self.assertIn("Skipped / unmatched skills", footer)
         self.assertIn("nope", footer)
 
 
@@ -261,6 +261,92 @@ class SchemaAdditiveTests(unittest.TestCase):
         schema = _load_schema(os.path.join("compact", "mission-charter.compact.schema.json"))
         sb = schema["$defs"]["skill_binding"]["properties"]
         self.assertIn("optional", sb)
+
+
+class Track1cActivationTests(unittest.TestCase):
+    """Track 1 Phase 1-c — deterministic task-scoped selection over the REAL vendored core-4 UI
+    skills. Covers the user's 10 acceptance points (driver-level cache-collision + plan-mutation
+    cases live in test_driver.py)."""
+
+    # (1) no signals → behavior-neutral: dev resolves only its default; no UI skill mounts.
+    def test_no_signals_is_behavior_neutral(self):
+        base = erc.resolve_role_config({}, "dev")
+        ext = erc.resolve_role_config({}, "dev", task_signals=[])
+        self.assertEqual([s.id for s in base.skills], ["test-driven-development"])
+        self.assertEqual(base.skill_set_hash, ext.skill_set_hash)
+        self.assertEqual(ext.selected_skills, ())
+
+    # (2) one signal → only its matching skill(s) load — NOT all four (no blanket load-all).
+    def test_one_signal_loads_only_its_matching_skills(self):
+        cfg = erc.resolve_role_config({}, "dev", task_signals=["ui"])
+        # `ui` matches only frontend-design (after the no-blanket retag).
+        self.assertEqual(list(cfg.selected_skills), ["frontend-design"])
+        self.assertEqual([s.id for s in cfg.skills],
+                         ["test-driven-development", "frontend-design"])
+        # a different single signal matching exactly one skill:
+        cfg2 = erc.resolve_role_config({}, "dev", task_signals=["interaction"])
+        self.assertEqual(list(cfg2.selected_skills), ["web-interface-guidelines"])
+
+    # (3) multiple signals → deterministic minimal union, no duplicates.
+    def test_multiple_signals_deterministic_union_no_dupes(self):
+        a = erc.resolve_role_config({}, "dev", task_signals=["design", "frontend"])
+        b = erc.resolve_role_config({}, "dev", task_signals=["frontend", "design"])
+        self.assertEqual(list(a.selected_skills), list(b.selected_skills))  # order-independent
+        self.assertEqual(list(a.selected_skills),
+                         ["front-end-design-checklist", "frontend-design",
+                          "web-interface-guidelines"])  # union of design+frontend, deduped
+        self.assertEqual(len(a.selected_skills), len(set(a.selected_skills)))
+        # no single signal pulls all four — the maximal single-signal set is < 4.
+        for sig in erc.TASK_SIGNAL_VOCAB:
+            self.assertLess(len(erc.resolve_role_config({}, "dev", task_signals=[sig]).selected_skills), 4)
+
+    # (4) unknown signal → validation failure (the closed-vocab enum). Covered structurally by
+    # SignalVocabularyTests.test_unknown_task_signal_fails_schema_validation; assert the selector
+    # treats an out-of-vocab signal as a no-match (never a silent fall-back to all skills).
+    def test_unknown_signal_matches_nothing_and_is_surfaced(self):
+        cfg = erc.resolve_role_config({}, "dev", task_signals=["nonsense-signal"])
+        self.assertEqual(cfg.selected_skills, ())
+        self.assertEqual(list(cfg.unmatched_signals), ["nonsense-signal"])
+        self.assertEqual([s.id for s in cfg.skills], ["test-driven-development"])
+        self.assertIn("nonsense-signal", erc.skill_skip_footer(cfg))
+
+    # (5) optional missing skill (catalog-declared, absent on disk) → audited skip, not fatal.
+    def test_optional_missing_selected_skill_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _make_framework_root(tmp)   # ghost-skill is signal-tagged but has no dir
+            cfg = erc.resolve_role_config({}, "dev", task_signals=["ui"], framework_root=root)
+            self.assertIn("ui-skill", [s.id for s in cfg.skills])
+            self.assertEqual([s["id"] for s in cfg.skipped_skills], ["ghost-skill"])
+
+    # (6) required missing skill → hard failure (selection never masks a required misconfig).
+    def test_required_missing_skill_hard_fails(self):
+        charter = {"tooling": {"dev": {"skills": {"mode": "extend", "items": [
+            {"id": "does-not-exist-required"}]}}}}
+        with self.assertRaises(erc.EffectiveConfigError):
+            erc.resolve_role_config(charter, "dev", task_signals=["ui"])
+
+    # (8) Acceptance never receives task-selected skills (byte-identical regardless of signals).
+    def test_acceptance_never_task_selected(self):
+        base = erc.resolve_role_config({}, "acceptance")
+        for sigs in (["a11y"], ["ui", "design", "frontend", "a11y"]):
+            ext = erc.resolve_role_config({}, "acceptance", task_signals=sigs)
+            self.assertEqual([s.id for s in ext.skills], [s.id for s in base.skills])
+            self.assertEqual(ext.skill_set_hash, base.skill_set_hash)
+            self.assertEqual(ext.selected_skills, ())
+
+    # (10) runtime context carries the COMPACT SKILL.md body only — never the large retained upstream.
+    def test_runtime_body_is_compact_skill_md_only(self):
+        cfg = erc.resolve_role_config({}, "dev", task_signals=["a11y"])
+        block = erc.skill_prompt_block(cfg)
+        self.assertIn("a11y-checklist", block)
+        # the prompt block points at SKILL.md, NOT the retained upstream-checklists.json (33 KB).
+        self.assertIn("SKILL.md", block)
+        self.assertNotIn("upstream-checklists.json", block)
+        self.assertNotIn("upstream-README.md", block)
+        # each selected UI skill's loaded body (SKILL.md) is compact (< 9 KB).
+        for s in cfg.skills:
+            if s.id in ("a11y-checklist", "web-interface-guidelines"):
+                self.assertLess(os.path.getsize(os.path.join(s.path, "SKILL.md")), 9000)
 
 
 class SignalVocabularyTests(unittest.TestCase):

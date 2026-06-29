@@ -111,6 +111,10 @@ class EffectiveRoleConfig:
     #: Dev/Deliver/Research/Reviewer AND the sub-sprint carries ``task_signals`` that
     #: match a catalog ``signals`` tag. Observation/audit only — not hashed.
     selected_skills: tuple[str, ...] = ()
+    #: Track 1 1-c — signed ``task_signals`` for which NO catalog skill carries the tag, i.e. a
+    #: valid signal that matched NOTHING. Surfaced so a no-match is VISIBLE on the audit surface
+    #: (never a silent fall-back to loading every UI skill). Observation/audit only — not hashed.
+    unmatched_signals: tuple[str, ...] = ()
 
     @property
     def skill_set_hash(self) -> str:
@@ -130,6 +134,7 @@ class EffectiveRoleConfig:
             "acceptance_functional": self.acceptance_functional,
             "skipped_skills": [dict(s) for s in self.skipped_skills],
             "selected_skills": list(self.selected_skills),
+            "unmatched_signals": list(self.unmatched_signals),
         }
 
 
@@ -294,6 +299,21 @@ def _resolve_skill(entry: Any, *, catalog: dict, framework_root: str,
     )
 
 
+def _catalog_signal_universe(catalog: dict) -> set:
+    """The set of signal tags any catalog skill (``skills``/``authored``) declares — the signals
+    that CAN match a skill. Used to surface task_signals that match nothing (1-c)."""
+    universe: set = set()
+    for section in ("skills", "authored"):
+        entries = catalog.get(section) or {}
+        if not isinstance(entries, dict):
+            continue
+        for e in entries.values():
+            sig = e.get("signals") if isinstance(e, dict) else None
+            if isinstance(sig, list):
+                universe |= {str(x) for x in sig}
+    return universe
+
+
 def select_skills_for_task(role: str, task_signals: Any, catalog: dict) -> list[str]:
     """Track 1 §2.3 — deterministic task-aware skill selection.
 
@@ -353,6 +373,7 @@ def resolve_role_config(charter: dict, role: str, *,
     # a matching `signals` tag) this adds nothing, so `bindings` — and the resolved `skills` /
     # `skill_set_hash` — are byte-identical to the pre-Track-1 result.
     selected_ids: list[str] = []
+    unmatched: list[str] = []
     if task_signals and canonical != "acceptance":
         already = {_binding_id(b) for b in bindings}
         for sid in select_skills_for_task(canonical, task_signals, catalog):
@@ -360,6 +381,15 @@ def resolve_role_config(charter: dict, role: str, *,
                 bindings.append({"id": sid, "optional": True})
                 already.add(sid)
                 selected_ids.append(sid)
+        # 1-c — surface signals that matched NO catalog skill (a no-match must be visible, never
+        # a silent fall-back). Deterministic + order-preserving + de-duplicated.
+        covered = _catalog_signal_universe(catalog)
+        seen_sig: set = set()
+        for raw in task_signals:
+            sig = str(raw)
+            if sig not in covered and sig not in seen_sig:
+                seen_sig.add(sig)
+                unmatched.append(sig)
 
     # Resolve every binding. §2.2 skip-if-absent: an OPTIONAL binding that does not resolve is
     # recorded in `skipped_skills` (audit + footer) instead of raising; a REQUIRED binding that
@@ -402,6 +432,7 @@ def resolve_role_config(charter: dict, role: str, *,
         acceptance_functional=functional,
         skipped_skills=tuple(skipped),
         selected_skills=tuple(selected_ids),
+        unmatched_signals=tuple(unmatched),
     )
 
 
@@ -423,21 +454,26 @@ def skill_prompt_block(config: EffectiveRoleConfig) -> str:
 
 
 def skill_skip_footer(config: EffectiveRoleConfig) -> str:
-    """Track 1 §2.2 — a NON-SILENT footer naming the OPTIONAL skills that did not resolve
-    (skip-if-absent). Returns ``""`` when nothing was skipped, so the dispatched prompt is
-    BYTE-IDENTICAL to the pre-Track-1 prompt for the common case (no optional bindings / no
-    task selection). Mirrors the ``effective_role_config`` audit event so a skip is visible
-    both on the Audit Spine and in the agent's own context."""
-    if not config.skipped_skills:
+    """Track 1 §2.2/1-c — a NON-SILENT footer naming the OPTIONAL skills that did not resolve
+    (skip-if-absent) AND any task_signals that matched no skill. Returns ``""`` when there is
+    nothing to report, so the dispatched prompt is BYTE-IDENTICAL to the pre-Track-1 prompt for
+    the common case (no optional bindings / no task selection / all signals matched). Mirrors the
+    ``effective_role_config`` audit event so a skip or a no-match is visible both on the Audit
+    Spine and in the agent's own context — never a silent fall-back."""
+    if not config.skipped_skills and not config.unmatched_signals:
         return ""
-    rows = "\n".join(
-        f"- `{s.get('id')}`: skipped (optional, unresolved) — {s.get('reason')}"
-        for s in config.skipped_skills
-    )
-    return (
-        "\n\n## Skipped optional skills (not mounted)\n"
-        "These OPTIONAL skill bindings did not resolve and were SKIPPED (skip-if-absent); "
-        "proceed without them — they are not required for this role's work.\n"
-        f"{rows}\n"
-    )
+    parts = ["\n\n## Skipped / unmatched skills (not mounted)\n"]
+    if config.skipped_skills:
+        parts.append(
+            "These OPTIONAL skill bindings did not resolve and were SKIPPED (skip-if-absent); "
+            "proceed without them — they are not required for this role's work.\n")
+        parts.append("\n".join(
+            f"- `{s.get('id')}`: skipped (optional, unresolved) — {s.get('reason')}"
+            for s in config.skipped_skills) + "\n")
+    if config.unmatched_signals:
+        parts.append(
+            "These task_signals matched NO registered skill (no skill is mounted for them; this is "
+            "recorded, not a fall-back to loading all skills): "
+            f"{', '.join('`' + s + '`' for s in config.unmatched_signals)}.\n")
+    return "".join(parts)
 

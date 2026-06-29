@@ -132,7 +132,7 @@ skills:
     provenance: community
     recognition: { maintained: true }
     tool_requirements: []
-    signals: [ui, frontend, design]
+    signals: [ui, design]
     harness_compat: [claude_code, codex, cursor, headless]
     status: active
     vendored: true
@@ -144,7 +144,7 @@ skills:
     provenance: community
     recognition: { maintained: true }
     tool_requirements: []
-    signals: [ui, frontend, design]
+    signals: [design, frontend]
     harness_compat: [claude_code, codex, cursor, headless]
     status: active
     vendored: true
@@ -156,7 +156,7 @@ skills:
     provenance: community
     recognition: { maintained: true }
     tool_requirements: []
-    signals: [ui, frontend, interaction, a11y, performance]
+    signals: [frontend, interaction, performance, a11y]
     harness_compat: [claude_code, codex, cursor, headless]
     status: active
     vendored: true
@@ -168,7 +168,7 @@ skills:
     provenance: community
     recognition: { maintained: true }
     tool_requirements: []
-    signals: [a11y, ui]
+    signals: [a11y]
     harness_compat: [claude_code, codex, cursor, headless]
     status: active
     vendored: true
