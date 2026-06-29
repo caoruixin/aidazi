@@ -1130,15 +1130,26 @@ class Driver:
         and ``planned_subsprints`` is otherwise restored from state.json with no integrity check — so
         a post-decompose edit would silently change skill selection. No-op when no digest was stamped
         (no task_signals authored)."""
-        if self.state is None or not self.state.task_signals_digest:
+        if self.state is None:
             return
         current = self._task_signals_digest(self.state.planned_subsprints)
-        if current != self.state.task_signals_digest:
+        stamped = self.state.task_signals_digest
+        if stamped is None:
+            # No digest was stamped. A digest is ALWAYS written at decompose when any task_signal is
+            # authored, so present-signals-with-no-digest means the digest was stripped (or signals
+            # injected) post-decompose → FAIL CLOSED (do NOT mount skills on unverified signals).
+            # Genuinely no signals (current is None) ⇒ no check — byte-identical to a pre-1-c run.
+            if current is not None:
+                raise self._gate_hard_fail(
+                    "planned_subsprints carry task_signals but no task_signals_digest was stamped "
+                    "(digest missing/stripped, or signals injected post-decompose); refusing to "
+                    "mount task-selected skills on unverified signals", self.state.state)
+            return
+        if current != stamped:
             raise self._gate_hard_fail(
                 "decompose task_signals changed after sign-off (digest stale: "
-                f"stamped={self.state.task_signals_digest} current={current}); the signed plan's "
-                "task-aware skill selection cannot be silently mutated",
-                self.state.state)
+                f"stamped={stamped} current={current}); the signed plan's task-aware skill "
+                "selection cannot be silently mutated", self.state.state)
 
     def _task_context_for(self, role: str) -> tuple:
         """Track 1 §2.4 — the (task_unit_id, task_signals) driving task-aware skill mounting for

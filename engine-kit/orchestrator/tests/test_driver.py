@@ -172,14 +172,34 @@ class Track1SkillMountingDriverTests(unittest.TestCase):
             st.planned_subsprints = []
             self.assertEqual(drv_._task_context_for("deliver"), (None, ()))
             # Plan entry present (post-decompose) ⇒ keyed by the sub-sprint id + its signals.
+            # A stamped digest is required whenever signals are present (1-c fail-closed invariant).
             st.planned_subsprints = [{"id": "sprint-001", "objective": "o",
                                       "task_signals": ["ui", "frontend"]}]
+            st.task_signals_digest = drv_._task_signals_digest(st.planned_subsprints)
             self.assertEqual(drv_._task_context_for("deliver"),
                              ("sprint-001", ("ui", "frontend")))
             self.assertEqual(drv_._task_context_for("dev"),
                              ("sprint-001", ("ui", "frontend")))
             # Acceptance is excluded (§2.5) regardless of the plan.
             self.assertEqual(drv_._task_context_for("acceptance"), (None, ()))
+
+    def test_task_signals_present_without_stamped_digest_fails_closed(self):
+        # (1-c #9, Codex final) Signals present but NO stamped digest (stripped digest / injected
+        # signals) must FAIL CLOSED — never mount skills on unverified signals.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            st = drv_.state
+            st.subsprint_id = "sp-ui"
+            st.planned_subsprints = [{"id": "sp-ui", "objective": "o", "task_signals": ["ui"]}]
+            st.task_signals_digest = None   # digest stripped / never stamped
+            with self.assertRaises(GateHardFail) as ctx:
+                drv_._effective_role("dev")
+            self.assertIn("no task_signals_digest was stamped", ctx.exception.reason)
+            # control: removing the signals (genuinely none) → no check, resolves normally.
+            st.planned_subsprints = [{"id": "sp-ui", "objective": "o"}]
+            self.assertEqual([s.id for s in drv_._effective_role("dev").skills],
+                             ["test-driven-development"])
 
     def test_same_role_different_task_units_no_cache_collision(self):
         # (1-c #7) The same role across two sub-sprints with DIFFERENT task_signals resolves to

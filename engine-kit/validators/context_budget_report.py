@@ -137,7 +137,8 @@ BUDGET_ENTRIES: list = [
     # `dev` sub-sprint with that task_signal would load (its default + the §2.3 task-selected UI
     # skill bodies). The UI skill bodies are role-independent, so `dev` is the representative role;
     # every vocab signal appears in ≥1 row, so `--strict` catches growth in ANY vendored UI skill
-    # body. (`ui` selects all four — the maximal UI surface.)
+    # body. (No single signal selects all four — the retag keeps each signal's set minimal; `design`
+    # / `a11y` / `frontend` are the broadest at two skills each.)
     {"key": "skills:dev:ui", "role": "dev", "task_kind": None,
      "kind": "skills", "task_signals": ["ui"]},
     {"key": "skills:dev:frontend", "role": "dev", "task_kind": None,
