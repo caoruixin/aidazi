@@ -15,7 +15,7 @@ sources:
 - path: role-cards/research-agent.md
   sha256: 4b2f210283ba6c25abd6a6abf2a29d7ce41af9a2eab6d3c6143bd097430eb65a
 - path: role-cards/deliver-agent.md
-  sha256: 613e4bead81116a17ca2d728feb836223ccc80b54d2f31ae8820c688bc61624a
+  sha256: 7ea8298a09a12ebefc77a6cd30379f0dbf3f53dc739a904df0e54f5e06a1e606
 - path: role-cards/dev-agent.md
   sha256: 8abf572ff8965fdebf0051e16a5c2201a749b160f6a656eb89c566e3c5389499
 - path: role-cards/code-reviewer-agent.md

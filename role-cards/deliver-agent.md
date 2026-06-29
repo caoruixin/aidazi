@@ -175,6 +175,17 @@ Per `templates/deliver-close-taxonomy.md`, after Dev + Code Reviewer return verd
 - Write the close decision into the handoff §12 (Deliver+human co-sign).
 - If verdict = C or D, the `close_taxonomy_C_or_D` MANDATORY_CHECKPOINT (`process/delivery-loop.md` §4.2.3) fires; Customer resolves.
 
+### §3.6 Task-signals (task-aware skill mounting — Track 1)
+
+When you decompose, set each UI/frontend/accessibility sub-sprint's OPTIONAL `task_signals` array (on the `deliver-plan-verdict` sub_sprint you emit) using ONLY the CLOSED controlled vocabulary `[a11y, design, frontend, interaction, performance, ui]` — the FEW signals that genuinely apply (each mounts extra skill bodies, so stay minimal), and OMIT `task_signals` entirely for non-UI sub-sprints. An out-of-vocabulary signal is schema-invalid (the plan is rejected).
+
+- **You author them, in the signed plan.** Deliver explicitly authors `task_signals` at decompose. The AUTHORITATIVE value lives in the signed `deliver-plan-verdict` sub-sprint entry (driver-projected to `state.planned_subsprints`). No other role authors or owns them.
+- **Frozen; never inferred at runtime.** Signals are frozen at sign-off. Runtime roles MUST NOT infer, add, or rewrite `task_signals` from prose, filenames, or changed files — the selector reads only the signed value, never the diff.
+- **Selection is deterministic.** The driver deterministically mounts the matching vendored UI `SKILL.md` bodies for Dev/Deliver/Research/Code-Reviewer (a de-duplicated union, keyed per (role, task-unit); minimal-matching, so no single signal loads every skill). It is a pure signed-data → catalog-tag match — identical every run for the same signals.
+- **No silent load-all fallback.** A signed signal that matches NO registered skill is SURFACED (the `unmatched_signals` audit field + the dispatched-prompt footer) — a no-match NEVER silently mounts all UI skills.
+- **Post-sign-off mutation fails closed.** `task_signals` are covered by `RunState.task_signals_digest`, stamped at decompose. Any post-sign-off change to which skills a sub-sprint mounts — editing, removing, or injecting signals, or stripping the digest — makes the digest (and the plan sign-off) stale and FAILS CLOSED before any task-aware skill is mounted (`_assert_task_signals_unmutated`). Re-author signals only by re-decomposing the signed plan, never by editing state.
+- **Acceptance is excluded.** The Acceptance role is NEVER given task-selected skills (its skill-set feeds the calibration fingerprint); `task_signals` and `planned_subsprints` never enter `acceptance_input_hash`, so a run that authors signals leaves Acceptance hashing byte-identical.
+
 ## §4 Boundary rules (Constitution §3.4 invariant #5)
 
 ### §4.1 What you MAY do
