@@ -41,6 +41,10 @@
     "calibration_coupled": {
       "type": "boolean",
       "description": "If true, mounting/changing this skill invalidates the Acceptance judge's calibration (Constitution §3.6; role-skill-model.md §4 corollary). Set for the Acceptance default (advanced-evaluation)."
+    },
+    "optional": {
+      "type": "boolean",
+      "description": "Track 1 §2.2 — SKIP-IF-ABSENT. When true, a binding that does not resolve (no catalog entry / no resolvable path / no SKILL.md) is SKIPPED with a structured skip-reason (effective_role_config.resolve_role_config collects it into skipped_skills[]; the driver records it in the effective_role_config audit event + a non-silent footer) instead of hard-failing the gate. Default/absent = REQUIRED (a missing required skill still hard-fails, so current adopter misconfig is never masked). Task-selected skills (select_skills_for_task) are fed as optional bindings so an absent candidate drops gracefully."
     }
   }
 }

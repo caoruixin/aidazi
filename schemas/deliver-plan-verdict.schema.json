@@ -77,6 +77,12 @@
             "uniqueItems": true,
             "items": {"type": "string", "pattern": "^REQ-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
             "description": "Δ-19 / Constitution §1.7-F clause 1. ONLY on a gap-followup remediation sub-sprint: the in-envelope requirement ids this sub-sprint closes. The Phase 2-γ runtime req_id-envelope check proves covered_req_ids ⊆ (F1 signed snapshot ∩ the milestone's signed covers_req_ids) — DISTINCT from the module/layer scope-expansion guard. OPTIONAL + additive: absent on normal sub-sprints; every existing plan still validates."
+          },
+          "task_signals": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "enum": ["a11y", "design", "frontend", "interaction", "performance", "ui"]},
+            "description": "Track 1 §2.3 — SIGNED task-affinity signals from the CLOSED controlled vocabulary (effective_role_config.TASK_SIGNAL_VOCAB; the enum is drift-guarded by a test) for task-aware dynamic skill mounting. This is the AUTHORITATIVE Deliver-authored source (the decompose verdict): it flows into self.state.planned_subsprints and the driver reads it per sub-sprint via _current_subsprint_plan() (so this — NOT the sprint_stanza projection — is the schema the runtime consumes). An UNKNOWN signal is schema-invalid (validate_verdict → gate_hard_fail), so signals are NEVER inferred from prose/filenames/changed-files/an LLM guess. select_skills_for_task maps these against skill-catalog `signals` tags to mount extra OPTIONAL skills for Dev/Deliver/Research/Reviewer; Acceptance is EXCLUDED (§2.5). OPTIONAL + additive: absent on every existing plan (byte-identical); planned_subsprints is NOT in the acceptance requirement-context sidecar, so this never perturbs acceptance_input_hash. Dormant until skills carry `signals` tags + Deliver authors task_signals (Track 1 Phase 1-c)."
           }
         }
       }

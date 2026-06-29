@@ -1,0 +1,20 @@
+# Provenance for vendored skill. normative source = upstream pin below.
+# To update: re-vendor at a new pin + re-vet. Runtime SKILL.md is a compact projection;
+# the full upstream canonical material is retained verbatim in this directory.
+id: a11y-checklist
+source:
+  repo: a11yproject/a11yproject.com
+  url: https://github.com/a11yproject/a11yproject.com
+  commit: 9c2cc2abb37711f27f7b3966d263b7aa1db43901
+  path: src/_data/checklists.json
+license: Apache-2.0
+copyright: The A11Y Project contributors — Apache-2.0 (see LICENSE)
+retrieved_at: '2026-06-29T00:00:00Z'
+tree_sha256: 06d9180a71d4c6e5be1596925e3e564d21a53faaba90a0725b3e27b5e7b8492f
+files:
+- path: LICENSE
+  sha256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4
+- path: SKILL.md
+  sha256: 9cac40b24949ce7ee3d8f31dfe280a95c101f6449baa5b6d83944fd6ca0dcfc7
+- path: upstream-checklists.json
+  sha256: 208690f5a151af6fec9c1e68205e038695d84bf085912b77b485b82b294c0644

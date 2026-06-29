@@ -1,0 +1,20 @@
+# Provenance for vendored skill. normative source = upstream pin below.
+# To update: re-vendor at a new pin + re-vet. Runtime SKILL.md is a compact projection;
+# the full upstream canonical material is retained verbatim in this directory.
+id: web-interface-guidelines
+source:
+  repo: vercel-labs/web-interface-guidelines
+  url: https://github.com/vercel-labs/web-interface-guidelines
+  commit: 4e799d45c17aec1498c269287a83b9dba22b966b
+  path: command.md
+license: MIT
+copyright: (c) Vercel, Inc. — MIT (see LICENSE)
+retrieved_at: '2026-06-29T00:00:00Z'
+tree_sha256: cae3bf247f38774eb8c865f08fcff602c61112720af185838c7e4d93e0735f11
+files:
+- path: LICENSE
+  sha256: 6cd1609c9c12233507cdd2ce0d32e9a721e3c27494951be06b90090deeeb7af2
+- path: SKILL.md
+  sha256: b3750ca3f60ac49df8e48a8bea3d37eed6f8ebc0822097263550caeb30b751e6
+- path: upstream-command.md
+  sha256: eea73cb6dd46fee9faec9973e8e7fe198b5f07ec326f14d276a56e50287e1cab
