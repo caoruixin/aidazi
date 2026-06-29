@@ -1745,11 +1745,17 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
         # (LOAD-CLOSURE). Carries the signed plan (with its F1 scope_envelope snapshot), the
         # requirement ledger, the CANONICAL charter (for the live F1 signed-scope-hash
         # recompute — the Driver only holds the per-milestone DERIVED charter), and a MINIMAL
-        # live campaign-state projection (status + cursor + milestone_outcomes; the only
-        # gap-relevant fields — so the bound hash never churns on volatile spend counters).
-        # Written ONLY when a requirement ledger is wired; absent ⇒ the gap_report stays
-        # dormant (byte-identical to today). Best-effort: a sidecar-write failure never
-        # breaks a dispatch (the gap_report simply stays dormant for that unit).
+        # PRE-DISPATCH SNAPSHOT of campaign-state (status + cursor + milestone_outcomes; the
+        # only gap-relevant fields compute_requirement_coverage reads — so the bound hash never
+        # churns on volatile spend counters). This is the state AS OF dispatch, NOT post-close:
+        # the advisory gap_report (Phase 2-β) is computed from this snapshot, which is hash-safe
+        # and acceptable for an ADVISORY artifact. NOTE for Phase 2-γ: once the gap DRIVES work
+        # (auto-followup), it MUST reflect the just-closed milestone's outcome — re-snapshot the
+        # state post-close (and re-bind into acceptance_input_hash) there, do not reuse this
+        # pre-dispatch snapshot. Written ONLY when a requirement ledger is wired; absent ⇒ the
+        # gap_report stays dormant (byte-identical to today). Best-effort: a sidecar failure
+        # never breaks a dispatch (the gap_report stays dormant), but it IS recorded (below) so a
+        # wired-ledger failure is observable rather than silent (Codex R-P2b NB-1).
         if plan is not None and ledger_path and os.path.isfile(ledger_path):
             try:
                 with open(ledger_path, encoding="utf-8") as fh:
@@ -1768,8 +1774,16 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
                     json.dump({"plan": plan, "ledger": _ledger,
                                "campaign_state": _state_proj, "charter": charter},
                               fh, indent=2, sort_keys=True)
-            except (OSError, ValueError):
-                pass  # sidecar best-effort; gap_report stays dormant on a write failure
+            except (OSError, ValueError) as _exc:
+                # Best-effort, but NON-SILENT: a wired ledger that fails to produce the sidecar
+                # leaves the gap_report dormant — record it so the failure is observable.
+                try:
+                    with open(os.path.join(unit_run_dir, "requirement-context.error"),
+                              "w", encoding="utf-8") as fh:
+                        fh.write(f"requirement-context sidecar not written (gap_report dormant "
+                                 f"for this unit): {type(_exc).__name__}: {_exc}\n")
+                except OSError:
+                    pass
 
         cps_dir = os.path.join(unit_run_dir, "docs", "checkpoints")
         effective_repo = repo_dir or run_loop_kwargs.get("repo_dir")
