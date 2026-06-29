@@ -1627,6 +1627,7 @@ def derive_milestone_context(charter: dict, milestone_id: str,
 def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
                   clock: Callable[[], str], plan: Optional[dict] = None,
                   run_loop_fn: Optional[Callable] = None,
+                  ledger_path: Optional[str] = None,
                   **run_loop_kwargs) -> RunUnit:
     """Build a PRODUCTION run_unit that drives ONE sub-sprint via
     `scheduling.run_loop` and returns the campaign summary
@@ -1737,6 +1738,38 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
             # guard already rejected an explicit truthy non-delivery_only mode.
             call_kwargs = {**run_loop_kwargs,
                            "loop_mode": _drv.LOOP_MODE_DELIVERY_ONLY}
+
+        # Δ-19 Phase 2-β: write the per-unit requirement-context sidecar (the gap-report
+        # SOURCE FACTS) so the Driver's milestone-close Acceptance can emit the ADVISORY
+        # gap_report AND bind these verdict-affecting inputs into acceptance_input_hash
+        # (LOAD-CLOSURE). Carries the signed plan (with its F1 scope_envelope snapshot), the
+        # requirement ledger, the CANONICAL charter (for the live F1 signed-scope-hash
+        # recompute — the Driver only holds the per-milestone DERIVED charter), and a MINIMAL
+        # live campaign-state projection (status + cursor + milestone_outcomes; the only
+        # gap-relevant fields — so the bound hash never churns on volatile spend counters).
+        # Written ONLY when a requirement ledger is wired; absent ⇒ the gap_report stays
+        # dormant (byte-identical to today). Best-effort: a sidecar-write failure never
+        # breaks a dispatch (the gap_report simply stays dormant for that unit).
+        if plan is not None and ledger_path and os.path.isfile(ledger_path):
+            try:
+                with open(ledger_path, encoding="utf-8") as fh:
+                    _ledger = json.load(fh)
+                _state_proj = None
+                _state_file = os.path.join(
+                    os.path.dirname(os.path.abspath(units_dir)), "campaign-state.json")
+                if os.path.isfile(_state_file):
+                    with open(_state_file, encoding="utf-8") as fh:
+                        _st = json.load(fh)
+                    _state_proj = {"status": _st.get("status"),
+                                   "cursor": _st.get("cursor") or {},
+                                   "milestone_outcomes": _st.get("milestone_outcomes") or []}
+                with open(os.path.join(unit_run_dir, "requirement-context.json"),
+                          "w", encoding="utf-8") as fh:
+                    json.dump({"plan": plan, "ledger": _ledger,
+                               "campaign_state": _state_proj, "charter": charter},
+                              fh, indent=2, sort_keys=True)
+            except (OSError, ValueError):
+                pass  # sidecar best-effort; gap_report stays dormant on a write failure
 
         cps_dir = os.path.join(unit_run_dir, "docs", "checkpoints")
         effective_repo = repo_dir or run_loop_kwargs.get("repo_dir")

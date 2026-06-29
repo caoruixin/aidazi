@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/gap-report.schema.json",
+  "title": "Acceptance completeness gap report (Δ-19 / Track 2 Phase 2-β — ADVISORY, from facts only)",
+  "description": "Engine-DERIVED, advisory artifact emitted by milestone-close Acceptance (driver._run_acceptance). It enumerates the COMPLETENESS gap = requirement ids that are bound to fresh-signed campaign-plan covers_req_ids (the human-signed F1 envelope, archive/2026-06-23-requirement-ledger-design.md §3.3.1) AND not yet delivered/waived. Generated ONLY from coverage/ledger FACTS — the §3.5.1-derived delivery_status of signed covers_req_ids (scope_report.compute_requirement_coverage), NEVER from the Acceptance verdict's pass/fail clause semantics: this SOURCE separation is the completeness<->quality SEAL the GATED §1.7-F path relies on. Phase 2-β is ADDITIVE + ADVISORY: nothing acts on this automatically (no auto-routing, no ship/route authority — that is the gated Phase 2-γ). Absent ledger ⇒ no gap report (byte-identical to today).",
+  "type": "object",
+  "required": ["source", "advisory", "ledger_present", "signoff_status", "gap"],
+  "additionalProperties": false,
+  "properties": {
+    "campaign_id": {"type": ["string", "null"], "description": "The campaign this gap report was computed for."},
+    "goal": {"type": ["string", "null"], "description": "Campaign goal (copied from the plan for a readable artifact)."},
+    "source": {"type": "string", "const": "requirement_coverage", "description": "Provenance SEAL: the gap is a pure projection of scope_report.compute_requirement_coverage (coverage/ledger facts), never the Acceptance verdict's quality judgment."},
+    "advisory": {"type": "boolean", "const": true, "description": "Phase 2-β: advisory only — nothing acts on this automatically. Auto-routing is the gated Phase 2-γ (§1.7-F)."},
+    "ledger_present": {"type": "boolean", "description": "True when a valid requirement ledger drove this projection."},
+    "signoff_status": {"type": "string", "enum": ["signed", "stale", "pre_f1", "unsigned"], "description": "campaign_plan_signoff status at computation time (design §3.3.1). The gap counts a REQ as in-envelope only when its covering milestone is fresh-signed."},
+    "gap": {
+      "type": "array",
+      "description": "The signed-but-undelivered REQs (in-envelope completion candidates): each REQ bound to a fresh-signed covers_req_ids whose derived delivery_status is not delivered/waived.",
+      "items": {
+        "type": "object",
+        "required": ["req_id", "delivery_status"],
+        "additionalProperties": false,
+        "properties": {
+          "req_id": {"type": "string", "pattern": "^REQ-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", "description": "The ledger requirement id (covered by a signed milestone, not yet delivered)."},
+          "delivery_status": {"type": "string", "enum": ["not_started", "in_progress", "delivered", "waived", "not_covered"], "description": "The §3.5.1-derived delivery_status (a gap item is undelivered: not_started/in_progress)."},
+          "covered_by": {"type": ["string", "null"], "description": "The signed campaign-plan milestone id whose covers_req_ids names this REQ."}
+        }
+      }
+    },
+    "uncovered_requirements": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^REQ-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+      "description": "REQs in the ledger covered by NO fresh-signed milestone (the PRD gap). NOT part of the in-envelope §1.7-F gap (never signed into a milestone) — reported separately as context only."
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Counts for a scannable summary.",
+      "properties": {
+        "requirements": {"type": "integer", "minimum": 0},
+        "delivered": {"type": "integer", "minimum": 0},
+        "waived": {"type": "integer", "minimum": 0},
+        "gap": {"type": "integer", "minimum": 0},
+        "uncovered": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

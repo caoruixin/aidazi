@@ -116,6 +116,29 @@ entries:
     disposition: RESOLVER_BOUND
     evidence: "WP-4B DONE: bound conditionally in _acceptance_resolver_graph (purpose prior_acceptance_report, docs/acceptance-reports/<scope>-acceptance-report.md under the adopter repo) exactly as the closure_contract is bound — an edit re-invalidates §3.5b reuse."
 
+  # ===== Δ-19 Phase 2-β: per-milestone gap-report inputs (RUN-DYNAMIC, RESOLVER_BOUND) =====
+  # The advisory completeness gap_report (driver._emit_gap_report) is computed from coverage
+  # FACTS at milestone-close Acceptance; its SOURCE FACTS (signed plan + F1 scope_envelope
+  # snapshot + requirement ledger + canonical charter + live campaign-state milestone_outcomes)
+  # ride a per-unit requirement-context.json sidecar the campaign writes at dispatch. Both the
+  # sidecar and the generated gap_report are RESOLVER_BOUND so a change in ANY gap input
+  # re-invalidates §3.5b reuse (Codex R-T2 B4 — no unbound verdict-affecting input). PATH-VARIABLE
+  # (per unit run_dir / scope), so parse_token is null (not text-parsed from a role-card "Load X"
+  # instruction); layer (c) cross-check verifies the resolver binds each by purpose. NOT cold-start
+  # (kept out of ROLE_COLD_START — a RUNTIME channel, sized by load_sizer.runtime_acceptance_artifact_report).
+  - source: "driver._run_acceptance Δ-19 Phase 2-β — requirement-context sidecar (gap-report source facts)"
+    region: null
+    parse_token: null
+    target: "data:requirement_context"
+    disposition: RESOLVER_BOUND
+    evidence: "bound by purpose requirement_context (MANDATORY when present) in _acceptance_resolver_graph (run_dir/requirement-context.json) — the signed plan + F1 snapshot + ledger + canonical charter + campaign-state milestone_outcomes the gap is computed from; a content change re-invalidates acceptance_input_hash."
+  - source: "driver._emit_gap_report Δ-19 Phase 2-β — generated advisory gap_report"
+    region: null
+    parse_token: null
+    target: "data:gap_report"
+    disposition: RESOLVER_BOUND
+    evidence: "bound by purpose gap_report (MANDATORY when present) in _acceptance_resolver_graph (run_dir/.orchestrator/acceptance/<scope>-gap-report.json) — the derived advisory artifact, bound for REPRODUCIBILITY (the judge does NOT read it; completeness<->quality SEAL). Absent (no ledger) ⇒ dormant."
+
   # ===== Loaded via the projected prompt's cold-start line (no §1 literal path) =====
   - source: "projected prompt cold-start line — Acceptance role card"
     region: null

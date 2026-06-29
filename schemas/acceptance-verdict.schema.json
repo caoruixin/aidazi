@@ -28,6 +28,10 @@
       "type": "string",
       "description": "Path to docs/research-briefs/<id>.md whose closure_contract was the evaluation source. Front-matter sign_off_date should match milestone start (Constitution §3.4 invariant #4 — Research-Acceptance contract symmetry)."
     },
+    "functional_checklist_ref": {
+      "type": "string",
+      "description": "Δ-19 Phase 2-β (static path). OPTIONAL path to the signed functional-checklist (schemas/functional-checklist.schema.json) whose criterion_ids the static cases record per-criterion coverage against. ADVISORY/record-only — additive, changes no verdict outcome and is not set-equality-enforced. The browser_e2e path wires its checklist via tooling.acceptance.functional.checklist_path instead (this field is for the static generalization)."
+    },
     "calibration_status": {
       "type": "string",
       "enum": ["calibrated", "uncalibrated", "not_required"],
@@ -48,7 +52,7 @@
           "criterion_id": {
             "type": "string",
             "minLength": 1,
-            "description": "P-C (browser_e2e). The functional-checklist criterion_id this case judges. Required + unique in the browser_e2e branch; the driver checks set-equality coverage against the signed functional-checklist."
+            "description": "The functional-checklist criterion_id this case judges (per-criterion coverage). REQUIRED + unique in the browser_e2e branch — the driver checks set-equality coverage against the signed functional-checklist. On the STATIC path (Δ-19 Phase 2-β) it is OPTIONAL + ADVISORY: when a static functional checklist (schemas/functional-checklist.schema.json) is wired, Acceptance MAY record it per case to enumerate user-observable criteria coverage. Static criterion_id is record-only — it changes NO verdict outcome and is NOT set-equality-enforced (no coercion gate; that authority change is the gated Phase 2-γ)."
           },
           "criterion": {
             "type": "string",

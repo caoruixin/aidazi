@@ -471,6 +471,55 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
     }
 
 
+def build_gap_report(coverage_report: dict) -> dict:
+    """Δ-19 Phase 2-β — the ADVISORY completeness gap_report (schemas/gap-report.schema.json),
+    a PURE projection of ``compute_requirement_coverage`` (coverage/ledger FACTS).
+
+    The gap = requirement ids bound to FRESH-signed ``covers_req_ids`` (signoff_status ==
+    'signed') whose §3.5.1-derived ``delivery_status`` is not yet delivered/waived
+    (i.e. not_started / in_progress). When the plan is NOT fresh-signed (stale / pre_f1 /
+    unsigned) there are no fresh-signed covers, so the in-envelope ``gap`` is EMPTY and the
+    blocked-pending-re-sign state is carried only by ``signoff_status`` (the gap is the
+    fresh-signed-but-undelivered set, never the blocked coverage — design §3.3.1 / §1.7-F).
+
+    Generated ONLY from the coverage facts — NEVER from the Acceptance verdict's pass/fail
+    clause semantics: this SOURCE separation is the completeness<->quality SEAL the gated
+    §1.7-F path relies on. Deterministic (sorted output); the caller validates it against
+    the schema and attaches it as an advisory artifact (nothing acts on it automatically)."""
+    signoff = coverage_report.get("signoff_status")
+    reqs = coverage_report.get("requirements") or []
+    gap: List[dict] = []
+    if signoff == "signed":
+        for r in reqs:
+            # When fresh-signed, live covers == fresh-signed covers, so a non-null
+            # covered_by IS the fresh-signed covering milestone (compute_requirement_coverage).
+            if r.get("covered_by") and r.get("delivery_status") in (_NOT_STARTED,
+                                                                     _IN_PROGRESS):
+                gap.append({"req_id": r.get("id"),
+                            "delivery_status": r.get("delivery_status"),
+                            "covered_by": r.get("covered_by")})
+    gap.sort(key=lambda g: g.get("req_id") or "")
+    t = coverage_report.get("totals") or {}
+    return {
+        "campaign_id": coverage_report.get("campaign_id"),
+        "goal": coverage_report.get("goal"),
+        "source": "requirement_coverage",
+        "advisory": True,
+        "ledger_present": True,
+        "signoff_status": signoff,
+        "gap": gap,
+        "uncovered_requirements": sorted(
+            coverage_report.get("uncovered_requirements") or []),
+        "totals": {
+            "requirements": t.get("requirements", 0),
+            "delivered": t.get("delivered", 0),
+            "waived": t.get("waived", 0),
+            "gap": len(gap),
+            "uncovered": t.get("uncovered", 0),
+        },
+    }
+
+
 def requirement_summary_line(report: dict) -> dict:
     """The compact, STABLE machine subset emitted as ``REQUIREMENT_COVERAGE=`` — a parse
     contract parallel to SCOPE_COVERAGE=, emitted ONLY when a valid ledger is present."""

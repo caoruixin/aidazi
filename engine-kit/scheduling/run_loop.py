@@ -534,7 +534,8 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     base = {"campaign_id": campaign_id, "campaign_home": home, "units_dir": units_dir}
     try:
         run_unit = _cp.make_run_unit(charter, units_dir, campaign_id,
-                                     clock=clock, plan=plan, **run_loop_kwargs)
+                                     clock=clock, plan=plan,
+                                     ledger_path=ledger_path, **run_loop_kwargs)
         resolver = make_campaign_decision_resolver(campaign_id, decision_path, home)
         st = _cp.run_campaign(plan, home, run_unit, clock=clock,
                               resume=resume, decision_resolver=resolver,
