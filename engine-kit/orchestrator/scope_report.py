@@ -293,6 +293,17 @@ def _signoff_status_and_hash(plan: dict, charter: Optional[dict]):
         return ("signed" if plan.get("signed_by_human") else "unsigned"), None
 
 
+def _snapshot_authentic(plan: dict) -> bool:
+    """Whether the plan's stored signoff snapshot verifies against its OWN signed_scope_hash
+    (via the campaign module; fail-closed False on any error or missing snapshot). scope_report
+    trusts the stored prior-coverage snapshot ONLY when this is True (Codex R-P2a #2)."""
+    try:
+        import campaign as _cp
+        return bool(_cp.signoff_snapshot_authentic(plan))
+    except Exception:
+        return False
+
+
 def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict,
                                  charter: Optional[dict] = None) -> dict:
     """Project ``(ledger, signed plan covers_req_ids, state milestone_outcomes)`` → a
@@ -331,22 +342,35 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
     status, live_hash = _signoff_status_and_hash(plan, charter)
     fresh_signed = status == "signed"
     stale = status == "stale"
+    blocked = status in ("stale", "pre_f1")   # signed-intent, but blocked pending re-sign
     fresh_signed_covers = dict(live_covers) if fresh_signed else {}
 
     # PRIOR signed coverage — reconstructed from the STORED snapshot (G4) so a stale
-    # signoff still shows what WAS signed and a ledger retirement is not "settled".
+    # signoff still shows what WAS signed. TRUST the snapshot ONLY when it is
+    # self-consistent with its OWN signed_scope_hash (Codex R-P2a #2: an unverified
+    # snapshot could be edited to drop coverage); otherwise fail closed (below).
+    snapshot_authentic = _snapshot_authentic(plan)
     signoff = plan.get("signoff") if isinstance(plan.get("signoff"), dict) else {}
     snapshot = (signoff or {}).get("scope_envelope") or {}
     prior_signed_covers: dict = {}
-    for m in (snapshot.get("milestones") or []):
-        for rid in (m.get("covers_req_ids") or []):
-            prior_signed_covers[rid] = m.get("id")
+    if snapshot_authentic:
+        for m in (snapshot.get("milestones") or []):
+            for rid in (m.get("covers_req_ids") or []):
+                prior_signed_covers[rid] = m.get("id")
 
-    # A REQ whose ledger retirement is NOT settled because it is bound to signed scope:
-    # fresh-signed always; while stale, the prior snapshot too (retirement un-settled).
+    # A REQ whose ledger retirement is NOT settled because it is bound to signed scope.
+    # fresh-signed always; while BLOCKED pending re-sign protect the blocked coverage so a
+    # disposition can't silently retire a REQ the runner is re-pausing on (Codex R-P2a #1):
+    #   - stale + authentic snapshot ⇒ the prior signed snapshot's covers;
+    #   - stale + UNVERIFIABLE snapshot ⇒ fail closed: protect the LIVE covers too;
+    #   - pre_f1 (no snapshot yet) ⇒ protect the LIVE covers (signed-intent, blocked).
     signed_bound = set(fresh_signed_covers)
-    if stale:
+    if status == "stale":
         signed_bound |= set(prior_signed_covers)
+        if not snapshot_authentic:
+            signed_bound |= set(live_covers)
+    elif status == "pre_f1":
+        signed_bound |= set(live_covers)
 
     def _delivery_status(rid):
         mid = live_covers.get(rid)
@@ -381,7 +405,9 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
             # is KEPT in the open views until a re-sign reconciles it.
             conflict = "invalid_signed_disposition"
             invalid_signed.append(rid)
-        elif retiring and stale and rid in prior_signed_covers:
+        elif retiring and blocked and rid in signed_bound:
+            # blocked pending re-sign (stale snapshot OR pre-F1, OR a fail-closed
+            # unverifiable snapshot): the retirement is NOT settled.
             conflict = "stale_signoff"
         item = {"id": rid, "statement": r.get("statement"),
                 "customer_disposition": disp, "delivery_status": dstatus,
@@ -403,7 +429,7 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
                               "delivery_status": dstatus, "customer_disposition": disp})
 
     stale_block = None
-    if stale:
+    if blocked:
         def _cov_map(milestones):
             out = {}
             for m in (milestones or []):
@@ -411,10 +437,16 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
                 if cov:
                     out[m.get("id")] = cov
             return out
+        # Emitted for any BLOCKED-pending-re-sign signoff (stale OR pre-F1). The prior
+        # snapshot coverage is shown ONLY when the snapshot verified against its hash;
+        # otherwise it is withheld (fail-closed) and the live coverage is what's protected.
         stale_block = {
+            "status": status,                       # "stale" | "pre_f1"
             "stored_hash": (signoff or {}).get("signed_scope_hash"),
             "live_hash": live_hash,
-            "prior_signed_coverage": _cov_map(snapshot.get("milestones")),
+            "snapshot_authentic": snapshot_authentic,
+            "prior_signed_coverage": (_cov_map(snapshot.get("milestones"))
+                                      if snapshot_authentic else {}),
             "live_coverage": _cov_map(plan.get("milestones")),
         }
 

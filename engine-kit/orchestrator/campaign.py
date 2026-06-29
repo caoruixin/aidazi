@@ -1502,12 +1502,46 @@ def stamp_signoff(plan: dict, charter: Optional[dict], *, signer: str = "human",
 
 def f1_required(plan: Optional[dict]) -> bool:
     """Whether the F1 integrity check is ACTIVE for this plan. F1 is OPT-IN — triggered
-    by a `signoff` block OR any milestone declaring covers_req_ids. Both are NEW fields,
-    so a legacy plan never triggers it (additivity: byte-identical to today)."""
+    by a `signoff` block OR any milestone DECLARING a covers_req_ids field. Both are NEW
+    fields, so a legacy plan never triggers it (additivity: byte-identical to today).
+    Keyed on field PRESENCE (not truthiness) so an explicit covers_req_ids:[] — a
+    deliberate "this milestone covers nothing" — still opts the plan into integrity
+    (Codex R-P2a NB-1: a non-empty test would silently downgrade an empty-array plan)."""
     plan = plan or {}
     if isinstance(plan.get("signoff"), dict):
         return True
-    return any(m.get("covers_req_ids") for m in (plan.get("milestones") or []))
+    return any(isinstance(m, dict) and "covers_req_ids" in m
+               for m in (plan.get("milestones") or []))
+
+
+def signoff_snapshot_authentic(plan: Optional[dict]) -> bool:
+    """Whether the STORED signoff snapshot is SELF-CONSISTENT with its own
+    signed_scope_hash — i.e. recomputing the hash from the stored scope_envelope (NOT
+    the live plan) reproduces the stored signed_scope_hash. This guards against a
+    TAMPERED snapshot (scope_envelope edited while signed_scope_hash is left untouched):
+    scope_report must NOT trust an unverified snapshot for prior-coverage reconstruction
+    (Codex R-P2a blocking #2 / design §3.3.1 G4). Returns False when there is no complete
+    snapshot to verify (caller then fails closed). The stored scope_envelope.milestones
+    are already in _envelope_milestone shape (compute_scope_envelope), so they slot
+    straight into H; canonical JSON sorts keys, so storage order is irrelevant."""
+    plan = plan or {}
+    signoff = plan.get("signoff")
+    if not isinstance(signoff, dict):
+        return False
+    snapshot = signoff.get("scope_envelope")
+    stored = signoff.get("signed_scope_hash")
+    if not isinstance(snapshot, dict) or not stored:
+        return False
+    H = {
+        "version": "v1",
+        "campaign_id": plan.get("campaign_id"),
+        "goal": snapshot.get("goal"),
+        "charter_ref": signoff.get("charter_ref"),
+        "charter_hash": signoff.get("charter_hash"),
+        "milestones": list(snapshot.get("milestones") or []),
+    }
+    recomputed = hashlib.sha256(_canonical_json(H).encode("utf-8")).hexdigest()
+    return recomputed == stored
 
 
 def signoff_status(plan: Optional[dict], charter: Optional[dict] = None) -> str:

@@ -455,6 +455,49 @@ class TestStaleSignoffKeepsPriorCoverage(unittest.TestCase):
         self.assertIn("REQ-2", [r["id"] for r in rep["remaining"]])
 
 
+class TestBlockedSignoffProtectsCoverage(unittest.TestCase):
+    """Codex R-P2a #1/#2: while a plan is BLOCKED pending re-sign (pre-F1 OR a stale
+    signoff with an UNVERIFIABLE snapshot), a ledger disposition must NOT silently retire
+    its covered REQs, and a tampered snapshot must NOT be trusted for prior coverage."""
+
+    def test_pre_f1_signed_coverage_not_silently_retired(self):
+        # covers_req_ids present (opts into F1) + a bare top-level signed_by_human, NO
+        # signoff block ⇒ pre_f1: the runner re-pauses, so scope_report must protect it.
+        plan = _covplan([("m1", ["REQ-1"])])
+        plan["signed_by_human"] = True
+        self.assertEqual(cp.signoff_status(plan, _STATIC_CHARTER), "pre_f1")
+        led = _ledger([("REQ-1", "dropped")])    # try to retire a pre-F1-signed REQ
+        rep = sr.compute_requirement_coverage(plan, _reqstate(0, []), led,
+                                              charter=_STATIC_CHARTER)
+        by = {r["id"]: r for r in rep["requirements"]}
+        self.assertTrue(by["REQ-1"]["signed_bound"])
+        self.assertEqual(by["REQ-1"]["conflict"], "stale_signoff")
+        self.assertIn("REQ-1", rep["uncovered_requirements"])      # NOT validly retired
+        self.assertIn("REQ-1", [r["id"] for r in rep["remaining"]])
+        self.assertEqual(rep["stale_signoff"]["status"], "pre_f1")
+
+    def test_tampered_stale_snapshot_fails_closed(self):
+        signed = cp.stamp_signoff(
+            _covplan([("m1", ["REQ-1"]), ("m2", ["REQ-2"])]), _STATIC_CHARTER, signed_at="t")
+        stale_plan = json.loads(json.dumps(signed))
+        stale_plan["milestones"][0]["objective"] = "EDITED → stale"   # live diverges ⇒ stale
+        # TAMPER the stored snapshot to drop REQ-2's prior coverage, leaving the stored
+        # signed_scope_hash untouched — the attack the authenticity check must catch.
+        stale_plan["signoff"]["scope_envelope"]["milestones"][1]["covers_req_ids"] = []
+        self.assertEqual(cp.signoff_status(stale_plan, _STATIC_CHARTER), "stale")
+        self.assertFalse(cp.signoff_snapshot_authentic(stale_plan))
+        led = _ledger([("REQ-1", "accepted"), ("REQ-2", "dropped")])  # try to retire REQ-2
+        rep = sr.compute_requirement_coverage(stale_plan, _reqstate(0, []), led,
+                                              charter=_STATIC_CHARTER)
+        self.assertFalse(rep["stale_signoff"]["snapshot_authentic"])
+        self.assertEqual(rep["stale_signoff"]["prior_signed_coverage"], {})  # withheld
+        # Fail-closed: REQ-2 (still in the LIVE covers) is protected, NOT silently retired.
+        by = {r["id"]: r for r in rep["requirements"]}
+        self.assertTrue(by["REQ-2"]["signed_bound"])
+        self.assertIn("REQ-2", rep["uncovered_requirements"])
+        self.assertIn("REQ-2", [r["id"] for r in rep["remaining"]])
+
+
 class TestRequirementSummaryAndCli(unittest.TestCase):
     def test_summary_line_machine_subset(self):
         plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1"])]), _STATIC_CHARTER,

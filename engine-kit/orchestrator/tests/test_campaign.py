@@ -1507,6 +1507,24 @@ class TestF1SignoffStatus(unittest.TestCase):
         flipped = {"tooling": {"acceptance": {"functional": {"mode": "browser_e2e"}}}}
         self.assertEqual(cp.signoff_status(signed, flipped), "stale")
 
+    def test_empty_covers_array_opts_into_f1(self):
+        # Codex R-P2a NB-1: an explicit covers_req_ids:[] is PRESENCE ⇒ F1 active (a
+        # non-empty/truthiness test would silently downgrade it to legacy byte-identical).
+        plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"],
+                       "covers_req_ids": []}], signed_by_human=True)
+        self.assertTrue(cp.f1_required(plan))
+        self.assertEqual(cp.signoff_status(plan, _STATIC_CHARTER), "pre_f1")
+
+    def test_snapshot_authenticity_catches_tamper(self):
+        # Codex R-P2a #2: the stored snapshot must verify against its OWN signed_scope_hash.
+        signed = cp.stamp_signoff(_plan([_covms("m1", ["s1"], ["REQ-1"])]),
+                                  _STATIC_CHARTER, signed_at="t")
+        self.assertTrue(cp.signoff_snapshot_authentic(signed))
+        tampered = json.loads(json.dumps(signed))
+        # Edit the STORED snapshot (drop coverage) but leave signed_scope_hash untouched.
+        tampered["signoff"]["scope_envelope"]["milestones"][0]["covers_req_ids"] = []
+        self.assertFalse(cp.signoff_snapshot_authentic(tampered))
+
 
 class TestF1RunnerIntegration(unittest.TestCase):
     def _ru_done(self):
