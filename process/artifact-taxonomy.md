@@ -215,6 +215,8 @@ Process-tier; edits at fold-back sub-sprint cadence per Constitution §8.
 
 Adding a 15th framework/document artifact is a substantive framework change; route through fold-back. Removing an artifact is breaking; route through v5 migration guide. The eval-runtime artifact (§6) is governed by `process/badcase-lifecycle.md` and edits to its governance route there.
 
+**Artifact #15 — the Requirement Ledger (Δ-19).** `docs/requirements-ledger.json` (schema `schemas/requirement-ledger.schema.json`) is the durable, intake-agnostic requirement→milestone→delivery record introduced by Δ-19 (`process/requirement-ledger.md`; full design `archive/2026-06-23-requirement-ledger-design.md`). Producer: Research at Gate-1 (items) + the Customer (`customer_disposition`, authority-only); consumers: Deliver (`covers_req_ids` on the signed plan), Acceptance (read-only), `scope_report` (the derived view). Phase 2-alpha is additive (absent ⇒ byte-identical); a full §1.15 catalog entry + the 14→15 renumber lands when the ledger is promoted out of the additive backbone phase.
+
 ---
 
 End of Δ-12 Artifact taxonomy.

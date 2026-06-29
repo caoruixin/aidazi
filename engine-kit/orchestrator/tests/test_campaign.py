@@ -1423,5 +1423,274 @@ class TestDeriveMilestoneContext(unittest.TestCase):
         self.assertEqual(p1, p2)
 
 
+_STATIC_CHARTER = {"tooling": {"acceptance": {"functional": {"mode": "static"}}}}
+
+
+def _covms(mid, seq, reqs):
+    return {"id": mid, "objective": f"o {mid}", "subsprint_sequence": list(seq),
+            "covers_req_ids": list(reqs)}
+
+
+class TestF1HashSpec(unittest.TestCase):
+    """Δ-19 F1 (design §3.3.1): the EXACT signed_scope_hash spec — sha256 over canonical
+    JSON of H = {version:'v1', campaign_id, goal, charter_ref, charter_hash, milestones:
+    [{id,objective,covers_req_ids,subsprint_sequence,depends_on,
+    resolved_functional_acceptance:{mode,source},acceptance_bar}]}; canonical = sorted
+    keys, no insignificant whitespace, UTF-8, absent arrays → []."""
+
+    def test_hash_matches_the_exact_spec_object(self):
+        import hashlib
+        plan = _plan([_covms("m1", ["s1"], ["REQ-1"])], signed_by_human=False)
+        H = {"version": "v1", "campaign_id": "camp-1", "goal": "deliver the thing",
+             "charter_ref": "ch", "charter_hash": cp._canonical_sha256(_STATIC_CHARTER),
+             "milestones": [{"id": "m1", "objective": "o m1",
+                             "covers_req_ids": ["REQ-1"], "subsprint_sequence": ["s1"],
+                             "depends_on": [],
+                             "resolved_functional_acceptance":
+                                 {"mode": "static", "source": "charter"},
+                             "acceptance_bar": None}]}
+        expected = hashlib.sha256(
+            json.dumps(H, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False).encode("utf-8")).hexdigest()
+        self.assertEqual(
+            cp.compute_signed_scope_hash(plan, _STATIC_CHARTER, charter_ref="ch"),
+            expected)
+
+    def test_absent_arrays_normalize_to_empty(self):
+        # A milestone with no covers/subsprint/depends hashes identically whether the
+        # fields are absent or explicitly [].
+        bare = _plan([{"id": "m1", "objective": "o m1"}], signed_by_human=False)
+        empty = _plan([{"id": "m1", "objective": "o m1", "covers_req_ids": [],
+                        "subsprint_sequence": [], "depends_on": []}],
+                      signed_by_human=False)
+        self.assertEqual(cp.compute_signed_scope_hash(bare, _STATIC_CHARTER),
+                         cp.compute_signed_scope_hash(empty, _STATIC_CHARTER))
+
+    def test_scope_edit_changes_the_hash(self):
+        a = _plan([_covms("m1", ["s1"], ["REQ-1"])])
+        b = _plan([_covms("m1", ["s1"], ["REQ-2"])])   # covers_req_ids changed
+        self.assertNotEqual(cp.compute_signed_scope_hash(a, _STATIC_CHARTER),
+                            cp.compute_signed_scope_hash(b, _STATIC_CHARTER))
+
+
+class TestF1SignoffStatus(unittest.TestCase):
+    def test_legacy_plan_is_byte_identical(self):
+        # No signoff block, no covers_req_ids ⇒ F1 inactive ⇒ legacy bare flag.
+        self.assertEqual(cp.signoff_status(
+            _plan([{"id": "m1", "objective": "a"}], signed_by_human=True)), "signed")
+        self.assertEqual(cp.signoff_status(
+            _plan([{"id": "m1", "objective": "a"}], signed_by_human=False)), "unsigned")
+
+    def test_fresh_signed(self):
+        signed = cp.stamp_signoff(_plan([_covms("m1", ["s1"], ["REQ-1"])]),
+                                  _STATIC_CHARTER, signed_at="t")
+        self.assertEqual(cp.signoff_status(signed, _STATIC_CHARTER), "signed")
+
+    def test_edit_after_signoff_is_stale(self):
+        signed = cp.stamp_signoff(_plan([_covms("m1", ["s1"], ["REQ-1"])]),
+                                  _STATIC_CHARTER, signed_at="t")
+        stale = json.loads(json.dumps(signed))
+        stale["milestones"][0]["objective"] = "EDITED AFTER SIGNOFF"
+        self.assertEqual(cp.signoff_status(stale, _STATIC_CHARTER), "stale")
+
+    def test_pre_f1_bare_flag_with_covers_needs_resign(self):
+        # covers_req_ids ⇒ F1 active; bare signed_by_human + no signoff block ⇒ pre_f1.
+        plan = _plan([_covms("m1", ["s1"], ["REQ-1"])], signed_by_human=True)
+        self.assertEqual(cp.signoff_status(plan, _STATIC_CHARTER), "pre_f1")
+
+    def test_g1_charter_default_flip_is_stale(self):
+        # The milestone has NO explicit functional_acceptance ⇒ it inherits the charter
+        # default. Flipping that default flips the RESOLVED mode in the envelope ⇒ stale.
+        plan = _plan([_covms("m1", ["s1"], ["REQ-1"])])
+        signed = cp.stamp_signoff(plan, _STATIC_CHARTER, signed_at="t")
+        self.assertEqual(cp.signoff_status(signed, _STATIC_CHARTER), "signed")
+        flipped = {"tooling": {"acceptance": {"functional": {"mode": "browser_e2e"}}}}
+        self.assertEqual(cp.signoff_status(signed, flipped), "stale")
+
+    def test_empty_covers_array_opts_into_f1(self):
+        # Codex R-P2a NB-1: an explicit covers_req_ids:[] is PRESENCE ⇒ F1 active (a
+        # non-empty/truthiness test would silently downgrade it to legacy byte-identical).
+        plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"],
+                       "covers_req_ids": []}], signed_by_human=True)
+        self.assertTrue(cp.f1_required(plan))
+        self.assertEqual(cp.signoff_status(plan, _STATIC_CHARTER), "pre_f1")
+
+    def test_snapshot_authenticity_catches_tamper(self):
+        # Codex R-P2a #2: the stored snapshot must verify against its OWN signed_scope_hash.
+        signed = cp.stamp_signoff(_plan([_covms("m1", ["s1"], ["REQ-1"])]),
+                                  _STATIC_CHARTER, signed_at="t")
+        self.assertTrue(cp.signoff_snapshot_authentic(signed))
+        tampered = json.loads(json.dumps(signed))
+        # Edit the STORED snapshot (drop coverage) but leave signed_scope_hash untouched.
+        tampered["signoff"]["scope_envelope"]["milestones"][0]["covers_req_ids"] = []
+        self.assertFalse(cp.signoff_snapshot_authentic(tampered))
+
+
+class TestF1RunnerIntegration(unittest.TestCase):
+    def _ru_done(self):
+        return _fake_run_unit({"s1": {"final_state": "done", "spawn_count": 1}})
+
+    def test_fresh_signed_plan_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            signed = cp.stamp_signoff(_plan([_covms("m1", ["s1"], ["REQ-1"])]),
+                                      _STATIC_CHARTER, signed_at="t")
+            st = cp.run_campaign(signed, d, self._ru_done(), clock=_clock(),
+                                 charter=_STATIC_CHARTER)
+            self.assertEqual(st.status, cp.STATUS_DONE)
+
+    def test_pre_f1_plan_repauses_at_signoff(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([_covms("m1", ["s1"], ["REQ-1"])], signed_by_human=True)
+            st = cp.run_campaign(plan, d, self._ru_done(), clock=_clock(),
+                                 charter=_STATIC_CHARTER)
+            self.assertEqual(st.status, cp.STATUS_PAUSED)
+            self.assertEqual(st.pause_reason, "campaign_plan_signoff")
+            self.assertEqual(st.subsprints_run, 0)  # nothing dispatched pre-resign
+
+    def test_stale_plan_repauses_then_resign_resumes(self):
+        with tempfile.TemporaryDirectory() as d:
+            signed = cp.stamp_signoff(_plan([_covms("m1", ["s1"], ["REQ-1"])]),
+                                      _STATIC_CHARTER, signed_at="t")
+            stale = json.loads(json.dumps(signed))
+            stale["milestones"][0]["objective"] = "EDITED"
+            st = cp.run_campaign(stale, d, self._ru_done(), clock=_clock(),
+                                 charter=_STATIC_CHARTER)
+            self.assertEqual(st.status, cp.STATUS_PAUSED)
+            self.assertEqual(st.pause_reason, "campaign_plan_signoff")
+            # Re-sign (re-stamp the snapshot for the EDITED scope) then resume → runs.
+            resigned = cp.stamp_signoff(stale, _STATIC_CHARTER, signed_at="t2")
+            resumed = cp.run_campaign(resigned, d, self._ru_done(), clock=_clock(),
+                                      resume=True, charter=_STATIC_CHARTER)
+            self.assertEqual(resumed.status, cp.STATUS_DONE)
+
+    def test_cross_milestone_duplicate_req_is_fail_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([_covms("m1", ["s1"], ["REQ-1"]),
+                          _covms("m2", ["s2"], ["REQ-1"])], signed_by_human=True)
+            with self.assertRaises(ValueError) as ctx:
+                cp.Campaign(plan, d, self._ru_done(), clock=_clock(),
+                            charter=_STATIC_CHARTER)
+            self.assertIn("more than one milestone", str(ctx.exception))
+
+
+class TestLedgerValidationFailClosed(unittest.TestCase):
+    def test_invalid_ledger_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            led = os.path.join(d, "ledger.json")
+            with open(led, "w", encoding="utf-8") as fh:
+                json.dump({"version": "v1", "requirements": [{"id": "BAD"}]}, fh)
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            with self.assertRaises(ValueError):
+                cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock(),
+                            ledger_path=led)
+
+    def test_valid_ledger_loads(self):
+        with tempfile.TemporaryDirectory() as d:
+            led = os.path.join(d, "ledger.json")
+            with open(led, "w", encoding="utf-8") as fh:
+                json.dump({"version": "v1", "requirements": [
+                    {"id": "REQ-1", "statement": "x", "source": {"channel": "prd"},
+                     "customer_disposition": "accepted"}]}, fh)
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            c = cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock(),
+                            ledger_path=led)
+            self.assertIsNotNone(c.ledger)
+
+
+class TestF3MilestoneOutcomes(unittest.TestCase):
+    """Δ-19 F3 (design §3.5.1): every terminal-close path stamps the right
+    milestone_outcomes[].terminal so scope_report can derive delivery_status."""
+
+    def _terminal(self, st, mid="m1"):
+        for o in st.milestone_outcomes:
+            if o.get("milestone_id") == mid:
+                return o.get("terminal")
+        return None
+
+    def _resolver(self, mapping):
+        return lambda reason, cp_: mapping.get(reason)
+
+    def test_done_is_acceptance_pass_authoritative(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            st = cp.run_campaign(plan, d, _fake_run_unit(
+                {"s1": {"final_state": "done", "spawn_count": 1}}), clock=_clock())
+            self.assertEqual(self._terminal(st), "acceptance_pass_authoritative")
+
+    def test_terminal_advance_is_acceptance_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            st = cp.run_campaign(plan, d, _fake_run_unit(
+                {"s1": {"final_state": "advance", "spawn_count": 1}}), clock=_clock())
+            self.assertEqual(st.status, cp.STATUS_DONE)
+            self.assertEqual(self._terminal(st), "acceptance_off")
+
+    def test_advisory_ship_is_advisory_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "advisory_acceptance_pass_signoff"}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            st = cp.run_campaign(
+                plan, d, _fake_run_unit(script), clock=_clock(), resume=True,
+                decision_resolver=self._resolver(
+                    {"advisory_acceptance_pass_signoff": {"choice": "ship"}}))
+            self.assertEqual(self._terminal(st), "acceptance_pass_advisory_ship")
+
+    def test_fix_required_confirm_no_is_fix_required_ship(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_fix_required"}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            st = cp.run_campaign(
+                plan, d, _fake_run_unit(script), clock=_clock(), resume=True,
+                decision_resolver=self._resolver(
+                    {"acceptance_fix_required": {"confirm": "no"}}))
+            self.assertEqual(self._terminal(st), "fix_required_ship")
+
+    def test_surface_approve_ship(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_surface_approve"}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            st = cp.run_campaign(
+                plan, d, _fake_run_unit(script), clock=_clock(), resume=True,
+                decision_resolver=self._resolver(
+                    {"acceptance_surface_approve": {"choice": "approve_ship"}}))
+            self.assertEqual(self._terminal(st), "surface_approve_ship")
+
+    def test_terminal_review_out_of_scope_accept_is_waived(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "review_out_of_scope"}}
+            cp.run_campaign(plan, d, _fake_run_unit(script), clock=_clock())
+            st = cp.run_campaign(
+                plan, d, _fake_run_unit(script), clock=_clock(), resume=True,
+                decision_resolver=self._resolver(
+                    {"review_out_of_scope": {"choice": "accept_and_advance"}}))
+            self.assertEqual(st.status, cp.STATUS_DONE)
+            self.assertEqual(self._terminal(st), "out_of_scope_advance")
+
+    def test_outcomes_persist_and_validate_against_schema(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                          {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}])
+            st = cp.run_campaign(plan, d, _fake_run_unit(
+                {"s1": {"final_state": "advance", "spawn_count": 1},
+                 "s2": {"final_state": "done", "spawn_count": 1}}), clock=_clock())
+            # Re-read the persisted state and schema-validate it (milestone_outcomes is
+            # part of the campaign-state contract now).
+            with open(os.path.join(d, "campaign-state.json"), encoding="utf-8") as fh:
+                persisted = json.load(fh)
+            cp._validate_or_raise(persisted, "campaign-state.schema.json", "state")
+            terms = {o["milestone_id"]: o["terminal"]
+                     for o in persisted["milestone_outcomes"]}
+            self.assertEqual(terms, {"m1": "acceptance_off",
+                                     "m2": "acceptance_pass_authoritative"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,14 @@
         "goal": {"type": "string", "minLength": 1, "description": "One-line user-facing goal Customer reads at gate 2."}
       }
     },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Δ-19 (design §5.2). OPTIONAL requirement-ledger wiring. Absent ⇒ default path; the ledger is still optional (Phase 2-alpha is additive).",
+      "properties": {
+        "ledger_path": {"type": "string", "default": "docs/requirements-ledger.json", "description": "Path to the project requirement ledger (requirement-ledger.schema.json)."}
+      }
+    },
     "autonomy": {
       "type": "object",
       "required": ["level", "approved_scope", "auto_pass_rules"],

@@ -78,6 +78,114 @@ class NewSchemasLoad(unittest.TestCase):
         self.assertEqual(_errs("acceptance-calibration-record.schema.json", ok), [])
 
 
+class RequirementLedgerSchema(unittest.TestCase):
+    """Δ-19 (Phase 2-alpha): the NEW requirement-ledger schema is metaschema-valid and
+    its machine constraints accept a well-formed ledger + reject the documented
+    violations (Customer-disposition enum, REQ-id pattern, additionalProperties:false,
+    NO writable covers[] / stored delivery_status)."""
+
+    SCH = "requirement-ledger.schema.json"
+
+    def test_metaschema_valid(self):
+        Draft202012Validator.check_schema(_schema(self.SCH))
+
+    def test_valid_sample(self):
+        ok = {"version": "v1", "requirements": [
+            {"id": "REQ-001", "statement": "Sign in with email + password.",
+             "source": {"channel": "prd", "ref": "prd.md#auth"},
+             "customer_disposition": "accepted",
+             "history": [{"at": "2026-06-29T00:00:00Z", "disposition": "accepted",
+                          "by": "customer"}]},
+            {"id": "REQ-002", "statement": "Export CSV.",
+             "gap_type": "unmet_existing", "relates_to_req_ids": ["REQ-001"],
+             "elaboration": ["brief-007#clause-2"], "supersedes": "REQ-000",
+             "source": {"channel": "requirement_point"},
+             "customer_disposition": "deferred"}]}
+        self.assertEqual(_errs(self.SCH, ok), [])
+
+    def test_empty_ledger_valid(self):
+        self.assertEqual(_errs(self.SCH, {"version": "v1", "requirements": []}), [])
+
+    def test_shipped_fixture_validates(self):
+        fx = os.path.abspath(os.path.join(
+            _THIS, "..", "..", "orchestrator", "tests", "fixtures",
+            "requirements-ledger.sample.json"))
+        with open(fx, encoding="utf-8") as fh:
+            self.assertEqual(_errs(self.SCH, json.load(fh)), [])
+
+    def test_machine_constraints_reject_violations(self):
+        base = {"version": "v1", "requirements": [
+            {"id": "REQ-1", "statement": "x", "source": {"channel": "prd"},
+             "customer_disposition": "accepted"}]}
+        self.assertEqual(_errs(self.SCH, base), [])
+        bad_id = json.loads(json.dumps(base))
+        bad_id["requirements"][0]["id"] = "R-1"               # not REQ-patterned
+        self.assertTrue(_errs(self.SCH, bad_id))
+        bad_disp = json.loads(json.dumps(base))
+        bad_disp["requirements"][0]["customer_disposition"] = "in_progress"  # lifecycle, not disposition
+        self.assertTrue(_errs(self.SCH, bad_disp))
+        bad_channel = json.loads(json.dumps(base))
+        bad_channel["requirements"][0]["source"]["channel"] = "telepathy"    # enum
+        self.assertTrue(_errs(self.SCH, bad_channel))
+        no_disp = json.loads(json.dumps(base))
+        del no_disp["requirements"][0]["customer_disposition"]               # required
+        self.assertTrue(_errs(self.SCH, no_disp))
+        # NO writable coverage / NO stored delivery_status (those are derived, §3.4/§3.5).
+        covers = json.loads(json.dumps(base))
+        covers["requirements"][0]["covers"] = ["m1"]                         # additionalProperties:false
+        self.assertTrue(_errs(self.SCH, covers))
+        delivery = json.loads(json.dumps(base))
+        delivery["requirements"][0]["delivery_status"] = "delivered"         # additionalProperties:false
+        self.assertTrue(_errs(self.SCH, delivery))
+        bad_version = json.loads(json.dumps(base))
+        bad_version["version"] = "v2"                                        # const v1
+        self.assertTrue(_errs(self.SCH, bad_version))
+
+
+class CampaignPlanSignoffSchema(unittest.TestCase):
+    """Δ-19 F1: the campaign-plan `signoff` block is OPTIONAL (pre-F1 plans still
+    validate) but, IF signed_by_human:true, the COMPLETE snapshot is required."""
+
+    SCH = "campaign-plan.schema.json"
+
+    def _plan(self, **kw):
+        p = {"campaign_id": "c1", "goal": "g",
+             "milestones": [{"id": "m1", "objective": "o"}]}
+        p.update(kw)
+        return p
+
+    def test_pre_f1_plan_still_validates(self):
+        self.assertEqual(_errs(self.SCH, self._plan(signed_by_human=True)), [])
+
+    def test_covers_req_ids_optional_and_patterned(self):
+        ok = self._plan(milestones=[{"id": "m1", "objective": "o",
+                                     "covers_req_ids": ["REQ-001", "REQ-002"]}])
+        self.assertEqual(_errs(self.SCH, ok), [])
+        bad = self._plan(milestones=[{"id": "m1", "objective": "o",
+                                      "covers_req_ids": ["BAD-1"]}])
+        self.assertTrue(_errs(self.SCH, bad))
+        dup = self._plan(milestones=[{"id": "m1", "objective": "o",
+                                      "covers_req_ids": ["REQ-1", "REQ-1"]}])
+        self.assertTrue(_errs(self.SCH, dup))  # uniqueItems within the array
+
+    def test_partial_signoff_block_is_fail_closed(self):
+        # signed_by_human:true but missing the snapshot fields → rejected (NB3).
+        partial = self._plan(signoff={"signed_by_human": True})
+        self.assertTrue(_errs(self.SCH, partial))
+
+    def test_complete_signoff_block_validates(self):
+        full = self._plan(signoff={
+            "signed_by_human": True, "signer": "human", "signed_at": "2026",
+            "charter_ref": "ch", "charter_hash": "h",
+            "scope_envelope": {"goal": "g", "milestones": [
+                {"id": "m1", "objective": "o", "covers_req_ids": [],
+                 "subsprint_sequence": [], "depends_on": [],
+                 "resolved_functional_acceptance": {"mode": "static", "source": "default"},
+                 "acceptance_bar": None}]},
+            "signed_scope_hash": "abc"})
+        self.assertEqual(_errs(self.SCH, full), [])
+
+
 class AcceptanceVerdictBranches(unittest.TestCase):
     SCH = "acceptance-verdict.schema.json"
 

@@ -254,6 +254,279 @@ def compute_coverage(plan: dict, state: Optional[dict],
 
 
 # --------------------------------------------------------------------------- #
+# Δ-19 requirement projection (design §3.5/§3.6) — joins
+# (ledger, signed campaign-plan covers_req_ids, campaign-state milestone_outcomes).
+#
+# Stays PURE / read-only / deterministic (a function of plan+state+ledger+charter):
+# delivery_status is DERIVED from each milestone's TERMINAL outcome (never the cursor),
+# customer_disposition is read straight from the ledger, conflicts + uncovered are
+# reported (never silently reconciled). The ONLY engine surface is reporting.
+# --------------------------------------------------------------------------- #
+# Customer dispositions that RETIRE a REQ from the open views — but only when the REQ
+# is NOT bound to (fresh-)signed scope (§3.3/§3.6).
+_RETIRING_DISPOSITIONS = frozenset({"dropped", "skipped", "deferred", "modified"})
+# milestone_outcomes terminal → derived per-REQ delivery_status (design §3.5.1).
+_DELIVERED_TERMINALS = frozenset({"acceptance_pass_authoritative",
+                                  "acceptance_pass_advisory_ship"})
+# waived terminals → the reason rendered beside the REQ.
+_WAIVED_TERMINALS = {
+    "fix_required_ship": "fix_required_ship",
+    "surface_approve_ship": "surface_approve",
+    "acceptance_off": "acceptance_off",
+    "out_of_scope_advance": "out_of_scope_advance",
+}
+
+
+def _signoff_status_and_hash(plan: dict, charter: Optional[dict]):
+    """(status, live_hash) for the plan's F1 signoff, via the campaign module (lazy
+    import — same contract as topological_order below). Never raises: a missing campaign
+    module / bad input degrades to ('unsigned', None)."""
+    try:
+        import campaign as _cp
+        status = _cp.signoff_status(plan, charter)
+        signoff = plan.get("signoff") or {}
+        live = _cp.compute_signed_scope_hash(
+            plan, charter or {}, charter_ref=signoff.get("charter_ref")) \
+            if isinstance(signoff, dict) and signoff.get("signed_by_human") else None
+        return status, live
+    except Exception:
+        return ("signed" if plan.get("signed_by_human") else "unsigned"), None
+
+
+def _snapshot_authentic(plan: dict) -> bool:
+    """Whether the plan's stored signoff snapshot verifies against its OWN signed_scope_hash
+    (via the campaign module; fail-closed False on any error or missing snapshot). scope_report
+    trusts the stored prior-coverage snapshot ONLY when this is True (Codex R-P2a #2)."""
+    try:
+        import campaign as _cp
+        return bool(_cp.signoff_snapshot_authentic(plan))
+    except Exception:
+        return False
+
+
+def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict,
+                                 charter: Optional[dict] = None) -> dict:
+    """Project ``(ledger, signed plan covers_req_ids, state milestone_outcomes)`` → a
+    structured per-REQ coverage report (design §3.6). Pure + deterministic."""
+    state = state or {}
+    ledger = ledger or {}
+    reqs = [r for r in (ledger.get("requirements") or []) if isinstance(r, dict)]
+    req_ids = {r.get("id") for r in reqs}
+
+    # LIVE covers map (req → milestone) from the current plan; drift = a covers entry
+    # naming a REQ absent from the ledger (asymmetry, reported read-only — §3.4).
+    live_covers: dict = {}
+    coverage_drift: List[dict] = []
+    for m in (plan.get("milestones") or []):
+        mid = m.get("id")
+        for rid in (m.get("covers_req_ids") or []):
+            live_covers[rid] = mid
+            if rid not in req_ids:
+                coverage_drift.append({"milestone_id": mid, "unknown_req_id": rid})
+
+    outcomes = {o.get("milestone_id"): o
+                for o in (state.get("milestone_outcomes") or [])
+                if isinstance(o, dict) and o.get("milestone_id")}
+
+    # Topological index (the runner's execution order) for the in_progress/not_started
+    # fallback when a covered milestone has no recorded terminal outcome yet.
+    raw_milestones = list(plan.get("milestones") or [])
+    try:
+        from campaign import topological_order as _topo
+        index_of = {m.get("id"): i for i, m in enumerate(_topo(raw_milestones))}
+    except Exception:
+        index_of = {m.get("id"): i for i, m in enumerate(raw_milestones)}
+    cursor_mi = (state.get("cursor") or {}).get("milestone_index", 0)
+    started = state.get("status") is not None
+
+    status, live_hash = _signoff_status_and_hash(plan, charter)
+    fresh_signed = status == "signed"
+    stale = status == "stale"
+    blocked = status in ("stale", "pre_f1")   # signed-intent, but blocked pending re-sign
+    fresh_signed_covers = dict(live_covers) if fresh_signed else {}
+
+    # PRIOR signed coverage — reconstructed from the STORED snapshot (G4) so a stale
+    # signoff still shows what WAS signed. TRUST the snapshot ONLY when it is
+    # self-consistent with its OWN signed_scope_hash (Codex R-P2a #2: an unverified
+    # snapshot could be edited to drop coverage); otherwise fail closed (below).
+    snapshot_authentic = _snapshot_authentic(plan)
+    signoff = plan.get("signoff") if isinstance(plan.get("signoff"), dict) else {}
+    snapshot = (signoff or {}).get("scope_envelope") or {}
+    prior_signed_covers: dict = {}
+    if snapshot_authentic:
+        for m in (snapshot.get("milestones") or []):
+            for rid in (m.get("covers_req_ids") or []):
+                prior_signed_covers[rid] = m.get("id")
+
+    # A REQ whose ledger retirement is NOT settled because it is bound to signed scope.
+    # fresh-signed always; while BLOCKED pending re-sign protect the blocked coverage so a
+    # disposition can't silently retire a REQ the runner is re-pausing on (Codex R-P2a #1):
+    #   - stale + authentic snapshot ⇒ the prior signed snapshot's covers;
+    #   - stale + UNVERIFIABLE snapshot ⇒ fail closed: protect the LIVE covers too;
+    #   - pre_f1 (no snapshot yet) ⇒ protect the LIVE covers (signed-intent, blocked).
+    signed_bound = set(fresh_signed_covers)
+    if status == "stale":
+        signed_bound |= set(prior_signed_covers)
+        if not snapshot_authentic:
+            signed_bound |= set(live_covers)
+    elif status == "pre_f1":
+        signed_bound |= set(live_covers)
+
+    def _delivery_status(rid):
+        mid = live_covers.get(rid)
+        if mid is None:
+            return "not_covered", None, None
+        term = (outcomes.get(mid) or {}).get("terminal")
+        if term in _DELIVERED_TERMINALS:
+            return "delivered", None, mid
+        if term in _WAIVED_TERMINALS:
+            return "waived", _WAIVED_TERMINALS[term], mid
+        # No delivered/waived terminal recorded ⇒ NOT delivered (never read 'delivered'
+        # off the cursor — design §3.5). Sub-classify by cursor position only.
+        mi = index_of.get(mid)
+        if started and mi is not None and mi <= cursor_mi:
+            return "in_progress", None, mid
+        return "not_started", None, mid
+
+    requirements: List[dict] = []
+    uncovered: List[str] = []
+    invalid_signed: List[str] = []
+    remaining: List[dict] = []
+    delivered_n = waived_n = 0
+    for r in reqs:
+        rid = r.get("id")
+        disp = r.get("customer_disposition")
+        dstatus, dreason, covered_by = _delivery_status(rid)
+        retiring = disp in _RETIRING_DISPOSITIONS
+        validly_retired = retiring and rid not in signed_bound
+        conflict = None
+        if retiring and rid in fresh_signed_covers:
+            # G2/F2: a retiring disposition on FRESH-signed scope is a conflict; the REQ
+            # is KEPT in the open views until a re-sign reconciles it.
+            conflict = "invalid_signed_disposition"
+            invalid_signed.append(rid)
+        elif retiring and blocked and rid in signed_bound:
+            # blocked pending re-sign (stale snapshot OR pre-F1, OR a fail-closed
+            # unverifiable snapshot): the retirement is NOT settled.
+            conflict = "stale_signoff"
+        item = {"id": rid, "statement": r.get("statement"),
+                "customer_disposition": disp, "delivery_status": dstatus,
+                "covered_by": covered_by, "signed_bound": rid in signed_bound,
+                "conflict": conflict}
+        if dreason:
+            item["delivery_reason"] = dreason
+        requirements.append(item)
+        if dstatus == "delivered":
+            delivered_n += 1
+        elif dstatus == "waived":
+            waived_n += 1
+        # uncovered = in NO fresh-signed milestone AND not validly retired (the true gap).
+        if rid not in fresh_signed_covers and not validly_retired:
+            uncovered.append(rid)
+        # continue menu = not delivered/waived AND not validly retired.
+        if dstatus not in ("delivered", "waived") and not validly_retired:
+            remaining.append({"id": rid, "statement": r.get("statement"),
+                              "delivery_status": dstatus, "customer_disposition": disp})
+
+    stale_block = None
+    if blocked:
+        def _cov_map(milestones):
+            out = {}
+            for m in (milestones or []):
+                cov = list(m.get("covers_req_ids") or [])
+                if cov:
+                    out[m.get("id")] = cov
+            return out
+        # Emitted for any BLOCKED-pending-re-sign signoff (stale OR pre-F1). The prior
+        # snapshot coverage is shown ONLY when the snapshot verified against its hash;
+        # otherwise it is withheld (fail-closed) and the live coverage is what's protected.
+        stale_block = {
+            "status": status,                       # "stale" | "pre_f1"
+            "stored_hash": (signoff or {}).get("signed_scope_hash"),
+            "live_hash": live_hash,
+            "snapshot_authentic": snapshot_authentic,
+            "prior_signed_coverage": (_cov_map(snapshot.get("milestones"))
+                                      if snapshot_authentic else {}),
+            "live_coverage": _cov_map(plan.get("milestones")),
+        }
+
+    return {
+        "campaign_id": plan.get("campaign_id"),
+        "goal": plan.get("goal"),
+        "ledger_present": True,
+        "signoff_status": status,
+        "requirements": requirements,
+        "uncovered_requirements": uncovered,
+        "invalid_signed_disposition": invalid_signed,
+        "stale_signoff": stale_block,
+        "coverage_drift": coverage_drift,
+        "remaining": remaining,
+        "totals": {
+            "requirements": len(reqs),
+            "delivered": delivered_n,
+            "waived": waived_n,
+            "uncovered": len(uncovered),
+            "remaining": len(remaining),
+        },
+    }
+
+
+def requirement_summary_line(report: dict) -> dict:
+    """The compact, STABLE machine subset emitted as ``REQUIREMENT_COVERAGE=`` — a parse
+    contract parallel to SCOPE_COVERAGE=, emitted ONLY when a valid ledger is present."""
+    t = report["totals"]
+    return {
+        "campaign_id": report.get("campaign_id"),
+        "ledger_present": True,
+        "signoff_status": report.get("signoff_status"),
+        "requirements_total": t["requirements"],
+        "delivered": t["delivered"],
+        "waived": t["waived"],
+        "uncovered": t["uncovered"],
+        "uncovered_requirements": list(report.get("uncovered_requirements") or []),
+        "invalid_signed_disposition": list(report.get("invalid_signed_disposition") or []),
+        "stale_signoff": report.get("stale_signoff") is not None,
+        "remaining_requirements": [r["id"] for r in (report.get("remaining") or [])],
+    }
+
+
+def render_requirements(report: dict) -> str:
+    """A compact, scannable human block for the requirement projection."""
+    t = report["totals"]
+    lines = ["--- requirement coverage (PRD requirements vs delivered) ---",
+             f"goal           : {report.get('goal')}",
+             f"signoff        : {report.get('signoff_status')}",
+             (f"requirements   : {t['delivered']}/{t['requirements']} delivered  "
+              f"waived={t['waived']}  uncovered={t['uncovered']}")]
+    if report.get("stale_signoff"):
+        lines.append("STALE SIGNOFF   : stored signed_scope_hash != live hash — re-sign "
+                     "required (prior signed coverage shown below, NOT settled)")
+        prior = (report["stale_signoff"].get("prior_signed_coverage") or {})
+        if prior:
+            lines.append(f"  prior signed : {json.dumps(prior, sort_keys=True)}")
+    inv = report.get("invalid_signed_disposition") or []
+    if inv:
+        lines.append(f"CONFLICT        : invalid_signed_disposition on {inv} "
+                     "(retiring disposition on fresh-signed scope — kept open)")
+    drift = report.get("coverage_drift") or []
+    if drift:
+        lines.append(f"DRIFT           : {len(drift)} covers_req_ids entr(y/ies) name a "
+                     "REQ absent from the ledger")
+    uncovered = report.get("uncovered_requirements") or []
+    if uncovered:
+        lines.append(f"uncovered (PRD gap): {uncovered}")
+    remaining = report.get("remaining") or []
+    if remaining:
+        lines.append("remaining (continue menu):")
+        for r in remaining:
+            lines.append(f"  - [{r['delivery_status']}/{r.get('customer_disposition')}] "
+                         f"{r['id']}: {r.get('statement')}")
+    else:
+        lines.append("remaining      : none — every requirement delivered/waived/retired")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 # Rendering.
 # --------------------------------------------------------------------------- #
 def summary_line(report: dict) -> dict:
@@ -344,6 +617,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "(default: <campaign-home>/scope-baseline.json)")
     parser.add_argument("--json", action="store_true",
                         help="emit the full report as JSON instead of the text block")
+    parser.add_argument("--requirement-ledger", default=None,
+                        help="path to the requirement ledger (requirement-ledger.schema."
+                             "json) — adds the Δ-19 per-REQ projection + REQUIREMENT_"
+                             "COVERAGE= (emitted ONLY when a valid ledger is present)")
+    parser.add_argument("--charter", default=None,
+                        help="path to the campaign charter (YAML) — used to recompute the "
+                             "live signed-scope hash for the stale-signoff check; "
+                             "optional (absent ⇒ best-effort)")
     args = parser.parse_args(argv)
 
     try:
@@ -388,11 +669,45 @@ def main(argv: Optional[List[str]] = None) -> int:
         baseline = load_baseline(args.campaign_home)
 
     report = compute_coverage(plan, state, baseline=baseline)
+
+    # Δ-19 requirement projection — ONLY when a (valid) ledger is supplied; otherwise the
+    # output is byte-identical to today (SCOPE_COVERAGE= unchanged).
+    req_report = None
+    if args.requirement_ledger:
+        try:
+            ledger = _read_json(args.requirement_ledger)
+        except (OSError, ValueError) as exc:
+            print(f"scope_report: cannot read --requirement-ledger: {exc}",
+                  file=sys.stderr)
+            return 2
+        # Fail-closed: an invalid ledger is not projected (and is not emitted).
+        try:
+            import campaign as _cp
+            _cp._validate_or_raise(ledger, "requirement-ledger.schema.json", "ledger")
+        except Exception as exc:  # noqa: BLE001 - schema/validator issue
+            print(f"scope_report: invalid --requirement-ledger: {exc}", file=sys.stderr)
+            return 2
+        charter = None
+        if args.charter:
+            try:
+                import driver as _drv
+                charter = _drv.load_charter(args.charter)
+            except Exception:  # noqa: BLE001 - charter optional for the projection
+                charter = None
+        req_report = compute_requirement_coverage(plan, state, ledger, charter=charter)
+
     if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        out = report
+        if req_report is not None:
+            out = {"scope": report, "requirement_coverage": req_report}
+        print(json.dumps(out, indent=2, sort_keys=True))
     else:
         print(render_text(report))
         print("SCOPE_COVERAGE=" + json.dumps(summary_line(report), sort_keys=True))
+        if req_report is not None:
+            print(render_requirements(req_report))
+            print("REQUIREMENT_COVERAGE="
+                  + json.dumps(requirement_summary_line(req_report), sort_keys=True))
     return 0
 
 

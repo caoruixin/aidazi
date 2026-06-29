@@ -304,5 +304,259 @@ class TestRemovedMilestoneDrift(unittest.TestCase):
         self.assertNotIn(("m1", "s1"), drift)   # in-plan, delivered — not drift
 
 
+import campaign as cp  # noqa: E402  (F1 stamp/hash helpers reused by the REQ tests)
+
+_STATIC_CHARTER = {"tooling": {"acceptance": {"functional": {"mode": "static"}}}}
+
+
+def _ledger(items):
+    return {"version": "v1", "requirements": [
+        {"id": i, "statement": f"req {i}", "source": {"channel": "prd"},
+         "customer_disposition": d} for (i, d) in items]}
+
+
+def _covplan(milestones, **kw):
+    """A plan with covers_req_ids per milestone: milestones = [(mid, [reqs], seq?)]."""
+    ms = []
+    for entry in milestones:
+        mid, reqs = entry[0], entry[1]
+        seq = entry[2] if len(entry) > 2 else [f"{mid}-s1"]
+        ms.append({"id": mid, "objective": f"o {mid}",
+                   "covers_req_ids": list(reqs), "subsprint_sequence": seq})
+    return _plan(ms, **kw)
+
+
+def _outcome(mid, terminal):
+    return {"milestone_id": mid, "terminal": terminal}
+
+
+def _reqstate(milestone_index, outcomes, status="running", units=None):
+    st = _state(milestone_index, units or [], status=status)
+    st["milestone_outcomes"] = outcomes
+    return st
+
+
+class TestRequirementProjectionDelivery(unittest.TestCase):
+    """Derived delivery_status from each milestone's TERMINAL outcome (design §3.5.1)."""
+
+    def setUp(self):
+        self.plan = cp.stamp_signoff(
+            _covplan([("m1", ["REQ-1"]), ("m2", ["REQ-2"]), ("m3", ["REQ-3"])]),
+            _STATIC_CHARTER, signed_at="t", charter_ref="ch")
+        self.led = _ledger([("REQ-1", "accepted"), ("REQ-2", "accepted"),
+                            ("REQ-3", "accepted")])
+
+    def test_delivered_requires_acceptance_pass(self):
+        state = _reqstate(2, [_outcome("m1", "acceptance_pass_authoritative"),
+                              _outcome("m2", "acceptance_pass_advisory_ship")])
+        rep = sr.compute_requirement_coverage(self.plan, state, self.led,
+                                              charter=_STATIC_CHARTER)
+        d = {r["id"]: r["delivery_status"] for r in rep["requirements"]}
+        self.assertEqual(d["REQ-1"], "delivered")
+        self.assertEqual(d["REQ-2"], "delivered")
+        self.assertEqual(d["REQ-3"], "in_progress")   # m3 is the cursor, no outcome yet
+        self.assertEqual(rep["totals"]["delivered"], 2)
+
+    def test_all_waived_reasons(self):
+        state = _reqstate(3, [_outcome("m1", "fix_required_ship"),
+                              _outcome("m2", "surface_approve_ship"),
+                              _outcome("m3", "acceptance_off")], status="done")
+        rep = sr.compute_requirement_coverage(self.plan, state, self.led,
+                                              charter=_STATIC_CHARTER)
+        by = {r["id"]: r for r in rep["requirements"]}
+        self.assertEqual((by["REQ-1"]["delivery_status"], by["REQ-1"]["delivery_reason"]),
+                         ("waived", "fix_required_ship"))
+        self.assertEqual((by["REQ-2"]["delivery_status"], by["REQ-2"]["delivery_reason"]),
+                         ("waived", "surface_approve"))
+        self.assertEqual((by["REQ-3"]["delivery_status"], by["REQ-3"]["delivery_reason"]),
+                         ("waived", "acceptance_off"))
+        self.assertEqual(rep["totals"]["waived"], 3)
+
+    def test_out_of_scope_advance_waived(self):
+        state = _reqstate(1, [_outcome("m1", "out_of_scope_advance")])
+        rep = sr.compute_requirement_coverage(self.plan, state, self.led,
+                                              charter=_STATIC_CHARTER)
+        by = {r["id"]: r for r in rep["requirements"]}
+        self.assertEqual((by["REQ-1"]["delivery_status"], by["REQ-1"]["delivery_reason"]),
+                         ("waived", "out_of_scope_advance"))
+
+    def test_not_shipped_is_not_delivered(self):
+        state = _reqstate(0, [_outcome("m1", "not_shipped")], status="ended")
+        rep = sr.compute_requirement_coverage(self.plan, state, self.led,
+                                              charter=_STATIC_CHARTER)
+        by = {r["id"]: r for r in rep["requirements"]}
+        self.assertNotEqual(by["REQ-1"]["delivery_status"], "delivered")
+
+
+class TestRequirementUncoveredAndDrift(unittest.TestCase):
+    def test_uncovered_is_the_prd_gap(self):
+        plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1"])]), _STATIC_CHARTER,
+                                signed_at="t")
+        led = _ledger([("REQ-1", "accepted"), ("REQ-2", "accepted"),  # REQ-2 in no ms
+                       ("REQ-3", "dropped")])                          # validly retired
+        rep = sr.compute_requirement_coverage(plan, _reqstate(0, []), led,
+                                              charter=_STATIC_CHARTER)
+        self.assertEqual(rep["uncovered_requirements"], ["REQ-2"])    # not REQ-3 (dropped)
+
+    def test_covers_unknown_req_is_drift(self):
+        plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1", "REQ-9"])]), _STATIC_CHARTER,
+                                signed_at="t")
+        led = _ledger([("REQ-1", "accepted")])   # REQ-9 not in the ledger
+        rep = sr.compute_requirement_coverage(plan, _reqstate(0, []), led,
+                                              charter=_STATIC_CHARTER)
+        self.assertEqual(rep["coverage_drift"],
+                         [{"milestone_id": "m1", "unknown_req_id": "REQ-9"}])
+
+
+class TestInvalidSignedDisposition(unittest.TestCase):
+    """A retiring disposition on FRESH-signed scope is a conflict and is NOT retired
+    (G2/F2) — it stays in the continue menu until a re-sign reconciles it."""
+
+    def test_dropped_on_fresh_signed_is_kept(self):
+        plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1"])]), _STATIC_CHARTER,
+                                signed_at="t")
+        led = _ledger([("REQ-1", "dropped")])    # dropped but bound to fresh-signed m1
+        rep = sr.compute_requirement_coverage(plan, _reqstate(0, []), led,
+                                              charter=_STATIC_CHARTER)
+        self.assertEqual(rep["invalid_signed_disposition"], ["REQ-1"])
+        by = {r["id"]: r for r in rep["requirements"]}
+        self.assertEqual(by["REQ-1"]["conflict"], "invalid_signed_disposition")
+        self.assertTrue(by["REQ-1"]["signed_bound"])
+        # KEPT in the continue menu (not silently retired).
+        self.assertIn("REQ-1", [r["id"] for r in rep["remaining"]])
+
+
+class TestStaleSignoffKeepsPriorCoverage(unittest.TestCase):
+    """When the live hash diverges from the signed snapshot, scope_report emits a
+    stale_signoff conflict and renders the STORED snapshot's prior signed coverage so a
+    ledger retirement is never shown as settled (G4)."""
+
+    def test_stale_after_edit_preserves_prior_signed_coverage(self):
+        signed = cp.stamp_signoff(
+            _covplan([("m1", ["REQ-1"]), ("m2", ["REQ-2"])]),
+            _STATIC_CHARTER, signed_at="t")
+        # Edit a milestone AFTER signing → live hash diverges → stale.
+        stale_plan = json.loads(json.dumps(signed))
+        stale_plan["milestones"][1]["objective"] = "EDITED AFTER SIGNOFF"
+        self.assertEqual(cp.signoff_status(stale_plan, _STATIC_CHARTER), "stale")
+        led = _ledger([("REQ-1", "accepted"), ("REQ-2", "dropped")])  # try to retire REQ-2
+        rep = sr.compute_requirement_coverage(stale_plan, _reqstate(0, []), led,
+                                              charter=_STATIC_CHARTER)
+        self.assertEqual(rep["signoff_status"], "stale")
+        self.assertIsNotNone(rep["stale_signoff"])
+        # Prior signed coverage is reconstructable from the stored snapshot.
+        self.assertEqual(rep["stale_signoff"]["prior_signed_coverage"],
+                         {"m1": ["REQ-1"], "m2": ["REQ-2"]})
+        self.assertNotEqual(rep["stale_signoff"]["stored_hash"],
+                            rep["stale_signoff"]["live_hash"])
+        # REQ-2's ledger retirement is NOT settled while stale (it was prior-signed) —
+        # it stays visible (uncovered/remaining), never silently dropped.
+        self.assertIn("REQ-2", rep["uncovered_requirements"])
+        self.assertIn("REQ-2", [r["id"] for r in rep["remaining"]])
+
+
+class TestBlockedSignoffProtectsCoverage(unittest.TestCase):
+    """Codex R-P2a #1/#2: while a plan is BLOCKED pending re-sign (pre-F1 OR a stale
+    signoff with an UNVERIFIABLE snapshot), a ledger disposition must NOT silently retire
+    its covered REQs, and a tampered snapshot must NOT be trusted for prior coverage."""
+
+    def test_pre_f1_signed_coverage_not_silently_retired(self):
+        # covers_req_ids present (opts into F1) + a bare top-level signed_by_human, NO
+        # signoff block ⇒ pre_f1: the runner re-pauses, so scope_report must protect it.
+        plan = _covplan([("m1", ["REQ-1"])])
+        plan["signed_by_human"] = True
+        self.assertEqual(cp.signoff_status(plan, _STATIC_CHARTER), "pre_f1")
+        led = _ledger([("REQ-1", "dropped")])    # try to retire a pre-F1-signed REQ
+        rep = sr.compute_requirement_coverage(plan, _reqstate(0, []), led,
+                                              charter=_STATIC_CHARTER)
+        by = {r["id"]: r for r in rep["requirements"]}
+        self.assertTrue(by["REQ-1"]["signed_bound"])
+        self.assertEqual(by["REQ-1"]["conflict"], "stale_signoff")
+        self.assertIn("REQ-1", rep["uncovered_requirements"])      # NOT validly retired
+        self.assertIn("REQ-1", [r["id"] for r in rep["remaining"]])
+        self.assertEqual(rep["stale_signoff"]["status"], "pre_f1")
+
+    def test_tampered_stale_snapshot_fails_closed(self):
+        signed = cp.stamp_signoff(
+            _covplan([("m1", ["REQ-1"]), ("m2", ["REQ-2"])]), _STATIC_CHARTER, signed_at="t")
+        stale_plan = json.loads(json.dumps(signed))
+        stale_plan["milestones"][0]["objective"] = "EDITED → stale"   # live diverges ⇒ stale
+        # TAMPER the stored snapshot to drop REQ-2's prior coverage, leaving the stored
+        # signed_scope_hash untouched — the attack the authenticity check must catch.
+        stale_plan["signoff"]["scope_envelope"]["milestones"][1]["covers_req_ids"] = []
+        self.assertEqual(cp.signoff_status(stale_plan, _STATIC_CHARTER), "stale")
+        self.assertFalse(cp.signoff_snapshot_authentic(stale_plan))
+        led = _ledger([("REQ-1", "accepted"), ("REQ-2", "dropped")])  # try to retire REQ-2
+        rep = sr.compute_requirement_coverage(stale_plan, _reqstate(0, []), led,
+                                              charter=_STATIC_CHARTER)
+        self.assertFalse(rep["stale_signoff"]["snapshot_authentic"])
+        self.assertEqual(rep["stale_signoff"]["prior_signed_coverage"], {})  # withheld
+        # Fail-closed: REQ-2 (still in the LIVE covers) is protected, NOT silently retired.
+        by = {r["id"]: r for r in rep["requirements"]}
+        self.assertTrue(by["REQ-2"]["signed_bound"])
+        self.assertIn("REQ-2", rep["uncovered_requirements"])
+        self.assertIn("REQ-2", [r["id"] for r in rep["remaining"]])
+
+
+class TestRequirementSummaryAndCli(unittest.TestCase):
+    def test_summary_line_machine_subset(self):
+        plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1"])]), _STATIC_CHARTER,
+                                signed_at="t")
+        led = _ledger([("REQ-1", "accepted"), ("REQ-2", "accepted")])
+        rep = sr.compute_requirement_coverage(plan, _reqstate(0, []), led,
+                                              charter=_STATIC_CHARTER)
+        line = sr.requirement_summary_line(rep)
+        for k in ("campaign_id", "ledger_present", "signoff_status",
+                  "requirements_total", "delivered", "waived", "uncovered",
+                  "uncovered_requirements", "stale_signoff", "remaining_requirements"):
+            self.assertIn(k, line)
+        self.assertEqual(line["requirements_total"], 2)
+        self.assertIsInstance(json.dumps(line, sort_keys=True), str)
+
+    def _write(self, path, obj):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh)
+
+    def test_cli_emits_requirement_coverage_only_with_ledger(self):
+        with tempfile.TemporaryDirectory() as home:
+            plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1"])]), _STATIC_CHARTER,
+                                    signed_at="t")
+            plan_path = os.path.join(home, "plan.json")
+            led_path = os.path.join(home, "ledger.json")
+            self._write(plan_path, plan)
+            self._write(led_path, _ledger([("REQ-1", "accepted")]))
+            # WITHOUT --requirement-ledger: no REQUIREMENT_COVERAGE= (byte-identical).
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = sr.main(["--plan", plan_path, "--campaign-home", home])
+            self.assertEqual(rc, 0)
+            self.assertIn("SCOPE_COVERAGE=", buf.getvalue())
+            self.assertNotIn("REQUIREMENT_COVERAGE=", buf.getvalue())
+            # WITH a valid ledger: REQUIREMENT_COVERAGE= present.
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = sr.main(["--plan", plan_path, "--campaign-home", home,
+                              "--requirement-ledger", led_path])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("REQUIREMENT_COVERAGE=", out)
+            machine = json.loads(
+                out.split("REQUIREMENT_COVERAGE=", 1)[1].splitlines()[0])
+            self.assertTrue(machine["ledger_present"])
+            self.assertEqual(machine["requirements_total"], 1)
+
+    def test_cli_invalid_ledger_returns_2(self):
+        with tempfile.TemporaryDirectory() as home:
+            plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1"])]), _STATIC_CHARTER,
+                                    signed_at="t")
+            plan_path = os.path.join(home, "plan.json")
+            led_path = os.path.join(home, "ledger.json")
+            self._write(plan_path, plan)
+            self._write(led_path, {"version": "v1", "requirements": [{"id": "BAD"}]})
+            rc = sr.main(["--plan", plan_path, "--campaign-home", home,
+                          "--requirement-ledger", led_path])
+            self.assertEqual(rc, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
