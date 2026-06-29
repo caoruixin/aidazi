@@ -881,6 +881,66 @@ class SkillIntegrityTests(unittest.TestCase):
                          msg="\n".join(i.render() for i in report.errors))
 
 
+class Track1TaskSelectableSkillTests(unittest.TestCase):
+    """Track 1 §2.3 / Codex BLOCKING-3 — a catalog skill carrying a `signals` tag is
+    TASK-SELECTABLE (select_skills_for_task can mount it on any non-acceptance role), so it must
+    get the SAME tool-whitelist / pin / integrity discipline as a default binding even when no
+    role binds it. A skill WITHOUT `signals` is never task-selected, so it is NOT validated unless
+    bound (dormancy)."""
+
+    # A single read-only dev role with defaults DISABLED, so the ONLY bindings come from the
+    # task-selectable (signal-tagged) catalog universe — isolating the check under test.
+    def _charter(self):
+        return {"tooling": {"dev": {
+            "agent_kind": "claude_code", "harness": "claude_code",
+            "tools": ["Read", "Grep", "Glob"],
+            "skills": {"mode": "disable"}}}}
+
+    def _catalog_path(self, tmp, skills_yaml: str) -> str:
+        p = os.path.join(tmp, "registry.yaml")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("catalog_version: 1\nrole_defaults:\n  dev: [base]\nskills:\n"
+                     "  base:\n    title: base\n    source: {repo: local}\n"
+                     "    license: aidazi\n    provenance: authored\n    status: active\n"
+                     + skills_yaml)
+        return p
+
+    def _rules(self, skills_yaml: str) -> set:
+        report = cv.Report()
+        with tempfile.TemporaryDirectory(prefix="cv-track1-") as tmp:
+            cv._check_skill_integrity(
+                self._charter(), report,
+                skill_catalog_path=self._catalog_path(tmp, skills_yaml),
+                repo_root=cv._REPO_ROOT)
+        return {i.rule for i in report.errors}
+
+    def test_signal_tagged_skill_exceeding_whitelist_is_flagged(self):
+        # ui-write-skill is signal-tagged AND needs Write → exceeds the read-only dev whitelist,
+        # so it is flagged even though no role binds it (it is task-selectable).
+        rules = self._rules(
+            "  ui-write-skill:\n    title: ui\n    source: {repo: local}\n"
+            "    license: aidazi\n    provenance: authored\n    status: active\n"
+            "    signals: [ui]\n    tool_requirements: [Write]\n")
+        self.assertIn("skill_tool_whitelist", rules)
+
+    def test_signal_tagged_readonly_skill_is_clean(self):
+        # Read-only-safe signal-tagged skill ([] tool_requirements) → no whitelist violation.
+        rules = self._rules(
+            "  ui-readonly-skill:\n    title: ui\n    source: {repo: local}\n"
+            "    license: aidazi\n    provenance: authored\n    status: active\n"
+            "    signals: [ui]\n    tool_requirements: []\n")
+        self.assertNotIn("skill_tool_whitelist", rules)
+
+    def test_untagged_skill_is_not_task_selected(self):
+        # Same overbroad tool_requirements but NO `signals` → not task-selectable → not validated
+        # (dormancy: the machinery only enforces the universe a sub-sprint could actually mount).
+        rules = self._rules(
+            "  plain-write-skill:\n    title: plain\n    source: {repo: local}\n"
+            "    license: aidazi\n    provenance: authored\n    status: active\n"
+            "    tool_requirements: [Write]\n")
+        self.assertNotIn("skill_tool_whitelist", rules)
+
+
 class ConnectorGrantTests(unittest.TestCase):
     def test_write_scope_connector_on_readonly_role_fails(self):
         ov = cv.Overrides(connector_catalog_path=_CONNECTOR_CATALOG)
