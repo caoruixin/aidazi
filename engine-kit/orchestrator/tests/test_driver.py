@@ -243,6 +243,85 @@ class Track1SkillMountingDriverTests(unittest.TestCase):
                 drv_._effective_role("dev")
 
 
+class Track1xTrack2GapRemediationIntegrationTests(unittest.TestCase):
+    """Cross-Track integration (§4 scenario 5): a Track 2 §1.7-F gap-followup
+    remediation dispatches a Driver with a SUPPLIED `subsprint_sequence` (the milestone's
+    signed sequence + the gapfix id — `campaign._dispatch_gap_remediation`'s grown_seq).
+    A supplied sequence SKIPS decompose, so the remediation Driver never re-authors
+    `task_signals` and never stamps a digest — it must resolve task-UNAWARE and mount NO
+    task-selected UI skill, WITHOUT bypassing Track 1's digest/staleness guard, which
+    stays ARMED on the very same Driver.
+    """
+
+    def _gapfix_driver(self, d):
+        # Mirror the remediation dispatch: a charter whose approved scope is a supplied
+        # sub-sprint sequence (signed seq + the gapfix id), exactly as run_unit injects it.
+        charter = load_charter(CHARTER_PATH)
+        charter.setdefault("autonomy", {}).setdefault("approved_scope", {})[
+            "subsprint_sequence"] = ["m1-s1", "m1-gapfix-1"]
+        drv_ = _driver(d, charter=charter)
+        drv_.run(subsprint_id="m1-s1")           # init live state (minimal flow)
+        return drv_
+
+    def test_gap_remediation_skips_decompose_and_is_task_unaware(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = self._gapfix_driver(d)
+            drv_.state.subsprint_id = "m1-gapfix-1"
+            # The supplied-sequence decompose path (the gap-remediation shape) is SKIPPED.
+            drv_._step_decompose()
+            self.assertTrue(any(
+                e["type"] == "decompose_skipped"
+                for e in audit.read_events(drv_.audit_ledger)))
+            # → no plan entries, no digest stamped (byte-identical to a no-signal run).
+            self.assertEqual(drv_.state.planned_subsprints, [])
+            self.assertIsNone(drv_.state.task_signals_digest)
+            # → the None/None digest state passes the staleness guard (does NOT raise)…
+            drv_._assert_task_signals_unmutated()
+            # …and every chain role resolves task-UNAWARE: no UI skill mounts.
+            for role in ("dev", "deliver", "review"):
+                self.assertEqual(drv_._task_context_for(role), (None, ()))
+            dev_skills = [s.id for s in drv_._effective_role("dev").skills]
+            for ui in ("frontend-design", "front-end-design-checklist",
+                       "web-interface-guidelines", "a11y-checklist"):
+                self.assertNotIn(ui, dev_skills)
+            # task-unaware dev == the role-default only (no task-selected extension).
+            self.assertEqual(dev_skills, ["test-driven-development"])
+
+    def test_gap_remediation_driver_keeps_digest_guard_armed(self):
+        # The remediation's task-unaware result is because its plan is empty — NOT because
+        # the guard is disabled. Injecting signals-without-digest on the SAME gapfix Driver
+        # (a tampered/post-signoff shape) must still FAIL CLOSED.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = self._gapfix_driver(d)
+            drv_._step_decompose()
+            drv_.state.subsprint_id = "m1-gapfix-1"
+            drv_.state.planned_subsprints = [
+                {"id": "m1-gapfix-1", "objective": "o", "task_signals": ["ui"]}]
+            drv_.state.task_signals_digest = None     # present signals, no stamped digest
+            with self.assertRaises(GateHardFail) as ctx:
+                drv_._effective_role("dev")
+            self.assertIn("no task_signals_digest was stamped", ctx.exception.reason)
+
+    def test_gap_remediation_does_not_perturb_acceptance_hashing(self):
+        # Acceptance stays excluded from task selection on the remediation Driver: its
+        # task context is task-unaware regardless of any plan, so its skill-set identity
+        # cannot vary with Track 2 remediation activity.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = self._gapfix_driver(d)
+            drv_._step_decompose()
+            # even if a (hypothetically) UI-signalled plan existed, acceptance is excluded.
+            drv_.state.subsprint_id = "m1-gapfix-1"
+            drv_.state.planned_subsprints = [
+                {"id": "m1-gapfix-1", "objective": "o", "task_signals": ["ui"]}]
+            drv_.state.task_signals_digest = drv_._task_signals_digest(
+                drv_.state.planned_subsprints)
+            self.assertEqual(drv_._task_context_for("acceptance"), (None, ()))
+            acc_skills = [s.id for s in drv_._effective_role("acceptance").skills]
+            for ui in ("frontend-design", "front-end-design-checklist",
+                       "web-interface-guidelines", "a11y-checklist"):
+                self.assertNotIn(ui, acc_skills)
+
+
 class TestSubSprintGate(unittest.TestCase):
     def test_eval_cmd_runs_before_review(self):
         with tempfile.TemporaryDirectory() as d:
