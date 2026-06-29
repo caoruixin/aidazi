@@ -199,6 +199,38 @@ def enforce_charter_for_real_run(charter: dict) -> None:
         "BEFORE any adapter is invoked:\n" + "\n".join(_charter_issue_lines(errors)))
 
 
+def campaign_plan_validation_report(plan: dict):
+    """Return the ``charter_validator`` Report for a campaign plan's Δ-19 / §1.7-F §A.3
+    gap_followup bounds (structural schema + the bounded/pin semantic rule), or None when the
+    validator / jsonschema is unavailable. Never raises. Mirrors charter_validation_report."""
+    try:
+        import charter_validator as _cv  # noqa: E402,WPS433
+        report = _cv.Report()
+        _cv.validate_campaign_plan(plan, report)
+        return report
+    except Exception:  # noqa: BLE001 - validator/jsonschema absent ⇒ None
+        return None
+
+
+def enforce_campaign_plan_for_real_run(plan: dict) -> None:
+    """ENFORCE the §1.7-F §A.3 gap_followup bounds/pin for a real (``--allow-real``) campaign
+    run: raise ``CharterValidationError`` on ANY blocking error, BEFORE any adapter is built or
+    invoked, so a plan with an unbounded or non-shrink-tolerating gap_followup (a value that the
+    runtime ``_gap_followup_bounds`` would otherwise RESPECT) never reaches a live model. This is
+    the production enforcement point for the otherwise authoring-time static guard — the only
+    layer that PINS ``max_no_progress_rounds == 1``. A None report (validator / jsonschema
+    unavailable) does NOT block — the campaign runner's own fail-closed plan-schema ingress
+    (campaign.py) remains the defense-in-depth gate. Mirrors enforce_charter_for_real_run; the
+    raised error is a ValueError, so run_campaign_entry maps it to the INVALID exit code."""
+    report = campaign_plan_validation_report(plan)
+    if report is None or _report_ok(report):
+        return
+    errors = list(getattr(report, "errors", []) or [])
+    raise CharterValidationError(
+        "campaign plan has blocking §1.7-F gap_followup error(s); refusing the real run "
+        "BEFORE any adapter is invoked:\n" + "\n".join(_charter_issue_lines(errors)))
+
+
 def advisory_validate_charter(charter: dict) -> Optional[str]:
     """Non-raising one-shot schema SUMMARY string (for visibility without
     enforcement). Real-run ENFORCEMENT lives in ``enforce_charter_for_real_run``
@@ -532,7 +564,9 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     resume integrity (no re-dispatch / no double-accounted Acceptance) are the
     campaign runner's guarantees (campaign.py); this only wires + reports them."""
     import campaign as _cp  # lazy (campaign imports run_loop)
-    campaign_id = (plan or {}).get("campaign_id")
+    # A truthy non-dict plan root (list / scalar) has no .get — guard so a malformed plan
+    # reaches the fail-closed validation/INVALID path instead of crashing here (Codex Step-4 R3).
+    campaign_id = plan.get("campaign_id") if isinstance(plan, dict) else None
     home = campaign_home_for(campaign_id or "unidentified", campaign_run_dir,
                              base=repo_dir)
     units_dir = os.path.join(home, "units")
@@ -552,6 +586,13 @@ def run_campaign_entry(plan: dict, charter: dict, *,
 
     base = {"campaign_id": campaign_id, "campaign_home": home, "units_dir": units_dir}
     try:
+        # Δ-19 / §1.7-F §A.3: fail-closed gap_followup bounds/pin preflight for a REAL run,
+        # BEFORE any adapter/model is built (the static guard's production enforcement point;
+        # raises CharterValidationError → the except-ValueError below maps it to INVALID).
+        # Mock/test runs (adapters injected, allow_real False) rely on the campaign runner's
+        # own fail-closed plan-schema ingress.
+        if allow_real:
+            enforce_campaign_plan_for_real_run(plan)
         run_unit = _cp.make_run_unit(charter, units_dir, campaign_id,
                                      clock=clock, plan=plan,
                                      ledger_path=ledger_path, **run_loop_kwargs)

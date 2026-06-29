@@ -976,5 +976,71 @@ class TestRunUnitResumeFallback(unittest.TestCase):
                    covered_req_ids=["REQ-1"])
 
 
+class GapFollowupRealRunPreflight(unittest.TestCase):
+    """Δ-19 / §1.7-F §A.3: the static gap_followup bounds/pin guard MUST actually fire for a
+    REAL campaign run (Codex Step-4 R1) — the runtime _gap_followup_bounds RESPECTS a configured
+    max_no_progress_rounds, so the pin is enforced only by this fail-closed preflight."""
+
+    def _good(self):
+        p = _plan("c1", [{"id": "m1", "objective": "o"}])
+        p["gap_followup"] = {"max_subsprints": 3, "max_no_progress_rounds": 1}
+        return p
+
+    def _bad_pin(self):
+        p = _plan("c1", [{"id": "m1", "objective": "o"}])
+        p["gap_followup"] = {"max_subsprints": 3, "max_no_progress_rounds": 2}
+        return p
+
+    def _bad_unbounded(self):
+        p = _plan("c1", [{"id": "m1", "objective": "o"}])
+        p["gap_followup"] = {"max_no_progress_rounds": 1}  # missing max_subsprints
+        return p
+
+    def test_validation_report_flags_bad_pin(self):
+        report = rl.campaign_plan_validation_report(self._bad_pin())
+        self.assertIsNotNone(report)
+        self.assertFalse(report.ok)
+        self.assertIn("gap_followup_no_progress_pin", report.rules_fired)
+
+    def test_validation_report_clean_for_good_plan(self):
+        report = rl.campaign_plan_validation_report(self._good())
+        self.assertIsNotNone(report)
+        self.assertTrue(report.ok, msg=report.render())
+
+    def test_enforce_raises_on_bad_plan_and_passes_good(self):
+        with self.assertRaises(rl.CharterValidationError):
+            rl.enforce_campaign_plan_for_real_run(self._bad_pin())
+        with self.assertRaises(rl.CharterValidationError):
+            rl.enforce_campaign_plan_for_real_run(self._bad_unbounded())
+        rl.enforce_campaign_plan_for_real_run(self._good())  # no raise
+
+    def test_real_run_rejects_bad_gap_followup_before_any_adapter(self):
+        # allow_real=True + a bad plan ⇒ the preflight raises BEFORE make_run_unit, so the run
+        # fails closed (INVALID) without ever building a real adapter / billing a model.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            r = rl.run_campaign_entry(
+                self._bad_pin(), charter, clock=_clock(),
+                campaign_run_dir=os.path.join(d, "h"), allow_real=True)
+            self.assertEqual(r["status"], "invalid")
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
+            self.assertIn("gap_followup", r.get("error", ""))
+
+    def test_mock_run_does_not_apply_real_run_preflight(self):
+        # campaign_plan_validation_report is pure and independent of allow_real — it flags the bad
+        # pin regardless; the run_campaign_entry preflight is what is allow_real-gated.
+        self.assertFalse(rl.campaign_plan_validation_report(self._bad_pin()).ok)
+
+    def test_non_dict_plan_root_reaches_invalid_not_crash(self):
+        # A truthy non-dict plan root (a list) must reach the fail-closed INVALID result, not
+        # AttributeError on `.get` before the preflight (Codex Step-4 R3 nit).
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            r = rl.run_campaign_entry(
+                [{"id": "m1"}], charter, clock=_clock(),
+                campaign_run_dir=os.path.join(d, "h"), allow_real=True)
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
+
+
 if __name__ == "__main__":
     unittest.main()

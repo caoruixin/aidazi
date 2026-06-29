@@ -1,0 +1,2 @@
+# A comment-only campaign-plan file parses to None. A successfully-loaded None (blank file) is a
+# structural failure (the plan shape is required), NOT a silent skip — Codex Step-4 R2.

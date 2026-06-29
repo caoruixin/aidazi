@@ -1,0 +1,13 @@
+# INVALID (semantic): max_no_progress_rounds > 1 tolerates a non-shrinking round, which §1.7-F
+# clause 2/3 forbids (each round's remaining gap req_id-set MUST be a strict PROPER SUBSET of the
+# prior round; a non-shrinking round HALTs on the FIRST occurrence). The value is schema-valid
+# (integer >= 1), so only the semantic pin fires. Expected rule: gap_followup_no_progress_pin
+# (§1.7-F / §1.7-D).
+campaign_id: c1
+goal: ship the backlog
+milestones:
+  - id: m1
+    objective: first milestone
+gap_followup:
+  max_subsprints: 3
+  max_no_progress_rounds: 2

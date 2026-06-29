@@ -164,14 +164,14 @@
   roles: [deliver, control-plane]
   condition: gap_followup_dispatch
   current_enforcement: 'campaign:_req_id_envelope_check'
-  notes: 'Phase 2-γ §1.7-F clause 1. Runtime check wired Step 3 — proves covered_req_ids ⊆ (authentic F1 snapshot ∩ the milestone signed covers); DISTINCT from driver:_scope_expansion_guard (modules/layers). Static charter_validator guard Step 4.'
+  notes: 'Phase 2-γ §1.7-F clause 1. Runtime check wired Step 3 — proves covered_req_ids ⊆ (authentic F1 snapshot ∩ the milestone signed covers); DISTINCT from driver:_scope_expansion_guard (modules/layers). RUNTIME-ONLY: the campaign-plan gap_followup block carries no req_ids, so clause 1 has NO static counterpart; the Step 4 static guard (validator:_check_gap_followup_bounds) covers the clause-2 bounds — see con-1.7f-bounded-runtime.'
 - id: con-1.7f-bounded-runtime
   anchor: 'governance/constitution.md §1.7-F'
   statement: 'Gap-followup MUST be runtime-bounded: gap_followup.max_subsprints per milestone (persisted counter); the remaining gap req_id-set MUST be a strict PROPER SUBSET of the prior round (persisted gap-set history; proper-subset, NOT identical-hash); campaign budget not exhausted; an ABSENT campaign-budget dimension MUST receive a conservative effective-cap, never an unbounded default.'
   roles: [control-plane, deliver]
   condition: gap_followup_dispatch
   current_enforcement: 'campaign:_gap_followup_bounds'
-  notes: 'Phase 2-γ §1.7-F clause 2. Runtime bounds + effective-cap wired Step 3 (per-milestone counter, proper-subset progress vs gap_set_history, absent-budget effective-cap from charter.budget.max_fix_rounds_total); static charter_validator guard Step 4.'
+  notes: 'Phase 2-γ §1.7-F clause 2. Runtime bounds + effective-cap wired Step 3 (per-milestone counter, proper-subset progress vs gap_set_history, absent-budget effective-cap from charter.budget.max_fix_rounds_total); static charter_validator guard wired Step 4 — validator:_check_gap_followup_bounds rejects an unbounded/missing-bound gap_followup and PINS max_no_progress_rounds==1 (a value > 1 tolerates non-progress = §1.7-D evasion), completing the §A.3 two-layer enforcement.'
 - id: con-1.7f-fail-closed-escalation
   anchor: 'governance/constitution.md §1.7-F'
   statement: 'On any bound exceeded, any non-shrinking (non-proper-subset) round, or any out-of-envelope or ambiguous gap, the orchestrator MUST HALT and escalate to needs_human — never silently stop, never loop.'

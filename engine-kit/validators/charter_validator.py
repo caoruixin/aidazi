@@ -12,7 +12,9 @@ NORMATIVE SOURCE for every rule below stays in the spec, NOT in this file:
   - process/delivery-loop.md §4.2.2 (charter editing rules + 4 bypass shapes)
                               §4.2.3 (the 9 MANDATORY_CHECKPOINTS)
                               §4.2.8 (anti-patterns)
-  - governance/constitution.md §1.7-C, §1.7-D (non-bypass), §3.6 (calibration)
+  - governance/constitution.md §1.7-C, §1.7-D (non-bypass), §3.6 (calibration),
+                               §1.7-F (gap-followup bounds — the §A.3 static guard,
+                               cross-checking a campaign plan when one is supplied)
 This module is an engine-kit *implementation* of those rules. If the spec and
 this file ever disagree, the spec wins; fix this file.
 
@@ -529,6 +531,131 @@ def _check_adaptive_insert_bound(charter: dict, report: Report) -> None:
             "orchestrator can refuse to insert past it (delivery-loop §4.2.2)",
             "autonomy.auto_pass_rules.adaptive_insert.max_inserted_subsprints",
         )
+
+
+# §1.7-F clause 2/3: the gap req_id-set MUST be a strict PROPER SUBSET of the prior round,
+# and a non-shrinking round HALTs on the FIRST occurrence — so max_no_progress_rounds is
+# PINNED to 1 (kept in lockstep with campaign.py:GAP_FOLLOWUP_DEFAULT_MAX_NO_PROGRESS and the
+# campaign-plan.schema.json gap_followup.max_no_progress_rounds default/description).
+GAP_FOLLOWUP_PINNED_MAX_NO_PROGRESS = 1
+
+
+def _check_gap_followup_bounds(campaign_plan: Any, report: Report) -> None:
+    """§A.3 STATIC enforcement — the build-time sibling of the §1.7-F clause-2 RUNTIME
+    bound (engine-kit/orchestrator/campaign.py:_gap_followup_bounds). It mirrors, for the
+    gap-followup auto-route, the four §1.7-D evasion shapes the charter checks already
+    cover, reading the CAMPAIGN PLAN's optional ``gap_followup`` block
+    (schemas/campaign-plan.schema.json — Δ-19 / Constitution §1.7-F):
+
+      * BOUNDED — a PRESENT block MUST name both ``max_subsprints`` and
+        ``max_no_progress_rounds`` explicitly; a missing bound is rejected exactly like an
+        unbounded ``adaptive_insert`` (delivery-loop §4.2.2 / §1.7-D). An ABSENT block is
+        the legitimate non-bypass — the runtime then applies the conservative engine
+        defaults (campaign.py GAP_FOLLOWUP_DEFAULT_*), never an unbounded value.
+      * PROPER-SUBSET / HALT-ON-FIRST-NON-SHRINK — ``max_no_progress_rounds`` is PINNED to
+        GAP_FOLLOWUP_PINNED_MAX_NO_PROGRESS (1). §1.7-F clause 2/3 requires each round's
+        remaining gap req_id-set to be a strict PROPER SUBSET of the prior round and HALTs
+        on the FIRST non-shrinking round; the runtime DEFAULT is 1, but the field is
+        configurable, so a value > 1 tolerates non-progress — the static gate is the layer
+        that enforces the invariant, completing the §A.3 two-layer enforcement surface.
+
+    Scope-widening and the quality ``fix_required → human-confirm`` path (§3.5) are NOT
+    ``gap_followup`` fields and are left untouched: scope-widening is the runtime clause-1
+    req_id-envelope check (campaign.py:_req_id_envelope_check; the block carries no req_ids,
+    so it has no static counterpart), and §3.5 stays enforced statically by
+    _check_acceptance_on_fix_required on the charter.
+
+    NO-OP when no campaign plan is supplied (the charter-only call path) or when the plan
+    declares no ``gap_followup`` block. This is a TARGETED bounds check — the campaign
+    plan's full structural validation is roadmap_validator's, not this guard's.
+    """
+    if not isinstance(campaign_plan, dict):
+        return
+    gf = campaign_plan.get("gap_followup")
+    if gf is None:
+        return  # absent block ⇒ conservative engine defaults (legitimate non-bypass)
+    if not isinstance(gf, dict):
+        # A non-object gap_followup is the campaign-plan schema's structural rejection
+        # (gap_followup.type=object); nothing to add semantically here.
+        return
+
+    base = "gap_followup"
+
+    if "max_subsprints" not in gf:
+        report.error(
+            "gap_followup_bound",
+            "campaign-plan gap_followup is present but max_subsprints is absent; an "
+            "opted-in gap-followup block MUST bound its per-milestone sub-sprints "
+            "explicitly so the orchestrator can refuse to auto-dispatch past it "
+            "(Constitution §1.7-F clause 2 / §1.7-D — an unbounded enable is an evasion, "
+            "rejected exactly like an unbounded adaptive_insert)",
+            f"{base}.max_subsprints",
+        )
+
+    pin = GAP_FOLLOWUP_PINNED_MAX_NO_PROGRESS
+    if "max_no_progress_rounds" not in gf:
+        report.error(
+            "gap_followup_no_progress_pin",
+            "campaign-plan gap_followup is present but max_no_progress_rounds is absent; "
+            f"it MUST be set explicitly to {pin} (Constitution §1.7-F clause 2/3 HALTs on "
+            "the FIRST non-shrinking round — the bound is not silently inherited from a "
+            "default once the block is opted into)",
+            f"{base}.max_no_progress_rounds",
+        )
+    else:
+        mnp = gf.get("max_no_progress_rounds")
+        # STRICT int (``type(mnp) is int``) so a bool (True == 1) or a float (1.0 == 1)
+        # cannot masquerade as the pinned value on the direct-call path. The schema layer
+        # (``validate_campaign_plan`` → campaign-plan.schema.json) is the primary type
+        # authority; this strict comparison is defense-in-depth for a bare call.
+        if type(mnp) is not int or mnp != pin:
+            report.error(
+                "gap_followup_no_progress_pin",
+                f"campaign-plan gap_followup.max_no_progress_rounds MUST be the integer "
+                f"{pin} (got {mnp!r}); §1.7-F clause 2/3 requires each round's remaining "
+                "gap req_id-set to be a strict PROPER SUBSET of the prior round and HALTs "
+                "on the FIRST non-shrinking round — a value > 1 tolerates non-progress and "
+                "is a §1.7-D evasion",
+                f"{base}.max_no_progress_rounds",
+            )
+
+
+def _load_campaign_plan_schema() -> Optional[dict]:
+    """Load schemas/campaign-plan.schema.json — the STRUCTURAL authority for a supplied
+    campaign plan (it rejects a non-object ``gap_followup``, a non-integer or <1 bound, and
+    the required plan shape). Returns None if absent; the semantic check still runs."""
+    path = _find_named_schema("campaign-plan.schema.json")
+    if not path:
+        return None
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def validate_campaign_plan(campaign_plan: Any, report: Report,
+                           schema: Optional[dict] = None) -> None:
+    """§1.7-F §A.3 STATIC guard for a campaign plan — runs BOTH layers, appending to
+    ``report``:
+      (A) STRUCTURAL — validate against schemas/campaign-plan.schema.json (the type/shape
+          authority: a non-object ``gap_followup``, a non-integer / <1 bound, and the
+          required plan shape are rejected here, reported as ``campaign_plan_structural``).
+      (B) SEMANTIC — _check_gap_followup_bounds (the both-bounds-present rule + the
+          ``max_no_progress_rounds == 1`` pin the schema cannot express).
+    This is the entry the CLI / Overrides path uses; run_loop's real-run campaign preflight
+    calls it too, so the authoring/CI gate and the runtime enforce the SAME rule. A missing
+    schema (None) degrades to the semantic check only — never a silent pass of a bad bound."""
+    if schema is None:
+        schema = _load_campaign_plan_schema()
+    if schema is not None:
+        # Validate ANY root (object / list / scalar / None) against the schema — a scalar or
+        # None root (e.g. a blank file → None, or "not a plan") is a structural failure
+        # (`is not of type 'object'`), NOT a silent pass. Do NOT guard on isinstance here: that
+        # would skip the schema for a scalar root and _check_gap_followup_bounds no-ops on a
+        # non-dict, which together would be a false PASS of the required-plan-shape check.
+        for err in sorted(Draft202012Validator(schema).iter_errors(campaign_plan),
+                          key=lambda e: list(e.absolute_path)):
+            path = ".".join(str(p) for p in err.absolute_path) or "<root>"
+            report.error("campaign_plan_structural", err.message, path)
+    _check_gap_followup_bounds(campaign_plan, report)
 
 
 # --------------------------------------------------------------------------- #
@@ -1131,6 +1258,9 @@ class Overrides:
     model_registry_path: Optional[str] = None
     skill_catalog_path: Optional[str] = None
     connector_catalog_path: Optional[str] = None
+    # Δ-19 / §1.7-F: optional campaign-plan to cross-check its gap_followup bounds
+    # (the §A.3 static guard). Absent ⇒ the gap_followup check is a no-op.
+    campaign_plan_path: Optional[str] = None
 
 
 def _check_functional_e2e(charter: dict, report: Report) -> None:
@@ -1290,6 +1420,24 @@ def validate_semantics(charter: Any, report: Report, overrides: Optional[Overrid
     _check_skill_integrity(charter, report, skill_catalog_path=ov.skill_catalog_path)
     _check_network_access(charter, report)
     _check_functional_e2e(charter, report)  # P-C
+    # Δ-19 / §1.7-F §A.3 static guard — cross-check the campaign plan (structural schema +
+    # the gap_followup bounds/pin) when one is supplied via overrides; the charter-only
+    # production path stays a no-op.
+    if ov.campaign_plan_path:
+        try:
+            campaign_plan = _stringify_dates(_load_yaml_file(ov.campaign_plan_path))
+        except OSError as exc:
+            # FileNotFoundError, permission errors, etc. — fail closed, never silently skip.
+            report.error("campaign_plan_load",
+                         f"campaign-plan could not be read: {exc}", ov.campaign_plan_path)
+        except yaml.YAMLError as exc:
+            report.error("campaign_plan_parse",
+                         f"campaign-plan parse error: {exc}", ov.campaign_plan_path)
+        else:
+            # A SUCCESSFUL load is validated even when it is None (a blank file) or a scalar —
+            # those are structural failures, not a skip. Only a load/parse ERROR (handled above)
+            # bypasses validation.
+            validate_campaign_plan(campaign_plan, report)
 
 
 # --------------------------------------------------------------------------- #
@@ -1373,9 +1521,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=None,
         help="override path to mission-charter.schema.json (default: auto-locate)",
     )
+    parser.add_argument(
+        "--campaign-plan",
+        default=None,
+        help="optional path to a campaign-plan(.json) — cross-checks its gap_followup "
+             "bounds (Δ-19 / Constitution §1.7-F §A.3 static guard)",
+    )
     args = parser.parse_args(argv)
 
-    report = validate_file(args.charter, args.schema)
+    overrides = Overrides(campaign_plan_path=args.campaign_plan)
+    report = validate_file(args.charter, args.schema, overrides)
     print(report.render())
     return 0 if report.ok else 1
 
