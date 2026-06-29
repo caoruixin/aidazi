@@ -215,6 +215,26 @@ When both Concept 1 (Auto Loop) and Concept 2 (Delivery Loop) are in use in the 
 
 Anchors §3.7.
 
+#### §1.7-F Pre-authorized in-envelope completeness remediation (gap-driven follow-up)
+
+Distinct from the quality `fix_required` channel (§1.7-C / §3.5, UNCHANGED), Acceptance MAY emit a **completeness `gap_report`**: the set of requirement ids that are part of the **human-signed requirement envelope** (the F1 signed resolved-scope snapshot, `archive/2026-06-23-requirement-ledger-design.md` §3.3.1) AND were signed into this milestone's `covers_req_ids` AND are not yet delivered. A gap is **in-envelope scope completion, never scope expansion**.
+
+Under `autonomy.level: human_on_the_loop` (or higher), the orchestrator MAY, WITHOUT a fresh human-confirm checkpoint, dispatch a **bounded remediation sub-sprint** to Deliver to close an in-envelope gap, IFF ALL of the following hold (deterministic, validator-checkable):
+
+0. **Quality channel is clean (completeness↔quality seal).** The milestone's Acceptance verdict carries **NO `fix_required` and NO `needs_human`** (those are *quality* faults keeping their §1.7-C / §3.5 human-confirm semantics, untouched). A milestone with ANY quality fault is INELIGIBLE for no-confirm gap-followup — it routes to human-confirm exactly as today. Gap-followup entries are generated **only from coverage/ledger facts** (the derived `delivery_status` of signed `covers_req_ids`), **never from Acceptance-authored failure semantics** (`positive_shape` / `anti_pattern` clause judgments). Completeness ≠ quality, sealed by the SOURCE of the entries.
+
+1. **In-envelope proof on the generated remediation.** The generated remediation sub-sprint stanza MUST carry an explicit `covered_req_ids[]` field, and a deterministic **req_id-envelope check** MUST prove `covered_req_ids ⊆ (F1 signed snapshot ∩ this milestone's signed covers_req_ids)`. This is a check **DISTINCT from `post_gate1_scope_expansion`**, which validates only modules/layers and would NOT catch same-module new scope. Any `covered_req_id` ∉ the envelope, or a remediation introducing behavior not traceable to an in-envelope `req_id`, fails → HALT for a human; the auto path is forbidden.
+
+2. **Bounds (persisted, enforced at runtime).** Enforced by runtime logic, not static charter validation alone: `gap_followup.max_subsprints` per milestone (persisted counter); the remaining gap `req_id`-set is **strictly shrinking — a PROPER SUBSET** of the prior round's set (persisted gap-set history; proper-subset, NOT identical-hash, which misses A/B churn); and the campaign budget is not exhausted. Where the campaign-budget dimension is ABSENT (today unbounded at runtime), this clause imposes a **conservative effective-cap** default on the gap-followup dimension — it does NOT inherit an unbounded default.
+
+3. **Fail-closed escalation.** On any bound exceeded, on a non-shrinking (non-proper-subset) round, or on any out-of-envelope or ambiguous gap, the orchestrator **HALTs and escalates to `needs_human`** — it never silently stops and never loops.
+
+Under `autonomy.level: human_in_the_loop`, a completeness `gap_report` routes to `needs_human` (no auto-dispatch). The quality `fix_required → human-confirm → Deliver` path (§3.5) is **unchanged at every autonomy level**. This clause grants **NO authority to ship, to widen scope**, to auto-iterate on a *quality* fault, or to act on an uncalibrated *authoritative* verdict.
+
+**Why this is consistent with §1.7-D, not a weakening of it**: §1.7-D's own rationale is that charter pre-authorization lets the human know IN ADVANCE which decisions the orchestrator may make autonomously. §1.7-F names ONE more such pre-authorized decision — *completing already-signed, undelivered scope* — and bounds it (clauses 0–3). It is an ADD (a pre-authorized decision the charter declares in advance), not an override of any checkpoint: `scope_deviation` and `post_gate1_scope_expansion` keep their semantics, and out-of-envelope work still HALTs (now additionally via the clause-1 req_id-envelope check, which is ADDITIVE to — it does not redefine — the existing module/layer guard).
+
+Anchors §3.4 (diagram invariant, amended below), §3.5 (quality channel, unchanged), and the Requirement Ledger F1 envelope.
+
 ### §1.8 Self-extension of the forbidden list
 
 The forbidden list above is the framework baseline. Adopters MAY extend it for their project's domain — e.g., a healthcare adopter MAY add "no LLM-authored medical diagnosis" as `§1.7-domain-A`. Domain extensions live in `docs/current/<adopter>-domain-overlay.md` and are referenced from `docs/current/adoption-state.md`.
@@ -322,7 +342,7 @@ Plus:
 
 - Gate 1 (brief sign-off) blocks downstream work until Customer signs.
 - Gate 2 (acceptance verdict) is the ship/no-ship decision; Customer signs.
-- Acceptance never silently routes to Deliver (§1.7-C).
+- Acceptance never silently routes to Deliver (§1.7-C) — except the §1.7-F pre-authorized, in-envelope, bounded completeness-remediation path, which is neither silent (it is audited) nor quality-routing.
 - Code Reviewer's question ≠ Acceptance's question (see §3.3).
 - Dev and Code Reviewer backing coding-agents are configurable per charter; the role boundaries are NOT.
 - All roles' chat histories are isolated. Context passes via repo docs only (Δ-5 / §1.4-i).

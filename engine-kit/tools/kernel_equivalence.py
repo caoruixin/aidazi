@@ -65,7 +65,7 @@ _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 # whose anchor belongs to that source. Missing token -> error.
 REQUIRED_ANCHORS = {
     "governance/constitution.md": [
-        "§1.7-A", "§1.7-B", "§1.7-C", "§1.7-D", "§1.7-E",
+        "§1.7-A", "§1.7-B", "§1.7-C", "§1.7-D", "§1.7-E", "§1.7-F",
         # Each §3.4 role-boundary invariant must be individually present (not just the
         # cluster) so a hollow inventory cannot drop invariants and still pass.
         "§3.4 #1", "§3.4 #2", "§3.4 #3", "§3.4 #4", "§3.4 #5", "§3.4 #6",
@@ -92,7 +92,7 @@ REQUIRED_ANCHORS = {
 # below the floor fails even if the surviving rows still cover the required anchors. Floors
 # are set at the audited row counts; legitimate ADDITIONS only raise the count.
 EXPECTED_MIN_ROWS = {
-    "01-constitution-core.yaml": 24,
+    "01-constitution-core.yaml": 29,
     "02-constitution-roles.yaml": 41,
     "03-doc-governance.yaml": 41,
     "04-context-briefing.yaml": 44,
