@@ -682,6 +682,10 @@ class Driver:
         self.browser_dir = os.path.join(
             self.audit_dir, "browser", self._safe_path_component(self.loop_id))
         self._pc_schema_cache: dict = {}
+        # Δ-19 Phase 2-β: the rel path of the advisory gap_report emitted at the current
+        # milestone-close Acceptance (set by _run_acceptance, bound by the resolver graph);
+        # None until/unless a requirement-context sidecar drives one.
+        self._gap_report_rel: Optional[str] = None
         schemas_dir = _find_schemas_dir()
         self.framework_root = os.path.dirname(schemas_dir) if schemas_dir else None
         self._effective_role_cache: dict[str, effective_roles.EffectiveRoleConfig] = {}
@@ -3725,6 +3729,26 @@ class Driver:
         seq = (self._supplied_sequence() or list(self.state.planned_sequence)
                or [self.state.subsprint_id])
         level = self.autonomy.get("level", "human_in_the_loop")
+        # Δ-19 Phase 2-β: when a signed functional checklist is wired on the STATIC path,
+        # instruct the judge to RECORD per-criterion coverage (criterion_id per case +
+        # functional_checklist_ref). ADVISORY/record-only — no set-equality coercion gate on
+        # the static path (that authority change is the gated Phase 2-γ). Additive: absent a
+        # static checklist the prompt is byte-identical to today.
+        fnl = (((self.charter.get("tooling") or {}).get("acceptance") or {})
+               .get("functional") or {})
+        static_checklist_path = (fnl.get("checklist_path")
+                                 if self._acceptance_class() == "static" else None)
+        static_checklist_section = ""
+        if static_checklist_path:
+            static_checklist_section = (
+                "## Functional criteria coverage (static checklist — ADVISORY, record-only)\n"
+                f"A signed functional-checklist of user-observable criteria is wired at "
+                f"`{static_checklist_path}`. For each criterion you judge, set that case's "
+                "`criterion_id` to the matching checklist id, and set the top-level "
+                "`functional_checklist_ref` to the checklist path. This enumerates "
+                "user-observable criteria coverage; it is ADVISORY — it does NOT change your "
+                "verdict and is NOT coverage-enforced (no set-equality gate on the static "
+                "path). Judge quality independently of completeness.\n\n")
         parts = [
             f"You are activating as the Acceptance Agent for the milestone close of "
             f"`{scope}`.\n",
@@ -3759,6 +3783,7 @@ class Driver:
             "If calibration is uncalibrated on an autonomous run, the orchestrator "
             "has ALREADY degraded authority (§3.6) and your verdict is ADVISORY "
             "ONLY until calibrated — do not self-escalate.\n\n",
+            static_checklist_section,
             "## Output — emit an acceptance-verdict "
             "(schemas/compact/acceptance-verdict.compact.schema.json)\n"
             "Return ONE JSON object and nothing else:\n"
@@ -4035,6 +4060,88 @@ class Driver:
             "set; a milestone pass requires every case pass AND no critical executor "
             "failure.\n")
 
+    # ----- Δ-19 Phase 2-β: advisory completeness gap_report (FACTS-only) ----- #
+    def _requirement_context_path(self) -> str:
+        """The per-unit requirement-context sidecar the campaign tier writes at dispatch
+        (campaign.make_run_unit): the gap-report SOURCE FACTS — the signed campaign plan
+        (with its F1 scope_envelope snapshot + covers_req_ids), the requirement ledger, the
+        CANONICAL charter (for the live F1 signed-scope-hash recompute), and a minimal live
+        campaign-state projection (status + cursor + milestone_outcomes). Absent ⇒ the
+        gap_report stays dormant (byte-identical to a non-campaign / no-ledger run)."""
+        return os.path.join(self.run_dir, "requirement-context.json")
+
+    def _load_requirement_context(self) -> Optional[dict]:
+        """Read the requirement-context sidecar. Absent ⇒ None (dormant; additive). PRESENT
+        but unreadable / not a dict / missing 'plan' ⇒ gate_hard_fail (fail-closed: a corrupt
+        verdict-affecting input is never silently skipped — same discipline as a missing
+        mandatory resolver root)."""
+        path = self._requirement_context_path()
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                ctx = json.load(fh)
+        except (OSError, ValueError) as exc:
+            raise self._gate_hard_fail(
+                f"requirement-context.json present but unreadable: {exc}",
+                STATE_ACCEPTANCE_PENDING)
+        if not isinstance(ctx, dict) or not isinstance(ctx.get("plan"), dict):
+            raise self._gate_hard_fail(
+                "requirement-context.json malformed (missing object 'plan')",
+                STATE_ACCEPTANCE_PENDING)
+        return ctx
+
+    def _emit_gap_report(self) -> Optional[str]:
+        """Δ-19 Phase 2-β: at milestone-close Acceptance, compute the ADVISORY completeness
+        gap_report from the requirement-context FACTS (REUSE
+        scope_report.compute_requirement_coverage → build_gap_report), validate it against
+        schemas/gap-report.schema.json, write it under run_dir, and AUDIT it. Returns the rel
+        path (the resolver graph binds + hashes it); None when no requirement-context sidecar
+        is present (dormant — no campaign ledger wired).
+
+        FACTS-ONLY: generated purely from coverage/ledger facts (the §3.5.1-derived
+        delivery_status of signed covers_req_ids), NEVER from the Acceptance verdict's
+        pass/fail clause semantics — the completeness<->quality SEAL the gated §1.7-F path
+        relies on. ADVISORY: nothing acts on it automatically (no Deliver dispatch, no
+        ship/route change — that is the gated Phase 2-γ). Deterministic (no clock/LLM/network)
+        so it never perturbs the §3.5b reuse hash beyond its own content."""
+        assert self.state is not None
+        ctx = self._load_requirement_context()
+        if ctx is None:
+            return None
+        ledger = ctx.get("ledger")
+        if not isinstance(ledger, dict) or not ledger.get("requirements"):
+            return None   # no requirement ledger ⇒ no requirement gap to project (dormant)
+        import scope_report  # sibling on sys.path (lazy, like run_loop's use)
+        plan = ctx.get("plan")
+        state = ctx.get("campaign_state")
+        charter = ctx.get("charter")
+        coverage = scope_report.compute_requirement_coverage(
+            plan, state if isinstance(state, dict) else None, ledger,
+            charter=charter if isinstance(charter, dict) else None)
+        gap_report = scope_report.build_gap_report(coverage)
+        err = validate_verdict(gap_report, self._pc_schema("gap-report.schema.json"))
+        if err is not None:
+            raise self._gate_hard_fail(
+                f"generated gap_report failed schema validation "
+                f"(gap-report.schema.json): {err}", STATE_ACCEPTANCE_PENDING)
+        scope = self._acceptance_scope_id()
+        rel = os.path.join(".orchestrator", "acceptance",
+                           f"{scope}-gap-report.json").replace(os.sep, "/")
+        out = os.path.join(self.run_dir, rel)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump(gap_report, fh, indent=2, sort_keys=True)
+        self._audit("acceptance_gap_report", {
+            "subsprint_id": self.state.subsprint_id,
+            "advisory": True,
+            "source": "requirement_coverage",
+            "signoff_status": gap_report.get("signoff_status"),
+            "gap_req_ids": [g.get("req_id") for g in (gap_report.get("gap") or [])],
+            "totals": gap_report.get("totals"),
+            "gap_report_ref": rel})
+        return rel
+
     def _acceptance_resolver_graph(self, evidence_path: str,
                                    run_id: Optional[str]):
         """rev7 resolver graph: the load set the Acceptance prompt instructs the judge to
@@ -4103,6 +4210,25 @@ class Driver:
         else:
             entries.append({"path": _abs(evidence_path), "rel": evidence_path,
                             "purpose": "f5_evidence", "mandatory": True})
+        # Δ-19 Phase 2-β (Codex R-T2 B4 — LOAD-CLOSURE): bind the gap-report SOURCE FACTS +
+        # the generated advisory gap_report. The requirement-context sidecar carries the
+        # signed plan (incl. the F1 scope_envelope snapshot), the requirement ledger, the
+        # canonical charter, and the live campaign-state projection (milestone_outcomes) the
+        # gap is computed from; the gap_report is the derived advisory artifact. Both are
+        # content-hashed into acceptance_input_hash so a change in ANY gap input
+        # re-invalidates §3.5b reuse AND the attached advisory artifact is recomputed
+        # consistently. They are bound for REPRODUCIBILITY — the judge does NOT read the
+        # gap_report (completeness<->quality SEAL: the verdict is not derived from
+        # completeness). MANDATORY once present (a corrupt verdict-affecting input is never
+        # silently dropped); absent ⇒ dormant (additive — byte-identical reuse hash).
+        req_ctx = self._requirement_context_path()
+        if os.path.isfile(req_ctx):
+            entries.append({"path": req_ctx, "rel": "requirement-context.json",
+                            "purpose": "requirement_context", "mandatory": True})
+        gap_rel = getattr(self, "_gap_report_rel", None)
+        if gap_rel:
+            entries.append({"path": _abs(gap_rel), "rel": gap_rel,
+                            "purpose": "gap_report", "mandatory": True})
         # Adopter cold-start lives in the ADOPTER repo (self.repo_dir), NOT run_dir (the
         # /tmp artifact dir, "outside the repo") — binding it under run_dir would miss the
         # REAL AGENTS.md / docs/current ledgers, so an edit there could not invalidate
@@ -4216,6 +4342,13 @@ class Driver:
             evidence_hash = e2e_stage.sha256_file(
                 os.path.join(self.run_dir, evidence_path))
 
+        # 2b. Δ-19 Phase 2-β: compute + emit the ADVISORY completeness gap_report (FACTS-only)
+        #     BEFORE the resolver graph, so the graph binds it + the gap-report source facts
+        #     into acceptance_input_hash (LOAD-CLOSURE). Dormant (None) when no campaign
+        #     requirement-context sidecar is present — byte-identical to today. It feeds the
+        #     resolver graph, NOT the prompt (completeness<->quality SEAL).
+        self._gap_report_rel = self._emit_gap_report()
+
         # 3. Prompt + resolver graph → the three reuse fingerprints + the FROZEN snapshot.
         prompt = self._build_acceptance_prompt(
             evidence_path, calibration_status, manifest, run_id)
@@ -4227,6 +4360,18 @@ class Driver:
                 "acceptance resolver-graph missing mandatory input(s): "
                 + ", ".join(m.get("purpose", m.get("path", "?")) for m in missing),
                 STATE_ACCEPTANCE_PENDING)
+        # Δ-19 Phase 2-β runtime size report (advisory) for the per-milestone acceptance
+        # artifacts (requirement-context / gap_report / functional checklist) — a RUNTIME
+        # channel kept OUT of the static cold-start floor (ROLE_COLD_START unchanged), so the
+        # bind/hash for reproducibility does not inflate cold-start. Best-effort: a reporting
+        # bug never breaks a run.
+        try:
+            budget = load_sizer.runtime_acceptance_artifact_report(graph)
+            if budget.get("by_purpose"):
+                self._audit("acceptance_runtime_artifact_budget",
+                            {"subsprint_id": self.state.subsprint_id, **budget})
+        except Exception:  # noqa: BLE001 - advisory reporting must never break a run
+            pass
         snapshot = {
             "evidence_hash": evidence_hash,
             "authority_fingerprint": e2e_stage.authority_fingerprint(

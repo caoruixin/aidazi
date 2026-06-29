@@ -206,6 +206,43 @@ DYNAMIC_COLDSTART: dict = {
 
 ROLES: tuple = ("research", "deliver", "dev", "review", "acceptance")
 
+#: Δ-19 Phase 2-β — RUN-DYNAMIC acceptance artifacts (the per-milestone requirement-context
+#: source facts + the derived gap_report + the functional checklist). These are RESOLVER-BOUND
+#: runtime inputs (driver._acceptance_resolver_graph) — content-hashed into
+#: acceptance_input_hash for verdict reproducibility — and are DELIBERATELY kept OUT of the
+#: static cold-start floor (ROLE_COLD_START / ROLE_SKILL_MODEL), so binding/hashing them never
+#: re-inflates the WP-4 acceptance-kernel savings. They carry the variable campaign plan /
+#: ledger / state, so they cannot be sized statically; the driver sizes them at RUNTIME from
+#: the resolver graph (which already records each entry's observed ``bytes``).
+RUNTIME_ACCEPTANCE_ARTIFACT_PURPOSES: tuple = (
+    "requirement_context", "gap_report", "functional_checklist")
+#: Advisory runtime cap (NOT a hard gate — WP-9 doctrine: surface bloat, never force a shrink
+#: of sufficient context). ~256 KB ≈ 64K tok of per-milestone acceptance data is generous;
+#: over it is AUDITED as an advisory signal so a pathologically large ledger/plan is visible.
+RUNTIME_ACCEPTANCE_ARTIFACT_CAP_BYTES: int = 262_144
+
+
+def runtime_acceptance_artifact_report(
+        resolver_graph: list, *,
+        cap_bytes: int = RUNTIME_ACCEPTANCE_ARTIFACT_CAP_BYTES) -> dict:
+    """Δ-19 Phase 2-β runtime size report for the per-milestone acceptance artifacts bound
+    into the acceptance resolver graph (``requirement_context`` / ``gap_report`` /
+    ``functional_checklist``). PURE: sums each bound entry's observed ``bytes`` by purpose.
+
+    Returns ``{total_bytes, est_tokens, by_purpose, cap_bytes, over_cap}``. ADVISORY — the
+    driver AUDITS it (never gate_hard_fails on it). It is a RUNTIME channel kept out of the
+    static cold-start budget (``context_budget_report.py``), so these reproducibility-bound
+    inputs are measured + visible without inflating ``ROLE_COLD_START``."""
+    by_purpose: dict = {}
+    for g in resolver_graph or []:
+        p = g.get("purpose")
+        if p in RUNTIME_ACCEPTANCE_ARTIFACT_PURPOSES:
+            by_purpose[p] = by_purpose.get(p, 0) + int(g.get("bytes") or 0)
+    total = sum(by_purpose.values())
+    return {"total_bytes": total, "est_tokens": total // BYTES_PER_TOKEN_EST,
+            "by_purpose": by_purpose, "cap_bytes": cap_bytes,
+            "over_cap": total > cap_bytes}
+
 
 # --------------------------------------------------------------------------- #
 # Sizing.
