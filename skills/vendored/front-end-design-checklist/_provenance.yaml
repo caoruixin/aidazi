@@ -1,0 +1,20 @@
+# Provenance for vendored skill. normative source = upstream pin below.
+# To update: re-vendor at a new pin + re-vet. Runtime SKILL.md is a compact projection;
+# the full upstream canonical material is retained verbatim in this directory.
+id: front-end-design-checklist
+source:
+  repo: thedaviddias/Front-End-Design-Checklist
+  url: https://github.com/thedaviddias/Front-End-Design-Checklist
+  commit: 7731755ab31808503c8d05756de0a9a6bee690c7
+  path: README.md
+license: CC0-1.0
+copyright: David Dias and contributors — CC0-1.0 public domain dedication (see LICENSE)
+retrieved_at: '2026-06-29T00:00:00Z'
+tree_sha256: 73bb92c5bbac0624d04077757559a444454ea9fcfcead5d807ff622768b02d81
+files:
+- path: LICENSE
+  sha256: 36ffd9dc085d529a7e60e1276d73ae5a030b020313e6c5408593a6ae2af39673
+- path: SKILL.md
+  sha256: 01bf522c599db42b71b73d08185b9d3e3c6e6e794765873b867abad54fa9ffb7
+- path: upstream-README.md
+  sha256: db37d9364e03c6b97039c2423b94b8e87cc4078394b06cc55bfeff9868c8c65e

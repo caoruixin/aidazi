@@ -132,6 +132,24 @@ BUDGET_ENTRIES: list = [
      "kind": "skills", "task_signals": []},
     {"key": "skills:acceptance", "role": "acceptance", "task_kind": None,
      "kind": "skills", "task_signals": []},
+    # Track 1 Phase 1-b/1-c — PER-TASK-SIGNAL-SET skill-body budgets (Codex R-T1 B1, now concrete
+    # since the signal-tagged UI skills are vendored). Each row sizes the RESOLVED effective set a
+    # `dev` sub-sprint with that task_signal would load (its default + the §2.3 task-selected UI
+    # skill bodies). The UI skill bodies are role-independent, so `dev` is the representative role;
+    # every vocab signal appears in ≥1 row, so `--strict` catches growth in ANY vendored UI skill
+    # body. (`ui` selects all four — the maximal UI surface.)
+    {"key": "skills:dev:ui", "role": "dev", "task_kind": None,
+     "kind": "skills", "task_signals": ["ui"]},
+    {"key": "skills:dev:frontend", "role": "dev", "task_kind": None,
+     "kind": "skills", "task_signals": ["frontend"]},
+    {"key": "skills:dev:design", "role": "dev", "task_kind": None,
+     "kind": "skills", "task_signals": ["design"]},
+    {"key": "skills:dev:a11y", "role": "dev", "task_kind": None,
+     "kind": "skills", "task_signals": ["a11y"]},
+    {"key": "skills:dev:interaction", "role": "dev", "task_kind": None,
+     "kind": "skills", "task_signals": ["interaction"]},
+    {"key": "skills:dev:performance", "role": "dev", "task_kind": None,
+     "kind": "skills", "task_signals": ["performance"]},
 ]
 
 

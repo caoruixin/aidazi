@@ -29,6 +29,16 @@ ROLE_ALIASES = {
     "code_reviewer": "code_reviewer",
 }
 SKILL_MODES = frozenset({"inherit", "extend", "replace", "disable"})
+
+#: Track 1 §2.3/1-c — the CLOSED controlled vocabulary for task-affinity signals. This is the
+#: single source of truth: a skill's catalog ``signals`` tags AND a sub-sprint's signed
+#: ``task_signals`` MUST each be a subset of this set. The three schemas (skill-catalog,
+#: deliver-plan-verdict, sprint_stanza) carry it as an ``enum`` so an UNKNOWN signal FAILS
+#: validation (a Deliver plan with an out-of-vocab task_signal is schema-invalid → gate_hard_fail;
+#: a catalog skill tagged with one is catalog-invalid). A drift-guard test asserts the schema enums
+#: equal this tuple. Extend deliberately (with a new skill that carries the tag) — never silently.
+#: Sorted for determinism.
+TASK_SIGNAL_VOCAB = ("a11y", "design", "frontend", "interaction", "performance", "ui")
 INTERACTION_MODES = frozenset({"deterministic", "agentic", "hybrid"})
 TARGET_ENVIRONMENTS = frozenset({"local", "staging", "production"})
 

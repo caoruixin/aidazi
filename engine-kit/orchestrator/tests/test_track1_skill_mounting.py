@@ -263,5 +263,49 @@ class SchemaAdditiveTests(unittest.TestCase):
         self.assertIn("optional", sb)
 
 
+class SignalVocabularyTests(unittest.TestCase):
+    """Track 1 1-c — the CLOSED controlled vocabulary is a single source of truth
+    (effective_role_config.TASK_SIGNAL_VOCAB); all three schema signal enums equal it, and every
+    registered skill's `signals` tags are a subset of it (drift guard — unknown signal fails)."""
+
+    def _enum(self, schema_path, *path):
+        node = _load_schema(schema_path)
+        for p in path:
+            node = node[p]
+        return node["items"]["enum"]
+
+    def test_schema_enums_match_canonical_vocab(self):
+        vocab = sorted(erc.TASK_SIGNAL_VOCAB)
+        self.assertEqual(sorted(self._enum(
+            "skill-catalog.schema.json", "$defs", "skill_entry", "properties", "signals")), vocab)
+        self.assertEqual(sorted(self._enum(
+            "deliver-plan-verdict.schema.json", "properties", "sub_sprints", "items",
+            "properties", "task_signals")), vocab)
+        self.assertEqual(sorted(self._enum(
+            "sprint_stanza.schema.json", "properties", "task_signals")), vocab)
+
+    def test_registry_signal_tags_are_subset_of_vocab(self):
+        import yaml
+        reg = yaml.safe_load(open(os.path.join(_REPO_ROOT, "skills", "registry.yaml"),
+                                   encoding="utf-8"))
+        vocab = set(erc.TASK_SIGNAL_VOCAB)
+        tagged = 0
+        for section in ("skills", "authored"):
+            for sid, e in (reg.get(section) or {}).items():
+                sig = e.get("signals")
+                if sig:
+                    tagged += 1
+                    self.assertTrue(set(sig) <= vocab, f"{sid} has out-of-vocab signals: {sig}")
+        self.assertGreaterEqual(tagged, 4)   # the vendored core-4 UI skills are signal-tagged
+
+    def test_unknown_task_signal_fails_schema_validation(self):
+        schema = _load_schema("deliver-plan-verdict.schema.json")
+        ss = {"id": "s1", "objective": "o", "scope_in": [], "scope_out": [],
+              "modules": [], "layers": [], "exit_criteria": []}
+        with self.assertRaises(Exception):
+            Draft202012Validator(schema).validate(
+                {"sub_sprints": [{**ss, "task_signals": ["totally-unknown-signal"]}]})
+
+
 if __name__ == "__main__":
     unittest.main()

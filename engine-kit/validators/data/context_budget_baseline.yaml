@@ -175,5 +175,90 @@ entries:
   task_kind: null
   task_signals: []
   total_bytes: 16988
+- by_purpose:
+    skill_body: 27615
+  est_tokens: 6903
+  files:
+    skills/vendored/a11y-checklist/SKILL.md: 2587
+    skills/vendored/front-end-design-checklist/SKILL.md: 2558
+    skills/vendored/frontend-design/SKILL.md: 8260
+    skills/vendored/test-driven-development/SKILL.md: 9867
+    skills/vendored/web-interface-guidelines/SKILL.md: 4343
+  key: skills:dev:ui
+  kind: skills
+  role: dev
+  task_kind: null
+  task_signals:
+  - ui
+  total_bytes: 27615
+- by_purpose:
+    skill_body: 25028
+  est_tokens: 6257
+  files:
+    skills/vendored/front-end-design-checklist/SKILL.md: 2558
+    skills/vendored/frontend-design/SKILL.md: 8260
+    skills/vendored/test-driven-development/SKILL.md: 9867
+    skills/vendored/web-interface-guidelines/SKILL.md: 4343
+  key: skills:dev:frontend
+  kind: skills
+  role: dev
+  task_kind: null
+  task_signals:
+  - frontend
+  total_bytes: 25028
+- by_purpose:
+    skill_body: 20685
+  est_tokens: 5171
+  files:
+    skills/vendored/front-end-design-checklist/SKILL.md: 2558
+    skills/vendored/frontend-design/SKILL.md: 8260
+    skills/vendored/test-driven-development/SKILL.md: 9867
+  key: skills:dev:design
+  kind: skills
+  role: dev
+  task_kind: null
+  task_signals:
+  - design
+  total_bytes: 20685
+- by_purpose:
+    skill_body: 16797
+  est_tokens: 4199
+  files:
+    skills/vendored/a11y-checklist/SKILL.md: 2587
+    skills/vendored/test-driven-development/SKILL.md: 9867
+    skills/vendored/web-interface-guidelines/SKILL.md: 4343
+  key: skills:dev:a11y
+  kind: skills
+  role: dev
+  task_kind: null
+  task_signals:
+  - a11y
+  total_bytes: 16797
+- by_purpose:
+    skill_body: 14210
+  est_tokens: 3552
+  files:
+    skills/vendored/test-driven-development/SKILL.md: 9867
+    skills/vendored/web-interface-guidelines/SKILL.md: 4343
+  key: skills:dev:interaction
+  kind: skills
+  role: dev
+  task_kind: null
+  task_signals:
+  - interaction
+  total_bytes: 14210
+- by_purpose:
+    skill_body: 14210
+  est_tokens: 3552
+  files:
+    skills/vendored/test-driven-development/SKILL.md: 9867
+    skills/vendored/web-interface-guidelines/SKILL.md: 4343
+  key: skills:dev:performance
+  kind: skills
+  role: dev
+  task_kind: null
+  task_signals:
+  - performance
+  total_bytes: 14210
 generated_from: load_sizer framework-static cold-start sizing (WP-9)
 version: 1
