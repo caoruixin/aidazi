@@ -65,10 +65,10 @@
     "gap_followup": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Δ-19 / Constitution §1.7-F clause 2. Per-milestone bounds for the pre-authorized in-envelope completeness-remediation auto-route (the gap-followup dimension, SEPARATE from campaign budget). OPTIONAL; an absent block uses conservative engine defaults (max_subsprints 3, max_no_progress_rounds 2), and the Phase 2-γ runtime derives an absent-campaign-budget effective-cap from charter.budget.max_fix_rounds_total — the gap-followup dimension is NEVER unbounded.",
+      "description": "Δ-19 / Constitution §1.7-F clause 2. Per-milestone bounds for the pre-authorized in-envelope completeness-remediation auto-route (the gap-followup dimension, SEPARATE from campaign budget). OPTIONAL; an absent block uses conservative engine defaults (max_subsprints 3, max_no_progress_rounds 1 — a non-shrinking round HALTs on the FIRST occurrence per clause 2/3), and the Phase 2-γ runtime derives an absent-campaign-budget effective-cap from charter.budget.max_fix_rounds_total — the gap-followup dimension is NEVER unbounded.",
       "properties": {
         "max_subsprints": {"type": "integer", "minimum": 1, "default": 3, "description": "Max gap-followup remediation sub-sprints the orchestrator may auto-dispatch per milestone before fail-closed escalation to needs_human (§1.7-F clause 2/3)."},
-        "max_no_progress_rounds": {"type": "integer", "minimum": 1, "default": 2, "description": "Max consecutive gap-followup rounds whose remaining gap req_id-set is NOT a strict proper subset of the prior round before fail-closed escalation (§1.7-F clause 2: proper-subset, not identical-hash)."}
+        "max_no_progress_rounds": {"type": "integer", "minimum": 1, "default": 1, "description": "Halt-threshold for non-shrinking gap-followup rounds. §1.7-F clause 2/3 requires each round's remaining gap req_id-set to be a strict PROPER SUBSET of the prior round and HALTs on a non-shrinking (non-proper-subset) round — so the default 1 escalates on the FIRST non-shrinking round (no retry). A value > 1 tolerates non-progress and is rejected by charter_validator as a §1.7-D evasion."}
       }
     },
     "trunk_branch": {"type": "string", "default": "main", "description": "The branch milestone work merges INTO at the milestone_merge gate (default main)."},

@@ -113,6 +113,21 @@
       }
     },
     {
+      "description": "adjust_scope (completeness_gap_review) — Track 2 Phase 2-γ / Constitution §1.7-F. The campaign-emitted completeness-gap gate a human resolves under autonomy.level human_in_the_loop (a completeness gap_report routes to needs_human; auto-dispatch is permitted only under human_on_the_loop or higher). choice is restricted to remediate|accept_gap|abort so an ambiguous decision re-pauses rather than silently advancing: remediate authorizes ONE bounded, in-envelope remediation sub-sprint (the SAME deterministic seal/req_id-envelope/bounds gates as the auto path — it grants NO authority to ship or widen scope); accept_gap accepts the incomplete signed scope and finishes (no remediation); abort ends the campaign. The decision MUST carry the per-pause checkpoint NONCE basename (so a stale remediate file from an earlier round is refused, never replayed); it MUST NOT carry subsprint_id (the gate is campaign-tier, not a unit). A milestone_id MAY be carried (advisory only).",
+      "if": {
+        "required": ["pause_reason"],
+        "properties": {"pause_reason": {"const": "completeness_gap_review"}}
+      },
+      "then": {
+        "required": ["choice", "checkpoint"],
+        "properties": {
+          "choice": {"enum": ["remediate", "accept_gap", "abort"]},
+          "checkpoint": {"type": "string", "minLength": 1}
+        },
+        "not": {"required": ["subsprint_id"]}
+      }
+    },
+    {
       "description": "The residue-waiver fields (residue/rationale/evidence/waiver/waiver_id) are ONLY for the acceptance_cleanup_required gate's choice:accept_residue_and_ship; EVERY other decision shape forbids them so unrelated gates stay strict (defense-in-depth at the schema ingress; the runtime already ignores them elsewhere). Completeness of the waiver is enforced at dispatch by campaign.residue_waiver, not here — a bare accept_residue_and_ship stays schema-valid but fail-closes to a Deliver follow-up.",
       "if": {
         "not": {

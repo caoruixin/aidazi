@@ -427,6 +427,25 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
                 return None
             out = {k: decision[k] for k in ("choice", "note") if k in decision}
             return out or None
+        if pause_reason == "completeness_gap_review":
+            # §1.7-F campaign-tier completeness gate (Track 2 Phase 2-γ): bound by
+            # campaign_id + pause_reason + the per-pause checkpoint NONCE basename (matched
+            # above), NOT a unit — so a stale `remediate` file from an earlier round is
+            # refused and cannot replay (Codex R1 B3). The live pause MUST carry a non-null
+            # nonce checkpoint; a null one is a corrupted/bug-written state and is refused
+            # (Codex R2 B3 — never bind a checkpoint:null decision past the nonce).
+            if checkpoint_path is None:
+                sys.stderr.write(
+                    "campaign decision: completeness_gap_review with no live nonce "
+                    "checkpoint — refusing (fail-closed)\n")
+                return None
+            if decision.get("subsprint_id") is not None:
+                sys.stderr.write(
+                    "campaign decision: completeness_gap_review must not carry "
+                    "subsprint_id — refusing (fail-closed)\n")
+                return None
+            out = {k: decision[k] for k in ("choice", "note") if k in decision}
+            return out or None
         if checkpoint_path is not None:
             # A checkpoint-bearing pause is ALWAYS on a unit: its milestone/sub-sprint
             # identity MUST be resolvable from campaign-state.json AND match. A missed
@@ -642,6 +661,18 @@ def _campaign_resume_hint(result: dict) -> str:
         return ("  -> author a campaign-decision.json with "
                 f'"choice": "merge_now"|"open_pr"|"keep_branch"|"abort" '
                 f'and milestone_id, then re-run with --resume --decision <file>')
+    if reason == "completeness_gap_review":
+        # §1.7-F: the campaign-tier completeness gate. The adjust_scope decision binds via
+        # campaign_id + pause_reason + the per-pause checkpoint NONCE basename (so a stale
+        # remediate file cannot replay across rounds). remediate authorizes ONE bounded,
+        # in-envelope round (same deterministic gates as the auto path; no ship/widen authority).
+        cpt = result.get("pause_checkpoint")
+        base = os.path.basename(cpt) if cpt else None
+        return ('  -> §1.7-F completeness gap (signed-but-undelivered scope). Author a '
+                'campaign-decision.json with "choice": "remediate"|"accept_gap"|"abort", '
+                f'"campaign_id": {result.get("campaign_id")!r}, '
+                f'"pause_reason": "completeness_gap_review", "checkpoint": {base!r} '
+                "(NO subsprint_id), then re-run with --resume --decision <file>")
     cpt = result.get("pause_checkpoint")
     base = os.path.basename(cpt) if cpt else None
     ident = (f'"campaign_id": {result.get("campaign_id")!r}, '

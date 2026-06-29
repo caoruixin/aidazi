@@ -139,6 +139,11 @@ CAMPAIGN_CHECKPOINTS: frozenset = frozenset({
     "campaign_plan_signoff",
     "campaign_budget_exhausted",
     "milestone_merge",
+    # Track 2 Phase 2-γ / §1.7-F: the completeness-gap gate the campaign emits under
+    # autonomy.level human_in_the_loop (a completeness gap_report routes to needs_human;
+    # auto-dispatch is permitted only under human_on_the_loop or higher). Resolved Mechanism-B
+    # via the adjust_scope decision shape (remediate|accept_gap|abort).
+    "completeness_gap_review",
 })
 # Non-pause checkpoints — emitted by the Driver but auto-resolved / informational;
 # they never leave the loop paused awaiting a human (design §5.4a).
@@ -181,6 +186,9 @@ ACT_ADVANCE_SUBSPRINT = "advance_subsprint"   # this sub-sprint done → next su
 ACT_REDISPATCH_FRESH = "redispatch_fresh"     # blocker removed → re-run SAME unit fresh
 ACT_DELIVER_FOLLOWUP = "deliver_followup"     # a new unit must be authored by Deliver → surface
 ACT_END = "end"                               # abort → campaign ends
+# Track 2 Phase 2-γ / §1.7-F: the human's adjust_scope decision at completeness_gap_review.
+ACT_GAP_REMEDIATE = "gap_remediate"           # authorize ONE bounded in-envelope remediation round
+ACT_GAP_ACCEPT = "gap_accept"                 # accept the incomplete signed scope → finish (no remediation)
 
 # (pause_reason, choice) → action. `choice` is the human's checkpoint decision.
 _DISPATCH_TABLE: Dict[str, Dict[Any, str]] = {
@@ -223,6 +231,14 @@ _DISPATCH_TABLE: Dict[str, Dict[Any, str]] = {
         "narrow_plan": ACT_DELIVER_FOLLOWUP, "abort": ACT_END},
     "campaign_budget_exhausted": {
         "raise_cap": ACT_REDISPATCH_FRESH, "abort": ACT_END},
+    "completeness_gap_review": {
+        # §1.7-F adjust_scope: remediate authorizes ONE bounded, in-envelope remediation
+        # round (the SAME deterministic seal/req_id-envelope/bounds gates as the auto path);
+        # accept_gap finishes WITH the gap (no remediation); abort ends. A bare/unknown choice
+        # fail-closes to ACT_DELIVER_FOLLOWUP (surface, never auto-remediate).
+        "remediate": ACT_GAP_REMEDIATE,
+        "accept_gap": ACT_GAP_ACCEPT,
+        "abort": ACT_END},
     "milestone_merge": {
         "merge_now": ACT_ADVANCE_MILESTONE,
         "open_pr": ACT_ADVANCE_MILESTONE,
@@ -335,9 +351,16 @@ class CampaignState:
     # waived-with-reason) — never inferred from cursor position. Additive; absent ⇒
     # today's behavior (a legacy state simply has no outcomes to project).
     milestone_outcomes: List[dict] = field(default_factory=list)
+    # Track 2 Phase 2-γ / §1.7-F clause 2-3: persisted RUNTIME state for the pre-authorized
+    # in-envelope completeness-remediation auto-route (campaign:_gap_followup_round). The
+    # per-milestone counter, the gap-set history (for the proper-subset progress check), the
+    # consecutive no-progress counter, and the audit of generated remediation stanzas. These
+    # are the bounds the static charter validator CANNOT enforce (the gap-set is only knowable
+    # at runtime). Additive; absent ⇒ no gap-followup has run (byte-identical to today).
+    gap_followup_state: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "campaign_id": self.campaign_id,
             "status": self.status,
             "pause_reason": self.pause_reason,
@@ -353,6 +376,12 @@ class CampaignState:
             "pending_milestone_advance": self.pending_milestone_advance,
             "milestone_outcomes": self.milestone_outcomes,
         }
+        # §1.7-F: emit gap_followup_state ONLY when a gap-followup has run, so a campaign
+        # that never enters the gap-followup path persists a byte-identical state.json
+        # (Codex R1 NB-2). Absent ⇒ from_dict defaults it to {}.
+        if self.gap_followup_state:
+            d["gap_followup_state"] = self.gap_followup_state
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "CampaignState":
@@ -371,7 +400,8 @@ class CampaignState:
             followup_baseline_seq=d.get("followup_baseline_seq"),
             milestone_context=d.get("milestone_context"),
             pending_milestone_advance=bool(d.get("pending_milestone_advance", False)),
-            milestone_outcomes=list(d.get("milestone_outcomes") or []))
+            milestone_outcomes=list(d.get("milestone_outcomes") or []),
+            gap_followup_state=dict(d.get("gap_followup_state") or {}))
 
 
 # --------------------------------------------------------------------------- #
@@ -450,6 +480,51 @@ _RESUME_ADVANCE_TERMINAL: Dict[str, str] = {
     "acceptance_surface_approve": "surface_approve_ship",
     "acceptance_cleanup_required": "acceptance_pass_advisory_ship",
 }
+
+# --------------------------------------------------------------------------- #
+# Track 2 Phase 2-γ / Constitution §1.7-F — pre-authorized in-envelope completeness
+# remediation (gap-driven follow-up). The dispositions the dedicated, fail-closed
+# gap-followup engine (_gap_followup_round) returns to run()'s OUTER loop.
+# --------------------------------------------------------------------------- #
+GAP_DONE = "gap_done"          # no in-envelope gap (or no ledger / not fresh-signed / human-accepted) → STATUS_DONE
+GAP_CONTINUE = "gap_continue"  # a bounded remediation round was dispatched + completed → re-check the gap
+GAP_PAUSED = "gap_paused"      # HALTED + escalated to needs_human (the campaign is paused; run() returns it)
+GAP_ENDED = "gap_ended"        # the human aborted at completeness_gap_review
+
+# The completeness gate the campaign emits for §1.7-F. ONE checkpoint carries BOTH the
+# human_in_the_loop pre-dispatch review AND every clause-3 fail-closed escalation
+# (distinguished by the audit/extra `gap_status`); both are resolved by the SAME
+# adjust_scope decision (remediate|accept_gap|abort).
+GAP_REVIEW_CHECKPOINT = "completeness_gap_review"
+
+# Schema defaults (campaign-plan.schema.json gap_followup) — mirrored so an ABSENT
+# gap_followup block uses conservative engine defaults, never an unbounded value.
+GAP_FOLLOWUP_DEFAULT_MAX_SUBSPRINTS = 3
+# §1.7-F clause 2/3: the gap req_id-set MUST be a strict PROPER SUBSET of the prior round;
+# a non-shrinking round HALTs (it is not "retried up to N" — Codex R5 B2). So the default
+# halt-threshold is 1 — the FIRST non-shrinking round escalates to needs_human. The
+# charter_validator (Step 4) rejects a higher (non-shrink-tolerating) value as a §1.7-D
+# evasion.
+GAP_FOLLOWUP_DEFAULT_MAX_NO_PROGRESS = 1
+# §1.7-F clause 2: when the campaign plan declares NO countable budget AND the charter
+# declares no budget.max_fix_rounds_total, the gap-followup dimension still gets a
+# conservative TOTAL-rounds effective-cap — it does NOT inherit today's unbounded default.
+GAP_FOLLOWUP_DEFAULT_EFFECTIVE_CAP = 3
+
+# §1.7-F: no-confirm auto-dispatch is permitted ONLY under human_on_the_loop or higher.
+# human_in_the_loop routes a completeness gap_report to needs_human (the
+# completeness_gap_review pause); the charter default (absent) is human_in_the_loop.
+_AUTO_GAP_DISPATCH_LEVELS = frozenset({
+    "human_on_the_loop", "fully_autonomous_within_budget"})
+
+# Milestone terminal outcomes that record a QUALITY fault or a HUMAN ship/scope waiver —
+# INELIGIBLE for no-confirm completeness gap-followup (§1.7-F clause 0: any quality fault
+# routes to human-confirm as today). Defense-in-depth: build_gap_report already EXCLUDES
+# every waived terminal from the gap (the gap is not_started/in_progress only), so a gap
+# milestone never carries one of these — but if a bug/tamper put one in the gap, the
+# eligibility seal FAILS CLOSED rather than auto-overriding a recorded human decision.
+_QUALITY_FAULT_TERMINALS = frozenset({
+    "fix_required_ship", "surface_approve_ship", "out_of_scope_advance"})
 
 
 class Campaign:
@@ -655,14 +730,22 @@ class Campaign:
                 f"has not reached the backlog end ({n_ms}) — not a reachable done "
                 f"state (fail-closed)")
         if mi == n_ms:
-            # The done/exhausted boundary. A PAUSED campaign is paused INSIDE a
-            # milestone, so it can never sit here; the runner resets subsprint_index
-            # to 0 before the cursor reaches this boundary.
-            if status == STATUS_PAUSED:
+            # The done/exhausted boundary. A PAUSED campaign is normally paused INSIDE a
+            # milestone, so it cannot sit here — EXCEPT the Track 2 Phase 2-γ / §1.7-F
+            # gap-followup gate, which by design fires AT backlog-exhausted (the cursor
+            # stays at (len, 0); remediation is dispatched directly, never via the cursor).
+            # So a completeness_gap_review pause at this boundary is the ONE legitimate
+            # paused-at-end state — AND only with its per-pause NONCE checkpoint: a null
+            # pause_checkpoint here is a corrupted/bug-written state that would let the
+            # resolver bind a checkpoint:null decision and bypass the nonce, so it is
+            # fail-closed (Codex R2 B3).
+            if status == STATUS_PAUSED and (
+                    data.get("pause_reason") != GAP_REVIEW_CHECKPOINT
+                    or not data.get("pause_checkpoint")):
                 raise ValueError(
                     "campaign state is paused but the cursor is at the backlog end "
-                    f"({n_ms}) — a paused campaign pauses inside a milestone "
-                    "(fail-closed)")
+                    f"({n_ms}) — a paused campaign pauses inside a milestone, except a "
+                    "completeness_gap_review pause WITH its nonce checkpoint (fail-closed)")
             if si != 0:
                 raise ValueError(
                     f"campaign state cursor at the backlog end ({n_ms}) has "
@@ -987,6 +1070,615 @@ class Campaign:
         self._advance_milestone_cursor()
         return None
 
+    # ----- Track 2 Phase 2-γ / §1.7-F gap-followup engine ----------------- #
+    # The pre-authorized, in-envelope completeness-remediation auto-route. This is a NEW
+    # auto-author/auto-dispatch capability (the campaign core otherwise deliberately
+    # SURFACES sub-sprint authoring at milestone_decompose_required), so it is built
+    # FAIL-CLOSED: it dispatches ONLY when every deterministic gate passes — the clause-0
+    # completeness↔quality SEAL, the clause-1 req_id-envelope PROOF, and the clause-2
+    # RUNTIME bounds — and on ANY failure it HALTs and escalates to needs_human (clause 3),
+    # never a silent stop and never a loop. It is DORMANT unless a requirement ledger is
+    # wired AND the plan is fresh-signed AND the post-close gap_report is non-empty (then
+    # byte-identical to today). The §3.4 diagram invariant: this path is audited (NOT
+    # silent) and is completeness, NOT quality, routing.
+
+    def _autonomy_level(self) -> str:
+        """The charter-declared autonomy level (default human_in_the_loop). §1.7-F permits
+        no-confirm gap-followup auto-dispatch ONLY under human_on_the_loop or higher; an
+        absent charter ⇒ the most conservative level."""
+        return ((self.charter or {}).get("autonomy") or {}).get(
+            "level", "human_in_the_loop")
+
+    def _gap_followup_cfg(self) -> dict:
+        """Resolved per-milestone gap-followup bounds (campaign-plan gap_followup + the
+        schema defaults). An ABSENT block ⇒ conservative engine defaults — never
+        unbounded (§1.7-F clause 2)."""
+        gf = self.plan.get("gap_followup") or {}
+        return {
+            "max_subsprints": gf.get("max_subsprints",
+                                     GAP_FOLLOWUP_DEFAULT_MAX_SUBSPRINTS),
+            "max_no_progress_rounds": gf.get("max_no_progress_rounds",
+                                             GAP_FOLLOWUP_DEFAULT_MAX_NO_PROGRESS),
+        }
+
+    def _campaign_budget_absent(self) -> bool:
+        """True when the campaign plan declares NO countable budget dimension (today
+        unbounded at runtime). §1.7-F clause 2: such a plan still gets a conservative
+        effective-cap on the gap-followup dimension, never the unbounded default."""
+        b = self.budget or {}
+        return not any(b.get(k) for k in
+                       ("max_subsprints", "max_total_spawns", "max_wall_clock_minutes"))
+
+    def _gap_effective_cap(self) -> int:
+        """The TOTAL-rounds effective-cap for the gap-followup dimension when the campaign
+        budget is ABSENT: charter.budget.max_fix_rounds_total when set, else a conservative
+        engine default (§1.7-F clause 2 — never unbounded)."""
+        mfr = ((self.charter or {}).get("budget") or {}).get("max_fix_rounds_total")
+        if isinstance(mfr, int) and mfr > 0:
+            return mfr
+        return GAP_FOLLOWUP_DEFAULT_EFFECTIVE_CAP
+
+    def _gap_state(self) -> dict:
+        """The persisted gap_followup_state, initialized in place (campaign-state.schema
+        gap_followup_state shape)."""
+        gfs = self.state.gap_followup_state
+        gfs.setdefault("rounds_by_milestone", {})
+        gfs.setdefault("gap_set_history", [])
+        gfs.setdefault("no_progress_rounds", 0)
+        gfs.setdefault("remediations", [])
+        return gfs
+
+    def _milestone_terminal(self, mid) -> Optional[str]:
+        """The recorded terminal outcome for a milestone (F3), or None."""
+        for o in self.state.milestone_outcomes:
+            if isinstance(o, dict) and o.get("milestone_id") == mid:
+                return o.get("terminal")
+        return None
+
+    def _build_gap_report(self) -> Optional[dict]:
+        """The POST-close completeness gap_report — from coverage/ledger FACTS ONLY
+        (scope_report.build_gap_report; the clause-0 SOURCE seal), computed off the LIVE
+        post-close state (status + cursor + milestone_outcomes), the signed plan + F1
+        envelope, the ledger, and the charter. Returns None when NO ledger is wired (the
+        engine is dormant). RAISES when a wired-ledger projection fails — the caller
+        fail-closes to needs_human (Codex R1 B1: an unavailable/ambiguous gap source on a
+        wired+signed plan must HALT, not silently finish — §1.7-F clause 3). It is NEVER
+        swallowed into a 'no gap' (that would silently mark the campaign done)."""
+        if not self.ledger:
+            return None
+        import scope_report as _scope
+        coverage = _scope.compute_requirement_coverage(
+            self.plan, self.state.to_dict(), self.ledger, charter=self.charter)
+        return _scope.build_gap_report(coverage)
+
+    def _gap_followup_eligible(self, gap_report):
+        """§1.7-F clause 0 — the completeness↔quality SEAL. Returns
+        (eligible, gap_items, reason). gap_items is the source-sealed gap from
+        build_gap_report (coverage facts only, NEVER Acceptance failure semantics).
+
+        INELIGIBLE when: not fresh-signed / no gap (nothing to complete → finish); a gap
+        item names no covering milestone or one absent from the plan (ambiguous → HALT); OR
+        a covering milestone carries a QUALITY-fault / human-waiver terminal (→ HALT; it
+        routes to human-confirm exactly as today, the auto path is forbidden). The last is
+        defense-in-depth — build_gap_report already excludes every waived terminal, so a gap
+        milestone never carries one, but a bug/tamper that put one in the gap fails closed
+        rather than auto-overriding a recorded human ship/scope decision."""
+        if not gap_report or gap_report.get("signoff_status") != "signed":
+            return False, [], "not_fresh_signed"
+        gap_items = [g for g in (gap_report.get("gap") or []) if isinstance(g, dict)]
+        if not gap_items:
+            return False, [], "no_gap"
+        plan_ids = {m.get("id") for m in self.milestones}
+        for g in gap_items:
+            mid = g.get("covered_by")
+            if not mid or mid not in plan_ids:
+                return False, gap_items, f"ambiguous_gap:{g.get('req_id')}"
+            if self._milestone_terminal(mid) in _QUALITY_FAULT_TERMINALS:
+                return False, gap_items, f"quality_fault:{mid}"
+        return True, gap_items, "eligible"
+
+    def _f1_envelope(self):
+        """(envelope_req_ids, covers_by_milestone) from the AUTHENTIC F1 signed snapshot,
+        or (None, None) when the snapshot does not verify against its OWN signed_scope_hash
+        (fail-closed: an unverifiable envelope cannot PROVE containment — Codex R-P2a #2).
+        envelope_req_ids = every signed covers_req_id; covers_by_milestone maps milestone_id
+        → its signed covers set."""
+        if not signoff_snapshot_authentic(self.plan):
+            return None, None
+        snapshot = (self.plan.get("signoff") or {}).get("scope_envelope") or {}
+        envelope: set = set()
+        by_ms: dict = {}
+        for m in (snapshot.get("milestones") or []):
+            cov = set(m.get("covers_req_ids") or [])
+            by_ms[m.get("id")] = cov
+            envelope |= cov
+        return envelope, by_ms
+
+    def _live_signed_scope_hash(self) -> Optional[str]:
+        """The LIVE F1 signed_scope_hash of the plan (the same value signoff_status compares
+        the stored hash against). Used to bind a pending_remediation marker to the EXACT
+        signed scope epoch it was authorized under (Codex R4 B1): any plan/charter edit
+        between marker persistence and resume changes this hash, so the marker is refused.
+        None on any failure (then the bind check fails closed)."""
+        signoff = self.plan.get("signoff") or {}
+        try:
+            return compute_signed_scope_hash(
+                self.plan, self.charter or {}, charter_ref=signoff.get("charter_ref"))
+        except Exception:  # noqa: BLE001 — None → the resume bind check fails closed
+            return None
+
+    def _select_gap_target(self, gap_items):
+        """Pick the remediation round's target = the FIRST undelivered in-envelope milestone
+        (topological/declared order) that owns a gap req_id. Returns
+        (milestone, milestone_index, covered_req_ids) — covered_req_ids is the SORTED set of
+        THIS milestone's gap req_ids (its undelivered signed covers; milestone-granular per
+        the locked decision). (None, None, None) defensively when no gap item maps to a plan
+        milestone (the eligibility seal already rejects that)."""
+        by_ms: dict = {}
+        for g in gap_items:
+            by_ms.setdefault(g.get("covered_by"), set()).add(g.get("req_id"))
+        for i, m in enumerate(self.milestones):
+            if m["id"] in by_ms:
+                return m, i, sorted(r for r in by_ms[m["id"]] if r)
+        return None, None, None
+
+    def _req_id_envelope_check(self, milestone, covered_req_ids):
+        """§1.7-F clause 1 — the deterministic req_id-envelope check, DISTINCT from
+        driver._scope_expansion_guard (modules/layers only, which would NOT catch
+        same-module new scope). Proves
+        covered_req_ids ⊆ (F1 signed snapshot ∩ this milestone's signed covers_req_ids).
+        Returns (ok, reason). FAILS CLOSED on an unverifiable envelope, an empty claim, or
+        ANY covered_req_id outside the intersection (out-of-envelope → HALT for a human)."""
+        envelope, by_ms = self._f1_envelope()
+        if envelope is None:
+            return False, "envelope_unverifiable"
+        if not covered_req_ids:
+            return False, "empty_covered_req_ids"
+        allowed = envelope & (by_ms.get(milestone["id"]) or set())
+        out = sorted(c for c in covered_req_ids if c not in allowed)
+        if out:
+            return False, f"out_of_envelope:{out}"
+        return True, "in_envelope"
+
+    def _gap_followup_bounds(self, milestone, gap_now):
+        """§1.7-F clause 2 — RUNTIME bounds. gap_now is the CURRENT remaining gap
+        req_id-set. Returns (ok, reason, next_no_progress):
+          * the per-milestone counter is below gap_followup.max_subsprints;
+          * when the campaign budget is ABSENT, the TOTAL gap-followup rounds are below the
+            effective-cap (never the unbounded default);
+          * the gap is a strict PROPER SUBSET of the prior round (proper-subset, NOT
+            identical-hash → catches A/B churn). A gap that GREW (a req_id not in the prior
+            set) is an immediate regression HALT; a gap that merely did not shrink is a
+            no-progress round, bounded by max_no_progress_rounds.
+        Read-only — the caller persists next_no_progress only on a clean dispatch."""
+        cfg = self._gap_followup_cfg()
+        gfs = self._gap_state()
+        no_progress = gfs["no_progress_rounds"]
+        rounds = gfs["rounds_by_milestone"].get(milestone["id"], 0)
+        if rounds >= cfg["max_subsprints"]:
+            return False, f"max_subsprints_exceeded:{milestone['id']}:{rounds}", no_progress
+        if self._campaign_budget_absent():
+            total = sum(gfs["rounds_by_milestone"].values())
+            cap = self._gap_effective_cap()
+            if total >= cap:
+                return False, f"effective_cap_exceeded:{total}>={cap}", no_progress
+        else:
+            # §1.7-F clause 2: "the campaign budget is not exhausted". The gap-followup
+            # dispatches OUTSIDE the inner loop's between-units _over_budget check, so the
+            # PRESENT campaign budget is enforced here too (the effective-cap covers the
+            # ABSENT-budget case above). A remediation that would exceed the signed
+            # campaign budget HALTs to needs_human, never silently overspends.
+            over = self._over_budget()
+            if over:
+                return False, f"campaign_budget_exhausted:{over}", no_progress
+        history = gfs["gap_set_history"]
+        if history:
+            prior = set(history[-1])
+            grew = gap_now - prior
+            if grew:
+                return False, f"gap_regression:{sorted(grew)}", no_progress
+            if gap_now == prior:
+                no_progress += 1
+                if no_progress >= cfg["max_no_progress_rounds"]:
+                    return False, f"no_progress_exceeded:{no_progress}", no_progress
+            else:  # strict proper subset (strictly smaller, no new ids) → progress
+                no_progress = 0
+        return True, "bounded", no_progress
+
+    def _restamp_milestone_outcome(self, mid, terminal, *, pause_reason=None,
+                                   decision_ref=None) -> None:
+        """§1.7-F: REPLACE a milestone's terminal outcome after a gap-followup remediation
+        re-delivers it (the idempotent _stamp_milestone_outcome would SKIP an existing
+        entry). Drops any prior entry for the milestone, then stamps the new one — so the
+        gap recomputation reflects the remediation (the basis of crash-idempotency)."""
+        self.state.milestone_outcomes = [
+            o for o in self.state.milestone_outcomes
+            if not (isinstance(o, dict) and o.get("milestone_id") == mid)]
+        self._stamp_milestone_outcome(mid, terminal, pause_reason=pause_reason,
+                                      decision_ref=decision_ref)
+
+    def _write_gap_review_checkpoint(self, gap_status, gap_items, milestone_id) -> str:
+        """Write a campaign-tier completeness_gap_review checkpoint with a per-pause NONCE
+        in its filename (Codex R1 B3) — a monotonic gap_review_seq + the clock stamp — so
+        each pause has a UNIQUE basename. The file-based decision resolver binds on that
+        basename, so a stale `remediate` file (an earlier round's nonce) is REFUSED and
+        cannot replay across rounds (the "ONE bounded round" semantics). Mirrors
+        _write_milestone_merge_checkpoint."""
+        gfs = self._gap_state()
+        seq = int(gfs.get("gap_review_seq", 0)) + 1
+        gfs["gap_review_seq"] = seq
+        try:
+            dt = datetime.fromisoformat(self.clock().replace("Z", "+00:00"))
+            stamp = dt.strftime("%Y%m%d-%H%M%S")
+        except (ValueError, AttributeError):
+            stamp = "00000000-000000"
+        fname = f"{stamp}__completeness_gap_review__r{seq}.md"
+        cps_dir = os.path.join(self.run_dir, "docs", "checkpoints")
+        os.makedirs(cps_dir, exist_ok=True)
+        path = os.path.join(cps_dir, fname)
+        gap_ids = [g.get("req_id") for g in (gap_items or [])]
+        body = (
+            f"---\n"
+            f"checkpoint_id: completeness_gap_review\n"
+            f"scope: {milestone_id or 'campaign'}\n"
+            f"emitted_at: {self.clock()}\n"
+            f"gap_status: {gap_status}\n"
+            f"decision: pending\n"
+            f"resolved_at: null\n"
+            f"resolver: null\n"
+            f"---\n\n"
+            f"# Context\n"
+            f"Constitution §1.7-F completeness gap (human-signed, in-envelope, "
+            f"signed-but-undelivered scope): {gap_ids}.\nStatus: `{gap_status}`.\n\n"
+            f"Under `human_in_the_loop` a completeness gap_report routes to needs_human; a "
+            f"clause-3 fail-closed escalation lands here too. §1.7-F grants NO authority to "
+            f"ship or widen scope. Author a campaign-decision.json with THIS checkpoint "
+            f"basename + an adjust_scope choice, then `--resume --decision <file>`.\n\n"
+            f"# Options (adjust_scope)\n"
+            f"- remediate — authorize ONE bounded, in-envelope remediation round (the SAME "
+            f"deterministic seal/req_id-envelope/bounds gates as the auto path)\n"
+            f"- accept_gap — accept the incomplete signed scope and finish (no remediation)\n"
+            f"- abort — end the campaign\n"
+        )
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path
+
+    def _pause_gap_review(self, gap_status, gap_items, *, milestone_id=None,
+                          remediation_checkpoint=None) -> "CampaignState":
+        """Pause at the ONE §1.7-F completeness gate (completeness_gap_review) — it carries
+        BOTH the human_in_the_loop pre-dispatch review AND every clause-3 fail-closed
+        escalation (the audit `gap_status` distinguishes them; the same adjust_scope
+        decision — remediate|accept_gap|abort — resolves both). Audited, never silent
+        (§3.4 diagram invariant).
+
+        It is a CAMPAIGN-tier gate: the file-based resolver special-cases it (bind by
+        campaign_id + pause_reason + the per-pause checkpoint NONCE basename, NO unit lookup,
+        NO subsprint_id). The nonce prevents a stale `remediate` file from replaying across
+        rounds (Codex R1 B3). A halted remediation's underlying Driver checkpoint is recorded
+        in `extra` + the halted unit (inspectable), never as the campaign pause_checkpoint."""
+        extra = {"gap_status": gap_status,
+                 "gap": [g.get("req_id") for g in (gap_items or [])],
+                 "autonomy": self._autonomy_level()}
+        if milestone_id:
+            extra["milestone_id"] = milestone_id
+        if remediation_checkpoint:
+            extra["remediation_checkpoint"] = remediation_checkpoint
+        path = self._write_gap_review_checkpoint(gap_status, gap_items, milestone_id)
+        return self._pause(GAP_REVIEW_CHECKPOINT, path,
+                           "campaign_gap_followup_pause", extra)
+
+    def _safe_remediation_id(self, milestone, round_n):
+        """Generate the round's gapfix sub-sprint id FAIL-CLOSED (Codex R1 B5). Returns
+        (id, None) when safe, or (None, reason) when it would OVERFLOW the path-safe length
+        cap (a 127-char milestone id + suffix would otherwise raise in make_run_unit instead
+        of pausing) or COLLIDE with a signed sub-sprint id / a prior recorded unit (a reused
+        (campaign, milestone, subsprint) loop_id). _SAFE_CAMPAIGN_ID_RE is the SAME gate
+        make_run_unit enforces on each id component."""
+        rid = f"{milestone['id']}-gapfix-{round_n}"
+        if not _SAFE_CAMPAIGN_ID_RE.match(rid):
+            return None, "id_overflow_or_unsafe"
+        if rid in set(milestone.get("subsprint_sequence") or []):
+            return None, "collides_with_signed_subsprint"
+        recorded = {u.get("subsprint_id") for u in self.state.units
+                    if isinstance(u, dict) and u.get("milestone_id") == milestone["id"]}
+        if rid in recorded:
+            return None, "collides_with_recorded_unit"
+        return rid, None
+
+    def _gap_remediation_spec(self, milestone, covered_req_ids) -> dict:
+        """The CONTENT-complete Dev work contract for the gapfix (Codex R1 B4): objective +
+        scope_in (from the ledger requirement statements) + exit_criteria, all bounded to
+        the in-envelope covered_req_ids. make_run_unit renders it into the Driver-resolved
+        compact/<id>-dev-prompt.md, so Deliver addresses EXACTLY the signed-but-undelivered
+        requirements — the req_id proof is BOUND into the work contract, never a bare run,
+        never scope expansion."""
+        reqs = {r.get("id"): r for r in (self.ledger or {}).get("requirements", [])
+                if isinstance(r, dict)}
+        scope_in = [f"{rid}: {((reqs.get(rid) or {}).get('statement') or rid)}"
+                    for rid in covered_req_ids]
+        joined = ", ".join(covered_req_ids)
+        return {
+            "covered_req_ids": list(covered_req_ids),
+            "objective": (f"Constitution §1.7-F in-envelope completeness remediation for "
+                          f"milestone {milestone['id']}: deliver the human-signed "
+                          f"requirements signed into this milestone's covers_req_ids that "
+                          f"are not yet delivered ({joined})."),
+            "scope_in": scope_in,
+            "exit_criteria": [f"{rid} delivered and verifiable at the milestone-close "
+                              f"Acceptance gate" for rid in covered_req_ids],
+        }
+
+    def _dispatch_gap_remediation(self, milestone, remediation_id, covered_req_ids, *,
+                                  resume) -> dict:
+        """Run ONE generated remediation sub-sprint for `milestone` through the SAME
+        injected run_unit, so per-milestone Acceptance anchors at this (now-terminal)
+        sub-sprint. Passes a GROWN sequence (the milestone's signed subsprint_sequence +
+        remediation_id) so the per-milestone projection includes the remediation, but does
+        NOT MUTATE the signed plan — a remediation COMPLETES already-signed scope, it is NOT
+        a scope edit, so the F1 signed envelope (which hashes subsprint_sequence) must stay
+        intact; mutating it would flip signoff_status to 'stale' and silently drop the rest
+        of a multi-milestone gap. Passes the gap_followup_spec (the §1.7-F in-envelope work
+        contract, bound into the Driver's Dev prompt) + covered_req_ids. `resume` is True
+        ONLY on a crash-recovery completion of an in-flight round (re-enter the Driver: a
+        COMPLETED one returns its outcome with no re-run; an un-started one re-runs fresh via
+        run_unit's FileNotFoundError fallback — Codex R2 B2). Accounts the spend exactly like
+        the inner loop. Returns the run_unit summary."""
+        mid = milestone["id"]
+        grown_seq = list(milestone.get("subsprint_sequence") or []) + [remediation_id]
+        spec = self._gap_remediation_spec(milestone, covered_req_ids)
+        summary = self.run_unit(
+            remediation_id, milestone_id=mid, subsprint_sequence=grown_seq,
+            resume=resume, functional_acceptance=milestone.get("functional_acceptance"),
+            repo_dir=self._milestone_work_dir(),
+            covered_req_ids=list(covered_req_ids), gap_followup_spec=spec)
+        self.state.subsprints_run += 1
+        self.state.total_spawns += int(summary.get("spawn_count") or 0)
+        self.state.wall_clock_minutes = (
+            self._base_wall + _iso_minutes(self._invocation_start, self.clock()))
+        return summary
+
+    def _run_remediation(self, milestone, remediation_id, covered_req_ids, round_n,
+                         gap_set, next_no_progress, *, resume) -> str:
+        """Dispatch ONE gapfix and ATOMICALLY record the round — counter + gap-set history +
+        no_progress + stanza + unit + terminal re-stamp AND clear the pending_remediation
+        marker, in ONE _save. So a crash replay recomputes the gap from the persisted
+        re-stamp (no double-dispatch), and the in-flight marker is cleared exactly when the
+        round becomes durable (Codex R2 B2). Returns GAP_CONTINUE (clean) or GAP_PAUSED
+        (halted → escalate to needs_human). Shared by the live path and crash-recovery."""
+        gap_items = [{"req_id": r} for r in sorted(gap_set)]
+        self._audit("campaign_gap_followup_dispatch",
+                    {"milestone_id": milestone["id"], "subsprint_id": remediation_id,
+                     "covered_req_ids": covered_req_ids, "round": round_n, "resume": resume})
+        summary = self._dispatch_gap_remediation(
+            milestone, remediation_id, covered_req_ids, resume=resume)
+        final_state = summary.get("final_state")
+        unit = {"milestone_id": milestone["id"], "subsprint_id": remediation_id,
+                "status": "done", "final_state": final_state,
+                "loop_id": summary.get("loop_id")}
+        gfs = self._gap_state()
+        gfs["rounds_by_milestone"][milestone["id"]] = round_n
+        gfs["gap_set_history"].append(sorted(gap_set))
+        gfs["no_progress_rounds"] = next_no_progress
+        gfs["remediations"].append(
+            {"milestone_id": milestone["id"], "subsprint_id": remediation_id,
+             "covered_req_ids": covered_req_ids, "round": round_n})
+        gfs.pop("pending_remediation", None)   # the round is now durably recorded
+
+        if final_state in _ADVANCE_STATES or final_state in _MILESTONE_DONE_STATES:
+            # The remediation completed. Re-stamp the milestone's terminal so the gap
+            # recomputation reflects it: done → delivered; advance (acceptance mode off) →
+            # acceptance_off/waived — EITHER WAY the milestone leaves the gap, so the set
+            # strictly shrinks (proper-subset progress holds; termination guaranteed).
+            terminal = ("acceptance_pass_authoritative"
+                        if final_state in _MILESTONE_DONE_STATES else "acceptance_off")
+            self.state.units.append(unit)
+            self._restamp_milestone_outcome(
+                milestone["id"], terminal, pause_reason=summary.get("pause_reason"),
+                decision_ref=summary.get("checkpoint_path"))
+            self._save()
+            self._audit("campaign_gap_followup_round_done",
+                        {"milestone_id": milestone["id"], "subsprint_id": remediation_id,
+                         "terminal": terminal, "round": round_n})
+            return GAP_CONTINUE
+
+        # The remediation HALTED at a gate → HALT and escalate to needs_human (clause 3).
+        reason_cp = summary.get("pause_reason") or final_state or "unknown_halt"
+        unit["status"] = "halted"
+        unit["pause_reason"] = reason_cp
+        unit["checkpoint_path"] = summary.get("checkpoint_path")
+        self.state.units.append(unit)
+        self._audit("campaign_gap_followup_blocked",
+                    {"reason": f"remediation_halted:{reason_cp}",
+                     "milestone_id": milestone["id"], "subsprint_id": remediation_id})
+        self._pause_gap_review(f"remediation_halted:{reason_cp}", gap_items,
+                               milestone_id=milestone["id"],
+                               remediation_checkpoint=summary.get("checkpoint_path"))
+        return GAP_PAUSED
+
+    def _complete_pending_remediation(self, pending) -> str:
+        """Crash-recovery: an in-flight gapfix dispatch was persisted (pending_remediation)
+        but the atomic round-save did not land. RE-ENTER that exact remediation via
+        resume=True — a Driver that COMPLETED returns its recorded outcome without re-running
+        (no double-run / no spend undercount — Codex R2 B2); an un-started one re-runs once
+        (run_unit's resume downgrade). Bypasses the autonomy gating + bounds (they already
+        passed before the crash).
+
+        VALIDATES the marker before bypassing those gates — RE-PROVING every live gate the
+        normal path proves, so resume cannot complete work the current plan no longer
+        authorizes: (a) SHAPE (Codex R3 NB-1) — a malformed marker (milestone vanished, empty
+        covered_req_ids, non-canonical/colliding id, bad round, or an empty {}); (b) SIGNED
+        (Codex R5 B1) — the plan MUST still be fresh-signed (signoff_status=='signed'), so a
+        signed_by_human flip after dispatch — which does NOT change the scope_hash — fails
+        closed; (c) SCOPE EPOCH (Codex R4 B1) — the marker's signed scope_hash MUST still
+        match the live one, so a plan/charter edit/re-sign refuses the stale marker; (d)
+        ENVELOPE (clause 1 re-proof) — covered_req_ids MUST still be ⊆ (F1 snapshot ∩ the
+        milestone's signed covers). ANY failure fails closed to needs_human."""
+        pending = pending or {}
+        mid = pending.get("milestone_id")
+        rid = pending.get("remediation_id")
+        cov = [c for c in (pending.get("covered_req_ids") or []) if isinstance(c, str)]
+        round_n = pending.get("round")
+        milestone = next((m for m in self.milestones if m["id"] == mid), None)
+        why = None
+        if not (milestone is not None and isinstance(rid, str)
+                and isinstance(round_n, int) and round_n >= 1 and cov
+                and rid == f"{mid}-gapfix-{round_n}"
+                and bool(_SAFE_CAMPAIGN_ID_RE.match(rid))):
+            why = "malformed"
+        elif self._signoff_status() != "signed":
+            # the plan was unsigned/stale/re-signed since dispatch (a signed_by_human flip
+            # does NOT change the scope_hash) → never complete work under a no-longer-signed
+            # plan (Codex R5 B1; mirrors the normal path's fresh-signed gate).
+            why = "not_signed"
+        elif (not pending.get("scope_hash")
+              or pending.get("scope_hash") != self._live_signed_scope_hash()):
+            # plan/charter edited or re-signed since dispatch, OR the epoch is unverifiable
+            # (a None hash either side) → fail-closed rather than re-run on an unproven epoch.
+            why = "scope_epoch_changed"
+        else:
+            ok, env_why = self._req_id_envelope_check(milestone, cov)
+            if not ok:
+                why = f"out_of_envelope:{env_why}"
+        if why is not None:
+            self.state.gap_followup_state.pop("pending_remediation", None)
+            self._audit("campaign_gap_followup_blocked",
+                        {"reason": f"pending_remediation_{why}", "milestone_id": mid})
+            self._pause_gap_review(f"pending_remediation:{why}", [], milestone_id=mid)
+            return GAP_PAUSED
+        return self._run_remediation(
+            milestone, rid, cov, round_n, set(pending.get("gap_set") or []),
+            int(pending.get("no_progress") or 0), resume=True)
+
+    def _gap_followup_round(self, decision_resolver) -> str:
+        """The dedicated, FAIL-CLOSED §1.7-F engine — called by run() at backlog-exhausted.
+        The cursor stays at (len, 0); remediation is dispatched DIRECTLY here (never via the
+        milestone cursor), so the battle-tested inner loop is untouched and already-done
+        milestones are never re-run. Returns GAP_DONE / GAP_CONTINUE / GAP_PAUSED /
+        GAP_ENDED.
+
+        Sequence: consume any human adjust_scope decision (one-shot, stashed by
+        _handle_resume); compute the post-close gap_report (coverage facts only — clause 0
+        source seal); apply the eligibility SEAL (clause 0); route by autonomy
+        (human_in_the_loop → pause at completeness_gap_review; human_on_the_loop+ → auto);
+        on the dispatch path PROVE the generated remediation in the F1 req_id-envelope
+        (clause 1) and the runtime bounds (clause 2), then dispatch ONE bounded remediation
+        round. ANY gate failure HALTs and escalates to needs_human (clause 3)."""
+        review_decision = self._gap_review_decision
+        self._gap_review_decision = None
+        self._crash_recovery = False   # consumed; the pending_remediation marker (below) is
+                                       # the durable crash-recovery signal, not this flag.
+
+        # Crash-recovery FIRST — BEFORE the dormant/no-ledger exit (Codex R3 B1): an in-flight
+        # remediation whose atomic round-save never landed must be COMPLETED (re-enter its
+        # Driver via resume=True) so a marker can never strand the campaign at STATUS_DONE
+        # with the round unrecorded + spend undercounted (a STATUS_DONE replay short-circuits,
+        # so the marker would never clear). The marker carries everything _run_remediation
+        # needs (it does NOT depend on the ledger), so this is correct even if the ledger
+        # became unreadable on resume.
+        pending = self.state.gap_followup_state.get("pending_remediation")
+        if pending is not None:   # an empty {} marker is PRESENT-but-malformed → fail-closed
+            return self._complete_pending_remediation(pending)   #   (Codex R4 NB-1), not ignored
+        if not self.ledger:
+            return GAP_DONE   # DORMANT — no requirement ledger wired (byte-identical to today)
+        try:
+            gap_report = self._build_gap_report()
+        except Exception as exc:  # noqa: BLE001 — clause 3 fail-closed (Codex R1 B1)
+            # A wired-ledger gap projection that fails is an ambiguous/unknowable gap →
+            # HALT to needs_human, never silently finish the campaign.
+            self._audit("campaign_gap_followup_blocked",
+                        {"reason": "gap_report_unavailable",
+                         "error": f"{type(exc).__name__}: {exc}"})
+            self._pause_gap_review("ineligible:gap_report_unavailable", [])
+            return GAP_PAUSED
+        eligible, gap_items, reason = self._gap_followup_eligible(gap_report)
+        if not eligible:
+            if reason in ("no_gap", "not_fresh_signed"):
+                return GAP_DONE   # nothing to complete → finish
+            # ambiguous gap or a quality-fault milestone in the gap → fail-closed (clause 3).
+            self._audit("campaign_gap_followup_blocked", {"reason": reason})
+            self._pause_gap_review(f"ineligible:{reason}", gap_items)
+            return GAP_PAUSED
+
+        # An in-envelope completeness gap exists. Decide whether to act on it.
+        if review_decision is not None:
+            action = interpret_dispatch(GAP_REVIEW_CHECKPOINT, review_decision)
+            if action == ACT_GAP_ACCEPT:
+                self._audit("campaign_gap_followup_accepted",
+                            {"gap": [g.get("req_id") for g in gap_items]})
+                return GAP_DONE
+            if action == ACT_END:
+                self._end("gap_followup_aborted")
+                return GAP_ENDED
+            if action != ACT_GAP_REMEDIATE:
+                # fail-closed: an unrecognized adjust_scope choice surfaces, never acts.
+                self._pause_gap_review("ambiguous_decision", gap_items)
+                return GAP_PAUSED
+            # ACT_GAP_REMEDIATE → the human authorized THIS round → fall through to dispatch.
+        elif self._autonomy_level() not in _AUTO_GAP_DISPATCH_LEVELS:
+            # human_in_the_loop: a completeness gap_report routes to needs_human.
+            self._audit("campaign_gap_followup_review",
+                        {"gap": [g.get("req_id") for g in gap_items],
+                         "autonomy": self._autonomy_level()})
+            self._pause_gap_review("human_in_the_loop", gap_items)
+            return GAP_PAUSED
+        # else human_on_the_loop+ with no pending review → auto-dispatch (no pause).
+
+        # ----- dispatch path: clause 1, clause 2, then ONE bounded remediation round ---- #
+        milestone, _idx, covered_req_ids = self._select_gap_target(gap_items)
+        if milestone is None:                       # defensive (eligibility already checked)
+            self._pause_gap_review("no_target", gap_items)
+            return GAP_PAUSED
+        ok, why = self._req_id_envelope_check(milestone, covered_req_ids)
+        if not ok:
+            self._audit("campaign_gap_followup_blocked",
+                        {"reason": why, "milestone_id": milestone["id"],
+                         "covered_req_ids": covered_req_ids})
+            self._pause_gap_review(f"envelope:{why}", gap_items,
+                                   milestone_id=milestone["id"])
+            return GAP_PAUSED
+        gap_now = {g.get("req_id") for g in gap_items if g.get("req_id")}
+        ok, why, next_no_progress = self._gap_followup_bounds(milestone, gap_now)
+        if not ok:
+            self._audit("campaign_gap_followup_blocked",
+                        {"reason": why, "milestone_id": milestone["id"]})
+            self._pause_gap_review(f"bounds:{why}", gap_items,
+                                   milestone_id=milestone["id"])
+            return GAP_PAUSED
+
+        gfs = self._gap_state()
+        round_n = gfs["rounds_by_milestone"].get(milestone["id"], 0) + 1
+        remediation_id, id_why = self._safe_remediation_id(milestone, round_n)
+        if remediation_id is None:
+            # §1.7-F clause 3 (Codex R1 B5): a generated id that COLLIDES with a signed
+            # sub-sprint id or OVERFLOWS the loop_id length cap HALTs to needs_human — it
+            # never crashes make_run_unit nor reuses a (campaign, milestone, subsprint)
+            # loop_id.
+            self._audit("campaign_gap_followup_blocked",
+                        {"reason": f"unsafe_remediation_id:{id_why}",
+                         "milestone_id": milestone["id"]})
+            self._pause_gap_review(f"unsafe_id:{id_why}", gap_items,
+                                   milestone_id=milestone["id"])
+            return GAP_PAUSED
+        # Persist the IN-FLIGHT marker + DURABLY clear the pause (→ RUNNING) BEFORE the
+        # side-effecting dispatch (Codex R2 B2 + R1 B2(b)). The marker captures everything
+        # the atomic round-save needs, so a crash after the gapfix Driver runs but before
+        # that save replays through STATUS_RUNNING crash-recovery → _complete_pending_-
+        # remediation RE-ENTERS this exact gapfix (resume=True; a completed Driver returns
+        # its outcome with no re-run) — never a double-dispatch, never a re-consumed paused
+        # decision.
+        gfs["pending_remediation"] = {
+            "milestone_id": milestone["id"], "remediation_id": remediation_id,
+            "round": round_n, "covered_req_ids": covered_req_ids,
+            "gap_set": sorted(gap_now), "no_progress": next_no_progress,
+            # Bind the marker to the signed scope epoch it was authorized under (Codex R4 B1):
+            # a plan/charter edit between this save and a crash-resume changes the live hash,
+            # so _complete_pending_remediation refuses the stale marker.
+            "scope_hash": self._live_signed_scope_hash()}
+        self._save()
+        return self._run_remediation(milestone, remediation_id, covered_req_ids,
+                                     round_n, gap_now, next_no_progress, resume=False)
+
     # ----- resume decision-execution (design §5.4a; increment 2) ---------- #
     def _handle_resume(self, decision_resolver) -> str:
         """Act on a resolved pause BEFORE re-entering the loop. Returns
@@ -1007,6 +1699,20 @@ class Campaign:
             ms = self.milestones[self.state.milestone_index]
             return ("proceed" if ms.get("subsprint_sequence")
                     else self._repause(reason, "still_undecomposed"))
+        if reason == GAP_REVIEW_CHECKPOINT:
+            # Track 2 Phase 2-γ / §1.7-F: the completeness gate (human_in_the_loop review OR
+            # a clause-3 fail-closed escalation). STASH the human's adjust_scope decision so
+            # the OUTER-loop engine (_gap_followup_round) consumes it once — its
+            # remediate/accept_gap/abort handling is the SAME for the auto and human paths.
+            # No decision ⇒ re-pause (the gap is unresolved).
+            decision = (decision_resolver(reason, self.state.pause_checkpoint)
+                        if decision_resolver is not None else None)
+            if not decision:
+                return self._repause(reason, "decision_pending")
+            self._gap_review_decision = decision
+            self._audit("campaign_resume_dispatch",
+                        {"pause_reason": reason, "choice": decision.get("choice")})
+            return "proceed"
         if reason == "milestone_merge":
             decision = (decision_resolver(reason, self.state.pause_checkpoint)
                         if decision_resolver is not None else None)
@@ -1158,6 +1864,7 @@ class Campaign:
         gate_resolver); None / a None return ⇒ the pause stays (re-pause)."""
         self._pending_driver_resume = False
         self._crash_recovery = False  # §3.5c: set True only on STATUS_RUNNING recovery
+        self._gap_review_decision = None  # §1.7-F: a human adjust_scope decision, consumed once
         if resume and self._load():
             self._audit("campaign_resume",
                         {"from_status": self.state.status,
@@ -1204,6 +1911,34 @@ class Campaign:
         self._base_wall = self.state.wall_clock_minutes
         self._invocation_start = self.clock()
 
+        while True:
+            paused = self._drive_milestones()
+            if paused is not None:
+                return paused
+            # Backlog exhausted → Track 2 Phase 2-γ / §1.7-F gap-followup decision. This
+            # OUTER loop is the ONLY structural change Phase 2-γ makes to run(): the cursor
+            # stays at (len, 0) and any remediation is dispatched DIRECTLY inside
+            # _gap_followup_round (never via the milestone cursor), so the inner milestone
+            # loop is untouched and already-completed milestones are never re-run.
+            outcome = self._gap_followup_round(decision_resolver)
+            if outcome == GAP_CONTINUE:
+                continue            # a bounded in-envelope remediation round ran; re-check
+            if outcome in (GAP_PAUSED, GAP_ENDED):
+                return self.state   # needs_human / human review / abort — already persisted
+            break                   # GAP_DONE → finish the campaign
+
+        # backlog exhausted + gap-followup complete.
+        self.state.status = STATUS_DONE
+        self._audit("campaign_done",
+                    {"subsprints_run": self.state.subsprints_run,
+                     "total_spawns": self.state.total_spawns})
+        self._save()
+        return self.state
+
+    def _drive_milestones(self) -> Optional["CampaignState"]:
+        """Drive the milestone backlog from the cursor (the inner loop, UNCHANGED from the
+        pre-Phase-2-γ campaign). Returns a PAUSED/ENDED CampaignState to halt run(), or None
+        when the backlog is exhausted (→ run()'s §1.7-F gap-followup decision)."""
         while self.state.milestone_index < len(self.milestones):
             milestone = self.milestones[self.state.milestone_index]
             seq = list(milestone.get("subsprint_sequence") or [])
@@ -1323,13 +2058,8 @@ class Campaign:
             if paused is not None:
                 return paused
 
-        # backlog exhausted.
-        self.state.status = STATUS_DONE
-        self._audit("campaign_done",
-                    {"subsprints_run": self.state.subsprints_run,
-                     "total_spawns": self.state.total_spawns})
-        self._save()
-        return self.state
+        # backlog exhausted → run()'s outer loop handles the §1.7-F gap-followup decision.
+        return None
 
 
 def run_campaign(plan: dict, run_dir: str, run_unit: RunUnit, *,
@@ -1403,6 +2133,37 @@ def _canonical_json(obj: Any) -> str:
     """Canonical JSON for hashing/fingerprints: UTF-8, sorted keys, no insignificant
     whitespace (design §3.3.1)."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def render_gapfix_dev_prompt(spec: dict, subsprint_id: str,
+                             milestone_id: Optional[str]) -> str:
+    """Track 2 Phase 2-γ / §1.7-F clause 1 (Codex R1 B4): render the generated remediation's
+    in-envelope work contract into a SELF-CONTAINED compact Dev prompt the Driver resolves
+    (driver._load_compact_file → compact/<id>-dev-prompt.md). The front-matter
+    context_budget.self_contained:true + the objective/scope_in/exit_criteria satisfy
+    driver._validate_compact_text, so on a LIVE run Deliver addresses EXACTLY the
+    covered_req_ids — the req_id proof is BOUND into the contract, never a bare/unbounded
+    run, never scope expansion."""
+    cov = list(spec.get("covered_req_ids") or [])
+    lines = [
+        "---", "context_budget:", "  self_contained: true", "---",
+        f"You are activating as the Dev Agent for gap-followup sub-sprint {subsprint_id} "
+        f"(milestone {milestone_id}).", "",
+        "This is a Constitution §1.7-F PRE-AUTHORIZED in-envelope completeness remediation: "
+        "deliver the human-signed requirements below that were signed into this milestone's "
+        "covers_req_ids but are NOT yet delivered. IN-ENVELOPE COMPLETION ONLY — do NOT "
+        "widen scope beyond these requirement ids (§1.7-F forbids scope expansion); if you "
+        "cannot satisfy them without new scope, HALT for human review.", "",
+        "Cold-start the role-session governance chain + role-cards/dev-agent.md.", "",
+        f"Objective:\n  {spec.get('objective', '')}", "",
+        "Covered requirement ids (the ONLY in-envelope scope):",
+    ]
+    lines += [f"  - {rid}" for rid in cov] or ["  - (none)"]
+    lines += ["", "Scope IN (deliverables):"]
+    lines += [f"  - {s}" for s in (spec.get("scope_in") or [])]
+    lines += ["", "Exit criteria (close conditions):"]
+    lines += [f"  - {e}" for e in (spec.get("exit_criteria") or [])]
+    return "\n".join(lines) + "\n"
 
 
 def resolve_functional_acceptance(charter: Optional[dict],
@@ -1695,7 +2456,8 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
             f"{campaign_id!r} — refusing to derive contexts from a mismatched plan")
 
     def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
-                 resume=False, functional_acceptance=None, repo_dir=None):
+                 resume=False, functional_acceptance=None, repo_dir=None,
+                 covered_req_ids=None, gap_followup_spec=None):
         # Validate id components BEFORE building any path (fail-closed; never makedirs
         # an unsafe path), then build a COLLISION-FREE, bounded loop_id by hashing the
         # (campaign, milestone, subsprint) tuple — a raw '-' join is ambiguous when ids
@@ -1731,6 +2493,36 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
             with open(os.path.join(unit_run_dir, "derived-context.json"),
                       "w", encoding="utf-8") as fh:
                 json.dump(provenance, fh, indent=2, sort_keys=True)
+            # Track 2 Phase 2-γ / §1.7-F clause 1: when the campaign auto-dispatches a
+            # GENERATED remediation sub-sprint it passes the in-envelope covered_req_ids it
+            # already PROVED ⊆ (F1 snapshot ∩ the milestone's signed covers) — record it as a
+            # Deliver-readable sidecar so Deliver addresses exactly the in-envelope gap (NEVER
+            # scope expansion). Additive: absent on every normal dispatch.
+            if covered_req_ids:
+                with open(os.path.join(unit_run_dir, "gap-followup-stanza.json"),
+                          "w", encoding="utf-8") as fh:
+                    json.dump({"sprint_id": subsprint_id, "milestone_id": milestone_id,
+                               "covered_req_ids": list(covered_req_ids)},
+                              fh, indent=2, sort_keys=True)
+            # Codex R1 B4: BIND the in-envelope covered_req_ids into the EXECUTABLE work
+            # contract — render the generated spec as the Driver-resolved compact Dev prompt
+            # (compact/<id>-dev-prompt.md under the work repo), so on a LIVE run Deliver
+            # builds exactly the signed-but-undelivered requirements instead of halting on a
+            # missing spec. Best-effort: a write failure leaves the gapfix to the Driver's
+            # own missing-spec refinement HALT (still fail-closed, never a bare run). Needs a
+            # repo (delivery dir); absent ⇒ offline/mock, where strict-prompt resolution is
+            # off and the contract is moot.
+            _gf_repo = repo_dir or run_loop_kwargs.get("repo_dir")
+            if gap_followup_spec and _gf_repo:
+                try:
+                    _cdir = os.path.join(_gf_repo, "compact")
+                    os.makedirs(_cdir, exist_ok=True)
+                    with open(os.path.join(_cdir, f"{subsprint_id}-dev-prompt.md"),
+                              "w", encoding="utf-8") as fh:
+                        fh.write(render_gapfix_dev_prompt(
+                            gap_followup_spec, subsprint_id, milestone_id))
+                except OSError:
+                    pass
             # PIN delivery_only on the derived dispatch: the Driver ctor's loop_mode
             # arg WINS over charter.autonomy.loop_mode (driver.py ~621), so this
             # neutralizes any full_chain_guided the SOURCE charter carries even when
@@ -1787,10 +2579,24 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
 
         cps_dir = os.path.join(unit_run_dir, "docs", "checkpoints")
         effective_repo = repo_dir or run_loop_kwargs.get("repo_dir")
+        # §1.7-F gap-followup crash-recovery (Codex R2 B2 / R3 B2): the campaign re-enters an
+        # in-flight gapfix with resume=True, but a gapfix that crashed BEFORE its first Driver
+        # save has no state.json to resume — run it FRESH. Scoped to a gap-followup dispatch
+        # (it alone carries covered_req_ids) so the inner loop's resume semantics are
+        # UNCHANGED, and a PRECISE state.json probe (the Driver persists to
+        # <run_dir>/.orchestrator/state.json) — NOT a broad `except FileNotFoundError` — so a
+        # FileNotFoundError from INSIDE a resumed Driver (missing schema / corrupt dependency)
+        # still PROPAGATES fail-closed, never silently re-runs (which could duplicate side
+        # effects).
+        effective_resume = resume
+        if (resume and covered_req_ids and not os.path.isfile(
+                os.path.join(unit_run_dir, ".orchestrator", "state.json"))):
+            effective_resume = False
         try:
             summary = run_loop_fn(unit_charter, run_dir=unit_run_dir, loop_id=loop_id,
                                   subsprint_id=subsprint_id, clock=clock,
-                                  resume=resume, repo_dir=effective_repo, **call_kwargs)
+                                  resume=effective_resume, repo_dir=effective_repo,
+                                  **call_kwargs)
         except gate_hard_fail as exc:
             cid, cpath = latest_checkpoint(cps_dir)
             return {"final_state": "halted", "spawn_count": 0, "loop_id": loop_id,
