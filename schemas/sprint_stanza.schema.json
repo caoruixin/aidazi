@@ -54,6 +54,12 @@
     },
     "next_subsprint": {
       "type": ["string", "null"]
+    },
+    "covered_req_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^REQ-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+      "description": "Δ-19 / Constitution §1.7-F clause 1. ONLY on a gap-followup remediation sub-sprint: the in-envelope requirement ids this sub-sprint closes. The Phase 2-γ runtime req_id-envelope check proves covered_req_ids ⊆ (F1 signed snapshot ∩ the milestone's signed covers_req_ids) — DISTINCT from the module/layer scope-expansion guard. OPTIONAL + additive: absent on normal sub-sprints; every existing stanza still validates."
     }
   }
 }

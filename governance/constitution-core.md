@@ -150,6 +150,36 @@ Core — each is FORBIDDEN and a Tier-0 framework breach:
 - **§1.7-E** When both the Auto Loop and the Delivery Loop are in use in the same project, adopter
   documentation MUST name each loop distinctly on first reference. [JUDGMENT]
 
+## §1.7-F Pre-authorized in-envelope completeness remediation (gap-driven follow-up)
+
+A bounded pre-authorized path (NOT a forbidden item) — the completeness sibling of the §3.5 quality
+channel. Distinct from the quality `fix_required` channel (§1.7-C / §3.5, UNCHANGED), Acceptance MAY
+emit a **completeness `gap_report`** — the req_ids in the human-signed F1 requirement envelope AND
+signed into this milestone's `covers_req_ids` AND not yet delivered. A gap is **in-envelope scope
+completion, never scope expansion**. Under `autonomy.level: human_on_the_loop` (or higher) the
+orchestrator MAY, WITHOUT a fresh human-confirm checkpoint, dispatch a bounded remediation
+sub-sprint to Deliver IFF (deterministic, validator-checkable):
+0. **Completeness↔quality seal** — the verdict carries **NO `fix_required` and NO `needs_human`** (any
+   quality fault → INELIGIBLE, routes to human-confirm as today); gap entries come **only from
+   coverage/ledger facts** (derived `delivery_status` of signed `covers_req_ids`), **never from
+   Acceptance-authored failure semantics**. [ENF: campaign:_gap_followup_eligible — Phase 2-γ Step 3]
+1. **In-envelope proof** — the remediation stanza MUST carry an **explicit `covered_req_ids[]`** and a
+   **`req_id-envelope check`** MUST prove `covered_req_ids ⊆ (F1 snapshot ∩ milestone covers_req_ids)`;
+   **DISTINCT from `post_gate1_scope_expansion`** (modules/layers only). Any **out-of-envelope id**, or
+   a remediation introducing **behavior not traceable to an in-envelope `req_id`**, **HALTs** for a human.
+2. **Bounded at runtime** — `gap_followup.max_subsprints per milestone`; the gap req_id-set is a strict
+   **PROPER SUBSET of the prior round** (**proper-subset, NOT identical-hash**); **campaign budget not
+   exhausted**; an ABSENT campaign budget gets a **conservative effective-cap**, **not an unbounded default**.
+3. **Fail-closed** — on any bound exceeded, non-shrinking round, or out-of-envelope/ambiguous gap the
+   orchestrator **HALTs and escalates to `needs_human`** — it **never silently stops and never loops**.
+Under `human_in_the_loop`, a completeness `gap_report` routes to `needs_human` (no auto-dispatch);
+**auto-dispatch is permitted only under `human_on_the_loop` or higher**. The quality `fix_required →
+human-confirm → Deliver` path (§3.5) is **unchanged at every autonomy level**.
+§1.7-F **grants NO authority to ship, to widen scope**, to auto-iterate on a quality fault, or to act
+on an uncalibrated authoritative verdict — a §1.7-D-consistent ADD (one more charter-declared
+pre-authorized decision), not a checkpoint override. [ENF: campaign/driver runtime gap-followup gates
++ validator gap_followup bounds — Track 2 Phase 2-γ]
+
 ## §1.8 No self-subtraction
 
 - Adopters MAY NOT subtract from the framework §1.7 forbidden list; an `adoption-state.md` row

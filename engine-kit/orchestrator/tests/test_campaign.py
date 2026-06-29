@@ -1692,5 +1692,686 @@ class TestF3MilestoneOutcomes(unittest.TestCase):
                                      "m2": "acceptance_pass_authoritative"})
 
 
+# --------------------------------------------------------------------------- #
+# Track 2 Phase 2-γ / Constitution §1.7-F — pre-authorized in-envelope completeness
+# remediation (gap-driven follow-up). The gap-followup engine is a DORMANT, fail-closed
+# completeness safety net: it fires ONLY when a requirement ledger is wired, the plan is
+# fresh-signed, and the POST-close gap_report (scope_report.build_gap_report, source-
+# sealed) is non-empty. Because the happy-path inner loop closes every milestone
+# delivered/waived (both EXCLUDED from the gap), the trigger state is constructed directly
+# (a covered milestone with no delivered/waived terminal ⇒ its covers stay in_progress ⇒
+# in the gap) — exactly the condition the safety net guards.
+# --------------------------------------------------------------------------- #
+_GF_CHARTER_ONL = {"autonomy": {"level": "human_on_the_loop"},
+                   "tooling": {"acceptance": {"functional": {"mode": "static"}}}}
+_GF_CHARTER_ITL = {"autonomy": {"level": "human_in_the_loop"},
+                   "tooling": {"acceptance": {"functional": {"mode": "static"}}}}
+
+
+def _ledger(reqs):
+    return {"version": "v1", "requirements": [
+        {"id": r, "statement": f"stmt {r}", "source": {"channel": "prd"},
+         "customer_disposition": "accepted"} for r in reqs]}
+
+
+def _gap_fake_run_unit(script, record=None):
+    """A fake run_unit that ACCEPTS the §1.7-F covered_req_ids kwarg the gap-followup
+    dispatch passes (the pre-Phase-2-γ fakes do not — they are never reached without a
+    ledger). Records each call so a test can assert the in-envelope covered_req_ids and the
+    grown per-milestone sequence."""
+    def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
+                 resume=False, functional_acceptance=None, repo_dir=None,
+                 covered_req_ids=None, gap_followup_spec=None, **_kw):
+        if record is not None:
+            record.append({"subsprint_id": subsprint_id, "milestone_id": milestone_id,
+                           "covered_req_ids": covered_req_ids, "resume": resume,
+                           "gap_followup_spec": gap_followup_spec,
+                           "subsprint_sequence": list(subsprint_sequence or [])})
+        return dict(script[subsprint_id])
+    return run_unit
+
+
+def _gap_campaign(tmp, charter, *, milestones=None, ledger_reqs=("REQ-1",),
+                  run_unit=None, outcomes=None, gap_followup=None, budget=None,
+                  gap_state=None):
+    """Construct a Campaign and SEED it to backlog-exhausted WITH an in-envelope gap: the
+    covered milestone has no delivered/waived terminal, so scope_report keeps its covers
+    in_progress (in the gap). Returns the Campaign, ready for _gap_followup_round (the run()
+    prelude attrs are primed)."""
+    home = os.path.join(tmp, "camp")
+    ledger_path = os.path.join(tmp, "ledger.json")
+    with open(ledger_path, "w", encoding="utf-8") as fh:
+        json.dump(_ledger(ledger_reqs), fh)
+    ms = milestones if milestones is not None else [_covms("m1", ["s1"], ["REQ-1"])]
+    extra = {}
+    if gap_followup is not None:
+        extra["gap_followup"] = gap_followup
+    if budget is not None:
+        extra["budget"] = budget
+    plan = cp.stamp_signoff(_plan(ms, **extra), charter, signed_at="t")
+    c = cp.Campaign(plan, home, run_unit or _gap_fake_run_unit({}), clock=_clock(),
+                    charter=charter, ledger_path=ledger_path)
+    c.state.milestone_index = len(c.milestones)
+    c.state.units = [{"milestone_id": m["id"], "subsprint_id": s, "status": "done",
+                      "final_state": "advance"}
+                     for m in c.milestones for s in (m.get("subsprint_sequence") or [])]
+    c.state.milestone_outcomes = list(outcomes or [])
+    if gap_state is not None:
+        c.state.gap_followup_state = dict(gap_state)
+    c.state.status = cp.STATUS_RUNNING
+    # Prime the run() prelude attrs so _gap_followup_round can be driven directly.
+    c._base_wall = 0.0
+    c._invocation_start = c.clock()
+    c._gap_review_decision = None
+    c._crash_recovery = False
+    return c
+
+
+class TestGapReviewCheckpointPlumbing(unittest.TestCase):
+    """completeness_gap_review is the ONE §1.7-F gate the campaign emits (Mechanism B)."""
+
+    def test_in_campaign_and_known_sets(self):
+        self.assertIn("completeness_gap_review", cp.CAMPAIGN_CHECKPOINTS)
+        self.assertIn("completeness_gap_review", cp.KNOWN_CHECKPOINTS)
+
+    def test_classified_dispatch(self):
+        self.assertEqual(cp.classify_checkpoint("completeness_gap_review"),
+                         cp.RESUME_DISPATCH)
+
+    def test_sets_stay_disjoint(self):
+        sets = [cp.DRIVER_RESUME_CHECKPOINTS, cp.DISPATCH_CHECKPOINTS,
+                cp.CAMPAIGN_CHECKPOINTS, cp.NON_PAUSE_CHECKPOINTS]
+        for i in range(len(sets)):
+            for j in range(i + 1, len(sets)):
+                self.assertEqual(sets[i] & sets[j], frozenset())
+
+    def test_interpret_adjust_scope(self):
+        f = cp.interpret_dispatch
+        self.assertEqual(f("completeness_gap_review", {"choice": "remediate"}),
+                         cp.ACT_GAP_REMEDIATE)
+        self.assertEqual(f("completeness_gap_review", {"choice": "accept_gap"}),
+                         cp.ACT_GAP_ACCEPT)
+        self.assertEqual(f("completeness_gap_review", {"choice": "abort"}), cp.ACT_END)
+        # fail-closed: a bare/unknown choice never auto-remediates.
+        self.assertEqual(f("completeness_gap_review", {"choice": "??"}),
+                         cp.ACT_DELIVER_FOLLOWUP)
+        self.assertEqual(f("completeness_gap_review", {}), cp.ACT_DELIVER_FOLLOWUP)
+
+
+class TestGapFollowupDormant(unittest.TestCase):
+    """No ledger ⇒ the engine is byte-identical to today (the campaign just finishes)."""
+
+    def test_no_ledger_no_gap_followup(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])
+            st = cp.run_campaign(plan, d, _fake_run_unit(
+                {"s1": {"final_state": "done", "spawn_count": 1}}), clock=_clock())
+            self.assertEqual(st.status, cp.STATUS_DONE)
+            self.assertEqual(st.gap_followup_state, {})
+
+    def test_fresh_signed_but_no_gap_finishes(self):
+        # A ledger + fresh-signed plan whose milestone DELIVERED its covers ⇒ no gap.
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(
+                d, _GF_CHARTER_ONL,
+                outcomes=[{"milestone_id": "m1",
+                           "terminal": "acceptance_pass_authoritative"}])
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_DONE)
+
+
+class TestGapFollowupEligibilitySeal(unittest.TestCase):
+    """§1.7-F clause 0 — the completeness↔quality SEAL (gap from facts only)."""
+
+    def test_gap_from_facts_is_eligible(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)
+            eligible, gap, reason = c._gap_followup_eligible(c._build_gap_report())
+            self.assertTrue(eligible)
+            self.assertEqual(reason, "eligible")
+            self.assertEqual([g["req_id"] for g in gap], ["REQ-1"])
+
+    def test_quality_fault_terminal_is_ineligible(self):
+        # A milestone whose covers are in the gap BUT carries a human-waiver terminal is
+        # INELIGIBLE for no-confirm gap-followup (defense-in-depth — it routes to a human).
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(
+                d, _GF_CHARTER_ONL,
+                outcomes=[{"milestone_id": "m1", "terminal": "fix_required_ship"}])
+            # fix_required_ship ⇒ scope_report marks REQ-1 'waived' ⇒ NOT in the gap.
+            # Force the seal's own check by feeding a crafted gap report.
+            rep = {"signoff_status": "signed",
+                   "gap": [{"req_id": "REQ-1", "delivery_status": "in_progress",
+                            "covered_by": "m1"}]}
+            eligible, _gap, reason = c._gap_followup_eligible(rep)
+            self.assertFalse(eligible)
+            self.assertEqual(reason, "quality_fault:m1")
+
+    def test_ambiguous_gap_is_ineligible(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)
+            rep = {"signoff_status": "signed",
+                   "gap": [{"req_id": "REQ-9", "delivery_status": "in_progress",
+                            "covered_by": "ghost"}]}
+            eligible, _gap, reason = c._gap_followup_eligible(rep)
+            self.assertFalse(eligible)
+            self.assertTrue(reason.startswith("ambiguous_gap"))
+
+    def test_not_fresh_signed_has_no_in_envelope_gap(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)
+            eligible, _gap, reason = c._gap_followup_eligible(
+                {"signoff_status": "stale", "gap": []})
+            self.assertFalse(eligible)
+            self.assertEqual(reason, "not_fresh_signed")
+
+
+class TestReqIdEnvelopeCheck(unittest.TestCase):
+    """§1.7-F clause 1 — the deterministic req_id-envelope check (DISTINCT from the
+    module/layer post_gate1_scope_expansion guard)."""
+
+    def test_in_envelope_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)
+            ok, why = c._req_id_envelope_check(c.milestones[0], ["REQ-1"])
+            self.assertTrue(ok)
+            self.assertEqual(why, "in_envelope")
+
+    def test_out_of_envelope_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)
+            ok, why = c._req_id_envelope_check(c.milestones[0], ["REQ-1", "REQ-999"])
+            self.assertFalse(ok)
+            self.assertIn("out_of_envelope", why)
+
+    def test_empty_claim_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)
+            ok, why = c._req_id_envelope_check(c.milestones[0], [])
+            self.assertFalse(ok)
+            self.assertEqual(why, "empty_covered_req_ids")
+
+    def test_unverifiable_snapshot_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)
+            # Tamper the stored snapshot so it no longer verifies against its own hash.
+            c.plan["signoff"]["scope_envelope"]["milestones"][0]["covers_req_ids"] = []
+            ok, why = c._req_id_envelope_check(c.milestones[0], ["REQ-1"])
+            self.assertFalse(ok)
+            self.assertEqual(why, "envelope_unverifiable")
+
+
+class TestGapFollowupBounds(unittest.TestCase):
+    """§1.7-F clause 2 — runtime bounds (per-milestone counter, proper-subset progress,
+    absent-budget effective-cap)."""
+
+    def test_max_subsprints_per_milestone(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL,
+                              gap_followup={"max_subsprints": 2},
+                              gap_state={"rounds_by_milestone": {"m1": 2}})
+            ok, why, _np = c._gap_followup_bounds(c.milestones[0], {"REQ-1"})
+            self.assertFalse(ok)
+            self.assertIn("max_subsprints_exceeded", why)
+
+    def test_proper_subset_progress(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL,
+                              gap_state={"gap_set_history": [["REQ-1", "REQ-2"]]})
+            # A strictly smaller gap ⇒ progress (no_progress resets to 0).
+            ok, _why, npg = c._gap_followup_bounds(c.milestones[0], {"REQ-1"})
+            self.assertTrue(ok)
+            self.assertEqual(npg, 0)
+
+    def test_non_shrinking_round_is_no_progress_bounded(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(
+                d, _GF_CHARTER_ONL,
+                gap_followup={"max_no_progress_rounds": 1},
+                gap_state={"gap_set_history": [["REQ-1"]], "no_progress_rounds": 0})
+            ok, why, _np = c._gap_followup_bounds(c.milestones[0], {"REQ-1"})
+            self.assertFalse(ok)
+            self.assertIn("no_progress_exceeded", why)
+
+    def test_gap_regression_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL,
+                              gap_state={"gap_set_history": [["REQ-1"]]})
+            # A gap that GAINED a req_id (not in the prior set) is an immediate regression.
+            ok, why, _np = c._gap_followup_bounds(c.milestones[0], {"REQ-1", "REQ-2"})
+            self.assertFalse(ok)
+            self.assertIn("gap_regression", why)
+
+    def test_absent_budget_effective_cap(self):
+        # No campaign budget + charter.budget.max_fix_rounds_total=2; spread 2 rounds over
+        # 2 milestones (each below max_subsprints) ⇒ the TOTAL effective-cap fires.
+        with tempfile.TemporaryDirectory() as d:
+            charter = dict(_GF_CHARTER_ONL, budget={"max_fix_rounds_total": 2,
+                                                    "max_wall_clock_minutes": 99})
+            c = _gap_campaign(
+                d, charter,
+                milestones=[_covms("m1", ["s1"], ["REQ-1"]),
+                            _covms("m2", ["s2"], ["REQ-2"])],
+                ledger_reqs=("REQ-1", "REQ-2"),
+                gap_state={"rounds_by_milestone": {"m1": 1, "m2": 1}})
+            self.assertTrue(c._campaign_budget_absent())
+            self.assertEqual(c._gap_effective_cap(), 2)
+            ok, why, _np = c._gap_followup_bounds(c.milestones[0], {"REQ-1", "REQ-2"})
+            self.assertFalse(ok)
+            self.assertIn("effective_cap_exceeded", why)
+
+    def test_present_budget_disables_effective_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL, budget={"max_subsprints": 50},
+                              gap_state={"rounds_by_milestone": {"m1": 1}})
+            self.assertFalse(c._campaign_budget_absent())
+            ok, _why, _np = c._gap_followup_bounds(c.milestones[0], {"REQ-1"})
+            self.assertTrue(ok)
+
+    def test_present_campaign_budget_exhausted_halts(self):
+        # §1.7-F clause 2 "campaign budget not exhausted": a PRESENT budget already at its
+        # cap blocks a further gap-followup round (the dispatch bypasses the inner loop's
+        # between-units check, so the bound is enforced in _gap_followup_bounds).
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL, budget={"max_subsprints": 3})
+            c.state.subsprints_run = 3
+            ok, why, _np = c._gap_followup_bounds(c.milestones[0], {"REQ-1"})
+            self.assertFalse(ok)
+            self.assertIn("campaign_budget_exhausted", why)
+
+
+class TestGapFollowupAutonomy(unittest.TestCase):
+    """§1.7-F autonomy routing: human_on_the_loop+ auto-dispatches; human_in_the_loop
+    routes a completeness gap_report to needs_human (the completeness_gap_review pause)."""
+
+    def test_human_on_the_loop_auto_dispatches_and_closes(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = []
+            ru = _gap_fake_run_unit(
+                {"m1-gapfix-1": {"final_state": "done", "spawn_count": 1}}, record=rec)
+            c = _gap_campaign(d, _GF_CHARTER_ONL, run_unit=ru)
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_CONTINUE)
+            # The remediation carried the in-envelope covered_req_ids + the grown sequence.
+            self.assertEqual(rec[0]["covered_req_ids"], ["REQ-1"])
+            self.assertEqual(rec[0]["subsprint_id"], "m1-gapfix-1")
+            self.assertIn("m1-gapfix-1", rec[0]["subsprint_sequence"])
+            # The milestone terminal was RE-STAMPED delivered + the round counter persisted.
+            self.assertEqual(c._milestone_terminal("m1"),
+                             "acceptance_pass_authoritative")
+            self.assertEqual(c.state.gap_followup_state["rounds_by_milestone"]["m1"], 1)
+            self.assertEqual(c.state.gap_followup_state["remediations"][0]["covered_req_ids"],
+                             ["REQ-1"])
+            # The next round sees no gap (REQ-1 delivered) ⇒ finish.
+            c._gap_review_decision = None
+            c._crash_recovery = False
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_DONE)
+
+    def test_multi_milestone_gap_remediates_all(self):
+        # REGRESSION: a remediation must NOT mutate the signed plan's subsprint_sequence —
+        # doing so flips signoff_status to 'stale', and the NEXT round's build_gap_report
+        # (not fresh-signed ⇒ empty gap) would SILENTLY DROP the rest of the gap. Both
+        # milestones must be remediated and the plan must stay 'signed' throughout.
+        with tempfile.TemporaryDirectory() as d:
+            ru = _gap_fake_run_unit(
+                {"m1-gapfix-1": {"final_state": "done", "spawn_count": 1},
+                 "m2-gapfix-1": {"final_state": "done", "spawn_count": 1}})
+            c = _gap_campaign(
+                d, _GF_CHARTER_ONL,
+                milestones=[_covms("m1", ["s1"], ["REQ-1"]),
+                            _covms("m2", ["s2"], ["REQ-2"])],
+                ledger_reqs=("REQ-1", "REQ-2"), run_unit=ru)
+            outcomes = []
+            for _ in range(5):   # bounded drive of the OUTER loop
+                o = c._gap_followup_round(None)
+                outcomes.append(o)
+                c._gap_review_decision = None
+                c._crash_recovery = False
+                if o != cp.GAP_CONTINUE:
+                    break
+            self.assertEqual(outcomes, [cp.GAP_CONTINUE, cp.GAP_CONTINUE, cp.GAP_DONE])
+            self.assertEqual(c._milestone_terminal("m1"),
+                             "acceptance_pass_authoritative")
+            self.assertEqual(c._milestone_terminal("m2"),
+                             "acceptance_pass_authoritative")
+            # the signed plan was never mutated ⇒ still fresh-signed.
+            self.assertEqual(cp.signoff_status(c.plan, _GF_CHARTER_ONL), "signed")
+            self.assertEqual(c.plan["milestones"][0]["subsprint_sequence"], ["s1"])
+
+    def test_advance_remediation_waives_and_shrinks_gap(self):
+        # An acceptance-off remediation (final_state advance) re-stamps acceptance_off
+        # (waived) ⇒ the milestone STILL leaves the gap (the set strictly shrinks).
+        with tempfile.TemporaryDirectory() as d:
+            ru = _gap_fake_run_unit(
+                {"m1-gapfix-1": {"final_state": "advance", "spawn_count": 1}})
+            c = _gap_campaign(d, _GF_CHARTER_ONL, run_unit=ru)
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_CONTINUE)
+            self.assertEqual(c._milestone_terminal("m1"), "acceptance_off")
+
+    def test_human_in_the_loop_pauses_for_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ITL)
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertEqual(c.state.status, cp.STATUS_PAUSED)
+            self.assertEqual(c.state.pause_reason, "completeness_gap_review")
+
+    def test_human_in_the_loop_remediate_decision_dispatches(self):
+        with tempfile.TemporaryDirectory() as d:
+            ru = _gap_fake_run_unit(
+                {"m1-gapfix-1": {"final_state": "done", "spawn_count": 1}})
+            c = _gap_campaign(d, _GF_CHARTER_ITL, run_unit=ru)
+            c._gap_review_decision = {"choice": "remediate"}
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_CONTINUE)
+            self.assertEqual(c._milestone_terminal("m1"),
+                             "acceptance_pass_authoritative")
+
+    def test_accept_gap_decision_finishes(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ITL)
+            c._gap_review_decision = {"choice": "accept_gap"}
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_DONE)
+
+    def test_abort_decision_ends(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ITL)
+            c._gap_review_decision = {"choice": "abort"}
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_ENDED)
+            self.assertEqual(c.state.status, cp.STATUS_ENDED)
+
+
+class TestGapFollowupFailClosed(unittest.TestCase):
+    """§1.7-F clause 3 — every gate failure HALTs and escalates to needs_human."""
+
+    def test_out_of_envelope_target_halts(self):
+        # The ledger covers REQ-1 but the SIGNED snapshot's covers were tampered to drop it
+        # ⇒ the req_id-envelope check cannot prove containment ⇒ HALT.
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)
+            c.plan["signoff"]["scope_envelope"]["milestones"][0]["covers_req_ids"] = []
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertEqual(c.state.pause_reason, "completeness_gap_review")
+
+    def test_bound_exceeded_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL,
+                              gap_followup={"max_subsprints": 1},
+                              gap_state={"rounds_by_milestone": {"m1": 1}})
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertEqual(c.state.pause_reason, "completeness_gap_review")
+
+    def test_halted_remediation_escalates(self):
+        with tempfile.TemporaryDirectory() as d:
+            ru = _gap_fake_run_unit({"m1-gapfix-1": {
+                "final_state": "halted", "spawn_count": 1,
+                "pause_reason": "gate_hard_fail", "checkpoint_path": "/cp.md"}})
+            c = _gap_campaign(d, _GF_CHARTER_ONL, run_unit=ru)
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertEqual(c.state.pause_reason, "completeness_gap_review")
+            # The round was counted + the halted unit recorded (with its checkpoint).
+            self.assertEqual(c.state.gap_followup_state["rounds_by_milestone"]["m1"], 1)
+            self.assertEqual(c.state.units[-1]["status"], "halted")
+            self.assertEqual(c.state.units[-1]["pause_reason"], "gate_hard_fail")
+
+
+class TestGapFollowupRunIntegration(unittest.TestCase):
+    """The run() OUTER loop: a seeded mid-gap-followup RUNNING state resumes, the engine
+    auto-dispatches the remediation, the gap closes, and the campaign reaches DONE — the
+    whole loop, persisted + schema-valid."""
+
+    def test_outer_loop_drives_to_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            ru = _gap_fake_run_unit(
+                {"m1-gapfix-1": {"final_state": "done", "spawn_count": 1}})
+            c = _gap_campaign(d, _GF_CHARTER_ONL, run_unit=ru)
+            c._save()   # persist the seeded mid-gap-followup RUNNING state
+            st = c.run(resume=True)
+            self.assertEqual(st.status, cp.STATUS_DONE)
+            self.assertEqual(c._milestone_terminal("m1"),
+                             "acceptance_pass_authoritative")
+            with open(os.path.join(d, "camp", "campaign-state.json"),
+                      encoding="utf-8") as fh:
+                persisted = json.load(fh)
+            cp._validate_or_raise(persisted, "campaign-state.schema.json", "state")
+            self.assertEqual(
+                persisted["gap_followup_state"]["rounds_by_milestone"]["m1"], 1)
+
+    def test_human_in_the_loop_pause_then_resume_to_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            ru = _gap_fake_run_unit(
+                {"m1-gapfix-1": {"final_state": "done", "spawn_count": 1}})
+            c = _gap_campaign(d, _GF_CHARTER_ITL, run_unit=ru)
+            c._save()
+            paused = c.run(resume=True)
+            self.assertEqual(paused.status, cp.STATUS_PAUSED)
+            self.assertEqual(paused.pause_reason, "completeness_gap_review")
+            # The paused-at-backlog-end state must itself be schema-valid + reloadable.
+            with open(os.path.join(d, "camp", "campaign-state.json"),
+                      encoding="utf-8") as fh:
+                cp._validate_or_raise(json.load(fh), "campaign-state.schema.json", "s")
+            done = c.run(resume=True,
+                         decision_resolver=lambda r, cpt: {"choice": "remediate"})
+            self.assertEqual(done.status, cp.STATUS_DONE)
+
+
+class TestGapFollowupR2Hardening(unittest.TestCase):
+    """Codex R1 BLOCKING fixes."""
+
+    def test_b1_gap_projection_failure_halts_not_finishes(self):
+        # A wired-ledger gap projection that FAILS must HALT to needs_human (clause 3),
+        # not silently finish the campaign.
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)
+
+            def _boom():
+                raise RuntimeError("ledger projection broke")
+            c._build_gap_report = _boom
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertEqual(c.state.pause_reason, "completeness_gap_review")
+
+    def test_b2_gapfix_dispatch_uses_resume_false(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = []
+            ru = _gap_fake_run_unit(
+                {"m1-gapfix-1": {"final_state": "done", "spawn_count": 1}}, record=rec)
+            c = _gap_campaign(d, _GF_CHARTER_ONL, run_unit=ru)
+            c._gap_followup_round(None)
+            self.assertFalse(rec[0]["resume"])   # never resume=True (no Driver state to resume)
+            self.assertEqual(rec[0]["gap_followup_spec"]["covered_req_ids"], ["REQ-1"])
+
+    def test_b2_completed_round_not_redispatched_on_recompute(self):
+        # Crash-idempotency: a round whose atomic save persisted the re-stamp leaves the
+        # milestone OUT of the recomputed gap → it is never re-dispatched.
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(
+                d, _GF_CHARTER_ONL,
+                outcomes=[{"milestone_id": "m1",
+                           "terminal": "acceptance_pass_authoritative"}],
+                gap_state={"rounds_by_milestone": {"m1": 1},
+                           "gap_set_history": [["REQ-1"]],
+                           "remediations": [{"milestone_id": "m1",
+                                             "subsprint_id": "m1-gapfix-1",
+                                             "covered_req_ids": ["REQ-1"], "round": 1}]})
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_DONE)
+
+    def test_b3_pause_writes_distinct_nonce_checkpoints(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ITL)
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            cpt1 = c.state.pause_checkpoint
+            self.assertTrue(cpt1 and os.path.isfile(cpt1))
+            self.assertIn("completeness_gap_review", os.path.basename(cpt1))
+            self.assertEqual(c.state.gap_followup_state["gap_review_seq"], 1)
+            c._gap_review_decision = None
+            c._crash_recovery = False
+            c._gap_followup_round(None)
+            cpt2 = c.state.pause_checkpoint
+            self.assertNotEqual(os.path.basename(cpt1), os.path.basename(cpt2))
+            self.assertEqual(c.state.gap_followup_state["gap_review_seq"], 2)
+
+    def test_b5_remediation_id_collision_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            # a signed sub-sprint already named m1-gapfix-1 ⇒ round-1's id collides.
+            c = _gap_campaign(d, _GF_CHARTER_ONL,
+                              milestones=[_covms("m1", ["s1", "m1-gapfix-1"], ["REQ-1"])])
+            rid, why = c._safe_remediation_id(c.milestones[0], 1)
+            self.assertIsNone(rid)
+            self.assertEqual(why, "collides_with_signed_subsprint")
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertEqual(c.state.pause_reason, "completeness_gap_review")
+
+    def test_b5_remediation_id_length_overflow_halts(self):
+        with tempfile.TemporaryDirectory() as d:
+            long_mid = "m" + "x" * 126   # 127 chars (legal id); + "-gapfix-1" overflows 128
+            c = _gap_campaign(d, _GF_CHARTER_ONL,
+                              milestones=[_covms(long_mid, ["s1"], ["REQ-1"])])
+            rid, why = c._safe_remediation_id(c.milestones[0], 1)
+            self.assertIsNone(rid)
+            self.assertEqual(why, "id_overflow_or_unsafe")
+
+    def test_n2_empty_gap_state_omitted_from_persisted_state(self):
+        # A campaign that never enters gap-followup persists a byte-identical state.json.
+        st = cp.CampaignState(campaign_id="c1")
+        self.assertNotIn("gap_followup_state", st.to_dict())
+        cp._validate_or_raise(st.to_dict(), "campaign-state.schema.json", "state")
+
+    def test_r2b2_pending_marker_cleared_on_clean_round(self):
+        with tempfile.TemporaryDirectory() as d:
+            ru = _gap_fake_run_unit(
+                {"m1-gapfix-1": {"final_state": "done", "spawn_count": 1}})
+            c = _gap_campaign(d, _GF_CHARTER_ONL, run_unit=ru)
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_CONTINUE)
+            self.assertNotIn("pending_remediation", c.state.gap_followup_state)
+
+    def _valid_marker(self, c, **over):
+        m = {"milestone_id": "m1", "remediation_id": "m1-gapfix-1", "round": 1,
+             "covered_req_ids": ["REQ-1"], "gap_set": ["REQ-1"], "no_progress": 0,
+             "scope_hash": c._live_signed_scope_hash()}
+        m.update(over)
+        c.state.gap_followup_state["pending_remediation"] = m
+        return c
+
+    def test_r2b2_crash_recovery_completes_inflight_once(self):
+        # A persisted pending_remediation (the atomic round-save never landed) is COMPLETED
+        # by re-entering the SAME gapfix with resume=True — recorded ONCE, no double-run.
+        with tempfile.TemporaryDirectory() as d:
+            rec = []
+            ru = _gap_fake_run_unit(
+                {"m1-gapfix-1": {"final_state": "done", "spawn_count": 1}}, record=rec)
+            c = self._valid_marker(_gap_campaign(d, _GF_CHARTER_ONL, run_unit=ru))
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_CONTINUE)
+            self.assertEqual(len(rec), 1)        # dispatched EXACTLY once (no double-run)
+            self.assertTrue(rec[0]["resume"])    # re-entered the in-flight Driver
+            self.assertEqual(c._milestone_terminal("m1"),
+                             "acceptance_pass_authoritative")
+            self.assertNotIn("pending_remediation", c.state.gap_followup_state)
+            self.assertEqual(c.state.gap_followup_state["rounds_by_milestone"]["m1"], 1)
+
+    def test_r2b2_orphan_pending_marker_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(
+                d, _GF_CHARTER_ONL,
+                gap_state={"pending_remediation": {
+                    "milestone_id": "ghost", "remediation_id": "ghost-gapfix-1",
+                    "round": 1, "covered_req_ids": ["REQ-1"], "gap_set": ["REQ-1"],
+                    "no_progress": 0}})
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertNotIn("pending_remediation", c.state.gap_followup_state)
+
+    def test_r2b3_null_checkpoint_boundary_rejected(self):
+        # A bug-written paused-at-end state with completeness_gap_review + NULL checkpoint is
+        # fail-closed at resume ingress, so it can never bind a checkpoint:null decision and
+        # bypass the nonce.
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ITL)
+            c.state.status = cp.STATUS_PAUSED
+            c.state.pause_reason = "completeness_gap_review"
+            c.state.pause_checkpoint = None
+            c._save()
+            cp._validate_or_raise(c.state.to_dict(),    # schema-valid (null checkpoint allowed)
+                                  "campaign-state.schema.json", "state")
+            with self.assertRaises(ValueError):
+                c.run(resume=True)                       # ...but consistency-rejected
+
+    def test_r3b1_pending_completed_even_without_ledger(self):
+        # The pending check runs BEFORE the no-ledger exit, so a marker is never stranded at
+        # STATUS_DONE if the ledger became unreadable on resume (the marker is self-contained).
+        with tempfile.TemporaryDirectory() as d:
+            rec = []
+            ru = _gap_fake_run_unit(
+                {"m1-gapfix-1": {"final_state": "done", "spawn_count": 1}}, record=rec)
+            c = self._valid_marker(_gap_campaign(d, _GF_CHARTER_ONL, run_unit=ru))
+            c.ledger = None                              # ledger unavailable on resume
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_CONTINUE)
+            self.assertEqual(len(rec), 1)
+            self.assertNotIn("pending_remediation", c.state.gap_followup_state)
+
+    def test_r3nb1_malformed_marker_fails_closed(self):
+        # A marker with a non-canonical remediation id (corrupt/tampered state) is refused
+        # before bypassing the gates, rather than dispatching an ambiguous remediation.
+        with tempfile.TemporaryDirectory() as d:
+            c = self._valid_marker(_gap_campaign(d, _GF_CHARTER_ONL),
+                                   remediation_id="WRONG-ID")
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertNotIn("pending_remediation", c.state.gap_followup_state)
+
+    def test_r3nb1_empty_covered_marker_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = self._valid_marker(_gap_campaign(d, _GF_CHARTER_ONL),
+                                   covered_req_ids=[], gap_set=[])
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertNotIn("pending_remediation", c.state.gap_followup_state)
+
+    def test_r4b1_scope_epoch_mismatch_fails_closed(self):
+        # A marker authorized under a DIFFERENT signed scope epoch (plan edited/re-signed
+        # between dispatch and resume) is refused — never auto-runs out-of-epoch work.
+        with tempfile.TemporaryDirectory() as d:
+            c = self._valid_marker(_gap_campaign(d, _GF_CHARTER_ONL),
+                                   scope_hash="0" * 64)   # stale/foreign epoch hash
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertNotIn("pending_remediation", c.state.gap_followup_state)
+
+    def test_r4nb1_empty_marker_fails_closed(self):
+        # A bug-written empty {} marker is PRESENT-but-malformed → fail-closed, not ignored.
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)
+            c.state.gap_followup_state["pending_remediation"] = {}
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertNotIn("pending_remediation", c.state.gap_followup_state)
+
+    def test_r5b1_pending_under_unsigned_plan_fails_closed(self):
+        # A signed_by_human flip after dispatch does NOT change the scope_hash, so the
+        # pending path must independently re-check signoff_status — never complete work
+        # under a no-longer-signed plan.
+        with tempfile.TemporaryDirectory() as d:
+            c = self._valid_marker(_gap_campaign(d, _GF_CHARTER_ONL))
+            c.plan["signoff"]["signed_by_human"] = False    # un-sign WITHOUT a scope change
+            c.plan["signed_by_human"] = False
+            self.assertNotEqual(c._signoff_status(), "signed")
+            self.assertEqual(c._gap_followup_round(None), cp.GAP_PAUSED)
+            self.assertNotIn("pending_remediation", c.state.gap_followup_state)
+
+    def test_r5b2_first_non_shrinking_round_halts_by_default(self):
+        # §1.7-F clause 2/3: a non-shrinking round HALTs on the FIRST occurrence (the default
+        # max_no_progress_rounds is 1 — proper-subset required, not retry-up-to-N).
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL,
+                              gap_state={"gap_set_history": [["REQ-1"]],
+                                         "no_progress_rounds": 0})
+            self.assertEqual(c._gap_followup_cfg()["max_no_progress_rounds"], 1)
+            ok, why, _np = c._gap_followup_bounds(c.milestones[0], {"REQ-1"})  # unchanged gap
+            self.assertFalse(ok)
+            self.assertIn("no_progress_exceeded", why)
+
+
+class TestGapFollowupStateRoundTrip(unittest.TestCase):
+    def test_gap_followup_state_persists_and_reloads(self):
+        gfs = {"rounds_by_milestone": {"m1": 2}, "gap_set_history": [["REQ-1"]],
+               "no_progress_rounds": 1,
+               "remediations": [{"milestone_id": "m1", "subsprint_id": "m1-gapfix-1",
+                                 "covered_req_ids": ["REQ-1"], "round": 1}]}
+        st = cp.CampaignState(campaign_id="c1", gap_followup_state=gfs)
+        back = cp.CampaignState.from_dict(st.to_dict())
+        self.assertEqual(back.gap_followup_state, gfs)
+        cp._validate_or_raise(st.to_dict(), "campaign-state.schema.json", "state")
+
+
 if __name__ == "__main__":
     unittest.main()

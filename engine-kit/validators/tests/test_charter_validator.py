@@ -152,6 +152,208 @@ class AdaptiveInsertBoundTests(unittest.TestCase):
         self.assertIn("adaptive_insert_bound", report.rules_fired)
 
 
+class GapFollowupBoundTests(unittest.TestCase):
+    """Δ-19 / Constitution §1.7-F §A.3 STATIC gap-followup guard — the build-time sibling
+    of campaign.py:_gap_followup_bounds. Mirrors AdaptiveInsertBoundTests: each test asserts
+    pass/fail AND the exact rule, so swapping one evasion shape for another is caught."""
+
+    # --- end-to-end through validate_file + Overrides(campaign_plan_path=...) ---
+    def test_unbounded_gap_followup_fails(self):
+        report = cv.validate_file(
+            _fixture("valid-charter.yaml"),
+            overrides=cv.Overrides(
+                campaign_plan_path=_fixture("invalid-gap-followup-unbounded.yaml")))
+        self.assertFalse(report.ok)
+        self.assertIn("gap_followup_bound", report.rules_fired)
+
+    def test_no_progress_gt_one_fails(self):
+        report = cv.validate_file(
+            _fixture("valid-charter.yaml"),
+            overrides=cv.Overrides(
+                campaign_plan_path=_fixture("invalid-gap-followup-no-progress.yaml")))
+        self.assertFalse(report.ok)
+        self.assertIn("gap_followup_no_progress_pin", report.rules_fired)
+
+    def test_valid_gap_followup_passes(self):
+        report = cv.validate_file(
+            _fixture("valid-charter.yaml"),
+            overrides=cv.Overrides(
+                campaign_plan_path=_fixture("valid-campaign-plan-gap-followup.yaml")))
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertNotIn("gap_followup_bound", report.rules_fired)
+        self.assertNotIn("gap_followup_no_progress_pin", report.rules_fired)
+
+    def test_no_campaign_plan_is_noop(self):
+        # The charter-only production path never touches the new check.
+        report = cv.validate_file(_fixture("valid-charter.yaml"))
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertNotIn("gap_followup_bound", report.rules_fired)
+        self.assertNotIn("gap_followup_no_progress_pin", report.rules_fired)
+
+    # --- direct unit calls on the pure function (mirrors test_p0a_checks_noop_*) ---
+    def test_none_campaign_plan_is_noop(self):
+        report = cv.Report()
+        cv._check_gap_followup_bounds(None, report)
+        self.assertTrue(report.ok)
+        self.assertEqual(report.rules_fired, set())
+
+    def test_absent_block_is_legitimate(self):
+        # No gap_followup block ⇒ the runtime applies conservative engine defaults; the
+        # static guard MUST stay silent (absence is the legitimate non-bypass).
+        report = cv.Report()
+        cv._check_gap_followup_bounds({"schema_version": "1"}, report)
+        self.assertTrue(report.ok)
+        self.assertEqual(report.rules_fired, set())
+
+    def test_missing_max_subsprints_fails(self):
+        report = cv.Report()
+        cv._check_gap_followup_bounds(
+            {"gap_followup": {"max_no_progress_rounds": 1}}, report)
+        self.assertFalse(report.ok)
+        self.assertIn("gap_followup_bound", report.rules_fired)
+
+    def test_missing_no_progress_fails(self):
+        report = cv.Report()
+        cv._check_gap_followup_bounds({"gap_followup": {"max_subsprints": 3}}, report)
+        self.assertFalse(report.ok)
+        self.assertIn("gap_followup_no_progress_pin", report.rules_fired)
+
+    def test_no_progress_two_fails(self):
+        report = cv.Report()
+        cv._check_gap_followup_bounds(
+            {"gap_followup": {"max_subsprints": 3, "max_no_progress_rounds": 2}}, report)
+        self.assertFalse(report.ok)
+        self.assertIn("gap_followup_no_progress_pin", report.rules_fired)
+
+    def test_both_bounds_pinned_one_passes(self):
+        report = cv.Report()
+        cv._check_gap_followup_bounds(
+            {"gap_followup": {"max_subsprints": 3, "max_no_progress_rounds": 1}}, report)
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertEqual(report.rules_fired, set())
+
+    def test_non_dict_gap_followup_is_structural_not_semantic(self):
+        # A non-object gap_followup is the campaign-plan schema's structural rejection; the
+        # semantic guard adds nothing (stays silent rather than double-reporting).
+        report = cv.Report()
+        cv._check_gap_followup_bounds({"gap_followup": [1, 2]}, report)
+        self.assertTrue(report.ok)
+        self.assertEqual(report.rules_fired, set())
+
+    def test_gap_followup_does_not_disable_fix_required(self):
+        # §3.5 / §A.3: the gap-followup guard must NOT widen scope or weaken the quality
+        # fix_required→human-confirm path. That path is still enforced on the charter
+        # regardless of any campaign-plan gap_followup block.
+        charter = cv.load_charter(_fixture("valid-charter.yaml"))
+        charter["tooling"]["acceptance"]["on_fix_required"]["human_confirm_required"] = False
+        report = cv.validate_charter(charter)
+        self.assertFalse(report.ok)
+        self.assertIn("human_confirm_required", report.rules_fired)
+
+    def test_missing_campaign_plan_path_reports_load_error(self):
+        # A supplied-but-unreadable campaign plan fails closed (clear error), it does not
+        # silently skip the gap_followup cross-check.
+        report = cv.validate_file(
+            _fixture("valid-charter.yaml"),
+            overrides=cv.Overrides(
+                campaign_plan_path=_fixture("does-not-exist-campaign-plan.json")))
+        self.assertFalse(report.ok)
+        self.assertIn("campaign_plan_load", report.rules_fired)
+
+    # --- structural layer: validate_campaign_plan runs campaign-plan.schema.json so the
+    #     CLI / Overrides path catches type/shape evasions the pure semantic check cannot ---
+    def _plan(self, **gf):
+        p = {"campaign_id": "c1", "goal": "g",
+             "milestones": [{"id": "m1", "objective": "o"}]}
+        if gf:
+            p["gap_followup"] = gf
+        return p
+
+    def test_validate_campaign_plan_clean(self):
+        report = cv.Report()
+        cv.validate_campaign_plan(self._plan(max_subsprints=3, max_no_progress_rounds=1),
+                                  report)
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertEqual(report.rules_fired, set())
+
+    def test_non_object_gap_followup_is_structural(self):
+        report = cv.Report()
+        plan = self._plan()
+        plan["gap_followup"] = []  # schema: gap_followup.type=object
+        cv.validate_campaign_plan(plan, report)
+        self.assertFalse(report.ok)
+        self.assertIn("campaign_plan_structural", report.rules_fired)
+
+    def test_zero_max_subsprints_is_structural(self):
+        report = cv.Report()
+        cv.validate_campaign_plan(self._plan(max_subsprints=0, max_no_progress_rounds=1),
+                                  report)
+        self.assertFalse(report.ok)
+        self.assertIn("campaign_plan_structural", report.rules_fired)  # schema minimum:1
+
+    def test_bool_no_progress_rejected_by_pin(self):
+        # True == 1 in Python, but the strict-int semantic pin (and the integer schema type)
+        # reject the masquerade.
+        report = cv.Report()
+        cv.validate_campaign_plan(self._plan(max_subsprints=3, max_no_progress_rounds=True),
+                                  report)
+        self.assertFalse(report.ok)
+        self.assertIn("gap_followup_no_progress_pin", report.rules_fired)
+
+    def test_malformed_plan_shape_is_structural(self):
+        report = cv.Report()
+        cv.validate_campaign_plan({"goal": "missing campaign_id and milestones"}, report)
+        self.assertFalse(report.ok)
+        self.assertIn("campaign_plan_structural", report.rules_fired)
+
+    def test_scalar_root_is_structural(self):
+        # A scalar root ("not a plan") must FAIL the schema (is not of type 'object'), not
+        # silently pass because _check_gap_followup_bounds no-ops on a non-dict (R2 false-PASS).
+        report = cv.Report()
+        cv.validate_campaign_plan("not a plan", report)
+        self.assertFalse(report.ok)
+        self.assertIn("campaign_plan_structural", report.rules_fired)
+
+    def test_none_root_is_structural(self):
+        report = cv.Report()
+        cv.validate_campaign_plan(None, report)
+        self.assertFalse(report.ok)
+        self.assertIn("campaign_plan_structural", report.rules_fired)
+
+    def test_scalar_campaign_plan_fixture_fails_via_overrides(self):
+        report = cv.validate_file(
+            _fixture("valid-charter.yaml"),
+            overrides=cv.Overrides(
+                campaign_plan_path=_fixture("invalid-campaign-plan-scalar.yaml")))
+        self.assertFalse(report.ok)
+        self.assertIn("campaign_plan_structural", report.rules_fired)
+
+    def test_blank_campaign_plan_fixture_fails_via_overrides(self):
+        # A comment-only file loads as None (no parse error) — it must be validated (structural
+        # failure), not skipped as "nothing supplied".
+        report = cv.validate_file(
+            _fixture("valid-charter.yaml"),
+            overrides=cv.Overrides(
+                campaign_plan_path=_fixture("empty-campaign-plan.yaml")))
+        self.assertFalse(report.ok)
+        self.assertIn("campaign_plan_structural", report.rules_fired)
+
+    # --- pure-function hardened pin (no schema): bool / float cannot masquerade as 1 ---
+    def test_pure_pin_rejects_bool(self):
+        report = cv.Report()
+        cv._check_gap_followup_bounds(
+            {"gap_followup": {"max_subsprints": 3, "max_no_progress_rounds": True}}, report)
+        self.assertFalse(report.ok)
+        self.assertIn("gap_followup_no_progress_pin", report.rules_fired)
+
+    def test_pure_pin_rejects_float(self):
+        report = cv.Report()
+        cv._check_gap_followup_bounds(
+            {"gap_followup": {"max_subsprints": 3, "max_no_progress_rounds": 1.0}}, report)
+        self.assertFalse(report.ok)
+        self.assertIn("gap_followup_no_progress_pin", report.rules_fired)
+
+
 class SemanticUnitTests(unittest.TestCase):
     """Direct calls to validate_charter to isolate semantic rules from the
     schema's own structural rejections (which also fire for some fixtures)."""

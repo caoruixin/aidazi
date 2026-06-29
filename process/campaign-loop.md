@@ -194,6 +194,46 @@ authors a `campaign-decision.json` with `choice`:
 Constitution §1.7-D: isolation strategies in the signed plan are **pre-authorized**;
 merge still requires an explicit human `merge_now` decision.
 
+### §4.2 Completeness gap-followup gate (Constitution §1.7-F; Track 2 Phase 2-γ)
+
+When the backlog is exhausted, a requirement ledger is wired, and the plan is
+**fresh-signed**, the runner runs a dedicated, fail-closed **gap-followup engine**
+(`campaign._gap_followup_round`, run()'s OUTER loop) over the **completeness
+`gap_report`** — the requirement ids in the human-signed F1 envelope AND signed into a
+milestone's `covers_req_ids` AND **not yet delivered** (computed from coverage/ledger
+FACTS only — `scope_report.build_gap_report` — the §1.7-F clause-0 SOURCE seal, NEVER the
+Acceptance verdict's pass/fail clauses). It is **dormant** without all three preconditions
+(byte-identical to before). A gap is **in-envelope scope completion, never expansion**.
+
+For each eligible round the engine proves, deterministically: clause-0 SEAL (no quality
+fault among the gap milestones); clause-1 **req_id-envelope check** —
+`covered_req_ids ⊆ (authentic F1 snapshot ∩ the milestone's signed covers_req_ids)`,
+DISTINCT from the module/layer `post_gate1_scope_expansion` guard; clause-2 RUNTIME bounds
+— `gap_followup.max_subsprints` per milestone, a strict **proper-subset** progress check
+vs the persisted gap-set history (NOT identical-hash — catches A/B churn), and an
+absent-campaign-budget **effective-cap** (from `charter.budget.max_fix_rounds_total`, never
+unbounded). On ANY failure it **HALTs and escalates to `needs_human`** (clause 3) — never a
+silent stop, never a loop.
+
+Autonomy routing: under `human_on_the_loop` (or higher) the engine **auto-dispatches** a
+bounded remediation sub-sprint (no fresh human-confirm) and re-checks the gap; under
+`human_in_the_loop` a gap_report **routes to `needs_human`** — the campaign pauses at the
+campaign-tier gate **`completeness_gap_review`** (NOT a 10th MANDATORY_CHECKPOINT). Each
+pause writes a checkpoint with a **per-pause nonce** (a monotonic `gap_review_seq` in its
+basename) so the file-based resolver refuses a stale `remediate` file from an earlier round
+(the "ONE bounded round" binding). The human authors a `campaign-decision.json` with the
+**adjust_scope** `choice` + that checkpoint basename (NO `subsprint_id`):
+
+- `remediate` — authorize ONE bounded, in-envelope remediation round (the SAME clause
+  0/1/2 gates as the auto path; grants no ship/scope-widen authority).
+- `accept_gap` — accept the incomplete signed scope and finish (no remediation).
+- `abort` — end the campaign.
+
+The quality `fix_required → human-confirm → Deliver` path (§3.5) is **unchanged at every
+autonomy level**. The generated remediation's in-envelope `covered_req_ids` is recorded as a
+Deliver-readable `gap-followup-stanza.json` sidecar and in `campaign-state.gap_followup_state`
+(the per-milestone counter, gap-set history, and stanza audit).
+
 ## §5 Artifacts
 - `schemas/campaign-plan.schema.json` — the ordered milestone backlog (+ `depends_on`
   / `module_locks` / `milestone_isolation` / per-milestone `isolation_strategy` /

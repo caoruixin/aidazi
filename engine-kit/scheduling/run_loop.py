@@ -199,6 +199,38 @@ def enforce_charter_for_real_run(charter: dict) -> None:
         "BEFORE any adapter is invoked:\n" + "\n".join(_charter_issue_lines(errors)))
 
 
+def campaign_plan_validation_report(plan: dict):
+    """Return the ``charter_validator`` Report for a campaign plan's Δ-19 / §1.7-F §A.3
+    gap_followup bounds (structural schema + the bounded/pin semantic rule), or None when the
+    validator / jsonschema is unavailable. Never raises. Mirrors charter_validation_report."""
+    try:
+        import charter_validator as _cv  # noqa: E402,WPS433
+        report = _cv.Report()
+        _cv.validate_campaign_plan(plan, report)
+        return report
+    except Exception:  # noqa: BLE001 - validator/jsonschema absent ⇒ None
+        return None
+
+
+def enforce_campaign_plan_for_real_run(plan: dict) -> None:
+    """ENFORCE the §1.7-F §A.3 gap_followup bounds/pin for a real (``--allow-real``) campaign
+    run: raise ``CharterValidationError`` on ANY blocking error, BEFORE any adapter is built or
+    invoked, so a plan with an unbounded or non-shrink-tolerating gap_followup (a value that the
+    runtime ``_gap_followup_bounds`` would otherwise RESPECT) never reaches a live model. This is
+    the production enforcement point for the otherwise authoring-time static guard — the only
+    layer that PINS ``max_no_progress_rounds == 1``. A None report (validator / jsonschema
+    unavailable) does NOT block — the campaign runner's own fail-closed plan-schema ingress
+    (campaign.py) remains the defense-in-depth gate. Mirrors enforce_charter_for_real_run; the
+    raised error is a ValueError, so run_campaign_entry maps it to the INVALID exit code."""
+    report = campaign_plan_validation_report(plan)
+    if report is None or _report_ok(report):
+        return
+    errors = list(getattr(report, "errors", []) or [])
+    raise CharterValidationError(
+        "campaign plan has blocking §1.7-F gap_followup error(s); refusing the real run "
+        "BEFORE any adapter is invoked:\n" + "\n".join(_charter_issue_lines(errors)))
+
+
 def advisory_validate_charter(charter: dict) -> Optional[str]:
     """Non-raising one-shot schema SUMMARY string (for visibility without
     enforcement). Real-run ENFORCEMENT lives in ``enforce_charter_for_real_run``
@@ -427,6 +459,25 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
                 return None
             out = {k: decision[k] for k in ("choice", "note") if k in decision}
             return out or None
+        if pause_reason == "completeness_gap_review":
+            # §1.7-F campaign-tier completeness gate (Track 2 Phase 2-γ): bound by
+            # campaign_id + pause_reason + the per-pause checkpoint NONCE basename (matched
+            # above), NOT a unit — so a stale `remediate` file from an earlier round is
+            # refused and cannot replay (Codex R1 B3). The live pause MUST carry a non-null
+            # nonce checkpoint; a null one is a corrupted/bug-written state and is refused
+            # (Codex R2 B3 — never bind a checkpoint:null decision past the nonce).
+            if checkpoint_path is None:
+                sys.stderr.write(
+                    "campaign decision: completeness_gap_review with no live nonce "
+                    "checkpoint — refusing (fail-closed)\n")
+                return None
+            if decision.get("subsprint_id") is not None:
+                sys.stderr.write(
+                    "campaign decision: completeness_gap_review must not carry "
+                    "subsprint_id — refusing (fail-closed)\n")
+                return None
+            out = {k: decision[k] for k in ("choice", "note") if k in decision}
+            return out or None
         if checkpoint_path is not None:
             # A checkpoint-bearing pause is ALWAYS on a unit: its milestone/sub-sprint
             # identity MUST be resolvable from campaign-state.json AND match. A missed
@@ -513,7 +564,9 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     resume integrity (no re-dispatch / no double-accounted Acceptance) are the
     campaign runner's guarantees (campaign.py); this only wires + reports them."""
     import campaign as _cp  # lazy (campaign imports run_loop)
-    campaign_id = (plan or {}).get("campaign_id")
+    # A truthy non-dict plan root (list / scalar) has no .get — guard so a malformed plan
+    # reaches the fail-closed validation/INVALID path instead of crashing here (Codex Step-4 R3).
+    campaign_id = plan.get("campaign_id") if isinstance(plan, dict) else None
     home = campaign_home_for(campaign_id or "unidentified", campaign_run_dir,
                              base=repo_dir)
     units_dir = os.path.join(home, "units")
@@ -533,6 +586,13 @@ def run_campaign_entry(plan: dict, charter: dict, *,
 
     base = {"campaign_id": campaign_id, "campaign_home": home, "units_dir": units_dir}
     try:
+        # Δ-19 / §1.7-F §A.3: fail-closed gap_followup bounds/pin preflight for a REAL run,
+        # BEFORE any adapter/model is built (the static guard's production enforcement point;
+        # raises CharterValidationError → the except-ValueError below maps it to INVALID).
+        # Mock/test runs (adapters injected, allow_real False) rely on the campaign runner's
+        # own fail-closed plan-schema ingress.
+        if allow_real:
+            enforce_campaign_plan_for_real_run(plan)
         run_unit = _cp.make_run_unit(charter, units_dir, campaign_id,
                                      clock=clock, plan=plan,
                                      ledger_path=ledger_path, **run_loop_kwargs)
@@ -642,6 +702,18 @@ def _campaign_resume_hint(result: dict) -> str:
         return ("  -> author a campaign-decision.json with "
                 f'"choice": "merge_now"|"open_pr"|"keep_branch"|"abort" '
                 f'and milestone_id, then re-run with --resume --decision <file>')
+    if reason == "completeness_gap_review":
+        # §1.7-F: the campaign-tier completeness gate. The adjust_scope decision binds via
+        # campaign_id + pause_reason + the per-pause checkpoint NONCE basename (so a stale
+        # remediate file cannot replay across rounds). remediate authorizes ONE bounded,
+        # in-envelope round (same deterministic gates as the auto path; no ship/widen authority).
+        cpt = result.get("pause_checkpoint")
+        base = os.path.basename(cpt) if cpt else None
+        return ('  -> §1.7-F completeness gap (signed-but-undelivered scope). Author a '
+                'campaign-decision.json with "choice": "remediate"|"accept_gap"|"abort", '
+                f'"campaign_id": {result.get("campaign_id")!r}, '
+                f'"pause_reason": "completeness_gap_review", "checkpoint": {base!r} '
+                "(NO subsprint_id), then re-run with --resume --decision <file>")
     cpt = result.get("pause_checkpoint")
     base = os.path.basename(cpt) if cpt else None
     ident = (f'"campaign_id": {result.get("campaign_id")!r}, '

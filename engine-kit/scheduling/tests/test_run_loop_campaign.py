@@ -765,5 +765,282 @@ class TestSamplePlanCoversReqIds(unittest.TestCase):
         self.assertEqual(len(covers), len(set(covers)))
 
 
+class TestGapFollowupStanzaSidecar(unittest.TestCase):
+    """Track 2 Phase 2-γ / §1.7-F clause 1 — the production run_unit writes the generated
+    remediation's in-envelope covered_req_ids as a Deliver-readable sidecar (so Deliver
+    addresses exactly the in-envelope gap), and ONLY for a gap-followup dispatch."""
+
+    def _fake_run_loop(self, calls):
+        def fake(charter, *, run_dir, loop_id, subsprint_id, clock, resume,
+                 repo_dir=None, **kw):
+            calls.append({"subsprint_id": subsprint_id, "loop_mode": kw.get("loop_mode")})
+            return {"final_state": "done", "spawn_count": 1}
+        return fake
+
+    def test_sidecar_written_for_remediation_dispatch(self):
+        with tempfile.TemporaryDirectory() as d:
+            units = os.path.join(d, "units")
+            calls = []
+            ru = cp.make_run_unit({}, units, "camp", clock=_clock(),
+                                  run_loop_fn=self._fake_run_loop(calls))
+            ru("m1-gapfix-1", milestone_id="m1",
+               subsprint_sequence=["s1", "m1-gapfix-1"], covered_req_ids=["REQ-1"])
+            loop_id = _expected_loop_id("camp", "m1", "m1-gapfix-1")
+            sidecar = os.path.join(units, loop_id, "gap-followup-stanza.json")
+            self.assertTrue(os.path.isfile(sidecar))
+            with open(sidecar, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.assertEqual(data["covered_req_ids"], ["REQ-1"])
+            self.assertEqual(data["sprint_id"], "m1-gapfix-1")
+            self.assertEqual(data["milestone_id"], "m1")
+            # the derived dispatch is PINNED delivery_only (per-milestone Acceptance anchor).
+            self.assertEqual(calls[0]["loop_mode"], "delivery_only")
+
+    def test_no_sidecar_for_normal_dispatch(self):
+        with tempfile.TemporaryDirectory() as d:
+            units = os.path.join(d, "units")
+            ru = cp.make_run_unit({}, units, "camp", clock=_clock(),
+                                  run_loop_fn=self._fake_run_loop([]))
+            ru("s1", milestone_id="m1", subsprint_sequence=["s1"])
+            loop_id = _expected_loop_id("camp", "m1", "s1")
+            self.assertFalse(os.path.isfile(
+                os.path.join(units, loop_id, "gap-followup-stanza.json")))
+
+    def test_b4_gapfix_compact_dev_prompt_written_and_valid(self):
+        # Codex R1 B4: the in-envelope work contract is BOUND into the Driver-resolved
+        # compact Dev prompt (not just an audited sidecar), and it passes the Driver's
+        # compact-text content gate so a LIVE run does not halt on a missing spec.
+        import driver as _drv
+        with tempfile.TemporaryDirectory() as d:
+            units = os.path.join(d, "units")
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            spec = {"covered_req_ids": ["REQ-1"], "objective": "complete REQ-1",
+                    "scope_in": ["REQ-1: do the thing"],
+                    "exit_criteria": ["REQ-1 delivered"]}
+            ru = cp.make_run_unit({}, units, "camp", clock=_clock(),
+                                  run_loop_fn=self._fake_run_loop([]))
+            # repo_dir arrives per-dispatch (the campaign passes _milestone_work_dir()).
+            ru("m1-gapfix-1", milestone_id="m1",
+               subsprint_sequence=["s1", "m1-gapfix-1"],
+               covered_req_ids=["REQ-1"], gap_followup_spec=spec, repo_dir=repo)
+            prompt = os.path.join(repo, "compact", "m1-gapfix-1-dev-prompt.md")
+            self.assertTrue(os.path.isfile(prompt))
+            text = open(prompt, encoding="utf-8").read()
+            self.assertIn("REQ-1", text)
+            self.assertIn("§1.7-F", text)
+            fm, body = _drv.Driver._split_front_matter(text)
+            self.assertEqual(_drv.Driver._validate_compact_text(fm, body), [])
+
+
+class TestGapReviewDecisionResolver(unittest.TestCase):
+    """Codex R1 B3: the per-pause checkpoint NONCE binds the adjust_scope decision so a
+    stale remediate file cannot replay across gap-followup rounds."""
+
+    def _seed(self, d, home, live_basename):
+        os.makedirs(os.path.join(home, "docs", "checkpoints"), exist_ok=True)
+        cpt_path = os.path.join(home, "docs", "checkpoints", live_basename)
+        with open(cpt_path, "w", encoding="utf-8") as fh:
+            fh.write("checkpoint")
+        state = {"campaign_id": "camp", "status": "paused",
+                 "pause_reason": "completeness_gap_review", "pause_checkpoint": cpt_path,
+                 "cursor": {"milestone_index": 1, "subsprint_index": 0},
+                 "spent": {"subsprints_run": 0, "total_spawns": 0,
+                           "wall_clock_minutes": 0},
+                 "units": [{"milestone_id": "m1", "subsprint_id": "s1", "status": "done"}]}
+        with open(os.path.join(home, "campaign-state.json"), "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+        return cpt_path
+
+    def _decision(self, d, **fields):
+        path = os.path.join(d, "dec.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"campaign_id": "camp",
+                       "pause_reason": "completeness_gap_review", **fields}, fh)
+        return path
+
+    def test_matching_nonce_resolves(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            os.makedirs(home)
+            cpt = "20260101-000000__completeness_gap_review__r1.md"
+            cpt_path = self._seed(d, home, cpt)
+            dec = self._decision(d, checkpoint=cpt, choice="remediate")
+            resolver = rl.make_campaign_decision_resolver("camp", dec, home)
+            self.assertEqual(resolver("completeness_gap_review", cpt_path),
+                             {"choice": "remediate"})
+
+    def test_stale_nonce_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            os.makedirs(home)
+            live = "20260101-000000__completeness_gap_review__r2.md"
+            cpt_path = self._seed(d, home, live)
+            # the decision was authored for r1 (an earlier round) → refused.
+            dec = self._decision(
+                d, checkpoint="20260101-000000__completeness_gap_review__r1.md",
+                choice="remediate")
+            resolver = rl.make_campaign_decision_resolver("camp", dec, home)
+            self.assertIsNone(resolver("completeness_gap_review", cpt_path))
+
+    def test_subsprint_id_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            os.makedirs(home)
+            cpt = "20260101-000000__completeness_gap_review__r1.md"
+            cpt_path = self._seed(d, home, cpt)
+            dec = self._decision(d, checkpoint=cpt, choice="remediate", subsprint_id="x")
+            resolver = rl.make_campaign_decision_resolver("camp", dec, home)
+            self.assertIsNone(resolver("completeness_gap_review", cpt_path))
+
+    def test_null_live_checkpoint_refused(self):
+        # Codex R2 B3: a (bug-written) live pause with no nonce checkpoint is refused even
+        # when the decision carries checkpoint:null — the nonce can't be bypassed.
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            os.makedirs(home)
+            self._seed(d, home, "20260101-000000__completeness_gap_review__r1.md")
+            dec = self._decision(d, checkpoint=None, choice="remediate")
+            resolver = rl.make_campaign_decision_resolver("camp", dec, home)
+            self.assertIsNone(resolver("completeness_gap_review", None))
+
+
+class TestRunUnitResumeFallback(unittest.TestCase):
+    """Codex R2 B2 / R3 B2: resume=True is downgraded to a FRESH run ONLY when the Driver
+    wrote no state.json (a crash before its first save) — a PRECISE pre-check, not a broad
+    FileNotFoundError catch, so a FNF from inside a resumed Driver still propagates."""
+
+    def _record_fake(self, calls):
+        def fake(charter, *, run_dir, loop_id, subsprint_id, clock, resume,
+                 repo_dir=None, **kw):
+            calls.append(resume)
+            return {"final_state": "done", "spawn_count": 1}
+        return fake
+
+    def test_resume_downgraded_to_fresh_when_no_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            units = os.path.join(d, "units")
+            calls = []
+            ru = cp.make_run_unit({}, units, "camp", clock=_clock(),
+                                  run_loop_fn=self._record_fake(calls))
+            ru("m1-gapfix-1", milestone_id="m1",
+               subsprint_sequence=["s1", "m1-gapfix-1"], resume=True,
+               covered_req_ids=["REQ-1"])
+            self.assertEqual(calls, [False])   # gap-followup + no state.json → fresh
+
+    def test_resume_preserved_when_state_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            units = os.path.join(d, "units")
+            loop_id = _expected_loop_id("camp", "m1", "m1-gapfix-1")
+            orch = os.path.join(units, loop_id, ".orchestrator")
+            os.makedirs(orch)
+            with open(os.path.join(orch, "state.json"), "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            calls = []
+            ru = cp.make_run_unit({}, units, "camp", clock=_clock(),
+                                  run_loop_fn=self._record_fake(calls))
+            ru("m1-gapfix-1", milestone_id="m1",
+               subsprint_sequence=["s1", "m1-gapfix-1"], resume=True,
+               covered_req_ids=["REQ-1"])
+            self.assertEqual(calls, [True])    # state exists → resume preserved
+
+    def test_inner_loop_resume_unaffected_by_the_gapfix_probe(self):
+        # A NON-gap-followup resume (no covered_req_ids) always propagates resume=True —
+        # the probe is scoped to gap-followup dispatches, so inner-loop semantics are intact.
+        with tempfile.TemporaryDirectory() as d:
+            units = os.path.join(d, "units")
+            calls = []
+            ru = cp.make_run_unit({}, units, "camp", clock=_clock(),
+                                  run_loop_fn=self._record_fake(calls))
+            ru("s1", milestone_id="m1", subsprint_sequence=["s1"], resume=True)
+            self.assertEqual(calls, [True])
+
+    def test_fnf_inside_resumed_driver_propagates(self):
+        # With state.json present, a FileNotFoundError from INSIDE the Driver (e.g. missing
+        # schema) is a real error → propagate fail-closed, never silently re-run fresh.
+        with tempfile.TemporaryDirectory() as d:
+            units = os.path.join(d, "units")
+            loop_id = _expected_loop_id("camp", "m1", "m1-gapfix-1")
+            orch = os.path.join(units, loop_id, ".orchestrator")
+            os.makedirs(orch)
+            with open(os.path.join(orch, "state.json"), "w", encoding="utf-8") as fh:
+                fh.write("{}")
+
+            def fake(charter, *, run_dir, loop_id, subsprint_id, clock, resume,
+                     repo_dir=None, **kw):
+                raise FileNotFoundError("missing schema discovery")
+            ru = cp.make_run_unit({}, units, "camp", clock=_clock(), run_loop_fn=fake)
+            with self.assertRaises(FileNotFoundError):
+                ru("m1-gapfix-1", milestone_id="m1",
+                   subsprint_sequence=["s1", "m1-gapfix-1"], resume=True,
+                   covered_req_ids=["REQ-1"])
+
+
+class GapFollowupRealRunPreflight(unittest.TestCase):
+    """Δ-19 / §1.7-F §A.3: the static gap_followup bounds/pin guard MUST actually fire for a
+    REAL campaign run (Codex Step-4 R1) — the runtime _gap_followup_bounds RESPECTS a configured
+    max_no_progress_rounds, so the pin is enforced only by this fail-closed preflight."""
+
+    def _good(self):
+        p = _plan("c1", [{"id": "m1", "objective": "o"}])
+        p["gap_followup"] = {"max_subsprints": 3, "max_no_progress_rounds": 1}
+        return p
+
+    def _bad_pin(self):
+        p = _plan("c1", [{"id": "m1", "objective": "o"}])
+        p["gap_followup"] = {"max_subsprints": 3, "max_no_progress_rounds": 2}
+        return p
+
+    def _bad_unbounded(self):
+        p = _plan("c1", [{"id": "m1", "objective": "o"}])
+        p["gap_followup"] = {"max_no_progress_rounds": 1}  # missing max_subsprints
+        return p
+
+    def test_validation_report_flags_bad_pin(self):
+        report = rl.campaign_plan_validation_report(self._bad_pin())
+        self.assertIsNotNone(report)
+        self.assertFalse(report.ok)
+        self.assertIn("gap_followup_no_progress_pin", report.rules_fired)
+
+    def test_validation_report_clean_for_good_plan(self):
+        report = rl.campaign_plan_validation_report(self._good())
+        self.assertIsNotNone(report)
+        self.assertTrue(report.ok, msg=report.render())
+
+    def test_enforce_raises_on_bad_plan_and_passes_good(self):
+        with self.assertRaises(rl.CharterValidationError):
+            rl.enforce_campaign_plan_for_real_run(self._bad_pin())
+        with self.assertRaises(rl.CharterValidationError):
+            rl.enforce_campaign_plan_for_real_run(self._bad_unbounded())
+        rl.enforce_campaign_plan_for_real_run(self._good())  # no raise
+
+    def test_real_run_rejects_bad_gap_followup_before_any_adapter(self):
+        # allow_real=True + a bad plan ⇒ the preflight raises BEFORE make_run_unit, so the run
+        # fails closed (INVALID) without ever building a real adapter / billing a model.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            r = rl.run_campaign_entry(
+                self._bad_pin(), charter, clock=_clock(),
+                campaign_run_dir=os.path.join(d, "h"), allow_real=True)
+            self.assertEqual(r["status"], "invalid")
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
+            self.assertIn("gap_followup", r.get("error", ""))
+
+    def test_mock_run_does_not_apply_real_run_preflight(self):
+        # campaign_plan_validation_report is pure and independent of allow_real — it flags the bad
+        # pin regardless; the run_campaign_entry preflight is what is allow_real-gated.
+        self.assertFalse(rl.campaign_plan_validation_report(self._bad_pin()).ok)
+
+    def test_non_dict_plan_root_reaches_invalid_not_crash(self):
+        # A truthy non-dict plan root (a list) must reach the fail-closed INVALID result, not
+        # AttributeError on `.get` before the preflight (Codex Step-4 R3 nit).
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            r = rl.run_campaign_entry(
+                [{"id": "m1"}], charter, clock=_clock(),
+                campaign_run_dir=os.path.join(d, "h"), allow_real=True)
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
+
+
 if __name__ == "__main__":
     unittest.main()

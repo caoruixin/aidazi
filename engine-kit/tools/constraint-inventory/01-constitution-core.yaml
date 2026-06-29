@@ -151,6 +151,41 @@
   roles: [all]
   condition: doc_references_either_loop
   current_enforcement: none-judgment
+- id: con-1.7f-completeness-quality-seal
+  anchor: 'governance/constitution.md §1.7-F'
+  statement: 'Acceptance MAY emit a completeness gap_report (req_ids in the human-signed F1 envelope AND signed into the milestone covers_req_ids AND not yet delivered; in-envelope scope completion, never scope expansion); no-confirm gap-followup is permitted ONLY when the Acceptance verdict carries NO fix_required and NO needs_human (any quality fault is INELIGIBLE and routes to human-confirm as today), and entries are generated only from coverage/ledger facts, never from Acceptance-authored failure semantics.'
+  roles: [acceptance, deliver, control-plane]
+  condition: gap_followup_eligibility
+  current_enforcement: 'campaign:_gap_followup_eligible'
+  notes: 'Phase 2-γ §1.7-F clause 0 + definition. Doctrine landed Step 1; runtime seal wired Step 3 — gap entries come ONLY from scope_report.build_gap_report (the source seal) and a quality-fault/human-waiver terminal among the gap milestones is INELIGIBLE (fail-closed to needs_human).'
+- id: con-1.7f-in-envelope-proof
+  anchor: 'governance/constitution.md §1.7-F'
+  statement: 'A generated remediation sub-sprint MUST carry an explicit covered_req_ids[] field and a deterministic req_id-envelope check MUST prove covered_req_ids is a subset of (F1 signed snapshot intersect the milestone signed covers_req_ids); this check is DISTINCT from post_gate1_scope_expansion (modules/layers only); any out-of-envelope covered_req_id or untraceable behavior HALTs for a human.'
+  roles: [deliver, control-plane]
+  condition: gap_followup_dispatch
+  current_enforcement: 'campaign:_req_id_envelope_check'
+  notes: 'Phase 2-γ §1.7-F clause 1. Runtime check wired Step 3 — proves covered_req_ids ⊆ (authentic F1 snapshot ∩ the milestone signed covers); DISTINCT from driver:_scope_expansion_guard (modules/layers). RUNTIME-ONLY: the campaign-plan gap_followup block carries no req_ids, so clause 1 has NO static counterpart; the Step 4 static guard (validator:_check_gap_followup_bounds) covers the clause-2 bounds — see con-1.7f-bounded-runtime.'
+- id: con-1.7f-bounded-runtime
+  anchor: 'governance/constitution.md §1.7-F'
+  statement: 'Gap-followup MUST be runtime-bounded: gap_followup.max_subsprints per milestone (persisted counter); the remaining gap req_id-set MUST be a strict PROPER SUBSET of the prior round (persisted gap-set history; proper-subset, NOT identical-hash); campaign budget not exhausted; an ABSENT campaign-budget dimension MUST receive a conservative effective-cap, never an unbounded default.'
+  roles: [control-plane, deliver]
+  condition: gap_followup_dispatch
+  current_enforcement: 'campaign:_gap_followup_bounds'
+  notes: 'Phase 2-γ §1.7-F clause 2. Runtime bounds + effective-cap wired Step 3 (per-milestone counter, proper-subset progress vs gap_set_history, absent-budget effective-cap from charter.budget.max_fix_rounds_total); static charter_validator guard wired Step 4 — validator:_check_gap_followup_bounds rejects an unbounded/missing-bound gap_followup and PINS max_no_progress_rounds==1 (a value > 1 tolerates non-progress = §1.7-D evasion), completing the §A.3 two-layer enforcement.'
+- id: con-1.7f-fail-closed-escalation
+  anchor: 'governance/constitution.md §1.7-F'
+  statement: 'On any bound exceeded, any non-shrinking (non-proper-subset) round, or any out-of-envelope or ambiguous gap, the orchestrator MUST HALT and escalate to needs_human — never silently stop, never loop.'
+  roles: [control-plane]
+  condition: gap_followup_dispatch
+  current_enforcement: 'campaign:_gap_followup_round'
+  notes: 'Phase 2-γ §1.7-F clause 3. Runtime fail-closed escalation wired Step 3 — every clause-0/1/2 failure HALTs and escalates to needs_human (the completeness_gap_review pause); a halted remediation also escalates; never silently stops, never loops (the proper-subset + per-milestone counter guarantee termination).'
+- id: con-1.7f-autonomy-gated-routing
+  anchor: 'governance/constitution.md §1.7-F'
+  statement: 'Under autonomy.level human_in_the_loop a completeness gap_report routes to needs_human (no auto-dispatch); auto-dispatch is permitted only under human_on_the_loop or higher; the quality fix_required to human-confirm to Deliver path (§3.5) is unchanged at every autonomy level; §1.7-F grants NO authority to ship, to widen scope, to auto-iterate on a quality fault, or to act on an uncalibrated authoritative verdict.'
+  roles: [control-plane, customer, acceptance, deliver]
+  condition: gap_report_routing
+  current_enforcement: 'campaign:_gap_followup_round'
+  notes: 'Phase 2-γ §1.7-F autonomy routing + no-new-authority. Runtime routing wired Step 3 in campaign:_gap_followup_round — human_in_the_loop routes a completeness gap_report to needs_human (the completeness_gap_review pause); auto-dispatch only under _AUTO_GAP_DISPATCH_LEVELS (human_on_the_loop+); grants no ship/scope-widen authority (the req_id-envelope check is in-envelope-only).'
 - id: con-1.8-may-not-subtract-forbidden-list
   anchor: 'governance/constitution.md §1.8'
   statement: 'Adopters MAY NOT subtract from the framework §1.7 forbidden list; a row in adoption-state.md targeting §1.7 MUST NOT carry status:divergent (such divergence is a framework breach, not a project override).'

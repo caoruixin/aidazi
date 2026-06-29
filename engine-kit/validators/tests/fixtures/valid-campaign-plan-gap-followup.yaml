@@ -1,0 +1,13 @@
+# VALID campaign plan with a properly-bounded gap_followup (both bounds explicit,
+# max_no_progress_rounds pinned to 1). Δ-19 / Constitution §1.7-F §A.3 static guard.
+# A full structurally-valid campaign plan: charter_validator now schema-validates the supplied
+# plan (campaign-plan.schema.json) before the semantic check. JSON is a YAML subset, so a real
+# campaign-plan.json parses the same way.
+campaign_id: c1
+goal: ship the backlog
+milestones:
+  - id: m1
+    objective: first milestone
+gap_followup:
+  max_subsprints: 3
+  max_no_progress_rounds: 1

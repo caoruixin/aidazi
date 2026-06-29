@@ -318,11 +318,12 @@ class KernelCoverageTests(_RepoBuilderMixin):
         return self._make_repo(inv_files=inv_files, extra_files=extra)
 
     def test_real_kernel_coverage_is_100pct(self):
-        # The real constitution-core draft carries all 65 constitution rows.
+        # The real constitution-core draft carries all 70 constitution rows
+        # (65 base + 5 new §1.7-F gap-followup rows, Track 2 Phase 2-γ).
         result = ke.check_kernel_coverage()
         self.assertTrue(result["ok"], msg=str(result.get("errors")))
         self.assertEqual(result["stats"]["coverage_pct"], 100.0)
-        self.assertEqual(result["stats"]["total"], 65)
+        self.assertEqual(result["stats"]["total"], 70)
 
     def test_complete_map_passes(self):
         root = self._cov_repo(

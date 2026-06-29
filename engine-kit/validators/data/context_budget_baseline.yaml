@@ -3,24 +3,24 @@ bytes_per_token_est: 4
 drift_warn_fraction: 0.1
 entries:
 - by_purpose:
-    governance: 59533
-  est_tokens: 14883
+    governance: 62277
+  est_tokens: 15569
   files:
     governance/authoring-kernel.md: 12328
-    governance/constitution-core.md: 22611
+    governance/constitution-core.md: 25355
     governance/context_briefing.md: 24594
   key: governance-floor
   role: null
   task_kind: null
-  total_bytes: 59533
+  total_bytes: 62277
 - by_purpose:
     briefing: 30900
-    governance: 59533
+    governance: 62277
     role_card: 11767
-  est_tokens: 25550
+  est_tokens: 26236
   files:
     governance/authoring-kernel.md: 12328
-    governance/constitution-core.md: 22611
+    governance/constitution-core.md: 25355
     governance/context_briefing.md: 24594
     process/agent-creation-prerequisites.md: 8739
     process/agent-design-elicitation.md: 8743
@@ -31,17 +31,17 @@ entries:
   key: research
   role: research
   task_kind: null
-  total_bytes: 102200
+  total_bytes: 104944
 - by_purpose:
-    briefing: 89697
-    governance: 59533
+    briefing: 90412
+    governance: 62277
     role_card: 18787
-  est_tokens: 42004
+  est_tokens: 42869
   files:
     governance/authoring-kernel.md: 12328
-    governance/constitution-core.md: 22611
+    governance/constitution-core.md: 25355
     governance/context_briefing.md: 24594
-    process/artifact-taxonomy.md: 11953
+    process/artifact-taxonomy.md: 12668
     process/common-detours-and-warnings-typeA.md: 9370
     process/milestone-framework.md: 9672
     process/post-deployment-iteration.md: 13623
@@ -55,30 +55,30 @@ entries:
   key: deliver
   role: deliver
   task_kind: null
-  total_bytes: 168017
+  total_bytes: 171476
 - by_purpose:
     briefing: 8923
-    governance: 59533
+    governance: 62277
     role_card: 18787
-  est_tokens: 21810
+  est_tokens: 22496
   files:
     governance/authoring-kernel.md: 12328
-    governance/constitution-core.md: 22611
+    governance/constitution-core.md: 25355
     governance/context_briefing.md: 24594
     role-cards/deliver-agent.md: 18787
     templates/deliver-close-taxonomy.md: 8923
   key: deliver:close
   role: deliver
   task_kind: close
-  total_bytes: 87243
+  total_bytes: 89987
 - by_purpose:
     briefing: 22004
-    governance: 59533
+    governance: 62277
     role_card: 11338
-  est_tokens: 23218
+  est_tokens: 23904
   files:
     governance/authoring-kernel.md: 12328
-    governance/constitution-core.md: 22611
+    governance/constitution-core.md: 25355
     governance/context_briefing.md: 24594
     process/context-passing-efficiency.md: 8864
     process/prompt-artifact-rules.md: 13140
@@ -86,15 +86,15 @@ entries:
   key: dev
   role: dev
   task_kind: null
-  total_bytes: 92875
+  total_bytes: 95619
 - by_purpose:
     briefing: 9548
-    governance: 59533
+    governance: 62277
     role_card: 13333
-  est_tokens: 20603
+  est_tokens: 21289
   files:
     governance/authoring-kernel.md: 12328
-    governance/constitution-core.md: 22611
+    governance/constitution-core.md: 25355
     governance/context_briefing.md: 24594
     role-cards/code-reviewer-agent.md: 13333
     schemas/compact/review-verdict.compact.schema.json: 2535
@@ -102,22 +102,22 @@ entries:
   key: review
   role: review
   task_kind: null
-  total_bytes: 82414
+  total_bytes: 85158
 - by_purpose:
-    briefing: 11096
-    governance: 59533
+    briefing: 11160
+    governance: 62277
     role_card: 19544
-  est_tokens: 22543
+  est_tokens: 23245
   files:
     governance/authoring-kernel.md: 12328
-    governance/constitution-core.md: 22611
+    governance/constitution-core.md: 25355
     governance/context_briefing.md: 24594
     role-cards/acceptance-agent.md: 19544
-    schemas/compact/acceptance-verdict.compact.schema.json: 5579
+    schemas/compact/acceptance-verdict.compact.schema.json: 5643
     templates/compact-acceptance-prompt.md: 5517
   key: acceptance
   role: acceptance
   task_kind: null
-  total_bytes: 90173
+  total_bytes: 92981
 generated_from: load_sizer framework-static cold-start sizing (WP-9)
 version: 1

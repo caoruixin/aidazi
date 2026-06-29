@@ -27,6 +27,54 @@
       }
     },
     "pending_milestone_advance": {"type": "boolean", "default": false, "description": "Internal: the current milestone is DONE but the cursor has NOT advanced yet — waiting at milestone_merge."},
+    "gap_followup_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Track 2 Phase 2-γ / Constitution §1.7-F clause 2-3. Persisted RUNTIME state for the pre-authorized in-envelope completeness-remediation auto-route — the basis of the runtime bounds the static charter validator cannot enforce. Additive; absent ⇒ no gap-followup has run (byte-identical to today). The §1.7-F engine (campaign:_gap_followup_round) is DORMANT unless a requirement ledger is wired AND the plan is fresh-signed AND the post-close gap_report (scope_report.build_gap_report, source-sealed) is non-empty.",
+      "properties": {
+        "rounds_by_milestone": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0},
+          "description": "Per-milestone remediation-round counter (§1.7-F clause 2: gap_followup.max_subsprints per milestone). Keyed by milestone_id; the count of gap-followup sub-sprints auto-dispatched for that milestone. Fail-closed escalation to needs_human when a milestone reaches its max_subsprints bound."
+        },
+        "gap_set_history": {
+          "type": "array",
+          "items": {"type": "array", "items": {"type": "string"}},
+          "description": "The remaining gap req_id-set (sorted) recorded at the START of each remediation round, for the §1.7-F clause 2 PROPER-SUBSET progress check (proper-subset, NOT identical-hash — catches A/B churn). The last entry is the prior round's set; a new round whose set is NOT a strict proper subset is a no-progress round."
+        },
+        "no_progress_rounds": {"type": "integer", "minimum": 0, "default": 0, "description": "Consecutive no-progress (non-proper-subset) rounds; fail-closed escalation to needs_human when it reaches gap_followup.max_no_progress_rounds (§1.7-F clause 2/3)."},
+        "gap_review_seq": {"type": "integer", "minimum": 0, "description": "Monotonic per-pause nonce counter: each completeness_gap_review pause stamps gap_review_seq into its checkpoint basename so the file-based decision resolver refuses a stale remediate file from an earlier round (Codex R1 B3 — the 'ONE bounded round' binding)."},
+        "pending_remediation": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Codex R2 B2 — the in-flight remediation marker, persisted BEFORE a gapfix dispatch and cleared in the atomic round-save. On a STATUS_RUNNING crash-recovery the engine RE-ENTERS this exact gapfix (resume=True) instead of re-dispatching it, so a Driver that completed before the crash returns its outcome without re-running (no double-run / no spend undercount). Present only transiently while a round is in flight.",
+          "properties": {
+            "milestone_id": {"type": "string"},
+            "remediation_id": {"type": "string"},
+            "round": {"type": "integer", "minimum": 1},
+            "covered_req_ids": {"type": "array", "items": {"type": "string"}},
+            "gap_set": {"type": "array", "items": {"type": "string"}},
+            "no_progress": {"type": "integer", "minimum": 0},
+            "scope_hash": {"type": ["string", "null"], "description": "Codex R4 B1 — the live F1 signed_scope_hash the round was authorized under. On crash-recovery _complete_pending_remediation refuses the marker if this no longer matches (a plan/charter edit between dispatch and resume), so a stale marker can never auto-run out-of-epoch/out-of-envelope work."}
+          }
+        },
+        "remediations": {
+          "type": "array",
+          "description": "Audit log of every generated remediation sub-sprint stanza (§1.7-F clause 1), so the in-envelope covered_req_ids claim each round was dispatched on is reconstructable.",
+          "items": {
+            "type": "object",
+            "required": ["milestone_id", "subsprint_id", "covered_req_ids"],
+            "additionalProperties": false,
+            "properties": {
+              "milestone_id": {"type": "string"},
+              "subsprint_id": {"type": "string"},
+              "covered_req_ids": {"type": "array", "items": {"type": "string"}},
+              "round": {"type": "integer", "minimum": 1, "description": "The 1-based per-milestone round this stanza was generated for."}
+            }
+          }
+        }
+      }
+    },
     "milestone_outcomes": {
       "type": "array",
       "description": "Δ-19 F3 (design §3.5.1). The runner stamps each milestone's TERMINAL close outcome here so scope_report can derive delivery_status deterministically (delivered vs waived-with-reason) — 'delivered' is NOT inferable from cursor position alone (a campaign can advance past a milestone that shipped without an Acceptance pass). Additive; absent ⇒ today's behavior.",

@@ -79,6 +79,50 @@ rows:
     - "validator MUST reject any such bypass shape"
     - "refuse to\n  boot"
   con-1.7e-no-loop-conflation-in-docs: "MUST name each loop distinctly on first reference"
+  # --- §1.7-F pre-authorized in-envelope completeness remediation (Phase 2-γ) ---
+  # Non-vacuous: EVERY mandatory subpart of each compound clause is pinned, so a future kernel edit
+  # cannot drop a subpart (e.g. the untraceable-behavior halt, budget-not-exhausted, the fail-closed
+  # trigger list, or the no-auto-iterate/uncalibrated authority bounds) while still passing (Codex R1-B2).
+  con-1.7f-completeness-quality-seal:
+    - "completeness gap_report"
+    - "human-signed F1 requirement envelope"
+    - "signed into this milestone's covers_req_ids"
+    - "not yet delivered"
+    - "in-envelope scope completion, never scope expansion"
+    - "NO fix_required and NO needs_human"
+    - "INELIGIBLE, routes to human-confirm as today"
+    - "only from coverage/ledger facts"
+    - "never from Acceptance-authored failure semantics"
+  con-1.7f-in-envelope-proof:
+    - "explicit covered_req_ids"
+    - "req_id-envelope check"
+    - "F1 snapshot ∩ milestone covers_req_ids"
+    - "DISTINCT from post_gate1_scope_expansion"
+    - "out-of-envelope id"
+    # Pin the HALT CONSEQUENCE contiguously with the untraceable-behavior condition, so deleting the
+    # clause-1 "HALTs for a human" text breaks coverage (Codex R2: condition pinned, consequence was not).
+    - "behavior not traceable to an in-envelope req_id, HALTs for a human"
+  con-1.7f-bounded-runtime:
+    - "gap_followup.max_subsprints per milestone"
+    - "PROPER SUBSET of the prior round"
+    - "proper-subset, NOT identical-hash"
+    - "campaign budget not exhausted"
+    - "conservative effective-cap"
+    - "not an unbounded default"
+  con-1.7f-fail-closed-escalation:
+    - "any bound exceeded"
+    - "non-shrinking round"
+    - "out-of-envelope/ambiguous gap"
+    - "HALTs and escalates to needs_human"
+    - "never silently stops and never loops"
+  con-1.7f-autonomy-gated-routing:
+    - "WITHOUT a fresh human-confirm checkpoint"
+    - "human_in_the_loop, a completeness gap_report routes to needs_human"
+    - "auto-dispatch is permitted only under human_on_the_loop or higher"
+    - "unchanged at every autonomy level"
+    - "grants NO authority to ship, to widen scope"
+    - "to auto-iterate on a quality fault"
+    - "act on an uncalibrated authoritative verdict"
   con-1.8-may-not-subtract-forbidden-list:
     - "MAY NOT subtract from the framework §1.7 forbidden list"
     - "MUST NOT carry status:divergent"

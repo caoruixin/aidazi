@@ -1,0 +1,10 @@
+# INVALID (semantic): a structurally-valid campaign plan whose gap_followup omits
+# max_subsprints (unbounded per-milestone auto-dispatch). Expected rule: gap_followup_bound —
+# the §1.7-F clause-2 sibling of invalid-adaptive-insert-unbounded.yaml (§1.7-F / §1.7-D).
+campaign_id: c1
+goal: ship the backlog
+milestones:
+  - id: m1
+    objective: first milestone
+gap_followup:
+  max_no_progress_rounds: 1
