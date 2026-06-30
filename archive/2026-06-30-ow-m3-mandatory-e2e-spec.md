@@ -2,7 +2,7 @@
 
 - **Date:** 2026-06-30
 - **Branch:** `acceptance-efficacy-e2e-mandate` (worktree `../aidazi-acceptance`, off `main` `2f0095d`)
-- **Status:** DESIGN SPEC rev2 — addresses Codex gpt-5.5 xhigh R1 `REVISE` (`archive/2026-06-30-ow-m3-codex-review-r1.md`). B1/B3/B4 fixed in-spec; **B2 → explicit dependency on a separate Track-2 hardening cycle.** **OW-M3 IMPLEMENTATION IS BLOCKED** until that Track-2 cycle lands and earns its own Codex APPROVE (§5). The spec itself is finalizable now; only impl is gated.
+- **Status:** DESIGN SPEC rev2 — **Codex gpt-5.5 xhigh APPROVE (R2, `archive/2026-06-30-ow-m3-codex-review-r2.md`)**; R1 `REVISE` (`…-review-r1.md`) B1/B3/B4 fixed in-spec, B2 → explicit Track-2 dependency. R2 = no new blocking; 3 impl nits folded (§5.1). **OW-M3 IMPLEMENTATION IS BLOCKED** until the Track-2 hardening cycle (§5) lands and earns its own Codex APPROVE. The spec is design-APPROVED now; only impl is gated.
 - **Parent:** `archive/2026-06-30-acceptance-efficacy-and-e2e-mandate.md` (research + locked plan).
 - **Thesis:** A milestone whose requirements touch UI / user interaction / user-perceived experience MUST be accepted via structured browser-E2E (M3), no downgrade to static (M1). The class is **derived from the requirement's nature, not a human flag.**
 
@@ -114,6 +114,11 @@ M3 authority unchanged (always advisory in v1). Reclassify/re-sign is Customer-o
   1. Re-validate F1 freshness (`signoff_status == "signed"`) before **every** resume decision and **every** dispatch — not only `campaign_plan_signoff` (`_handle_resume`).
   2. Extend authoritative signed-input coverage to **all** post-signoff-mutable verdict/authority-affecting fields, **including the pre-existing `gap_followup.max_subsprints` gap** ([[track2-gap-followup-signing-followup]]).
 - **OW-M3 IMPLEMENTATION IS BLOCKED until that Track-2 cycle lands AND earns an independent Codex APPROVE.** OW-M3 does NOT carry a local resume patch and does NOT absorb the campaign state-machine hardening (explicit user decision). This rev2 spec may be finalized/Codex-approved as a design ahead of that.
+
+### 5.1 Implementation checklist (Codex R2 nits — non-blocking, fold at impl)
+- **Schema (N1):** `campaign-plan.schema.json` must add `covered_req_surfaces` (the `{rid: surface}` map) under `signoff.scope_envelope.milestones[]`, which is `additionalProperties:false` today; and the impl must thread the LIVE ledger into the `signed_scope_hash` recompute (not just stamp time) so freshness checks see it. Canonical JSON sorts object keys → the map is ordering-stable.
+- **Empty-array semantics (N2):** OW-M3's checks key on the SET of referenced REQ ids. **Absent `covers_req_ids` ⇒ dormant** (no mandate). An explicit `covers_req_ids: []` activates F1 (existing, presence-keyed, `campaign.py:2272-2275`) but references **no** REQ — so the "every referenced REQ exists + classified" rule is vacuous and the milestone signs per today's resolution. The refuse-on-missing-ledger rule (D2) fires only when the referenced set is **non-empty**. State + test both cases.
+- **Migration (N3):** a pre-existing SIGNED plan that already uses `covers_req_ids` WITHOUT a surface-bearing ledger will, post-OW-M3, require a ledger + re-sign (intentional). The refuse-to-sign message must say exactly that (which REQ ids are unknown/unclassified, and that a ledger entry + re-sign is required) — not a generic failure.
 
 ---
 
