@@ -1,0 +1,50 @@
+{
+  "_doc": "Phase-0 PRE-REGISTERED task set + ground truth + rubric. Locked BEFORE running any arm. Ground-truth anchors were each grep-verified present at code checkpoint 8e3b20f. The `ground_truth` block is for SCORING ONLY; it is NOT fed to briefing_select (Arm B selects sections from the task prompt alone, to avoid author hinting). Rubric: 6 binary dims (0/1) per task, max 6.",
+  "code_checkpoint": "8e3b20f",
+  "map_checkpoint": "8e3b20f",
+  "rubric_dims": ["correct_entry_point", "dependency_completeness", "constraint_coverage", "test_coverage", "no_fabrication", "solution_plausibility"],
+  "answer_contract": "For each task the agent must output: (1) primary file(s)+symbol(s) to read/change, (2) key cross-module dependencies, (3) the key invariant/constraint involved, (4) the relevant test(s), (5) a short data-flow / proposed-change sketch with risks. Analysis/localization only; no production edits.",
+  "tasks": [
+    {"id": "t1a", "category": "1-single-module-localize",
+     "prompt": "In the delivery-loop driver, what bounds the number of fix rounds, and which charter field configures that cap? Name the file+symbol and the config field.",
+     "ground_truth": {"entry": ["engine-kit/orchestrator/driver.py:Driver"], "config_field": "charter.budget.max_fix_rounds_total", "deps": ["spawn-count/budget guard", "GateHardFail on budget halt"], "constraint": "fix-round counter bounded; fail-closed budget halt", "tests": ["engine-kit/orchestrator/tests/test_driver.py"], "map_section": "orchestrator-driver"}},
+    {"id": "t1b", "category": "1-single-module-localize",
+     "prompt": "Which file and symbol compute the per-role cold-start token/byte baseline (the WP budget surface used by the context-budget lint)?",
+     "ground_truth": {"entry": ["engine-kit/orchestrator/load_sizer.py:size_role", "engine-kit/orchestrator/load_sizer.py:GOVERNANCE_TRIO"], "deps": ["context_budget_report reuses load_sizer"], "constraint": "deterministic byte/token sizing", "tests": ["engine-kit/orchestrator/tests/test_load_sizer.py"], "map_section": "orchestrator-misc"}},
+
+    {"id": "t2a", "category": "2-cross-module-bug",
+     "prompt": "A campaign keeps re-running the same milestone instead of advancing to the next. Which modules govern milestone dispatch vs loop termination, and where is the advance/continue/halt/escalate decision actually made?",
+     "ground_truth": {"entry": ["engine-kit/orchestrator/campaign.py:run_campaign", "engine-kit/orchestrator/loop_controller.py:decide"], "deps": ["driver advance", "campaign dispatch through driver"], "constraint": "total deterministic precedence advance/continue/halt/escalate", "tests": ["engine-kit/orchestrator/tests/test_campaign.py", "engine-kit/orchestrator/tests/test_loop_controller.py"], "map_section": "orchestrator-campaign|orchestrator-loop-lifecycle"}},
+    {"id": "t2b", "category": "2-cross-module-bug",
+     "prompt": "Acceptance verdicts must not depend on inputs absent at judging time. Which invariant enforces this, where is the hash computed, and where is the closure proven?",
+     "ground_truth": {"entry": ["engine-kit/orchestrator/e2e_stage.py:acceptance_input_hash", "engine-kit/tools/acceptance_load_closure.py:closure_state"], "deps": ["acceptance reads verdicts from artifacts, never reverse"], "constraint": "LOAD-CLOSURE: no unbound verdict-affecting input", "tests": ["engine-kit/orchestrator/tests/test_e2e_acceptance.py", "engine-kit/tools/tests/test_acceptance_load_closure.py"], "map_section": "orchestrator-e2e-acceptance|constraint-gate"}},
+
+    {"id": "t3a", "category": "3-feature-impact",
+     "prompt": "To add a new harness adapter (a new CLI coding agent), what files and registration points must change, and what contract must the adapter satisfy?",
+     "ground_truth": {"entry": ["engine-kit/adapters/base.py:Adapter", "engine-kit/adapters/__init__.py:resolve_adapter_class"], "deps": ["registry resolve", "driver is single verdict-validation point"], "constraint": "spawn(role,prompt,tools,schema,connectors,sandbox)->dict; prompt via stdin; sandbox->permission-mode fail-closed; adapter never pre-validates", "tests": ["engine-kit/adapters/tests/test_claude_code.py", "engine-kit/adapters/tests/test_codex.py"], "map_section": "adapters-harness-bridge"}},
+    {"id": "t3b", "category": "3-feature-impact",
+     "prompt": "To change a canonical JSON schema (e.g., acceptance-verdict), what else must change in lockstep so the build stays green?",
+     "ground_truth": {"entry": ["engine-kit/tools/project_schema.py", "schemas/compact/"], "deps": ["compact projection regeneration"], "constraint": "x-canonical-sha256 lockstep; regenerate compact, never hand-edit", "tests": ["engine-kit/validators/tests/test_pc_schemas.py", "engine-kit/tools/tests/test_project_schema.py"], "map_section": "schemas-canonical-all|schemas-compact-projections|dev-tools"}},
+
+    {"id": "t4a", "category": "4-unknown-entry-investigation",
+     "prompt": "How does the framework prove its always-load kernel carries every constitution constraint non-vacuously, and where is that build-time gate?",
+     "ground_truth": {"entry": ["engine-kit/tools/kernel_equivalence.py:check_kernel_coverage"], "deps": ["constraint-inventory/_sources.yaml source-hash binding"], "constraint": "non-vacuous 65/65 coverage; full constitution stays on-demand", "tests": ["engine-kit/tools/tests/test_kernel_equivalence.py"], "map_section": "constraint-gate|tier0-kernel-projections"}},
+    {"id": "t4b", "category": "4-unknown-entry-investigation",
+     "prompt": "Where does a loop run decide its git-isolation strategy (current branch vs new branch vs new worktree)?",
+     "ground_truth": {"entry": ["engine-kit/orchestrator/loop_ingress.py:decide_strategy"], "deps": ["LoopRegistry"], "constraint": "deterministic strategy pick", "tests": ["engine-kit/orchestrator/tests/test_loop_ingress.py", "engine-kit/orchestrator/tests/test_loop_controller.py"], "map_section": "orchestrator-loop-lifecycle"}},
+
+    {"id": "t5a", "category": "5-test-failure-localize",
+     "prompt": "After editing a governance doc, test_kernel_equivalence fails. What is the most likely cause, and which file binds the doc to kernel coverage?",
+     "ground_truth": {"entry": ["engine-kit/tools/kernel_equivalence.py:check_kernel_coverage", "engine-kit/tools/constraint-inventory/_sources.yaml"], "deps": ["source-hash gate"], "constraint": "editing a governed doc changes its source hash -> kernel coverage must be re-proven/re-stamped", "tests": ["engine-kit/tools/tests/test_kernel_equivalence.py"], "map_section": "constraint-gate"}},
+    {"id": "t5b", "category": "5-test-failure-localize",
+     "prompt": "After editing a canonical schema, test_pc_schemas fails. Why, and what regeneration step was missed?",
+     "ground_truth": {"entry": ["engine-kit/tools/project_schema.py", "schemas/compact/"], "deps": ["compact projection"], "constraint": "compact projection out of x-canonical-sha256 lockstep; regenerate via project_schema.py", "tests": ["engine-kit/validators/tests/test_pc_schemas.py"], "map_section": "schemas-canonical-all|schemas-compact-projections"}},
+
+    {"id": "t6a", "category": "6-tiny-grep-faster",
+     "prompt": "What environment variable must be set to allow real (non-mock) adapters when running the loop?",
+     "ground_truth": {"entry": ["engine-kit/scheduling/run_loop.py"], "answer": "AIDAZI_ALLOW_REAL_ADAPTER=1", "deps": [], "constraint": "real I/O gated", "tests": [], "map_section": "scheduling-runloop"}},
+    {"id": "t6b", "category": "6-tiny-grep-faster",
+     "prompt": "How many MANDATORY_CHECKPOINTS does the charter validator encode?",
+     "ground_truth": {"entry": ["engine-kit/validators/charter_validator.py"], "answer": "9", "deps": [], "constraint": "9 MANDATORY_CHECKPOINTS (delivery-loop §4.2.3)", "tests": [], "map_section": "core-validators"}}
+  ]
+}
