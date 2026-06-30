@@ -76,7 +76,7 @@ def main():
                     other_calls += 1
                 for p in paths:
                     files_read.add(p)
-                cmd_output_bytes += len(it.get("aggregated_output", "") or "")
+                cmd_output_bytes += len((it.get("aggregated_output", "") or "").encode("utf-8"))
                 if localization_step is None and gt_bases:
                     cmdstr = it.get("command", "")
                     if any(b in cmdstr for b in gt_bases):

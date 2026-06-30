@@ -5,8 +5,9 @@ codebase map alone. NON-RUNTIME, read-only.
 Anti-bias guarantees:
 - Section selection uses ONLY the task prompt vs the map's own keywords/title/responsibility.
   It never reads tasks.json `ground_truth`; no human hand-picks sections or hints answers.
-- The briefing contains ONLY map-derived structural pointers (section responsibility + anchors +
-  tests + canonical_docs) + the git delta. It injects NO business answer and NOT the full map.
+- The briefing contains ONLY map-derived structural pointers (section title + anchors + tests +
+  canonical_docs) + the git delta. NO responsibility prose (which can embed scalar answers; removed
+  per design.md Amendment 2), NO business answer, NOT the full map.
 
 Usage: briefing_select.py --map process/codebase-map.md --repo . --topk 3  (task prompt on stdin)
 Prints the briefing to STDOUT; a selection-rationale JSON to STDERR.
@@ -53,10 +54,11 @@ def main():
 
     lines = []
     lines.append("## Codebase map briefing (read-only orientation aid — verify before relying; ignore if unhelpful)")
-    lines.append(f"Selected {len(selected)} area(s) for this task from the maintained map (checkpoint {ckpt[:8]}):\n")
+    lines.append(f"Selected {len(selected)} area(s) for this task from the maintained map (checkpoint {ckpt[:8]}).")
+    lines.append("STRUCTURAL POINTERS ONLY (where to look) — no prose summaries, so no task answer is")
+    lines.append("pre-supplied; you must open the files to answer.\n")
     for score, sid, s in selected:
         lines.append(f"### {sid} — {s.get('title','')}")
-        lines.append(f"- responsibility: {s.get('responsibility','')}")
         if s.get("anchors"):
             lines.append("- anchors (jump targets): " + ", ".join(s["anchors"]))
         if s.get("tests"):

@@ -13,6 +13,7 @@ import json, os, subprocess, sys, argparse
 
 REPO = "/Users/caoruixin/projects/aidazi"
 BASE = f"{REPO}/archive/phase0-codebase-map"
+MODEL = "gpt-5.5"  # pinned for reproducibility (Codex review R1 #7)
 PREAMBLE = (
     "You are analyzing the aidazi repository (read-only). Do NOT edit, run tests, or modify code. "
     "Localize and analyze, then answer concisely with: (1) primary file(s)+symbol(s); (2) key "
@@ -39,7 +40,7 @@ def run_arm(task, arm, effort, outdir):
     open(pf, "w").write(prompt)
     cmd = [sys.executable, f"{REPO}/engine-kit/tools/review_runner.py", "--timeout", "600",
            "--inactivity-warn", "150", "--attempts", "2", "--prompt-file", pf, "--capture-dir", d,
-           "--", "codex", "exec", "--json", "-s", "read-only", "-c",
+           "--", "codex", "exec", "--json", "-s", "read-only", "-m", MODEL, "-c",
            f"model_reasoning_effort={effort}", "-C", REPO, "-"]
     print(f"  [{task['id']}-{arm}] running codex (effort={effort}, prompt={len(prompt)}B)...")
     subprocess.run(cmd, capture_output=True, text=True)

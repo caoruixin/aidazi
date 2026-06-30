@@ -11,7 +11,8 @@ constraint coverage — by enough to justify (later) a thin auto-entry?
 ## A/B design
 - **Arm A (cold start):** fresh agent session, task prompt only, no map.
 - **Arm B (map-guided):** fresh session, task prompt + a briefing containing ONLY: the task-relevant
-  map section(s) (responsibility + anchors + tests + canonical_docs) and `git diff map_checkpoint..HEAD`.
+  map section(s) (title + anchors + tests + canonical_docs — the original also included
+  `responsibility` prose, removed per Amendment 2) and `git diff map_checkpoint..HEAD`.
   NOT the full map; NO business answer beyond map-derived structural pointers.
 - Held equal across arms: code checkpoint (`8e3b20f`), task text, model + reasoning effort, tool
   permissions (read-only), independent fresh session, no reuse of the other arm's conversation.
@@ -68,3 +69,23 @@ select favorable data to justify the approach.
 1. `python3 archive/phase0-codebase-map/run_phase0.py --tasks all --effort medium`
 2. Per-run metrics under `.runs/phase0/<task>-<arm>/metrics.json`; aggregate `results.json`.
 3. Scoring + aggregation → `score.py` / `decision-memo.md` (committed); raw transcripts stay in `.runs/`.
+
+## Amendment (post-pilot, documented; not a protocol change)
+The pilot showed raw `input_tokens` is confounded (it is API prompt-tokens summed across turns, so
+turn-count × cached-context re-sends dominate it — it labelled a clearly-better run "+18%"). Both
+replacement headline metrics were ALREADY in the pre-registered metric list: **`fresh_input` =
+input − cached** (token-billing proxy) and **`command_output_bytes`** (read-volume). We therefore
+LEAD with those two; raw `input_tokens` is reported but not used as the headline. Ground truth,
+rubric, task set, and arms are unchanged. Also: per the variance observed, per-task numbers are
+treated as noisy and only cross-task aggregates are interpreted.
+
+## Amendment 2 (Codex review R1 BLOCK — answer-leak fix)
+The first Codex xhigh review (BLOCK) found that, although `briefing_select.py` never reads
+`tasks.json` ground truth, the map's `responsibility` PROSE itself embeds some scalar answers (e.g.
+`AIDAZI_ALLOW_REAL_ADAPTER=1`, "9 MANDATORY_CHECKPOINTS"), so Arm-B briefings pre-supplied answers to
+the fact-lookup tasks — contaminating the tiny-task conclusion. FIX: the briefing now emits
+**structural pointers only — section title + anchors + tests + canonical_docs (NO responsibility
+prose)** — and **all 12 Arm-B runs were redone** with the de-leaked briefing (Arm-A unaffected, kept).
+Verified post-fix: the scalar answers no longer appear in any briefing. (Anchors like
+`project_schema.py:strip_annotations` remain — those are "where to look" structural pointers, the
+map's intended help, not prose answers.) Briefing cost dropped to ~524 tok (from ~602).
