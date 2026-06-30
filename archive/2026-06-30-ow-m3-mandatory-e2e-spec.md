@@ -1,151 +1,155 @@
-# OW-M3 — requirement-driven mandatory browser-E2E acceptance (design spec)
+# OW-M3 — requirement-driven mandatory browser-E2E acceptance (design spec, rev2)
 
 - **Date:** 2026-06-30
 - **Branch:** `acceptance-efficacy-e2e-mandate` (worktree `../aidazi-acceptance`, off `main` `2f0095d`)
-- **Status:** DESIGN SPEC — for Codex gpt-5.5 xhigh review/acceptance before any impl. No runtime code changed.
+- **Status:** DESIGN SPEC rev2 — addresses Codex gpt-5.5 xhigh R1 `REVISE` (`archive/2026-06-30-ow-m3-codex-review-r1.md`). B1/B3/B4 fixed in-spec; **B2 → explicit dependency on a separate Track-2 hardening cycle.** **OW-M3 IMPLEMENTATION IS BLOCKED** until that Track-2 cycle lands and earns its own Codex APPROVE (§5). The spec itself is finalizable now; only impl is gated.
 - **Parent:** `archive/2026-06-30-acceptance-efficacy-and-e2e-mandate.md` (research + locked plan).
-- **Thesis:** A milestone whose requirements touch UI / user interaction / user-perceived experience MUST be accepted via structured browser-E2E (M3), with **no downgrade** to static (M1). The class is **derived from the requirement's nature, not chosen by a human flag.**
+- **Thesis:** A milestone whose requirements touch UI / user interaction / user-perceived experience MUST be accepted via structured browser-E2E (M3), no downgrade to static (M1). The class is **derived from the requirement's nature, not a human flag.**
+
+## rev2 disposition of Codex R1 (all 7 citations were confirmed OK; anchors corrected to the worktree/main tree)
+- **B1 (surface not hash-bound) — FIXED §1/§3.3:** the per-covered-REQ surface snapshot is bound INTO the signed envelope/`H`.
+- **B2 (resume-freshness not universal) — DEFERRED to Track-2 §5:** OW-M3 does NOT add a local resume patch and does NOT absorb the campaign state-machine hardening; impl is blocked on the Track-2 cycle.
+- **B3 (canary vs dormancy contradiction) — FIXED §4/§7:** canary is post-OW-2-adoption; a milestone declaring `covers_req_ids` must have every referenced REQ present + classified or it is refused-to-sign.
+- **B4 (waiver = bypass) — FIXED §3.2:** waiver removed from v1; resolutions are set-`browser_e2e` or reclassify-and-re-sign only.
+- Nits N1–N5 folded (§6).
 
 ---
 
 ## 0. The one-sentence design
 
-> **OW-2's requirement ledger is the INPUT CONTRACT of OW-M3.** The ledger supplies, per requirement, the machine-readable *surface classification*; OW-M3 is the enforcement that, at campaign-plan **sign-off**, derives each milestone's acceptance class from the classifications of the requirements it covers and **refuses to sign** a plan that would accept a user-facing requirement on static (M1) evidence. Neither half is a standalone document task: without OW-2's classification OW-M3 has no signal and stays dormant; without OW-M3 OW-2's classification drives nothing.
+> **OW-2's requirement ledger is the INPUT CONTRACT of OW-M3.** The ledger supplies, per requirement, a machine-readable *surface classification*; OW-M3 is the **sign-off gate** that derives each milestone's required acceptance class from the classifications of the requirements it covers, **binds those classifications into the signed scope hash**, and **refuses to sign** a plan that would accept a user-facing requirement on static (M1) evidence. Neither half stands alone: without OW-2's classification OW-M3 has no signal; without OW-M3 the classification drives nothing.
 
 ---
 
 ## 1. Why this is one mechanism, not two (the input contract)
 
-OW-M3 must answer exactly one question per milestone: *"does this milestone deliver anything the end user sees or interacts with?"* That answer is **a property of the requirement, not of the milestone or the charter.** The only place requirements live as first-class, customer-authored records is the requirement ledger (`schemas/requirement-ledger.schema.json`). Therefore:
+OW-M3 answers one question per milestone: *"does this milestone deliver anything the end user sees or interacts with?"* That is a property of the **requirement**, recorded only in the requirement ledger. Therefore OW-2 and OW-M3 ship as **one reviewable unit, one schema-version bump.**
 
 ```
-PRD ──(OW-2 onboarding)──▶ ledger REQ items, each with: surface classification
-                                   │
-                          milestone.covers_req_ids  (already signed, campaign.py:2194)
-                                   │
-                          OW-M3 sign-off derivation: milestone is "user-facing"
-                          iff ANY covered REQ is classified user-facing
-                                   │
-                          ⇒ resolved_functional_acceptance.mode MUST be browser_e2e
-                          (already frozen in signed_scope_hash, campaign.py:2197/2238)
-                                   │
-                          runtime _acceptance_class() reads the frozen mode (driver.py:3160)
-                          ⇒ M3 evidence mandatory; static is unreachable for this milestone
+PRD ─(OW-2)→ ledger REQ items, each with: surface  ┐
+                                                    │  joined at sign-off by
+milestones[].covers_req_ids (already signed)  ──────┤  covers_req_ids
+                                                    │
+   OW-M3 sign-off gate:                             ▼
+     • require every covered REQ ∈ ledger AND classified         (B3/N2)
+     • milestone is user-facing  ⇔  ANY covered REQ.surface == user_facing
+     • user-facing ⇒ resolved functional acceptance MUST be browser_e2e   (refuse else)
+     • SNAPSHOT covered-REQ surfaces INTO the signed envelope/H            (B1)
+                                                    │
+runtime _acceptance_class() reads the frozen mode (driver.py:3029-3037)
+   ⇒ M3 evidence mandatory; static unreachable for this milestone
+   (NB: tamper-DETECTION is in the hash; tamper-BLOCKING on resume = Track-2, §5)
 ```
 
-**Interface definition (the contract OW-2 MUST produce and OW-M3 MUST consume), versioned together:**
+**Interface (OW-2 produces / OW-M3 consumes), versioned together:**
 
-| Field | Owner | Where it lives | Consumed by |
+| Field | Owner | Where | Consumed by |
 |---|---|---|---|
 | `requirements[].surface` (new) | OW-2 | `schemas/requirement-ledger.schema.json` | OW-M3 sign-off derivation |
-| `milestones[].covers_req_ids` (exists) | campaign-plan author | `schemas/campaign-plan.schema.json`, signed | OW-M3 derivation (join key) |
-| `resolved_functional_acceptance.mode` (exists, derived) | engine | signed scope envelope `campaign.py:2197` | runtime `_acceptance_class()` |
-
-OW-2 and OW-M3 ship as one reviewable unit with one schema-version bump. The ledger PR that adds `surface` is incomplete without the sign-off gate that reads it, and vice-versa.
+| `milestones[].covers_req_ids` (exists, signed) | plan author | `schemas/campaign-plan.schema.json` | OW-M3 join key |
+| `_envelope_milestone.covered_req_surfaces` (**new, B1**) | engine @ sign-off | signed envelope + `H` (campaign.py:2189-2197 / 2218-2225) | tamper-detection of the surface→mode basis |
+| `resolved_functional_acceptance.mode` (exists, derived, signed) | engine | signed envelope (campaign.py:2197) | runtime `_acceptance_class()` |
 
 ---
 
-## 2. OW-2 deliverable: the `surface` classification (input half of the contract)
+## 2. OW-2 deliverable: the `surface` classification (input half)
 
 Add to each ledger requirement (additive; absence stays byte-identical to today):
 
 ```jsonc
 "surface": {
   "type": "string",
-  "enum": ["user_facing", "non_user_facing"],   // v1 — see Decision D1 for a possible 3rd tier
-  "description": "Does meeting this requirement produce something the end user sees or interacts with? user_facing ⇒ its covering milestone MUST be accepted via browser-E2E (M3). Agent-proposed, CUSTOMER-CONFIRMED at campaign-plan sign-off (NOT auto-set). Distinct from customer_disposition."
+  "enum": ["user_facing", "non_user_facing"],   // v1 binary — Decision D1
+  "description": "Does meeting this requirement produce something the end user OPERATES (UI / user journey)? user_facing ⇒ its covering milestone MUST be accepted via browser-E2E (M3). Agent-proposed, CUSTOMER-CONFIRMED by being signed into scope. Distinct from customer_disposition."
 }
 ```
-
-- **Authority:** Research/agent MAY propose `surface` (drafting is async-permitted, mirroring `intent_contract.drafted_by`); the value becomes binding **only** by being present on a REQ that the Customer signs into scope. It is NOT pure-customer-authority like `customer_disposition` — it is a signed, agent-proposable property.
-- **Onboarding (OW-2 + OW-3):** the PRD→ledger wizard step assigns `surface` per REQ and, for `user_facing` REQs, requires the Gate-1 user-journey `functional-checklist` (OW-3) that M3 will judge against. This is the single authoring act referenced in the parent plan.
+- **Authority:** Research/agent MAY propose `surface` (mirrors `intent_contract.drafted_by`); it binds only by being on a REQ the Customer signs into scope. Reclassification of a signed REQ ⇒ re-sign (Customer authority, seal ②).
+- **Onboarding (OW-2 + OW-3):** the PRD→ledger wizard assigns `surface` per REQ; for `user_facing` REQs it requires the Gate-1 user-journey `functional-checklist` (OW-3) that M3 judges against.
 
 ---
 
-## 3. OW-M3 deliverable: the sign-off derivation + gate (enforcement half)
+## 3. OW-M3 deliverable: the sign-off gate (enforcement half)
 
 ### 3.1 Derivation (pure function, sign-off time)
-
-For each milestone `m` in the plan being signed:
+For each milestone `m`:
 ```
-covered_surfaces = { ledger[rid].surface for rid in m.covers_req_ids }
-m_is_user_facing = "user_facing" ∈ covered_surfaces
-required_mode    = "browser_e2e" if m_is_user_facing else (today's resolution)
+covered = m.covers_req_ids
+# B3/N2: refuse if any rid ∈ covered is absent from the ledger or has no `surface`
+surfaces = { rid: ledger[rid].surface for rid in covered }
+m_user_facing = "user_facing" ∈ surfaces.values()
+required_mode = "browser_e2e" if m_user_facing else <today's resolution unchanged>
 ```
-`required_mode` is compared against `resolve_functional_acceptance(charter, m.functional_acceptance)` (`campaign.py:2169-2181`) — the mode that WILL be frozen into the signed envelope.
+compared against `resolve_functional_acceptance(charter, m.functional_acceptance)` (campaign.py:2169-2181).
 
-### 3.2 The gate (the only new enforcement)
+### 3.2 The gate (refuse-to-sign) — at the F1 sign path
+Fail closed — refuse to sign — when, for any milestone declaring `covers_req_ids`:
+1. **Unknown/unclassified** — a covered `rid` is absent from the ledger, or its REQ has no `surface`. (B3/N2)
+2. **Downgrade** — `m_user_facing` AND resolved mode ≠ `browser_e2e`. Message + the **only two** resolutions: *set `functional_acceptance: browser_e2e`, OR (Customer) reclassify the requirement's `surface` and re-sign.* **No waiver in v1 (B4).**
 
-At the F1 sign path (`stamp_signoff` / `--sign-plan`, and the validator that `run_loop` invokes on `allow_real`), **fail closed — refuse to sign — when**:
+And, at sign-off, **B1 — bind the basis:** `_envelope_milestone` additionally emits `covered_req_surfaces` (the `{rid: surface}` map used for the decision), so it lands in both the stored `scope_envelope` and the hash input `H` (campaign.py:2218-2225). Equivalent acceptable form: a canonical `ledger_digest` over the covered-REQ subset. Either way the surface FACT that justified the mode is now signed — a post-sign surface flip changes `signed_scope_hash` ⇒ `stale`.
 
-1. **Downgrade**: `m_is_user_facing` AND resolved mode ≠ `browser_e2e`. → *"milestone `<id>` covers user-facing requirement(s) `<rids>` but resolves to functional acceptance `static`; a user-facing milestone must be accepted via browser-E2E (M3). Set `functional_acceptance: browser_e2e`, or reclassify the requirement (Customer), or record an explicit waiver."*
-2. **Unclassified**: any `rid ∈ m.covers_req_ids` whose ledger REQ has no `surface`. → refuse to sign (Decision D2). The classification is mandatory for any REQ bound into signed scope.
+### 3.3 What already exists (reuse) vs what is NOT yet guaranteed (Track-2)
+**Already true (no OW-M3 code):**
+- The resolved mode is in the stored envelope AND `H` (campaign.py:2189-2197, 2218-2225; stamped 2251-2259); the campaign projection materializes it onto the per-milestone derived charter (campaign.py:2351-2368) that `_acceptance_class()` reads (driver.py:3029-3037). So a downgrade is **hash-DETECTABLE.**
+- `browser_e2e` + `acceptance.mode:off` is a construction hard-fail (driver.py:697-701) — forcing `browser_e2e` auto-forbids the `acceptance.enabled:false` escape (airecruiter M3/M4) by construction.
+- M3 (browser_e2e) pass is **always advisory** in v1 (driver.py:3071-3081; advisory halt at driver.py:4539-4561) regardless of any declared M3 calibration — **so OW-M3 mandates EVIDENCE, not SHIP; no calibration work (cut OW-4) is needed.**
 
-**Note what is NOT new** — these already hold and need no OW-M3 code:
-- The resolved mode is already in `_envelope_milestone` → `compute_signed_scope_hash` (`campaign.py:2197,2238`), so a post-sign downgrade breaks the hash → `signoff_status` goes `stale` → runner blocks pending re-sign (`scope_report.py:342-345`). **Runtime "no downgrade" is already guaranteed by the signed hash.**
-- `browser_e2e` + `acceptance.mode:off` is already an incoherence hard-fail at driver construction (`driver.py:712-716`). So forcing `browser_e2e` automatically forbids the `acceptance.enabled:false` escape (airecruiter's M3/M4 pattern) **by construction** — OW-M3 needs no separate "acceptance must be on" check.
-- `_acceptance_class()` (`driver.py:3160-3168`) and the whole M3 evidence pipeline (executor, hash-anchored manifest, set-equality coverage, `needs_human` on thin evidence) already exist. OW-M3 adds **no runtime path** — it only makes the frozen mode correct at sign time.
+**NOT yet guaranteed (the corrected B2 — Codex R1 OVERSTATED #6):** hash-detection only blocks a run if F1 freshness is re-checked at the resume/dispatch point. Today `_handle_resume` re-checks freshness ONLY for `campaign_plan_signoff`; resume from `advisory_acceptance_pass_signoff` / `deliver_followup_required` / merge can advance without re-verifying `signoff_status == "signed"`. So a post-sign downgrade or `covers_req_ids` mutation while paused is detectable but not yet uniformly blocked. **OW-M3's runtime guarantee therefore DEPENDS on Track-2 (§5).**
 
-### 3.3 Authority preserved
-
-- M3 verdict authority is **unchanged**: v1 ships no M3 calibration ⇒ a browser-E2E `pass` is **always advisory** and HALTs at `advisory_acceptance_pass_signoff` (`driver.py:3204-3212`). **OW-M3 makes the EVIDENCE mandatory, not the SHIP.** This is why the cut OW-4 calibration work is not required.
-- The waiver path (gate rule 1, third option) is **Customer-only** and recorded — it routes through re-sign / `research_contract_revision`, never an engine default. Consistent with seal ② (Customer final authority).
-
----
-
-## 4. Activation, dormancy, and the single-loop path
-
-- **Ledger-gated, additive.** OW-M3 fires only where the input contract exists: an F1-active campaign (`f1_required` is true — a `signoff` block or any `covers_req_ids`, `campaign.py:2264-2274`) whose ledger carries `surface`. **No ledger ⇒ dormant ⇒ byte-identical to today**, consistent with the existing completeness-line doctrine. This is the deliberate incentive: adopting the ledger (OW-2) is what unlocks the automatic E2E mandate.
-- **This is not a weakness — it is the precondition.** "This requirement is user-facing" is only machine-enforceable if it is machine-recorded. Adopters who skip the ledger get OW-3's authoring guidance + an onboarding warning, not silent enforcement.
-- **Single-loop (non-campaign) path:** no `covers_req_ids`, no ledger. **v1 non-goal** — behavior unchanged. A future extension MAY carry `surface` on `intent_contract` to drive the same derivation for single loops (Decision D3, deferred).
+### 3.4 Authority preserved
+M3 authority unchanged (always advisory in v1). Reclassify/re-sign is Customer-only and signed. Seal ② intact.
 
 ---
 
-## 5. Non-goals (explicit)
-
-- ❌ M3 calibration → authoritative / auto-ship (cut OW-4). M3 stays advisory.
-- ❌ Per-REQ verdict-case wiring `covers_req_ids ↔ criterion_id ↔ case` (cut OW-5).
-- ❌ Forcing browser_e2e on non-user-facing (backend/data/agent) milestones — the generality guard. `non_user_facing` resolves exactly as today.
-- ❌ Changing `_acceptance_class()` runtime mechanism, the M3 evidence pipeline, or any verdict/authority semantics.
+## 4. Activation, dormancy, and the single-loop path (B3-corrected)
+- **Ledger-gated, additive.** The mandate is inert until the input contract exists. With **no `covers_req_ids` / no ledger ⇒ dormant ⇒ byte-identical to today.**
+- **Activation point = a milestone DECLARING `covers_req_ids`.** That already triggers F1 (campaign.py:2272-2275); OW-M3 piggybacks: every referenced REQ must exist + be classified, and any `user_facing` REQ forces `browser_e2e` — else refuse-to-sign. (This is why dormancy and the canary no longer contradict: the mandate bites exactly when the adopter opts into requirement coverage.)
+- **Single-loop (non-campaign):** no `covers_req_ids`/ledger ⇒ **v1 non-goal**, behavior unchanged (D3/N3). A future `intent_contract.surface` extension could drive the same derivation for single loops.
 
 ---
 
-## 6. Decisions for the Codex gate / human
+## 5. Dependencies & sequencing (the B2 resolution — Option 2, user-chosen 2026-06-30)
+- **OW-M3 sign-off gate (§3.1–§3.2) + B1 snapshot (§3.3) are implementable as a self-contained F1-sign validator change** — but they only make a post-sign mutation DETECTABLE.
+- **OW-M3 RUNTIME guarantee requires a separate Track-2 hardening cycle** that must, uniformly:
+  1. Re-validate F1 freshness (`signoff_status == "signed"`) before **every** resume decision and **every** dispatch — not only `campaign_plan_signoff` (`_handle_resume`).
+  2. Extend authoritative signed-input coverage to **all** post-signoff-mutable verdict/authority-affecting fields, **including the pre-existing `gap_followup.max_subsprints` gap** ([[track2-gap-followup-signing-followup]]).
+- **OW-M3 IMPLEMENTATION IS BLOCKED until that Track-2 cycle lands AND earns an independent Codex APPROVE.** OW-M3 does NOT carry a local resume patch and does NOT absorb the campaign state-machine hardening (explicit user decision). This rev2 spec may be finalized/Codex-approved as a design ahead of that.
 
-- **D1 — classification taxonomy.** v1 recommends a 2-value enum (`user_facing` / `non_user_facing`); the M3 trigger = `user_facing`. Optional 3rd tier (`user_visible_output` = user sees output but no interaction, e.g. a generated report) could map to a lighter evidence bar. **Recommend: ship 2-value; defer the 3rd tier** to avoid taxonomy churn. The user's stated bar ("UI / 用户交互 / 影响体验") collapses cleanly to the binary.
-- **D2 — unclassified handling.** Recommend **refuse-to-sign** (explicit `surface` required for any signed REQ) over "conservative default = treat unclassified as user_facing," because silently forcing browser-E2E on a backend milestone reintroduces the generality problem (false-positive E2E friction → adopters bypass, the very failure OW-0 found). Refuse-to-sign forces a human call once, at sign time.
-- **D3 — single-loop coverage.** Deferred (non-goal v1). Confirm deferral.
-- **D4 — gate location.** The derivation/gate belongs in the **charter/plan validator on the F1 sign path** (alongside the existing F1 checks in `campaign.py` + `charter_validator.py`), NOT in the driver hot path. Confirm placement so it is enforced both at `--sign-plan` and at runner `allow_real` validation.
+---
+
+## 6. Decisions (Codex-reviewed; nits folded)
+- **D1 (taxonomy)** — v1 binary `user_facing` / `non_user_facing`; M3 trigger = `user_facing`, where `user_facing` means **browser-operable UI / a user journey** (N1). A lighter "user-visible output" tier (e.g. generated reports, emails) needing a non-browser evidence class is **explicitly out of scope v1**.
+- **D2 (unclassified)** — **refuse-to-sign**, and likewise refuse on unknown REQ ids / missing ledger whenever `covers_req_ids` is present (N2). Conservative-default (unclassified⇒user_facing) rejected: it would force browser-E2E on backend milestones → the false-positive friction that drove the OW-0 bypass.
+- **D3 (single-loop)** — deferred (non-goal v1); single-milestone delivery remains outside the mandate, stated plainly (N3).
+- **D4 (gate location)** — the F1-sign validator, enforced at **`--sign-plan` AND the runner `allow_real` preflight** (N4). Resume-time freshness is NOT this gate's job — it is the Track-2 cycle's (§5).
+- **N5** — add a sign-time/preflight diagnostic for `browser_e2e` + `acceptance.mode:off` (usability), even though driver-construction is the hard backstop.
 
 ---
 
 ## 7. Test / canary plan
-
-- **Unit (campaign/validator):** user_facing REQ + static milestone ⇒ sign refused; + browser_e2e milestone ⇒ signs; non_user_facing + static ⇒ signs (generality guard); unclassified covered REQ ⇒ refused; no-ledger plan ⇒ byte-identical (dormancy); waiver recorded ⇒ signs with audit.
-- **Tamper:** sign a browser_e2e milestone, flip its `functional_acceptance` to static post-sign ⇒ `signoff_status: stale` ⇒ runner blocks (reuses existing hash machinery — assert, don't rebuild).
-- **Incoherence:** forced browser_e2e + `acceptance.mode:off` ⇒ existing `driver.py:712-716` hard-fail (assert it fires via the new path).
-- **Live canary:** re-run the OW-0 adopters against the gate — airecruiter M4 (`真 web 端到端` folded into M1) and airplat M5 (manual control-plane live step) should both be REFUSED-to-sign until their UI milestones declare `browser_e2e`, proving the gate closes the observed bypass.
+- **Unit (sign validator):** user_facing REQ + static milestone ⇒ refused; + browser_e2e ⇒ signs; non_user_facing + static ⇒ signs (generality guard); covered REQ absent/unclassified ⇒ refused; no-`covers_req_ids` plan ⇒ byte-identical (dormancy); reclassify+re-sign ⇒ signs with audit.
+- **B1 hash binding:** sign a plan; flip a covered REQ's `surface` in the ledger post-sign ⇒ `signed_scope_hash` recompute mismatches ⇒ `signoff_status: stale` (assert detection; the *blocking* on resume is a Track-2 test, §5).
+- **Incoherence:** forced browser_e2e + `acceptance.mode:off` ⇒ existing driver.py:697-701 hard-fail fires.
+- **Live canary (B3-corrected — POST-OW-2-ADOPTION):** after airecruiter/airplat add a ledger + `covers_req_ids` + `surface`, their UI milestones (airecruiter M4 `presentable-product`, airplat M5) must be **refused-to-sign** until they declare `browser_e2e` — closing the OW-0 bypass. **Pre-adoption they stay dormant** (the mandate cannot bite without the machine-readable signal — that is the honest limit, not a hole).
 
 ---
 
 ## 8. Seals & risks
-
-- **Seals preserved:** ① completeness⇄quality (this gate is about *evidence class*, never reads the verdict's pass/fail); ② Customer authority (waiver + reclassify are Customer-only, signed); ③ advisory-by-default (M3 stays advisory).
-- **Track-2 authz gap relevance:** OW-M3 does NOT extend `§1.7-F` auto-route authority, so it does not depend on the `gap_followup.max_subsprints` fix ([[track2-gap-followup-signing-followup]]). It RELIES on the signed-scope-hash being authoritative — which is exactly the property the Track-2 gap erodes elsewhere; flag for Codex that the `surface`-derived mode must be inside the hash input `H` (`campaign.py:2218-2226`) with no parallel unsigned override.
-- **Friction guard:** refuse-to-sign must emit an actionable message (the three options in §3.2 rule 1), or adopters will bypass via the ledger-absent path — re-creating OW-0's failure.
+- **Seals preserved:** ① completeness⇄quality (the gate reads requirement *surface*, never the verdict's pass/fail); ② Customer authority (reclassify/re-sign only, signed); ③ advisory-by-default (M3 stays advisory).
+- **Track-2 dependency (corrected from rev1):** OW-M3's runtime no-downgrade guarantee **DOES** depend on the Track-2 freshness/signed-input hardening (§5) — rev1's claim that it did not was wrong (Codex B2). The `surface`-derived basis is bound into `H` (B1) so it is in scope for that revalidation.
+- **Friction guard:** refuse-to-sign must emit the two actionable resolutions (§3.2), or adopters bypass via the no-ledger path — re-creating OW-0's failure.
 
 ---
 
-## 9. Citations
-
+## 9. Citations (corrected to worktree/main `2f0095d`)
 | Claim | Anchor |
 |---|---|
-| resolved acceptance mode is in the signed envelope/hash | `campaign.py:2189-2197`, `2218-2239` |
-| per-milestone mode precedence (milestone > charter > static default) | `campaign.py:2169-2181` |
-| covers_req_ids is a signed envelope field | `campaign.py:2194` |
-| F1 is opt-in (signoff block OR covers_req_ids) | `campaign.py:2264-2274` |
-| runtime class reads frozen functional.mode | `driver.py:3160-3168` |
-| browser_e2e + acceptance off ⇒ construction hard-fail | `driver.py:712-716` |
-| M3 always advisory in v1 (no calibration) | `driver.py:3204-3212` |
-| stale signoff blocks the runner | `scope_report.py:342-345` |
+| resolved mode in stored envelope + hash `H` (+ stamp) | `campaign.py:2189-2197`, `2218-2225`, `2251-2259` |
+| mode precedence (milestone > charter > static default) | `campaign.py:2169-2181` |
+| campaign projection materializes resolved mode onto derived charter | `campaign.py:2351-2368` |
+| F1 opt-in (signoff block OR covers_req_ids presence) | `campaign.py:2272-2275` |
+| runtime class reads derived `functional.mode` | `driver.py:3029-3037` |
+| browser_e2e + acceptance off ⇒ construction hard-fail | `driver.py:697-701` |
+| M3 always advisory in v1 (+ advisory halt) | `driver.py:3071-3081`, `4539-4561` |
+| resume re-checks freshness only for campaign_plan_signoff (B2 gap) | `_handle_resume` (campaign.py ~`1691-1697`); initial pause `campaign.py:1894-1907` |
 | ledger surface field target | `schemas/requirement-ledger.schema.json` |
