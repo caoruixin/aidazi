@@ -1778,7 +1778,16 @@ class Campaign:
         # Mechanism B + campaign-level dispatch.
         if reason == "campaign_budget_exhausted":
             if decision.get("choice") == "raise_cap":
-                self.budget = self.plan.get("budget") or {}  # human raised the cap
+                # Track-2 T2-B N3: budget.* is now inside the signed hash H, so a raised
+                # cap is a SIGNED scope change — the human must RE-SIGN the raised budget,
+                # not bump it in memory. On an F1-active plan, re-read the live budget and
+                # gate it through the universal freshness check: a fresh re-sign (the
+                # raised plan was re-stamped) proceeds; an in-memory/unsigned raise stays
+                # stale and re-pauses for re-sign (durable overlay preserves this gate).
+                # Non-F1 plans keep the legacy in-memory bump (byte-identical).
+                self.budget = self.plan.get("budget") or {}  # re-read the (raised) budget
+                if not self._authority_fresh():
+                    return self._block_for_resign(reason)
                 self._audit("campaign_resume_dispatch",
                             {"pause_reason": reason, "action": "raise_cap"})
                 return "proceed"
@@ -2185,7 +2194,10 @@ def _envelope_milestone(charter: Optional[dict], milestone: dict) -> dict:
     """One milestone's RESOLVED scope-envelope entry (design §3.3.1): the scope-bearing
     fields + the RESOLVED acceptance {mode,source} (not the literal, possibly-absent
     functional_acceptance). Absent arrays normalize to [] so absent-vs-empty doesn't
-    churn the hash; acceptance_bar is the string or null."""
+    churn the hash; acceptance_bar is the string or null. Track-2 T2-B: the per-milestone
+    isolation_strategy (legacy/per-milestone branch-vs-worktree authority) joins the
+    entry so a post-sign per-milestone strategy edit flips the hash (resolved to the
+    same precedence the runner reads — absent ⇒ 'inherit')."""
     mode, source = resolve_functional_acceptance(
         charter, milestone.get("functional_acceptance"))
     return {
@@ -2196,25 +2208,85 @@ def _envelope_milestone(charter: Optional[dict], milestone: dict) -> dict:
         "depends_on": list(milestone.get("depends_on") or []),
         "resolved_functional_acceptance": {"mode": mode, "source": source},
         "acceptance_bar": milestone.get("acceptance_bar"),
+        # Track-2 T2-B: per-milestone isolation strategy (branch vs worktree); 'inherit'
+        # when absent (the same default _resolve_milestone_strategy reads).
+        "isolation_strategy": milestone.get("isolation_strategy") or "inherit",
+    }
+
+
+def _resolve_plan_authority(plan: dict) -> dict:
+    """Track-2 T2-B: the RESOLVED top-level authority block bound into the signed hash H
+    (and stored in the scope_envelope). It mirrors the EXACT resolution the runner's
+    constructor applies (Campaign.__init__: budget, milestone_isolation/legacy
+    isolation_strategy, trunk_branch, gap_followup) so a post-sign edit that changes the
+    effective authority — auto-remediation extent, non-progress tolerance, the campaign
+    budget caps, the merge target/gate, worktree/branch placement or cleanup — flips the
+    hash and the plan goes 'stale' until re-signed. Read-sites (campaign.py): budget.* —
+    _over_budget; gap_followup.* — _gap_followup_cfg; trunk_branch + milestone_isolation.*
+    — _ensure_milestone_context / _needs_milestone_merge_gate / _execute_milestone_merge.
+
+    Values are NORMALIZED to the resolved form (defaults filled, legacy isolation_strategy
+    folded into default_strategy) so absent-vs-explicit-default does not churn the hash and
+    so the live re-read (which resolves the same way) compares equal byte-for-byte.
+
+    Additivity: this is ONLY ever inside H/scope_envelope, which signoff_status reads ONLY
+    when f1_required(plan) — a legacy non-F1 plan never reaches this (byte-identical)."""
+    budget = plan.get("budget") or {}
+    iso = plan.get("milestone_isolation") or {}
+    legacy = plan.get("isolation_strategy")
+    default_iso = iso.get("default_strategy")
+    if not default_iso and legacy == "worktree":
+        default_iso = li.STRATEGY_NEW_WORKTREE
+    elif not default_iso and legacy == "shared":
+        default_iso = li.STRATEGY_CURRENT_BRANCH
+    gf = plan.get("gap_followup") or {}
+    return {
+        "budget": {
+            "max_subsprints": budget.get("max_subsprints"),
+            "max_total_spawns": budget.get("max_total_spawns"),
+            "max_wall_clock_minutes": budget.get("max_wall_clock_minutes"),
+        },
+        "gap_followup": {
+            "max_subsprints": gf.get("max_subsprints",
+                                     GAP_FOLLOWUP_DEFAULT_MAX_SUBSPRINTS),
+            "max_no_progress_rounds": gf.get("max_no_progress_rounds",
+                                             GAP_FOLLOWUP_DEFAULT_MAX_NO_PROGRESS),
+        },
+        "trunk_branch": plan.get("trunk_branch") or "main",
+        "milestone_isolation": {
+            "default_strategy": default_iso or li.STRATEGY_CURRENT_BRANCH,
+            "branch_name_template": iso.get("branch_name_template")
+                or "milestone/{campaign_id}/{milestone_id}",
+            "worktree_root": iso.get("worktree_root"),
+            "merge_prompt_at_close": iso.get("merge_prompt_at_close", True),
+            "cleanup_policy": iso.get("cleanup_policy") or li.CLEANUP_KEEP,
+        },
     }
 
 
 def compute_scope_envelope(plan: dict, charter: Optional[dict]) -> dict:
-    """The STORED signed scope-envelope snapshot {goal, milestones:[…]} (design §3.3.1,
-    G4: stored not just hashed, so prior signed coverage is reconstructable for
-    stale-signoff rendering). Milestones are in the plan's DECLARED order (reordering
-    is a scope change → a new hash → stale)."""
+    """The STORED signed scope-envelope snapshot {goal, milestones:[…], authority}
+    (design §3.3.1, G4: stored not just hashed, so prior signed coverage is
+    reconstructable for stale-signoff rendering). Milestones are in the plan's DECLARED
+    order (reordering is a scope change → a new hash → stale). Track-2 T2-B: the resolved
+    top-level `authority` block (budget/gap_followup/trunk_branch/milestone_isolation) is
+    stored alongside so signoff_snapshot_authentic reconstructs the SAME H from the stored
+    envelope (lockstep)."""
     return {
         "goal": plan.get("goal"),
         "milestones": [_envelope_milestone(charter, m)
                        for m in (plan.get("milestones") or [])],
+        "authority": _resolve_plan_authority(plan),
     }
 
 
 def _signed_scope_H(plan: dict, charter: Optional[dict], *,
                     charter_ref: Optional[str], charter_hash: str) -> dict:
     """The EXACT hash-input object H (design §3.3.1): goal/charter_hash live INSIDE H
-    (not concatenated alongside the envelope), so the input is unambiguous."""
+    (not concatenated alongside the envelope), so the input is unambiguous. Track-2 T2-B:
+    H carries the resolved top-level `authority` block, so every authority-bearing plan
+    field (budget/gap_followup/trunk_branch/milestone_isolation/per-milestone
+    isolation_strategy) is inside the SINGLE signed hash."""
     return {
         "version": "v1",
         "campaign_id": plan.get("campaign_id"),
@@ -2223,6 +2295,7 @@ def _signed_scope_H(plan: dict, charter: Optional[dict], *,
         "charter_hash": charter_hash,
         "milestones": [_envelope_milestone(charter, m)
                        for m in (plan.get("milestones") or [])],
+        "authority": _resolve_plan_authority(plan),
     }
 
 
@@ -2300,6 +2373,14 @@ def signoff_snapshot_authentic(plan: Optional[dict]) -> bool:
         "charter_ref": signoff.get("charter_ref"),
         "charter_hash": signoff.get("charter_hash"),
         "milestones": list(snapshot.get("milestones") or []),
+        # Track-2 T2-B lockstep: reconstruct the SAME H from the STORED envelope's
+        # authority block (compute_scope_envelope stores it). A snapshot from before
+        # T2-B has no `authority` key — its stored signed_scope_hash was computed
+        # without one, so reconstructing without it reproduces that hash and the older
+        # snapshot still verifies (the live signoff_status independently flips it to
+        # 'stale' once authority enters H, forcing the one-time re-sign — TD5).
+        **({"authority": snapshot["authority"]}
+           if isinstance(snapshot.get("authority"), dict) else {}),
     }
     recomputed = hashlib.sha256(_canonical_json(H).encode("utf-8")).hexdigest()
     return recomputed == stored

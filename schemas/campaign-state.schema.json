@@ -27,6 +27,15 @@
       }
     },
     "pending_milestone_advance": {"type": "boolean", "default": false, "description": "Internal: the current milestone is DONE but the cursor has NOT advanced yet — waiting at milestone_merge."},
+    "freshness_block": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Track-2 T2-A/B4 — the DURABLE freshness-block overlay. When a mid-run universal F1 freshness gate (_authority_fresh) detects that the signed plan went STALE (a post-sign authority/scope edit, or budget raise without re-sign), the campaign BLOCKS for re-sign as pause_reason='campaign_plan_signoff' WHILE preserving the ORIGINAL gate here, so a post-re-sign resume returns to that original gate (mechanism-A resume, deliver_followup_required, milestone_merge, decision-bound checkpoints). It is persisted campaign-state (NOT an in-memory flag) so a crash mid-block never loses the original gate. Additive; absent/null ⇒ no freshness block is active (byte-identical to today).",
+      "properties": {
+        "original_pause_reason": {"type": ["string", "null"], "description": "The pause_reason the campaign was at when the freshness gate fired — restored verbatim on a post-re-sign resume."},
+        "original_pause_checkpoint": {"type": ["string", "null"], "description": "The pause_checkpoint that accompanied original_pause_reason — restored alongside it so the original gate's decision file/nonce binding is unchanged."}
+      }
+    },
     "gap_followup_state": {
       "type": "object",
       "additionalProperties": false,
