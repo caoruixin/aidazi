@@ -48,11 +48,16 @@ git delta and emits a small briefing); only the compact briefing enters context.
   `process/codebase-map.md` to localize; ignore if unhelpful"). Works with zero hooks, any harness.
 
 Constraints on the entries: maintainer-only (excluded from adopter vendoring, like the old wiring);
-**must not depend on Claude Code MEMORY; must not require a human to run a script.**
+**must not depend on Claude Code MEMORY; must not require a human to run a script.** Every entry
+must be **fail-open and bounded-time**: on any internal error, missing map, or timeout it exits
+success and injects nothing — never a non-zero exit, never a stall. A thin entry can only ever add
+context; it has no code path that returns failure to the harness.
 
 ## 4. Behavior contract (binding)
 
-1. At session start, or on the first coding task, the agent auto-loads the map index.
+1. At session start, or on the first coding task, a thin read-only entry loads the map index
+   **out-of-context** — the full map file is read by the entry/script, NOT injected — and surfaces
+   only a compact briefing into the session.
 2. It selects the relevant sections from the task.
 3. It uses `git diff <map_checkpoint>..HEAD` to decide which sections need re-verification.
 4. It outputs a compact briefing + suggested read paths (never a full-map dump).
