@@ -1441,6 +1441,11 @@ class TestF1HashSpec(unittest.TestCase):
     def test_hash_matches_the_exact_spec_object(self):
         import hashlib
         plan = _plan([_covms("m1", ["s1"], ["REQ-1"])], signed_by_human=False)
+        # Track-2 T2-B: H now carries the per-milestone resolved isolation_strategy AND the
+        # RESOLVED top-level `authority` block (budget/gap_followup/trunk_branch/
+        # milestone_isolation), so a post-sign edit to ANY authority-bearing plan field
+        # flips the single signed hash. The expected object pins the EXACT canonical spec
+        # (defaults filled to the resolved form so absent-vs-explicit-default never churns).
         H = {"version": "v1", "campaign_id": "camp-1", "goal": "deliver the thing",
              "charter_ref": "ch", "charter_hash": cp._canonical_sha256(_STATIC_CHARTER),
              "milestones": [{"id": "m1", "objective": "o m1",
@@ -1448,7 +1453,18 @@ class TestF1HashSpec(unittest.TestCase):
                              "depends_on": [],
                              "resolved_functional_acceptance":
                                  {"mode": "static", "source": "charter"},
-                             "acceptance_bar": None}]}
+                             "acceptance_bar": None,
+                             "isolation_strategy": "inherit"}],
+             "authority": {
+                 "budget": {"max_subsprints": None, "max_total_spawns": None,
+                            "max_wall_clock_minutes": None},
+                 "gap_followup": {"max_subsprints": 3, "max_no_progress_rounds": 1},
+                 "trunk_branch": "main",
+                 "milestone_isolation": {
+                     "default_strategy": "current_branch",
+                     "branch_name_template": "milestone/{campaign_id}/{milestone_id}",
+                     "worktree_root": None, "merge_prompt_at_close": True,
+                     "cleanup_policy": "keep"}}}
         expected = hashlib.sha256(
             json.dumps(H, sort_keys=True, separators=(",", ":"),
                        ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -2371,6 +2387,648 @@ class TestGapFollowupStateRoundTrip(unittest.TestCase):
         back = cp.CampaignState.from_dict(st.to_dict())
         self.assertEqual(back.gap_followup_state, gfs)
         cp._validate_or_raise(st.to_dict(), "campaign-state.schema.json", "state")
+
+
+# --------------------------------------------------------------------------- #
+# Track-2 freshness / signed-input hardening (design rev3 §2; Codex R1-R3 APPROVE).
+# --------------------------------------------------------------------------- #
+def _signed_f1(ms=None, charter=_STATIC_CHARTER, **extra):
+    """An F1-active, freshly-signed campaign plan (covers_req_ids ⇒ F1; signoff block via
+    stamp_signoff)."""
+    ms = ms if ms is not None else [_covms("m1", ["s1"], ["REQ-1"])]
+    return cp.stamp_signoff(_plan(ms, **extra), charter, signed_at="t")
+
+
+class TestTrack2SignedInputCoverage(unittest.TestCase):
+    """T2-B: every authority-bearing plan field is inside the SINGLE signed hash H, so a
+    post-sign edit flips signoff_status to 'stale' (Codex R1 B1/B2, R2-confirmed complete)."""
+
+    def _stale_after(self, mutate):
+        signed = _signed_f1()
+        self.assertEqual(cp.signoff_status(signed, _STATIC_CHARTER), "signed")
+        mutate(signed)
+        return cp.signoff_status(signed, _STATIC_CHARTER)
+
+    def test_add_budget_after_signoff_is_stale(self):
+        def m(p): p["budget"] = {"max_subsprints": 5}
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_raise_gap_followup_after_signoff_is_stale(self):
+        def m(p): p["gap_followup"] = {"max_subsprints": 9}
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_raise_gap_followup_no_progress_after_signoff_is_stale(self):
+        def m(p): p["gap_followup"] = {"max_no_progress_rounds": 4}
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_flip_trunk_branch_after_signoff_is_stale(self):
+        def m(p): p["trunk_branch"] = "develop"   # redirect the merge TARGET
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_disable_merge_prompt_after_signoff_is_stale(self):
+        # Flipping merge_prompt_at_close DISABLES the human merge gate (§1.7-D) — must stale.
+        def m(p): p["milestone_isolation"] = {"merge_prompt_at_close": False}
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_flip_cleanup_policy_after_signoff_is_stale(self):
+        def m(p): p["milestone_isolation"] = {"cleanup_policy": "remove_if_merged"}
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_flip_default_strategy_after_signoff_is_stale(self):
+        def m(p): p["milestone_isolation"] = {"default_strategy": "new_worktree"}
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_flip_branch_template_after_signoff_is_stale(self):
+        def m(p): p["milestone_isolation"] = {"branch_name_template": "x/{milestone_id}"}
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_set_worktree_root_after_signoff_is_stale(self):
+        def m(p): p["milestone_isolation"] = {"worktree_root": "/tmp/wt"}
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_flip_per_milestone_isolation_after_signoff_is_stale(self):
+        def m(p): p["milestones"][0]["isolation_strategy"] = "new_worktree"
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_legacy_isolation_strategy_resolves_into_authority(self):
+        # The deprecated top-level isolation_strategy folds into the resolved default; a
+        # post-sign change to it flips the resolved authority ⇒ stale.
+        def m(p): p["isolation_strategy"] = "worktree"   # legacy alias → new_worktree
+        self.assertEqual(self._stale_after(m), "stale")
+
+    def test_authority_default_no_churn(self):
+        # Absent vs explicit-default authority hash identically (the resolved form is
+        # canonical, so a no-op edit never forces a re-sign).
+        bare = cp._resolve_plan_authority(
+            {"campaign_id": "c", "goal": "g", "milestones": []})
+        explicit = cp._resolve_plan_authority({
+            "campaign_id": "c", "goal": "g", "milestones": [],
+            "gap_followup": {"max_subsprints": 3, "max_no_progress_rounds": 1},
+            "trunk_branch": "main",
+            "milestone_isolation": {"default_strategy": "current_branch",
+                                    "merge_prompt_at_close": True,
+                                    "cleanup_policy": "keep"}})
+        self.assertEqual(cp._canonical_json(bare), cp._canonical_json(explicit))
+
+    def test_snapshot_authentic_includes_authority(self):
+        # The stored snapshot's authority block is part of the reconstructed H — tampering
+        # it (while leaving signed_scope_hash) breaks self-consistency (lockstep, N1).
+        signed = _signed_f1()
+        self.assertTrue(cp.signoff_snapshot_authentic(signed))
+        tampered = json.loads(json.dumps(signed))
+        tampered["signoff"]["scope_envelope"]["authority"]["trunk_branch"] = "evil"
+        self.assertFalse(cp.signoff_snapshot_authentic(tampered))
+
+    def test_signed_plan_with_authority_validates_against_schema(self):
+        # A freshly-signed plan (authority + per-milestone isolation_strategy in the stored
+        # envelope) passes campaign-plan.schema.json ingress (Campaign.__init__).
+        with tempfile.TemporaryDirectory() as d:
+            cp.Campaign(_signed_f1(), d, _fake_run_unit({}), clock=_clock(),
+                        charter=_STATIC_CHARTER)   # no raise ⇒ schema-valid
+
+
+class TestTrack2FreshnessGate(unittest.TestCase):
+    """T2-A: a universal F1 freshness precondition before every act-on-signed-scope site,
+    with a DURABLE overlay that preserves the original gate (B4/B5)."""
+
+    def _resolver(self, mapping):
+        return lambda reason, cpt: mapping.get(reason)
+
+    def _stale(self, signed, mutate):
+        stale = json.loads(json.dumps(signed))
+        mutate(stale)
+        return stale
+
+    def test_non_f1_authority_always_fresh(self):
+        # A legacy non-F1 plan never reaches the F1 gate — _authority_fresh is always True
+        # (byte-identical to today), even unsigned.
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}],
+                         signed_by_human=False)
+            c = cp.Campaign(plan, d, _fake_run_unit({}), clock=_clock())
+            self.assertTrue(c._authority_fresh())
+
+    def test_cursor_advance_blocks_on_stale_then_resumes(self):
+        with tempfile.TemporaryDirectory() as d:
+            signed = _signed_f1()
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_surface_approve"}}
+            paused = cp.run_campaign(signed, d, _fake_run_unit(script), clock=_clock(),
+                                     charter=_STATIC_CHARTER)
+            self.assertEqual(paused.pause_reason, "acceptance_surface_approve")
+            # Edit the plan AFTER signoff → stale → a ship decision must NOT advance; it
+            # blocks for re-sign while PRESERVING the acceptance gate (B4 overlay).
+            stale = self._stale(signed,
+                                lambda p: p["milestones"][0].__setitem__("objective", "X"))
+            blocked = cp.run_campaign(
+                stale, d, _fake_run_unit(script), clock=_clock(), charter=_STATIC_CHARTER,
+                resume=True, decision_resolver=self._resolver(
+                    {"acceptance_surface_approve": {"choice": "approve_ship"}}))
+            self.assertEqual(blocked.status, cp.STATUS_PAUSED)
+            self.assertEqual(blocked.pause_reason, "campaign_plan_signoff")
+            self.assertIsNotNone(blocked.freshness_block)
+            self.assertEqual(blocked.freshness_block["original_pause_reason"],
+                             "acceptance_surface_approve")
+            # Re-sign the edited plan → resume → the ORIGINAL acceptance gate ships → done.
+            resigned = cp.stamp_signoff(stale, _STATIC_CHARTER, signed_at="t2")
+            done = cp.run_campaign(
+                resigned, d, _fake_run_unit(script), clock=_clock(),
+                charter=_STATIC_CHARTER, resume=True, decision_resolver=self._resolver(
+                    {"acceptance_surface_approve": {"choice": "approve_ship"}}))
+            self.assertEqual(done.status, cp.STATUS_DONE)
+            self.assertIsNone(done.freshness_block)   # overlay consumed
+
+    def test_redispatch_fresh_blocks_on_stale(self):
+        with tempfile.TemporaryDirectory() as d:
+            signed = _signed_f1()
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_cleanup_required"}}
+            cp.run_campaign(signed, d, _fake_run_unit(script), clock=_clock(),
+                            charter=_STATIC_CHARTER)
+            stale = self._stale(signed,
+                                lambda p: p["milestones"][0].__setitem__("objective", "X"))
+            blocked = cp.run_campaign(
+                stale, d, _fake_run_unit(script), clock=_clock(), charter=_STATIC_CHARTER,
+                resume=True, decision_resolver=self._resolver(
+                    {"acceptance_cleanup_required": {"choice": "retry_cleanup"}}))
+            self.assertEqual(blocked.pause_reason, "campaign_plan_signoff")
+            self.assertEqual(blocked.freshness_block["original_pause_reason"],
+                             "acceptance_cleanup_required")
+
+    def test_driver_resume_blocks_on_stale(self):
+        with tempfile.TemporaryDirectory() as d:
+            signed = _signed_f1()
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "dev_spec_refinement"}}
+            cp.run_campaign(signed, d, _fake_run_unit(script), clock=_clock(),
+                            charter=_STATIC_CHARTER)
+            self.assertEqual(cp.classify_checkpoint("dev_spec_refinement"),
+                             cp.RESUME_DRIVER)
+            stale = self._stale(signed,
+                                lambda p: p["milestones"][0].__setitem__("objective", "X"))
+            blocked = cp.run_campaign(
+                stale, d, _fake_run_unit(script), clock=_clock(), charter=_STATIC_CHARTER,
+                resume=True, decision_resolver=self._resolver(
+                    {"dev_spec_refinement": {"choice": "x"}}))
+            self.assertEqual(blocked.pause_reason, "campaign_plan_signoff")
+            self.assertEqual(blocked.freshness_block["original_pause_reason"],
+                             "dev_spec_refinement")
+
+    def test_per_dispatch_gate_blocks_before_run_unit(self):
+        # The fresh-dispatch gate is read-only and fires BEFORE run_unit — a stale plan
+        # blocks without ever dispatching (proven by a run_unit that raises if called).
+        with tempfile.TemporaryDirectory() as d:
+            signed = _signed_f1([_covms("m1", ["s1", "s2"], ["REQ-1"])])
+
+            def boom(*a, **k):
+                raise AssertionError("run_unit must not be called on a stale dispatch")
+            c = cp.Campaign(signed, d, boom, clock=_clock(), charter=_STATIC_CHARTER)
+            c.plan["milestones"][0]["objective"] = "EDITED"   # make it stale mid-flight
+            c.state.status = cp.STATUS_RUNNING
+            c._pending_driver_resume = False
+            c._crash_recovery = False
+            c._base_wall = 0.0
+            c._invocation_start = c.clock()
+            out = c._drive_milestones()
+            self.assertIsNotNone(out)
+            self.assertEqual(out.pause_reason, "campaign_plan_signoff")
+            self.assertIsNotNone(out.freshness_block)
+            # A mid-drive block has NO original gate to restore.
+            self.assertIsNone(out.freshness_block["original_pause_reason"])
+
+    def test_post_signoff_decompose_blocks_at_dispatch(self):
+        # milestone_decompose_required has no freshness gate of its own (it just surfaces
+        # authoring); a post-sign decompose that FILLS an empty subsprint_sequence is a scope
+        # change ⇒ stale, and the UNCONDITIONAL per-dispatch gate catches it before run_unit.
+        with tempfile.TemporaryDirectory() as d:
+            signed = cp.stamp_signoff(
+                _plan([{"id": "m1", "objective": "o", "subsprint_sequence": [],
+                        "covers_req_ids": ["REQ-1"]}]), _STATIC_CHARTER, signed_at="t")
+
+            def boom(*a, **k):
+                raise AssertionError("must not dispatch a post-sign decompose unsigned")
+            st = cp.run_campaign(json.loads(json.dumps(signed)), d, boom, clock=_clock(),
+                                 charter=_STATIC_CHARTER)
+            self.assertEqual(st.pause_reason, "milestone_decompose_required")
+            decomposed = self._stale(
+                signed,
+                lambda p: p["milestones"][0].__setitem__("subsprint_sequence", ["s1"]))
+            out = cp.run_campaign(decomposed, d, boom, clock=_clock(),
+                                  charter=_STATIC_CHARTER, resume=True)
+            self.assertEqual(out.pause_reason, "campaign_plan_signoff")
+            self.assertIsNotNone(out.freshness_block)
+
+    def test_crash_recovery_blocks_on_stale(self):
+        # Codex R1 B1: a STATUS_RUNNING crash-recovery whose cursor points at a NOT-YET-RUN
+        # next unit (e.g. after a §3.5c-barrier cursor advance) must NOT dispatch under stale
+        # signed scope — the per-dispatch gate is unconditional, so it blocks for re-sign.
+        with tempfile.TemporaryDirectory() as d:
+            signed = _signed_f1([_covms("m1", ["s1", "s2"], ["REQ-1"])])
+            # Prime a crashed RUNNING state: s1 recorded+advanced, cursor at s2 (never run).
+            c0 = cp.Campaign(json.loads(json.dumps(signed)), d, _fake_run_unit({}),
+                             clock=_clock(), charter=_STATIC_CHARTER)
+            c0.state.status = cp.STATUS_RUNNING
+            c0.state.subsprint_index = 1
+            c0.state.units = [{"milestone_id": "m1", "subsprint_id": "s1",
+                               "status": "done", "final_state": "advance"}]
+            c0._save()
+
+            def boom(*a, **k):
+                raise AssertionError("must not dispatch stale scope on crash recovery")
+            stale = self._stale(signed,
+                                lambda p: p["milestones"][0].__setitem__("objective", "X"))
+            out = cp.run_campaign(stale, d, boom, clock=_clock(),
+                                  charter=_STATIC_CHARTER, resume=True)
+            self.assertEqual(out.pause_reason, "campaign_plan_signoff")
+            self.assertIsNotNone(out.freshness_block)
+
+    def test_crash_recovery_proceeds_when_fresh(self):
+        # Control: the unconditional gate is a NO-OP for a still-signed plan — crash recovery
+        # re-dispatches the cursor unit normally.
+        with tempfile.TemporaryDirectory() as d:
+            signed = _signed_f1([_covms("m1", ["s1", "s2"], ["REQ-1"])])
+            c0 = cp.Campaign(json.loads(json.dumps(signed)), d, _fake_run_unit({}),
+                             clock=_clock(), charter=_STATIC_CHARTER)
+            c0.state.status = cp.STATUS_RUNNING
+            c0.state.subsprint_index = 1
+            c0.state.units = [{"milestone_id": "m1", "subsprint_id": "s1",
+                               "status": "done", "final_state": "advance"}]
+            c0._save()
+            script = {"s2": {"final_state": "done", "spawn_count": 1}}
+            done = cp.run_campaign(json.loads(json.dumps(signed)), d,
+                                   _fake_run_unit(script), clock=_clock(),
+                                   charter=_STATIC_CHARTER, resume=True)
+            self.assertEqual(done.status, cp.STATUS_DONE)
+            self.assertIsNone(done.freshness_block)
+
+    def test_raise_cap_requires_resign(self):
+        # N3: budget.* is now in H, so a raised cap is a SIGNED scope change — raise_cap on
+        # an un-re-signed raised budget blocks; re-signing the raised budget proceeds.
+        with tempfile.TemporaryDirectory() as d:
+            signed = _signed_f1([_covms("m1", ["s1", "s2"], ["REQ-1"])],
+                                budget={"max_subsprints": 1})
+            script = {"s1": {"final_state": "advance", "spawn_count": 1},
+                      "s2": {"final_state": "done", "spawn_count": 1}}
+            paused = cp.run_campaign(signed, d, _fake_run_unit(script), clock=_clock(),
+                                     charter=_STATIC_CHARTER)
+            self.assertEqual(paused.pause_reason, "campaign_budget_exhausted")
+            # Raise the cap WITHOUT re-signing → stale → raise_cap blocks for re-sign.
+            raised = self._stale(
+                signed, lambda p: p.__setitem__("budget", {"max_subsprints": 5}))
+            blocked = cp.run_campaign(
+                raised, d, _fake_run_unit(script), clock=_clock(), charter=_STATIC_CHARTER,
+                resume=True, decision_resolver=self._resolver(
+                    {"campaign_budget_exhausted": {"choice": "raise_cap"}}))
+            self.assertEqual(blocked.pause_reason, "campaign_plan_signoff")
+            self.assertEqual(blocked.freshness_block["original_pause_reason"],
+                             "campaign_budget_exhausted")
+            # Re-sign the raised budget → resume raise_cap → proceeds → s2 → done.
+            resigned = cp.stamp_signoff(raised, _STATIC_CHARTER, signed_at="t2")
+            done = cp.run_campaign(
+                resigned, d, _fake_run_unit(script), clock=_clock(),
+                charter=_STATIC_CHARTER, resume=True, decision_resolver=self._resolver(
+                    {"campaign_budget_exhausted": {"choice": "raise_cap"}}))
+            self.assertEqual(done.status, cp.STATUS_DONE)
+
+
+class TestTrack2DeliverFollowupRestamp(unittest.TestCase):
+    """TD6: the ONE legitimate engine-authored delta (a deliver_followup insertion at
+    cursor+1) advances the SINGLE signed epoch via a guarded engine re-stamp — never a human
+    re-sign, never a plan-file write-back; any OTHER delta refuses the re-stamp."""
+
+    def _resolver(self, mapping):
+        return lambda reason, cpt: mapping.get(reason)
+
+    # The "plan file on disk": each campaign invocation re-loads it FRESH (run_loop.py
+    # json.loads), so the engine's in-memory re-stamp NEVER carries across invocations.
+    # These helpers model that faithfully — every run() gets a deep copy, and a Deliver
+    # insertion mutates ONLY the on-disk plan (its signoff block stays the original).
+    @staticmethod
+    def _fresh(pf):
+        return json.loads(json.dumps(pf))
+
+    def _to_followup(self, d, pf, script):
+        """Drive to a deliver_followup_required pause (s1 → fix → followup route)."""
+        cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
+                        charter=_STATIC_CHARTER)
+        paused = cp.run_campaign(
+            self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
+            charter=_STATIC_CHARTER, resume=True, decision_resolver=self._resolver(
+                {"acceptance_fix_required": {"confirm": "yes",
+                                             "route": "deliver_fix_iteration"}}))
+        self.assertEqual(paused.pause_reason, "deliver_followup_required")
+
+    def test_legit_insertion_restamps_and_proceeds(self):
+        with tempfile.TemporaryDirectory() as d:
+            pf = _signed_f1([_covms("m1", ["s1"], ["REQ-1"])])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_fix_required"},
+                      "s_fix": {"final_state": "done", "spawn_count": 1}}
+            self._to_followup(d, pf, script)
+            # Deliver INSERTS s_fix at cursor+1 in the PLAN FILE (the ONE authorized delta);
+            # its signoff block is untouched (engine never writes it back) → re-stamp.
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix"]
+            done = cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script),
+                                   clock=_clock(), charter=_STATIC_CHARTER, resume=True)
+            self.assertEqual(done.status, cp.STATUS_DONE)
+            # Provenance recorded to campaign STATE (not the plan file); pinned hash present.
+            self.assertIsNotNone(done.engine_restamp)
+            self.assertEqual(done.engine_restamp["restamp_version"], 1)
+            self.assertEqual(len(done.engine_restamp["deltas"]), 1)
+            self.assertEqual(done.engine_restamp["deltas"][0]["subsprint_id"], "s_fix")
+            self.assertEqual(done.engine_restamp["signed_scope_hash"],
+                             cp.compute_signed_scope_hash(
+                                 pf, _STATIC_CHARTER,
+                                 charter_ref=pf["signoff"].get("charter_ref")))
+
+    def test_restamp_survives_across_invocation(self):
+        with tempfile.TemporaryDirectory() as d:
+            pf = _signed_f1([_covms("m1", ["s1"], ["REQ-1"])])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_fix_required"},
+                      "s_fix": {"final_state": "halted", "spawn_count": 1,
+                                "pause_reason": "advisory_acceptance_pass_signoff"}}
+            self._to_followup(d, pf, script)
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix"]
+            # Invocation A: re-stamp fires, dispatches s_fix → it halts; epoch persisted.
+            mid = cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script),
+                                  clock=_clock(), charter=_STATIC_CHARTER, resume=True)
+            self.assertEqual(mid.pause_reason, "advisory_acceptance_pass_signoff")
+            self.assertIsNotNone(mid.engine_restamp)
+            # Invocation B is a TRULY fresh load (the plan file still carries the OLD signoff
+            # over [s1]): the epoch is RE-APPLIED deterministically (E* = e0 + deltas) so the
+            # cursor-advancing ship gate sees 'signed' (no spurious re-sign block) → done.
+            done = cp.run_campaign(
+                self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
+                charter=_STATIC_CHARTER, resume=True, decision_resolver=self._resolver(
+                    {"advisory_acceptance_pass_signoff": {"choice": "ship"}}))
+            self.assertEqual(done.status, cp.STATUS_DONE)
+
+    def test_further_edit_after_restamp_blocks(self):
+        with tempfile.TemporaryDirectory() as d:
+            pf = _signed_f1([_covms("m1", ["s1"], ["REQ-1"])])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_fix_required"},
+                      "s_fix": {"final_state": "halted", "spawn_count": 1,
+                                "pause_reason": "advisory_acceptance_pass_signoff"}}
+            self._to_followup(d, pf, script)
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix"]
+            cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
+                            charter=_STATIC_CHARTER, resume=True)   # re-stamp + persist
+            # A FURTHER unauthorized edit (beyond the authorized insertion) makes the LIVE
+            # plan diverge from E* (live hash ≠ pinned) → re-apply no-ops → stale → block.
+            pf["milestones"][0]["objective"] = "EDITED AFTER RESTAMP"
+            blocked = cp.run_campaign(
+                self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
+                charter=_STATIC_CHARTER, resume=True, decision_resolver=self._resolver(
+                    {"advisory_acceptance_pass_signoff": {"choice": "ship"}}))
+            self.assertEqual(blocked.pause_reason, "campaign_plan_signoff")
+
+    def test_two_followups_each_restamp_one_epoch(self):
+        # TWO sequential deliver_followup insertions, each in a TRULY fresh invocation: each
+        # advances the SINGLE epoch by ONE delta. The second re-stamp validates its insertion
+        # against the FIRST authorized epoch (E* = e0 + delta1, reconstructed each run), NOT
+        # the original — so it is not mistaken for a two-item edit.
+        with tempfile.TemporaryDirectory() as d:
+            pf = _signed_f1([_covms("m1", ["s1"], ["REQ-1"])])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_fix_required"},
+                      "s_fix1": {"final_state": "halted", "spawn_count": 1,
+                                 "pause_reason": "acceptance_fix_required"},
+                      "s_fix2": {"final_state": "done", "spawn_count": 1}}
+            fix = self._resolver({"acceptance_fix_required":
+                                  {"confirm": "yes", "route": "deliver_fix_iteration"}})
+            cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
+                            charter=_STATIC_CHARTER)
+            cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
+                            charter=_STATIC_CHARTER, resume=True, decision_resolver=fix)
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix1"]   # 1st insert
+            cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
+                            charter=_STATIC_CHARTER, resume=True)   # re-stamp v1, s_fix1 halts
+            cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
+                            charter=_STATIC_CHARTER, resume=True, decision_resolver=fix)
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix1", "s_fix2"]  # 2nd
+            done = cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script),
+                                   clock=_clock(), charter=_STATIC_CHARTER, resume=True)
+            self.assertEqual(done.status, cp.STATUS_DONE)
+            self.assertEqual(done.engine_restamp["restamp_version"], 2)
+            self.assertEqual([x["subsprint_id"] for x in done.engine_restamp["deltas"]],
+                             ["s_fix1", "s_fix2"])
+
+    _FIX_SCRIPT = {"s1": {"final_state": "halted", "spawn_count": 1,
+                          "pause_reason": "acceptance_fix_required"},
+                   "s_fix": {"final_state": "done", "spawn_count": 1}}
+
+    def _assert_followup_refused(self, d, pf):
+        """Resume after a plan mutation that is NOT a clean cursor+1 insertion → the re-stamp
+        REFUSES → block for re-sign, no epoch advance."""
+        blocked = cp.run_campaign(self._fresh(pf), d, _fake_run_unit(self._FIX_SCRIPT),
+                                  clock=_clock(), charter=_STATIC_CHARTER, resume=True)
+        self.assertEqual(blocked.status, cp.STATUS_PAUSED)
+        self.assertEqual(blocked.pause_reason, "campaign_plan_signoff")
+        self.assertEqual(blocked.freshness_block["original_pause_reason"],
+                         "deliver_followup_required")
+        self.assertIsNone(blocked.engine_restamp)   # no epoch advance on a refused delta
+
+    def test_insertion_with_other_diff_refuses_restamp(self):
+        with tempfile.TemporaryDirectory() as d:
+            pf = _signed_f1([_covms("m1", ["s1"], ["REQ-1"])])
+            self._to_followup(d, pf, self._FIX_SCRIPT)
+            # Insert s_fix at cursor+1 BUT ALSO smuggle a Customer scope change (covers) →
+            # the guard's "no other delta" clause fails → re-stamp REFUSES → block.
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix"]
+            pf["milestones"][0]["covers_req_ids"] = ["REQ-1", "REQ-2"]
+            self._assert_followup_refused(d, pf)
+
+    def test_insertion_with_charter_drift_refuses_restamp(self):
+        # Codex R1 B2: a clean cursor+1 insertion PAIRED with a charter change (charter_hash
+        # lives inside H but a non-acceptance-flipping charter edit need not show in the
+        # envelope) must NOT be laundered by the re-stamp → refuse → block.
+        with tempfile.TemporaryDirectory() as d:
+            pf = _signed_f1([_covms("m1", ["s1"], ["REQ-1"])])
+            self._to_followup(d, pf, self._FIX_SCRIPT)
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix"]
+            drifted = {"tooling": {"acceptance": {"functional": {"mode": "static"}}},
+                       "extra": "CHARTER EDITED AFTER SIGNOFF"}  # changes charter_hash, not mode
+            blocked = cp.run_campaign(self._fresh(pf), d,
+                                      _fake_run_unit(self._FIX_SCRIPT), clock=_clock(),
+                                      charter=drifted, resume=True)
+            self.assertEqual(blocked.pause_reason, "campaign_plan_signoff")
+            self.assertIsNone(blocked.engine_restamp)
+
+    def test_insertion_with_signed_by_human_flip_refuses_restamp(self):
+        # Codex R1 B2: a clean cursor+1 insertion PAIRED with signed_by_human flipped off is
+        # a re-authorization, not an engine delta → the re-stamp requires a genuine human
+        # signature → refuse → block (never dispatch an un-human-signed plan).
+        with tempfile.TemporaryDirectory() as d:
+            pf = _signed_f1([_covms("m1", ["s1"], ["REQ-1"])])
+            self._to_followup(d, pf, self._FIX_SCRIPT)
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix"]
+            pf["signoff"]["signed_by_human"] = False
+            self._assert_followup_refused(d, pf)
+
+    def test_human_resign_supersedes_engine_epoch(self):
+        # Codex R2 B1: engine re-stamp v1 → a HUMAN re-signs the grown plan → a SECOND
+        # follow-up must restamp a CLEAN chain from the new human baseline (the obsolete v1
+        # delta is DROPPED on re-sign), so a later fresh invocation reconstructs E* correctly
+        # and does NOT spuriously block.
+        with tempfile.TemporaryDirectory() as d:
+            pf = _signed_f1([_covms("m1", ["s1"], ["REQ-1"])])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_fix_required"},
+                      "s_fix1": {"final_state": "halted", "spawn_count": 1,
+                                 "pause_reason": "acceptance_fix_required"},
+                      "s_fix2": {"final_state": "halted", "spawn_count": 1,
+                                 "pause_reason": "advisory_acceptance_pass_signoff"}}
+            fix = self._resolver({"acceptance_fix_required":
+                                  {"confirm": "yes", "route": "deliver_fix_iteration"}})
+            ship = self._resolver({"advisory_acceptance_pass_signoff": {"choice": "ship"}})
+
+            def fresh():
+                return json.loads(json.dumps(pf))
+            cp.run_campaign(fresh(), d, _fake_run_unit(script), clock=_clock(),
+                            charter=_STATIC_CHARTER)
+            cp.run_campaign(fresh(), d, _fake_run_unit(script), clock=_clock(),
+                            charter=_STATIC_CHARTER, resume=True, decision_resolver=fix)
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix1"]   # Deliver insert #1
+            a = cp.run_campaign(fresh(), d, _fake_run_unit(script), clock=_clock(),
+                                charter=_STATIC_CHARTER, resume=True)   # engine re-stamp v1
+            self.assertEqual(a.engine_restamp["restamp_version"], 1)
+            # HUMAN re-signs the grown plan (folds s_fix1 into a new signed baseline).
+            pf = cp.stamp_signoff(pf, _STATIC_CHARTER, signed_at="t2")
+            # Resume the s_fix1 acceptance gate → route to a SECOND deliver_followup. The
+            # re-sign supersedes the v1 epoch, so engine_restamp is dropped.
+            b = cp.run_campaign(fresh(), d, _fake_run_unit(script), clock=_clock(),
+                                charter=_STATIC_CHARTER, resume=True, decision_resolver=fix)
+            self.assertEqual(b.pause_reason, "deliver_followup_required")
+            self.assertIsNone(b.engine_restamp)
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix1", "s_fix2"]   # insert #2
+            c = cp.run_campaign(fresh(), d, _fake_run_unit(script), clock=_clock(),
+                                charter=_STATIC_CHARTER, resume=True)   # CLEAN chain re-stamp
+            self.assertEqual(c.engine_restamp["restamp_version"], 1)   # not v2
+            self.assertEqual([x["subsprint_id"] for x in c.engine_restamp["deltas"]],
+                             ["s_fix2"])
+            # FINAL fresh invocation: E* reconstructs without double-applying s_fix1 → ship.
+            done = cp.run_campaign(fresh(), d, _fake_run_unit(script), clock=_clock(),
+                                   charter=_STATIC_CHARTER, resume=True, decision_resolver=ship)
+            self.assertEqual(done.status, cp.STATUS_DONE)
+
+    def test_scope_report_honors_engine_restamp(self):
+        # Codex R2 B2: external requirement-coverage reporting must honor the authorized
+        # engine epoch from campaign state (the SAME pure reconstruction the runner uses), so
+        # it never reports 'stale' while the runner treats the re-stamped plan as 'signed'.
+        import scope_report as sr
+        with tempfile.TemporaryDirectory() as d:
+            pf = _signed_f1([_covms("m1", ["s1"], ["REQ-1"])])
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_fix_required"},
+                      "s_fix": {"final_state": "halted", "spawn_count": 1,
+                                "pause_reason": "advisory_acceptance_pass_signoff"}}
+            self._to_followup(d, pf, script)
+            pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix"]
+            mid = cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
+                                  charter=_STATIC_CHARTER, resume=True)   # engine re-stamp
+            self.assertIsNotNone(mid.engine_restamp)
+            ledger = {"version": "v1", "requirements": [
+                {"id": "REQ-1", "statement": "s", "source": {"channel": "prd"},
+                 "customer_disposition": "accepted"}]}
+            # The RAW plan file still carries the ORIGINAL signoff over [s1]; honoring the
+            # state's engine_restamp, scope_report reports 'signed' (matches the runner).
+            cov = sr.compute_requirement_coverage(
+                self._fresh(pf), mid.to_dict(), ledger, charter=_STATIC_CHARTER)
+            self.assertEqual(cov["signoff_status"], "signed")
+            # Control: drop the engine_restamp from state ⇒ scope_report correctly sees stale.
+            st_no_restamp = {**mid.to_dict(), "engine_restamp": None}
+            cov_raw = sr.compute_requirement_coverage(
+                self._fresh(pf), st_no_restamp, ledger, charter=_STATIC_CHARTER)
+            self.assertEqual(cov_raw["signoff_status"], "stale")
+
+
+class TestTrack2FreshnessBlockDurability(unittest.TestCase):
+    """B4/N1: the freshness-block overlay is DURABLE campaign-state — it survives a crash/
+    reload and a re-pause, never losing the original gate."""
+
+    def _resolver(self, mapping):
+        return lambda reason, cpt: mapping.get(reason)
+
+    def test_overlay_round_trips_through_load(self):
+        with tempfile.TemporaryDirectory() as d:
+            signed = _signed_f1()
+            script = {"s1": {"final_state": "halted", "spawn_count": 1,
+                             "pause_reason": "acceptance_surface_approve"}}
+            cp.run_campaign(signed, d, _fake_run_unit(script), clock=_clock(),
+                            charter=_STATIC_CHARTER)
+            stale = json.loads(json.dumps(signed))
+            stale["milestones"][0]["objective"] = "X"
+            blocked = cp.run_campaign(
+                stale, d, _fake_run_unit(script), clock=_clock(), charter=_STATIC_CHARTER,
+                resume=True, decision_resolver=self._resolver(
+                    {"acceptance_surface_approve": {"choice": "approve_ship"}}))
+            self.assertEqual(blocked.pause_reason, "campaign_plan_signoff")
+            # The persisted state.json is schema-valid AND carries the overlay (durable).
+            with open(os.path.join(d, "campaign-state.json"), encoding="utf-8") as fh:
+                persisted = json.load(fh)
+            cp._validate_or_raise(persisted, "campaign-state.schema.json", "state")
+            self.assertEqual(persisted["freshness_block"]["original_pause_reason"],
+                             "acceptance_surface_approve")
+            # Crash-replay: resume STILL stale (no re-sign) → re-pause, overlay PRESERVED.
+            again = cp.run_campaign(
+                stale, d, _fake_run_unit(script), clock=_clock(), charter=_STATIC_CHARTER,
+                resume=True, decision_resolver=self._resolver(
+                    {"acceptance_surface_approve": {"choice": "approve_ship"}}))
+            self.assertEqual(again.pause_reason, "campaign_plan_signoff")
+            self.assertEqual(again.freshness_block["original_pause_reason"],
+                             "acceptance_surface_approve")
+            # Re-sign → resume → the ORIGINAL gate is restored and ships → done.
+            resigned = cp.stamp_signoff(stale, _STATIC_CHARTER, signed_at="t2")
+            done = cp.run_campaign(
+                resigned, d, _fake_run_unit(script), clock=_clock(),
+                charter=_STATIC_CHARTER, resume=True, decision_resolver=self._resolver(
+                    {"acceptance_surface_approve": {"choice": "approve_ship"}}))
+            self.assertEqual(done.status, cp.STATUS_DONE)
+
+    def test_state_round_trips_overlay_and_restamp(self):
+        st = cp.CampaignState(
+            campaign_id="camp-1", status=cp.STATUS_PAUSED,
+            pause_reason="campaign_plan_signoff",
+            freshness_block={"original_pause_reason": "milestone_merge",
+                             "original_pause_checkpoint": "/c/x.md"},
+            engine_restamp={"signed_scope_hash": "abc", "restamp_version": 2,
+                            "deltas": [{"milestone_id": "m1", "subsprint_id": "s_fix",
+                                        "restamp_version": 1}]})
+        back = cp.CampaignState.from_dict(st.to_dict())
+        self.assertEqual(back.freshness_block, st.freshness_block)
+        self.assertEqual(back.engine_restamp, st.engine_restamp)
+        # A state that never blocks/re-stamps persists byte-identically (additive).
+        plain = cp.CampaignState(campaign_id="camp-2")
+        self.assertNotIn("freshness_block", plain.to_dict())
+        self.assertNotIn("engine_restamp", plain.to_dict())
+
+
+class TestTrack2GapFollowupStaleRepause(unittest.TestCase):
+    """T2-A B3: a STALE plan at backlog-exhaustion must NOT silently finish (the pre-fix bug
+    collapsed not_fresh_signed into GAP_DONE → STATUS_DONE) — it re-pauses for re-sign."""
+
+    def test_stale_at_backlog_end_repauses_not_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL)   # backlog-exhausted, in-envelope gap
+            self.assertEqual(c._signoff_status(), "signed")
+            # Edit the plan after signoff → stale.
+            c.plan["milestones"][0]["objective"] = "EDITED AFTER SIGNOFF"
+            self.assertEqual(c._signoff_status(), "stale")
+            outcome = c._gap_followup_round(lambda r, cpt: None)
+            self.assertEqual(outcome, cp.GAP_PAUSED)          # NOT GAP_DONE
+            self.assertEqual(c.state.status, cp.STATUS_PAUSED)
+            self.assertEqual(c.state.pause_reason, cp.GAP_REVIEW_CHECKPOINT)
+
+    def test_fresh_plan_with_no_gap_still_finishes(self):
+        # Control: a fresh-signed plan whose covered milestone DELIVERED has no gap → GAP_DONE
+        # (the split must not over-pause a legitimately complete campaign).
+        with tempfile.TemporaryDirectory() as d:
+            c = _gap_campaign(d, _GF_CHARTER_ONL,
+                              outcomes=[{"milestone_id": "m1",
+                                         "terminal": "acceptance_pass_authoritative"}])
+            self.assertEqual(c._gap_followup_round(lambda r, cpt: None), cp.GAP_DONE)
 
 
 if __name__ == "__main__":

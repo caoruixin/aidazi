@@ -41,7 +41,44 @@
                   "subsprint_sequence": {"type": "array", "items": {"type": "string"}},
                   "depends_on": {"type": "array", "items": {"type": "string"}},
                   "resolved_functional_acceptance": {"type": "object", "additionalProperties": false, "required": ["mode", "source"], "properties": {"mode": {"type": "string"}, "source": {"type": "string"}}, "description": "The RESOLVED acceptance class {mode, source} (not the literal functional_acceptance which may be absent and inherit the charter default)."},
-                  "acceptance_bar": {"type": ["string", "null"]}
+                  "acceptance_bar": {"type": ["string", "null"]},
+                  "isolation_strategy": {"type": ["string", "null"], "description": "Track-2 T2-B: the per-milestone branch-vs-worktree isolation authority resolved into the envelope ('inherit' when absent), so a post-sign per-milestone strategy edit flips the hash. OPTIONAL so a pre-T2-B snapshot (no isolation_strategy) still validates and is independently flagged stale for the one-time re-sign."}
+                }
+              }
+            },
+            "authority": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Track-2 T2-B: the RESOLVED top-level authority bound into the single signed hash H (budget caps, gap-followup bounds, the merge target trunk_branch, and milestone_isolation), so a post-sign edit that changes the effective authority — auto-remediation extent, the campaign budget, the merge target/gate, or worktree/branch placement/cleanup — flips the hash and the plan goes stale until re-signed. Stored alongside the envelope so signoff_snapshot_authentic reconstructs the SAME H. OPTIONAL so a pre-T2-B snapshot (no authority) still validates and is independently flagged stale for the one-time re-sign.",
+              "properties": {
+                "budget": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "max_subsprints": {"type": ["integer", "null"]},
+                    "max_total_spawns": {"type": ["integer", "null"]},
+                    "max_wall_clock_minutes": {"type": ["integer", "null"]}
+                  }
+                },
+                "gap_followup": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "max_subsprints": {"type": ["integer", "null"]},
+                    "max_no_progress_rounds": {"type": ["integer", "null"]}
+                  }
+                },
+                "trunk_branch": {"type": ["string", "null"]},
+                "milestone_isolation": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "default_strategy": {"type": ["string", "null"]},
+                    "branch_name_template": {"type": ["string", "null"]},
+                    "worktree_root": {"type": ["string", "null"]},
+                    "merge_prompt_at_close": {"type": ["boolean", "null"]},
+                    "cleanup_policy": {"type": ["string", "null"]}
+                  }
                 }
               }
             }

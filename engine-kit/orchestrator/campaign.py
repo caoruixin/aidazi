@@ -344,6 +344,22 @@ class CampaignState:
     wall_clock_minutes: float = 0.0
     units: List[dict] = field(default_factory=list)
     followup_baseline_seq: Optional[List[str]] = None  # subsprint_sequence snapshot at a deliver_followup pause
+    # Track-2 T2-A/B4: the DURABLE freshness-block overlay. When a mid-run universal F1
+    # freshness gate (_authority_fresh) finds the signed plan went STALE, the campaign
+    # BLOCKS for re-sign as pause_reason='campaign_plan_signoff' WHILE preserving the
+    # ORIGINAL gate here, so a post-re-sign resume returns to that gate. Persisted (NOT an
+    # in-memory flag) so a crash mid-block never loses the original gate. Absent/None ⇒ no
+    # block active (byte-identical to today).
+    freshness_block: Optional[dict] = None
+    # Track-2 T2-A/TD6: the engine-authored deliver_followup re-stamp record. The ONE
+    # legitimate mid-campaign plan mutation (a follow-up sub-sprint inserted at cursor+1)
+    # grows subsprint_sequence (inside the signed hash H), which would read 'stale'. The
+    # engine advances the SINGLE signed epoch by pinning the authorized signed_scope_hash
+    # here (+ append-only provenance) — NEVER writing the plan file (re-authorization needs
+    # a human signoff artifact). Each invocation deterministically RE-APPLIES it to the
+    # in-memory signoff (_reapply_engine_restamp) iff the live hash still equals the pinned
+    # hash, so all freshness consumers agree (no divergence). Absent/None ⇒ no re-stamp.
+    engine_restamp: Optional[dict] = None
     milestone_context: Optional[dict] = None   # active milestone git isolation (campaign-tier ingress)
     pending_milestone_advance: bool = False    # milestone DONE; cursor not advanced (at merge gate)
     # Δ-19 F3 (design §3.5.1): one TERMINAL close outcome per milestone, stamped at
@@ -381,6 +397,13 @@ class CampaignState:
         # (Codex R1 NB-2). Absent ⇒ from_dict defaults it to {}.
         if self.gap_followup_state:
             d["gap_followup_state"] = self.gap_followup_state
+        # Track-2: the freshness overlay + the engine re-stamp are emitted ONLY when
+        # active, so a campaign that never blocks for re-sign / never inserts a
+        # deliver_followup persists a byte-identical state.json (additivity).
+        if self.freshness_block:
+            d["freshness_block"] = self.freshness_block
+        if self.engine_restamp:
+            d["engine_restamp"] = self.engine_restamp
         return d
 
     @classmethod
@@ -398,6 +421,8 @@ class CampaignState:
             wall_clock_minutes=spent.get("wall_clock_minutes", 0.0),
             units=list(d.get("units") or []),
             followup_baseline_seq=d.get("followup_baseline_seq"),
+            freshness_block=d.get("freshness_block"),
+            engine_restamp=d.get("engine_restamp"),
             milestone_context=d.get("milestone_context"),
             pending_milestone_advance=bool(d.get("pending_milestone_advance", False)),
             milestone_outcomes=list(d.get("milestone_outcomes") or []),
@@ -486,7 +511,7 @@ _RESUME_ADVANCE_TERMINAL: Dict[str, str] = {
 # remediation (gap-driven follow-up). The dispositions the dedicated, fail-closed
 # gap-followup engine (_gap_followup_round) returns to run()'s OUTER loop.
 # --------------------------------------------------------------------------- #
-GAP_DONE = "gap_done"          # no in-envelope gap (or no ledger / not fresh-signed / human-accepted) → STATUS_DONE
+GAP_DONE = "gap_done"          # no in-envelope gap (or no ledger / human-accepted) → STATUS_DONE. A STALE/pre-F1 plan does NOT finish here — it re-pauses for re-sign (T2-A B3).
 GAP_CONTINUE = "gap_continue"  # a bounded remediation round was dispatched + completed → re-check the gap
 GAP_PAUSED = "gap_paused"      # HALTED + escalated to needs_human (the campaign is paused; run() returns it)
 GAP_ENDED = "gap_ended"        # the human aborted at completeness_gap_review
@@ -1010,6 +1035,231 @@ class Campaign:
         a bare top-level signed_by_human with no signoff block ⇒ 'pre_f1' (one re-sign)."""
         return signoff_status(self.plan, self.charter)
 
+    # ----- Track-2 T2-A universal F1 freshness gate (design §2.1) --------- #
+    def _authority_fresh(self) -> bool:
+        """The T2-A universal precondition: True when the plan is NOT F1-active (legacy —
+        byte-identical to today) OR its signed scope is FRESH (signoff_status == 'signed').
+        It is READ-ONLY — every act-on-signed-scope site calls it BEFORE an irreversible
+        action and converts a would-be proceed into a durable re-sign block (B5).
+
+        TD6: a legitimate engine-authored deliver_followup insertion is reflected by
+        _reapply_engine_restamp (run once per invocation, mutating the in-memory signoff to
+        the authorized epoch), so by the time any gate calls this a legitimately-grown plan
+        already reads 'signed' — no parallel/divergent hash. Any OTHER post-sign edit reads
+        'stale'/'pre_f1'/'unsigned' ⇒ not fresh ⇒ block."""
+        if not f1_required(self.plan):
+            return True
+        return self._signoff_status() == "signed"
+
+    def _drift_field_hint(self) -> Optional[str]:
+        """Best-effort label of WHICH hash-bound field class drifted, for the re-sign
+        message (TD5: name the newly hash-bound field class). Compares the live resolved
+        envelope against the stored signed snapshot. Never a gate — any failure ⇒ None."""
+        try:
+            signoff = self.plan.get("signoff") or {}
+            stored = signoff.get("scope_envelope")
+            if not isinstance(stored, dict):
+                return None
+            live = compute_scope_envelope(self.plan, self.charter)
+            if _canonical_json(stored.get("authority")) != _canonical_json(
+                    live.get("authority")):
+                return "authority(budget/gap_followup/trunk_branch/milestone_isolation)"
+            if _canonical_json(stored.get("goal")) != _canonical_json(live.get("goal")):
+                return "goal"
+            if _canonical_json(stored.get("milestones")) != _canonical_json(
+                    live.get("milestones")):
+                return "milestones(scope/acceptance/subsprint_sequence/covers_req_ids)"
+            return "charter_or_signature"
+        except Exception:  # noqa: BLE001 — a hint, never a gate
+            return None
+
+    def _block_for_resign(self, original_reason: Optional[str]) -> str:
+        """B4 — BLOCK for re-sign while PRESERVING the original gate in a DURABLE overlay.
+        Set self.state.freshness_block (if not already active) to the ORIGINAL
+        pause_reason/checkpoint, then re-pause as 'campaign_plan_signoff'. On a post-re-sign
+        resume the campaign_plan_signoff branch consumes the overlay and re-dispatches the
+        ORIGINAL gate (mechanism-A resume / deliver_followup / milestone_merge /
+        decision-bound checkpoints), so the mid-run drift never erases the original gate.
+        Returns 'paused'. The overlay capture reads self.state.pause_checkpoint BEFORE
+        _pause overwrites it, so the original checkpoint is preserved verbatim."""
+        if self.state.freshness_block is None:
+            self.state.freshness_block = {
+                "original_pause_reason": original_reason,
+                "original_pause_checkpoint": self.state.pause_checkpoint,
+            }
+        self._pause("campaign_plan_signoff", None, "campaign_freshness_block",
+                    {"signoff_status": self._signoff_status(),
+                     "original_pause_reason":
+                         self.state.freshness_block.get("original_pause_reason"),
+                     "drift": self._drift_field_hint()})
+        return "paused"
+
+    def _consume_freshness_block(self) -> Optional[str]:
+        """Restore the ORIGINAL gate captured by _block_for_resign and clear the overlay.
+        Returns the restored original_pause_reason (None ⇒ a mid-drive block had no gate to
+        restore → the caller just re-dispatches the cursor). NO _save() here — a crash
+        before the restored gate's own durable barrier/pause re-saves replays from the
+        still-persisted campaign_plan_signoff + overlay (re-validates freshness, re-consumes,
+        re-dispatches), which is strictly safer than persisting a transient half-state."""
+        fb = self.state.freshness_block or {}
+        self.state.pause_reason = fb.get("original_pause_reason")
+        self.state.pause_checkpoint = fb.get("original_pause_checkpoint")
+        self.state.freshness_block = None
+        return self.state.pause_reason
+
+    # ----- Track-2 TD6 engine-authored deliver_followup re-stamp ---------- #
+    def _reapply_engine_restamp(self) -> None:
+        """TD6 cross-invocation determinism: align self.plan's signoff with the authorized
+        engine epoch (E* = the plan-file signed envelope + the append-only deltas pinned in
+        campaign state) so the WHOLE invocation's freshness consumers (_signoff_status,
+        scope_report via _build_gap_report, _live_signed_scope_hash, _f1_envelope) see ONE
+        epoch — no divergence. The reconstruction itself is the SHARED, pure
+        apply_engine_restamp_to_plan (also used by scope_report, so EXTERNAL reporting agrees
+        — Codex R2 B2). Called once, early in run() after _load().
+
+        Codex R2 B1 — a genuine HUMAN re-sign of the (already-grown) plan supersedes the
+        engine epoch: the plan-file signoff now reads 'signed' on its own and already folds
+        in the prior engine deltas, so the recorded engine_restamp is OBSOLETE. Replaying its
+        deltas onto the human-re-signed envelope would double-apply them and falsely block a
+        later legitimate follow-up. Detect it (raw signoff already 'signed') and DROP the
+        stale engine_restamp; the plan is genuinely fresh-signed and a future follow-up starts
+        a clean delta chain from the new human baseline."""
+        if not f1_required(self.plan):
+            return
+        if not self.state.engine_restamp:
+            return
+        if self._signoff_status() == "signed":
+            self.state.engine_restamp = None   # human re-sign supersedes the engine epoch
+            return
+        self.plan = apply_engine_restamp_to_plan(
+            self.plan, self.charter, self.state.engine_restamp)
+
+    @staticmethod
+    def _entry_equal_except_seq(a: dict, b: dict) -> bool:
+        """Two scope-envelope milestone entries equal in EVERY field except
+        subsprint_sequence (canonical compare)."""
+        ax = {k: v for k, v in a.items() if k != "subsprint_sequence"}
+        bx = {k: v for k, v in b.items() if k != "subsprint_sequence"}
+        return _canonical_json(ax) == _canonical_json(bx)
+
+    @staticmethod
+    def _is_single_insertion(old_seq: list, new_seq: list, idx: int,
+                             baseline: set) -> bool:
+        """new_seq is old_seq with EXACTLY one NEW id inserted at position idx: length grew
+        by one, the inserted id is not a baseline (pre-existing) id, and removing it leaves
+        old_seq byte-identical (prefix + suffix unchanged)."""
+        if len(new_seq) != len(old_seq) + 1:
+            return False
+        if idx < 0 or idx >= len(new_seq):
+            return False
+        if new_seq[idx] in baseline:
+            return False  # not a NEWLY authored follow-up (Codex inc-2 #3 spirit)
+        return new_seq[:idx] + new_seq[idx + 1:] == old_seq
+
+    def _is_authorized_followup_insertion(self, stored_env: dict, live_env: dict,
+                                          inserted_index: int) -> bool:
+        """The TD6 exact-diff guard. True IFF live_env differs from the CURRENT signed
+        envelope (stored_env) by EXACTLY one subsprint id inserted into the CURRENT
+        milestone's subsprint_sequence at inserted_index, with:
+          * goal + the resolved authority block byte-identical;
+          * the same milestone COUNT and every OTHER milestone byte-identical;
+          * the current milestone identical in every field except subsprint_sequence;
+          * that subsprint_sequence == stored + one NEW id (not a baseline id) at cursor+1,
+            prefix + suffix unchanged.
+        Any other shape — a reorder, a multi-item or non-cursor+1 edit, a prompt-id swap, a
+        covers/acceptance/authority change, or a Customer change PAIRED with an insertion —
+        fails the 'no other delta' clause ⇒ False ⇒ the re-stamp refuses ⇒ stays stale."""
+        if not isinstance(stored_env, dict) or not isinstance(live_env, dict):
+            return False
+        if _canonical_json(stored_env.get("goal")) != _canonical_json(
+                live_env.get("goal")):
+            return False
+        if _canonical_json(stored_env.get("authority")) != _canonical_json(
+                live_env.get("authority")):
+            return False
+        stored_ms = stored_env.get("milestones") or []
+        live_ms = live_env.get("milestones") or []
+        if len(stored_ms) != len(live_ms):
+            return False  # a milestone added/removed is NOT a follow-up insertion
+        # Identify the executing milestone by ID, not by numeric position (Codex R1 NB-1):
+        # self.milestones is in TOPOLOGICAL order while the envelope is in DECLARED order, so
+        # state.milestone_index is not a valid index into the envelope when depends_on
+        # reorders the backlog. The envelope is declared-order in BOTH stored + live, so a
+        # positional id mismatch means the declared order itself changed ⇒ refuse.
+        cur_id = self.milestones[self.state.milestone_index].get("id")
+        baseline = set(self.state.followup_baseline_seq or [])
+        for sm, lm in zip(stored_ms, live_ms):
+            if sm.get("id") != lm.get("id"):
+                return False  # a declared-order reorder is a scope change, not an insertion
+            if sm.get("id") == cur_id:
+                if not self._entry_equal_except_seq(sm, lm):
+                    return False
+                if not self._is_single_insertion(
+                        list(sm.get("subsprint_sequence") or []),
+                        list(lm.get("subsprint_sequence") or []),
+                        inserted_index, baseline):
+                    return False
+            elif _canonical_json(sm) != _canonical_json(lm):
+                return False
+        return True
+
+    def _restamp_followup_epoch(self, inserted_index: int) -> bool:
+        """TD6: advance the SINGLE signed epoch for the ONE legitimate engine-authored delta
+        — the deliver_followup insertion at cursor+1. Runs the exact-diff guard against the
+        CURRENT signed envelope; on success it (atomically, in one logical advance) mutates
+        the IN-MEMORY signoff to the live (grown) envelope + recomputed hash so all consumers
+        read 'signed' this invocation, AND pins the authorized hash + append-only provenance
+        to CAMPAIGN STATE (never the plan file). Returns True on a clean re-stamp, False (→
+        block) on any other delta. NOT a human re-sign — signed_by_human/signer untouched.
+
+        Idempotent under crash replay: the provenance is recomputed deterministically (a lost
+        in-memory mutation is re-derived; an already-reapplied epoch makes _authority_fresh
+        True so this is not re-entered — see the deliver_followup_required resume branch)."""
+        if not signoff_snapshot_authentic(self.plan):
+            return False  # cannot trust the stored signed envelope → fail closed
+        signoff = self.plan["signoff"]
+        # Codex R1 B2 — the re-stamp may advance the epoch ONLY for the authorized insertion;
+        # it must NEVER launder a separate authority change. (a) the snapshot must be a
+        # genuine HUMAN signature (a flipped/removed signed_by_human is a re-authorization,
+        # not an engine delta); (b) the charter must be byte-identical to the signed snapshot
+        # (a charter edit changes charter_hash INSIDE H but need not show in the envelope, so
+        # the envelope diff alone would miss it) — either ⇒ refuse ⇒ block for human re-sign.
+        if signoff.get("signed_by_human") is not True:
+            return False
+        if _canonical_sha256(self.charter or {}) != signoff.get("charter_hash"):
+            return False
+        stored_env = signoff.get("scope_envelope")
+        live_env = compute_scope_envelope(self.plan, self.charter)
+        if not self._is_authorized_followup_insertion(
+                stored_env, live_env, inserted_index):
+            return False
+        new_hash = self._live_signed_scope_hash()
+        if not new_hash:
+            return False
+        ms = self.milestones[self.state.milestone_index]
+        seq = ms.get("subsprint_sequence") or []
+        inserted_id = seq[inserted_index] if 0 <= inserted_index < len(seq) else None
+        prior = self.state.engine_restamp or {"restamp_version": 0, "deltas": []}
+        version = int(prior.get("restamp_version", 0)) + 1
+        prior_hash = signoff.get("signed_scope_hash")
+        delta = {"milestone_id": ms.get("id"), "subsprint_id": inserted_id,
+                 "at_index": inserted_index,
+                 "authorizing_checkpoint": self.state.pause_checkpoint,
+                 "prior_signed_scope_hash": prior_hash,
+                 "new_signed_scope_hash": new_hash, "restamp_version": version}
+        # Atomic advance (in-memory signoff + pinned state record together):
+        self.state.engine_restamp = {
+            "signed_scope_hash": new_hash, "restamp_version": version,
+            "deltas": list(prior.get("deltas") or []) + [delta]}
+        signoff["scope_envelope"] = live_env
+        signoff["signed_scope_hash"] = new_hash
+        self._audit("campaign_followup_epoch_restamp",
+                    {"milestone_id": ms.get("id"), "subsprint_id": inserted_id,
+                     "at_index": inserted_index, "restamp_version": version,
+                     "prior_signed_scope_hash": prior_hash,
+                     "new_signed_scope_hash": new_hash})
+        return True
+
     # ----- Δ-19 F3 terminal-outcome stamping (design §3.5.1) ------------- #
     def _stamp_milestone_outcome(self, milestone_id: str, terminal: str, *,
                                  pause_reason: Optional[str] = None,
@@ -1156,7 +1406,8 @@ class Campaign:
         (eligible, gap_items, reason). gap_items is the source-sealed gap from
         build_gap_report (coverage facts only, NEVER Acceptance failure semantics).
 
-        INELIGIBLE when: not fresh-signed / no gap (nothing to complete → finish); a gap
+        INELIGIBLE when: no gap (nothing to complete → finish); not fresh-signed (a stale/
+        pre-F1 plan → the caller RE-PAUSES for re-sign, T2-A B3 — never finishes); a gap
         item names no covering milestone or one absent from the plan (ambiguous → HALT); OR
         a covering milestone carries a QUALITY-fault / human-waiver terminal (→ HALT; it
         routes to human-confirm exactly as today, the auto path is forbidden). The last is
@@ -1593,8 +1844,21 @@ class Campaign:
             return GAP_PAUSED
         eligible, gap_items, reason = self._gap_followup_eligible(gap_report)
         if not eligible:
-            if reason in ("no_gap", "not_fresh_signed"):
+            if reason == "no_gap":
                 return GAP_DONE   # nothing to complete → finish
+            if reason == "not_fresh_signed":
+                # T2-A B3 (the fix): a STALE/pre-F1 plan at backlog exhaustion must NOT
+                # silently finish (the pre-T2-A bug collapsed this into GAP_DONE → run() →
+                # STATUS_DONE). RE-PAUSE for re-sign instead. The cursor is at the backlog
+                # boundary, where _check_state_consistency permits ONLY a completeness_gap_-
+                # review pause (with its nonce checkpoint) — so this re-pauses at that gate
+                # (gap_status names the cause); the human re-signs the plan and resumes with
+                # an adjust_scope decision to proceed. (The durable freshness overlay is for
+                # MID-milestone gates, which can pause as campaign_plan_signoff; the boundary
+                # cannot.) gap_items is [] here — eligibility yields no trustworthy gap.
+                self._audit("campaign_gap_followup_blocked", {"reason": reason})
+                self._pause_gap_review("not_fresh_signed", gap_items)
+                return GAP_PAUSED
             # ambiguous gap or a quality-fault milestone in the gap → fail-closed (clause 3).
             self._audit("campaign_gap_followup_blocked", {"reason": reason})
             self._pause_gap_review(f"ineligible:{reason}", gap_items)
@@ -1694,7 +1958,19 @@ class Campaign:
             # stale/pre-F1/unsigned plan re-pauses (the `why` carries the status so the
             # CLI distinguishes "stale-signed / blocked pending re-sign" from "unsigned").
             status = self._signoff_status()
-            return "proceed" if status == "signed" else self._repause(reason, status)
+            if status != "signed":
+                return self._repause(reason, status)
+            # B4 — a DURABLE freshness-block overlay means a mid-run gate blocked here for
+            # re-sign while preserving its ORIGINAL gate. Now fresh-signed: consume the
+            # overlay and RE-DISPATCH that original gate so the campaign resumes exactly
+            # where it blocked (the gate's decision file/nonce is unchanged). A mid-drive
+            # block (no original gate) just proceeds and re-dispatches the cursor.
+            if self.state.freshness_block is not None:
+                orig = self._consume_freshness_block()
+                if not orig or orig == "campaign_plan_signoff":
+                    return "proceed"
+                return self._handle_resume(decision_resolver)
+            return "proceed"
         if reason == "milestone_decompose_required":
             ms = self.milestones[self.state.milestone_index]
             return ("proceed" if ms.get("subsprint_sequence")
@@ -1722,6 +1998,14 @@ class Campaign:
             if choice == "abort":
                 self._end("milestone_merge_aborted")
                 return "ended"
+            # T2-A B5: before the IRREVERSIBLE merge + cursor advance, the signed plan
+            # (whose trunk_branch / milestone_isolation now bind into H) must be fresh-
+            # signed. A post-sign merge-target / merge-gate / cleanup edit ⇒ stale ⇒ block
+            # for re-sign (the overlay preserves THIS milestone_merge gate). Read-only,
+            # OUTSIDE the §3.5c barrier — it can only convert a would-be advance into a
+            # durable block, never half-merge/half-advance.
+            if not self._authority_fresh():
+                return self._block_for_resign(reason)
             # Capture the milestone id + run any (irreversible) merge BEFORE the cursor
             # advance nulls milestone_context.
             mid = (self.state.milestone_context or {}).get("milestone_id")
@@ -1755,6 +2039,22 @@ class Campaign:
             # sub-sprint NOR an append-elsewhere is mistaken for the insertion (Codex
             # inc-2 #3: prove "inserted at cursor+1", not just "the sequence grew").
             if nxt < len(seq) and seq[nxt] not in baseline:
+                # TD6 (R3 nit #2): the legitimate insertion GREW subsprint_sequence (inside
+                # H), so the live plan now reads 'stale'. Run the engine re-stamp as a
+                # SPECIAL PRE-FRESHNESS step (a generic freshness gate ahead of it would
+                # over-pause this legitimate path). The exact-diff guard re-stamps the SINGLE
+                # epoch ONLY when the live↔signed delta is EXACTLY this one cursor+1
+                # insertion; any other delta REFUSES ⇒ stays stale ⇒ block for re-sign. On a
+                # crash replay where _reapply_engine_restamp already re-applied the pinned
+                # epoch, the plan already reads 'signed' (so the re-stamp is not re-entered).
+                if f1_required(self.plan) and not self._authority_fresh():
+                    if not self._restamp_followup_epoch(nxt):
+                        return self._block_for_resign(reason)
+                    # Defense (Codex R1 B2): the re-stamp must ACHIEVE fresh-signed — if the
+                    # plan still does not read 'signed' (some residual authority drift the
+                    # guard did not absorb), block rather than dispatch.
+                    if not self._authority_fresh():
+                        return self._block_for_resign(reason)
                 self.state.subsprint_index = nxt
                 self.state.followup_baseline_seq = None
                 self._audit("campaign_resume_dispatch",
@@ -1770,6 +2070,12 @@ class Campaign:
             return self._repause(reason, "decision_pending")
 
         if classify_checkpoint(reason) == RESUME_DRIVER:
+            # T2-A: arming a Mechanism-A driver resume re-enters the paused Driver and
+            # dispatches on signed scope → the plan must be fresh-signed first. A post-sign
+            # edit ⇒ stale ⇒ block for re-sign (the overlay preserves THIS decision-bound
+            # checkpoint so the driver resume re-arms after re-sign).
+            if not self._authority_fresh():
+                return self._block_for_resign(reason)
             # Mechanism A: the Driver re-enters the paused state on the next dispatch.
             self._pending_driver_resume = True
             self._audit("campaign_resume_driver", {"pause_reason": reason})
@@ -1823,6 +2129,13 @@ class Campaign:
         # here too, so the WHOLE advancing dispatch path is crash-idempotent, consistently
         # with the milestone_merge advance above.
         if action in (ACT_ADVANCE_SUBSPRINT, ACT_ADVANCE_MILESTONE):
+            # T2-A B5: a cursor-advancing ship acts on signed scope — gate it BEFORE
+            # stamping the terminal outcome / advancing the cursor / clearing the pause (the
+            # §3.5c barrier). A post-sign edit ⇒ stale ⇒ block for re-sign (the overlay
+            # preserves THIS acceptance gate). Read-only, OUTSIDE the barrier — it can only
+            # convert a would-be advance into a durable block, never strand a half-cursor.
+            if not self._authority_fresh():
+                return self._block_for_resign(reason)
             if action == ACT_ADVANCE_SUBSPRINT:
                 self.state.subsprint_index += 1   # this sub-sprint accepted → next in milestone
             else:                                 # ACT_ADVANCE_MILESTONE
@@ -1842,6 +2155,15 @@ class Campaign:
                 self._audit("campaign_acceptance_residue_waived", waiver_audit)
             return "proceed"
 
+        # T2-A: re-dispatching the SAME unit fresh acts on signed scope → it must be fresh-
+        # signed. Gate BEFORE the dispatch audit (Codex R1 NB-2) so a stale block does not
+        # leave a durable "redispatch selected" audit it never honored. END/FOLLOWUP do not
+        # act on signed scope here (END terminates; FOLLOWUP parks for Deliver and its real
+        # dispatch is the freshness-gated deliver_followup_required path), so they keep the
+        # audit. The cursor is unchanged, so the block only converts a would-be re-dispatch
+        # into a durable pause (the overlay preserves THIS gate).
+        if action == ACT_REDISPATCH_FRESH and not self._authority_fresh():
+            return self._block_for_resign(reason)
         # NON-advancing outcomes keep their existing durable-state semantics (each already
         # crash-idempotent): REDISPATCH_FRESH leaves the cursor + the PAUSED state intact
         # until the fresh re-dispatch records progress; END / FOLLOWUP persist a
@@ -1875,6 +2197,13 @@ class Campaign:
         self._crash_recovery = False  # §3.5c: set True only on STATUS_RUNNING recovery
         self._gap_review_decision = None  # §1.7-F: a human adjust_scope decision, consumed once
         if resume and self._load():
+            # TD6: deterministically RE-APPLY any engine-authored deliver_followup re-stamp
+            # to the in-memory signoff BEFORE any freshness consumer runs, so a legitimately-
+            # grown plan reads 'signed' this whole invocation (no plan-file write-back; the
+            # pinned epoch hash is the cross-invocation proof). A no-op when no re-stamp is
+            # recorded or the live plan no longer matches the pinned epoch (then it stays
+            # stale and is blocked).
+            self._reapply_engine_restamp()
             self._audit("campaign_resume",
                         {"from_status": self.state.status,
                          "pause_reason": self.state.pause_reason})
@@ -1998,6 +2327,20 @@ class Campaign:
                 else:
                     resume_this = self._pending_driver_resume or crash_recover
                     self._pending_driver_resume = False
+                    # T2-A B5: before dispatching this unit, the signed plan must still be
+                    # fresh-signed (a dispatch reads LIVE functional_acceptance/seq). A stale
+                    # edit ⇒ block for re-sign BEFORE the irreversible run_unit. This gate is
+                    # UNCONDITIONAL — a STATUS_RUNNING crash-recovery re-dispatch (Codex R1 B1)
+                    # may point at a not-yet-recorded next unit after a §3.5c-barrier cursor
+                    # advance, and a Mechanism-A driver resume re-dispatches a cursor unit
+                    # too, so neither may dispatch stale signed scope. A fresh-signed plan
+                    # passes unchanged (a Mechanism-A resume already validated freshness at
+                    # its resume site, so this is a no-op pass); only a genuinely stale plan
+                    # blocks (mid-drive block: no original gate ⇒ re-dispatch the cursor after
+                    # re-sign). Read-only, OUTSIDE the §3.5c barrier — never strands a cursor.
+                    if not self._authority_fresh():
+                        self._block_for_resign(self.state.pause_reason)
+                        return self.state
                     # Pass THIS milestone's LIVE sequence + its functional_acceptance so the
                     # production run_unit derives a per-milestone execution context whose
                     # terminal sub-sprint anchors Acceptance (design §5) and whose acceptance
@@ -2405,6 +2748,87 @@ def signoff_status(plan: Optional[dict], charter: Optional[dict] = None) -> str:
     if plan.get("signed_by_human") is True:
         return "pre_f1"
     return "unsigned"
+
+
+# --------------------------------------------------------------------------- #
+# Track-2 TD6 — the engine-authored deliver_followup re-stamp, reconstructed
+# deterministically from CANONICAL SIGNED INPUTS (the plan-file signed envelope +
+# the append-only authorized deltas pinned in campaign state). These are module-level
+# + PURE so EVERY freshness consumer — the Campaign runner AND scope_report (external
+# requirement-coverage reporting) — agrees on ONE epoch (no divergence; Codex R2 B2).
+# --------------------------------------------------------------------------- #
+def _reconstruct_authorized_envelope(e0: dict, deltas: list) -> Optional[dict]:
+    """The authorized epoch envelope E* = the ORIGINAL signed envelope (e0, from the plan
+    file — never written back) + each append-only authorized insertion (subsprint_id at
+    at_index in the named milestone's subsprint_sequence), applied in chronological order.
+    None if any delta does not apply cleanly (caller leaves the plan stale → fail-closed)."""
+    env = copy.deepcopy(e0)
+    by_id = {m.get("id"): m for m in (env.get("milestones") or [])}
+    for d in (deltas or []):
+        m = by_id.get(d.get("milestone_id"))
+        sid, idx = d.get("subsprint_id"), d.get("at_index")
+        if m is None or sid is None or not isinstance(idx, int):
+            return None
+        seq = list(m.get("subsprint_sequence") or [])
+        if idx < 0 or idx > len(seq):
+            return None
+        seq.insert(idx, sid)
+        m["subsprint_sequence"] = seq
+    return env
+
+
+def _hash_from_envelope(plan: dict, charter: Optional[dict],
+                        signoff: dict, envelope: dict) -> str:
+    """sha256(canonical_json(H)) for a RECONSTRUCTED scope-envelope — H is built from the
+    envelope (goal/milestones/authority) + the plan/charter wrapper IDENTICALLY to
+    compute_signed_scope_hash, using the LIVE charter_hash (so it matches a hash the runner
+    pinned via _live_signed_scope_hash)."""
+    H = {"version": "v1", "campaign_id": plan.get("campaign_id"),
+         "goal": envelope.get("goal"),
+         "charter_ref": signoff.get("charter_ref"),
+         "charter_hash": _canonical_sha256(charter or {}),
+         "milestones": list(envelope.get("milestones") or [])}
+    if isinstance(envelope.get("authority"), dict):
+        H["authority"] = envelope["authority"]
+    return hashlib.sha256(_canonical_json(H).encode("utf-8")).hexdigest()
+
+
+def apply_engine_restamp_to_plan(plan: Optional[dict], charter: Optional[dict],
+                                 engine_restamp: Optional[dict]) -> dict:
+    """Return `plan` with its signoff aligned to the authorized engine epoch (E* = the
+    plan-file signed envelope + the append-only deltas pinned in `engine_restamp`) IFF that
+    reconstruction reproduces the pinned signed_scope_hash; otherwise `plan` unchanged. PURE
+    — never mutates the input (returns a shallow copy with a re-stamped signoff when it
+    applies). This is the SINGLE source of TD6 epoch truth shared by the Campaign runner and
+    scope_report, so the runner and external reporting never diverge (Codex R2 B2).
+
+    A plan that already reads 'signed' on its own (a human re-sign of the grown plan, or an
+    F1-inactive plan) is returned unchanged — the engine epoch is only consulted to RESCUE a
+    'stale' plan whose sole drift is the authorized follow-up insertion(s)."""
+    plan = plan or {}
+    if not f1_required(plan):
+        return plan
+    if signoff_status(plan, charter) == "signed":
+        return plan   # genuinely / human re-signed → the engine epoch is moot
+    restamp = engine_restamp or {}
+    pinned = restamp.get("signed_scope_hash")
+    deltas = restamp.get("deltas") or []
+    if not pinned or not deltas:
+        return plan
+    signoff = plan.get("signoff")
+    if not isinstance(signoff, dict) or not signoff_snapshot_authentic(plan):
+        return plan   # no/again-untrustworthy original signed envelope → stays stale
+    estar = _reconstruct_authorized_envelope(signoff.get("scope_envelope") or {}, deltas)
+    if estar is None:
+        return plan
+    if _hash_from_envelope(plan, charter, signoff, estar) != pinned:
+        return plan   # E* does not reproduce the pinned epoch (tamper / further edit) → stale
+    out = dict(plan)
+    out_signoff = dict(signoff)
+    out_signoff["scope_envelope"] = estar
+    out_signoff["signed_scope_hash"] = pinned   # signed_by_human/signer UNTOUCHED
+    out["signoff"] = out_signoff
+    return out
 
 
 def derive_milestone_context(charter: dict, milestone_id: str,
