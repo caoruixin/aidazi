@@ -13,25 +13,34 @@ and **without ever becoming an execution gate**.
 **How it auto-fires** (per harness, priority: native repo-instruction → native hook → thin wrapper;
 priority-1 is unavailable here because Claude Code `CLAUDE.md` / Codex `AGENTS.md` are the vendored,
 adopter-facing entry points, so we use the native **hook** path):
-- **Claude Code** (live-verified): `.claude/settings.json` → `UserPromptSubmit` hook runs
-  `map_briefing.py --hook claude`; its plain stdout (a compact structural briefing) is injected into
-  the session. Fires automatically in any fresh session (project hooks need no separate approval).
-- **Codex CLI** (live-verified): `.codex/hooks.json` → `UserPromptSubmit` hook runs
-  `map_briefing.py --hook codex`, which injects via `hookSpecificOutput.additionalContext` and
-  resolves the repo from the payload **`cwd`** (Codex runs hooks in a sandbox where `os.getcwd()` is
-  NOT the repo). `codex features` shows `hooks` as `stable`/enabled. Needs a **one-time** `/hooks`
-  hash-trust (Codex security; the exact hook definition is hash-trusted); fires automatically in
-  every session thereafter.
-- **Cursor (experimental, non-blocking):** `.cursor/rules/00-codebase-map.mdc` — an always-apply rule
-  (Cursor has no `UserPromptSubmit` hook), so the agent runs the selector itself.
+- **Claude Code** (live-verified): the repo-local `.claude/settings.json` hook is **active
+  automatically** in any fresh session (project hooks need no separate approval). `UserPromptSubmit`
+  runs `map_briefing.py --hook claude`; its plain stdout (a compact structural briefing) is injected.
+- **Codex CLI** (live-verified): `.codex/hooks.json` `UserPromptSubmit` runs `map_briefing.py --hook
+  codex`, injecting via `hookSpecificOutput.additionalContext` and resolving the repo from the payload
+  **`cwd`** (Codex runs hooks in a sandbox where `os.getcwd()`/git are unreliable). `codex features`
+  shows `hooks` `stable`/enabled. **First use: open the Codex TUI once and run `/hooks` to hash-trust
+  the current hook definition** (the project is already trusted); after that it is autonomous in every
+  new session. **Re-trust is needed if this hook definition changes.**
+- **Cursor (experimental):** `.cursor/rules/00-codebase-map.mdc` — an always-apply rule (Cursor has no
+  `UserPromptSubmit` hook), so the agent runs the selector itself. Not a hook; best-effort.
 
-**Guarantees (do not weaken):** READ-ONLY (reads the map + `git` only); **FAIL-OPEN** — on any error,
-missing/malformed map, invalid checkpoint, git failure, unmappable/trivial task, or exception it emits
-nothing and **exits 0** (the hook *command* is also wrapped to always exit 0, so a missing script
-can't block a prompt either); there is **NO PreToolUse / receipt / epoch / mutation-ledger** anywhere,
-so it cannot deny or delay `Edit`/`Bash`/`commit`/subagent/worktree/cross-repo work. The briefing is
-**structural pointers only** (no answers, no config values — Phase-0 anti-leak) and stays compact
-(~0.5–1K tokens); tiny/obvious tasks get a minimal pointer or nothing.
+**Hard timeout (external to Python; not relying on the script to return).** A hung script/subprocess
+is force-killed at **8s**, then the hook fail-opens:
+- **Claude**: a command-level `perl -e 'alarm 8; exec @ARGV'` (Claude fail-*closes* on a harness hook
+  timeout, so we self-limit and `exit 0` first, well within Claude's 30s `UserPromptSubmit` limit).
+- **Codex**: the native handler `"timeout": 8` (Codex fail-*opens* on timeout — verified; perl does
+  not run in the Codex sandbox).
+
+**Guarantees (do not weaken):** READ-ONLY (reads the map + `git` only). **It does NOT intercept coding
+tools** — the only hook is `UserPromptSubmit` (a context-injector); there is **NO PreToolUse /
+PostToolUse hook, and NO receipt / epoch / mutation-ledger** anywhere. **FAIL-OPEN**: on any error,
+missing/malformed map, invalid checkpoint, git failure, unmappable/trivial task, exception, **or the
+8s hard timeout (hang)**, it emits nothing and the command **exits 0**; **under the tested harnesses
+(Claude Code, Codex) a hook failure or timeout does not block the normal prompt/coding loop** (see the
+per-harness timeout note above — Claude fail-closes on a *harness* timeout, which is why we self-limit
+first). The briefing is **structural pointers only** (no answers, no config values — Phase-0 anti-leak)
+and stays compact (~0.5–1K tokens); tiny/obvious tasks get a minimal pointer or nothing.
 
 **Stateless trigger (honest scope):** it fires on `UserPromptSubmit` for every *substantive mapped*
 prompt — including the first coding task — and skips trivial/continuation prompts. There is **no

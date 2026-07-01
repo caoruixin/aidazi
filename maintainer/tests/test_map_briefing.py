@@ -199,14 +199,20 @@ def test_no_pretooluse_in_hook_wiring():
         assert list(hooks.keys()) == ["UserPromptSubmit"], rel
 
 
-def test_hook_commands_fail_open_and_git_free():
+def test_hook_commands_fail_open_git_free_and_hard_timeout():
     cc = json.load(open(os.path.join(REPO, ".claude/settings.json")))
     cx = json.load(open(os.path.join(REPO, ".codex/hooks.json")))
-    cc_cmd = cc["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-    cx_cmd = cx["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-    assert "exit 0" in cc_cmd and "exit 0" in cx_cmd            # command-level fail-open
+    cc_h = cc["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    cx_h = cx["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    cc_cmd, cx_cmd = cc_h["command"], cx_h["command"]
+    assert "exit 0" in cc_cmd and "exit 0" in cx_cmd            # command-level fail-open (bad exit code)
     assert "git" not in cx_cmd                                  # codex path must not depend on git
     assert "map_briefing.py" in cc_cmd and "map_briefing.py" in cx_cmd
+    # HARD TIMEOUT (external to Python, not relying on the script to return):
+    # Claude fail-CLOSES on a harness hook timeout -> we self-limit with a perl `alarm` command-timeout.
+    assert "alarm" in cc_cmd and "perl" in cc_cmd
+    # Codex fail-OPENS on a harness hook timeout (perl is unavailable in its sandbox) -> use the field.
+    assert isinstance(cx_h.get("timeout"), int) and 1 <= cx_h["timeout"] <= 30
 
 
 def test_advisory_silent_by_default():
