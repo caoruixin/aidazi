@@ -328,7 +328,7 @@ class TestStrictLedgerLoader(unittest.TestCase):
                 rl.load_requirement_ledger_strict(d)
 
     def test_broken_symlink_raises(self):
-        # Codex R2: a broken symlink is PRESENT (lexists) but unreadable ⇒ refuse.
+        # Codex R2: a broken symlink is PRESENT but unreadable ⇒ refuse.
         import tempfile
         import run_loop as rl
         with tempfile.TemporaryDirectory() as d:
@@ -336,6 +336,16 @@ class TestStrictLedgerLoader(unittest.TestCase):
             os.symlink(os.path.join(d, "no-such-target.json"), link)
             with self.assertRaises(rl.LedgerError):
                 rl.load_requirement_ledger_strict(link)
+
+    def test_fifo_path_raises_not_hangs(self):
+        # Codex R3: a FIFO is PRESENT-but-non-regular ⇒ refuse BEFORE open() (never blocks).
+        import tempfile
+        import run_loop as rl
+        with tempfile.TemporaryDirectory() as d:
+            fifo = os.path.join(d, "ledger.json")
+            os.mkfifo(fifo)
+            with self.assertRaises(rl.LedgerError):
+                rl.load_requirement_ledger_strict(fifo)
 
 
 class TestRunLoopPreflightGate(unittest.TestCase):

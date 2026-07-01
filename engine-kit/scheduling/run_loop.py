@@ -253,37 +253,21 @@ class LedgerError(ValueError):
 
 
 def load_requirement_ledger_strict(ledger_path: Optional[str]) -> Optional[dict]:
-    """Load + VALIDATE the wired ledger for the OW-M3 sign/preflight GATE. An ABSENT file ⇒
-    None (dormant, additive — no ledger wired). A PRESENT file that is unreadable, malformed
-    JSON, schema-invalid (e.g. an out-of-enum `surface`), or carries duplicate requirement
-    ids ⇒ raise ``LedgerError`` — a wired input contract that cannot be trusted must NOT be
-    signed/run around. Mirrors the campaign runner's fail-closed construction ingress so the
-    ledger-less ``--sign-plan`` path (which builds no Campaign) is equally strict.
-
-    ABSENT vs PRESENT-BUT-BROKEN: use ``lexists`` (not ``isfile``) so a configured path that
-    is a directory, a broken symlink, or unreadable (permission/stat error) is PRESENT ⇒
-    REFUSE — only a path with NO entry at all is dormant. ``isfile`` collapses all of those
-    to False, which would silently stamp around a configured-but-broken ledger (Codex R2)."""
-    if not ledger_path or not os.path.lexists(ledger_path):
-        return None
-    try:
-        with open(ledger_path, encoding="utf-8") as fh:
-            led = json.load(fh)
-    except (OSError, ValueError) as exc:
-        raise LedgerError(f"requirement ledger present but unreadable/malformed: {exc}")
+    """Load + VALIDATE the wired ledger for the OW-M3 sign/preflight GATE. Delegates to the
+    campaign runner's SHARED strict probe (campaign.load_and_validate_ledger) so the
+    ledger-less ``--sign-plan`` path (which builds no Campaign) applies EXACTLY the same
+    fail-closed rule as construction: an ABSENT path ⇒ None (dormant, additive); a
+    PRESENT-but-broken one (non-regular / unstatable / unreadable / malformed / schema-invalid
+    e.g. an out-of-enum ``surface`` / duplicate ids) ⇒ raise ``LedgerError`` (a ValueError),
+    never dormant. os.lstat is used explicitly rather than lexists/isfile — those swallow
+    OSError and collapse a permission/stat failure to 'absent' (Codex R3)."""
     try:
         import campaign as _cp  # lazy (campaign imports run_loop)
-        _cp._validate_or_raise(led, "requirement-ledger.schema.json", "ledger")
-        dups = _cp.duplicate_requirement_ids(led)
-    except LedgerError:
-        raise
-    except ValueError as exc:                       # schema-invalid (out-of-enum surface …)
-        raise LedgerError(f"requirement ledger invalid: {exc}")
-    except Exception as exc:  # noqa: BLE001 - jsonschema/campaign unavailable ⇒ can't verify
-        raise LedgerError(f"requirement ledger could not be validated: {exc}")
-    if dups:
-        raise LedgerError(f"requirement ledger has duplicate requirement id(s): {dups}")
-    return led
+        return _cp.load_and_validate_ledger(ledger_path)
+    except ValueError as exc:            # LedgerError + schema/probe ValueErrors
+        raise LedgerError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - campaign/jsonschema unavailable ⇒ can't verify
+        raise LedgerError(f"requirement ledger could not be validated: {exc}") from exc
 
 
 def enforce_mandatory_e2e_for_real_run(plan: dict, charter: dict,

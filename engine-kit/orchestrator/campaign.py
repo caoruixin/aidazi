@@ -29,6 +29,7 @@ import copy
 import hashlib
 import json
 import os
+import stat as _stat
 import re
 import sys
 from dataclasses import dataclass, field
@@ -615,26 +616,11 @@ class Campaign:
         # ingress, mirroring the plan/state gates). Load + schema-validate ONLY; the
         # engine NEVER writes the ledger back (delivery_status is a derived projection).
         self.ledger_path = ledger_path
-        self.ledger: Optional[dict] = None
-        # ABSENT vs PRESENT-BUT-BROKEN (Codex R2): lexists (not isfile) so a configured
-        # path that is a directory / broken symlink / unreadable is PRESENT ⇒ fail closed,
-        # not silently dormant. Only a path with no entry at all stays dormant (additive).
-        if ledger_path and os.path.lexists(ledger_path):
-            try:
-                with open(ledger_path, encoding="utf-8") as fh:
-                    led = json.load(fh)
-            except (OSError, ValueError) as exc:
-                raise ValueError(
-                    f"campaign requirement ledger present but unreadable/malformed: {exc}")
-            _validate_or_raise(led, "requirement-ledger.schema.json", "ledger")
-            # OW-M3: a duplicate requirement id is an ambiguous surface classification the
-            # JSON Schema cannot catch — fail closed so the {rid: surface} basis is
-            # unambiguous for the mandate + the signed hash.
-            dups = duplicate_requirement_ids(led)
-            if dups:
-                raise ValueError(
-                    f"campaign requirement ledger has duplicate requirement id(s): {dups}")
-            self.ledger = led
+        # STRICT ABSENT-vs-PRESENT-BROKEN probe (Codex R2/R3): a truly-absent ledger stays
+        # dormant (None, additive); a PRESENT-but-broken one (non-regular / unstatable /
+        # malformed / schema-invalid / duplicate ids) raises ValueError → fail closed. Shared
+        # with the run_loop sign/preflight gate so both agree.
+        self.ledger: Optional[dict] = load_and_validate_ledger(ledger_path)
         self.budget = plan.get("budget") or {}
         iso = plan.get("milestone_isolation") or {}
         # Legacy top-level isolation_strategy (shared|worktree) → map when milestone_isolation absent.
@@ -2567,6 +2553,48 @@ def duplicate_requirement_ids(ledger: Optional[dict]) -> list:
             dups.append(rid)
         seen.add(rid)
     return dups
+
+
+def load_and_validate_ledger(ledger_path: Optional[str]) -> Optional[dict]:
+    """STRICT ABSENT-vs-PRESENT-BROKEN requirement-ledger probe (Codex R3), shared by the
+    Campaign runner ingress AND the run_loop --sign-plan / preflight gate so both agree.
+
+    Returns the schema-validated ledger dict, or None ONLY when the path is TRULY absent (no
+    directory entry — dormant, byte-identical to pre-OW-M3). Anything PRESENT-but-broken
+    RAISES ValueError — a wired input contract that cannot be trusted must never be treated
+    as dormant (which would silently sign/run around the mandate):
+      • os.path.lexists/isfile swallow OSError, so a permission/stat failure on a PRESENT
+        path collapses to 'absent'. We os.lstat EXPLICITLY: only FileNotFoundError is
+        dormant; any other OSError (permission, ELOOP, …) raises.
+      • a non-regular target (directory, FIFO, socket, device) or a broken symlink raises
+        BEFORE open() — never blocks on a FIFO, never reads a directory.
+      • malformed JSON, schema-invalid (out-of-enum surface …), or duplicate ids raise."""
+    if not ledger_path:
+        return None
+    try:
+        st = os.lstat(ledger_path)                     # does the PATH ENTRY exist at all?
+    except FileNotFoundError:
+        return None                                    # truly absent → dormant (additive)
+    except (OSError, ValueError) as exc:               # PRESENT but unstatable (perm/ELOOP…)
+        raise ValueError(f"requirement ledger present but unstatable: {exc}")
+    if _stat.S_ISLNK(st.st_mode):
+        try:
+            st = os.stat(ledger_path)                  # resolve the symlink target
+        except OSError as exc:                          # broken symlink / unreadable target
+            raise ValueError(f"requirement ledger symlink present but broken: {exc}")
+    if not _stat.S_ISREG(st.st_mode):                  # directory / FIFO / socket / device
+        raise ValueError(
+            f"requirement ledger path present but not a regular file: {ledger_path}")
+    try:
+        with open(ledger_path, encoding="utf-8") as fh:
+            led = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"requirement ledger present but unreadable/malformed: {exc}")
+    _validate_or_raise(led, "requirement-ledger.schema.json", "ledger")
+    dups = duplicate_requirement_ids(led)
+    if dups:
+        raise ValueError(f"requirement ledger has duplicate requirement id(s): {dups}")
+    return led
 
 
 def _ledger_surface(ledger: Optional[dict], rid: str) -> Optional[str]:
