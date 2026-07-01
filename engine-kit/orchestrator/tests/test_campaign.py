@@ -1765,9 +1765,10 @@ def _gap_campaign(tmp, charter, *, milestones=None, ledger_reqs=("REQ-1",),
         extra["gap_followup"] = gap_followup
     if budget is not None:
         extra["budget"] = budget
-    # Mirror production: --sign-plan and the runner both resolve the SAME ledger, so the
-    # signed hash binds covered_req_surfaces (OW-M3 B1). Sign WITH the wired ledger, else
-    # the runner's ledger-aware recompute would read a false 'stale'.
+    # Direct-stamp fixture (bypasses the OW-M3 --sign-plan gate) mirroring production's
+    # single-ledger invariant: sign-time and the runner resolve the SAME ledger, so the
+    # signed hash binds covered_req_surfaces (OW-M3 B1) identically. Sign WITH the wired
+    # ledger, else the runner's ledger-aware recompute would read a false 'stale'.
     plan = cp.stamp_signoff(_plan(ms, **extra), charter, signed_at="t", ledger=led)
     c = cp.Campaign(plan, home, run_unit or _gap_fake_run_unit({}), clock=_clock(),
                     charter=charter, ledger_path=ledger_path)
@@ -2930,8 +2931,9 @@ class TestTrack2DeliverFollowupRestamp(unittest.TestCase):
             lp = os.path.join(d, "ledger.json")
             with open(lp, "w", encoding="utf-8") as fh:
                 json.dump(ledger, fh)
-            # Sign AND run with the SAME ledger (production: --sign-plan + runner resolve
-            # one ledger), so the engine-restamp hash is pinned WITH covered_req_surfaces
+            # Sign AND run with the SAME ledger (production's single-ledger invariant;
+            # direct-stamp, bypassing the --sign-plan gate), so the engine-restamp hash is
+            # pinned WITH covered_req_surfaces
             # and coverage recompute agrees.
             pf = cp.stamp_signoff(_plan([_covms("m1", ["s1"], ["REQ-1"])]),
                                   _STATIC_CHARTER, signed_at="t", ledger=ledger)

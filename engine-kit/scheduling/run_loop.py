@@ -233,9 +233,10 @@ def enforce_campaign_plan_for_real_run(plan: dict) -> None:
 
 def load_requirement_ledger(ledger_path: Optional[str]) -> Optional[dict]:
     """Load the requirement ledger JSON at ``ledger_path``, or None when absent/unreadable
-    (OW-M3 dormant ⇒ byte-identical to pre-OW-M3). Never raises — the campaign runner's
-    construction remains the fail-closed schema gate; this is a best-effort read for the
-    sign-off gate + freshness recompute + summary."""
+    (OW-M3 dormant ⇒ byte-identical to pre-OW-M3). Never raises — used for the best-effort
+    FRESHNESS recompute + summary (where an absent live ledger falls back to the stored
+    covered_req_surfaces basis, by design). The sign-off/preflight GATE uses the STRICT
+    loader below."""
     if not ledger_path or not os.path.isfile(ledger_path):
         return None
     try:
@@ -243,6 +244,41 @@ def load_requirement_ledger(ledger_path: Optional[str]) -> Optional[dict]:
             return json.load(fh)
     except (OSError, ValueError):
         return None
+
+
+class LedgerError(ValueError):
+    """A WIRED requirement ledger file exists but cannot be read/parsed/validated. The
+    OW-M3 sign-off + real-run preflight gate REFUSE rather than treat a broken input
+    contract as dormant (which would silently stamp/run around the mandate)."""
+
+
+def load_requirement_ledger_strict(ledger_path: Optional[str]) -> Optional[dict]:
+    """Load + VALIDATE the wired ledger for the OW-M3 sign/preflight GATE. An ABSENT file ⇒
+    None (dormant, additive — no ledger wired). A PRESENT file that is unreadable, malformed
+    JSON, schema-invalid (e.g. an out-of-enum `surface`), or carries duplicate requirement
+    ids ⇒ raise ``LedgerError`` — a wired input contract that cannot be trusted must NOT be
+    signed/run around. Mirrors the campaign runner's fail-closed construction ingress so the
+    ledger-less ``--sign-plan`` path (which builds no Campaign) is equally strict."""
+    if not ledger_path or not os.path.isfile(ledger_path):
+        return None
+    try:
+        with open(ledger_path, encoding="utf-8") as fh:
+            led = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise LedgerError(f"requirement ledger unreadable/malformed: {exc}")
+    try:
+        import campaign as _cp  # lazy (campaign imports run_loop)
+        _cp._validate_or_raise(led, "requirement-ledger.schema.json", "ledger")
+        dups = _cp.duplicate_requirement_ids(led)
+    except LedgerError:
+        raise
+    except ValueError as exc:                       # schema-invalid (out-of-enum surface …)
+        raise LedgerError(f"requirement ledger invalid: {exc}")
+    except Exception as exc:  # noqa: BLE001 - jsonschema/campaign unavailable ⇒ can't verify
+        raise LedgerError(f"requirement ledger could not be validated: {exc}")
+    if dups:
+        raise LedgerError(f"requirement ledger has duplicate requirement id(s): {dups}")
+    return led
 
 
 def enforce_mandatory_e2e_for_real_run(plan: dict, charter: dict,
@@ -628,8 +664,11 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         # own fail-closed plan-schema ingress.
         if allow_real:
             enforce_campaign_plan_for_real_run(plan)
+            # Strict ledger load: a wired-but-unreadable/invalid ledger raises LedgerError
+            # (a ValueError) → caught below → INVALID, rather than dormantly skipping the
+            # mandate. An absent ledger stays dormant (additive).
             enforce_mandatory_e2e_for_real_run(
-                plan, charter, load_requirement_ledger(ledger_path))
+                plan, charter, load_requirement_ledger_strict(ledger_path))
         run_unit = _cp.make_run_unit(charter, units_dir, campaign_id,
                                      clock=clock, plan=plan,
                                      ledger_path=ledger_path, **run_loop_kwargs)
@@ -1041,9 +1080,14 @@ def main(argv=None) -> int:
             import campaign as _cp  # lazy (campaign imports run_loop)
             # OW-M3 (design §3.2 / D4): refuse to sign a plan that would accept a
             # user-facing requirement on non-browser-E2E evidence, or that covers an
-            # unclassified requirement. Dormant when no ledger is wired.
-            _ow_ledger = load_requirement_ledger(
-                resolve_ledger_path(charter, args.repo_dir))
+            # unclassified requirement. Dormant when no ledger is wired; a wired-but-broken
+            # ledger REFUSES (strict) rather than silently signing around the mandate.
+            try:
+                _ow_ledger = load_requirement_ledger_strict(
+                    resolve_ledger_path(charter, args.repo_dir))
+            except LedgerError as exc:
+                print(f"--sign-plan REFUSED: {exc}")
+                return 2
             _ow_violations = _cp.mandatory_e2e_violations(plan, charter, _ow_ledger)
             if _ow_violations:
                 print(_cp.render_mandatory_e2e_refusal(

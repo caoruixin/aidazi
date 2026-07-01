@@ -85,7 +85,7 @@
             }
           }
         },
-        "signed_scope_hash": {"type": "string", "description": "sha256(canonical_json(H)) per the exact hash spec in design §3.3.1 (H = {version:'v1', campaign_id, goal, charter_ref, charter_hash, milestones:[{id,objective,covers_req_ids,subsprint_sequence,depends_on,resolved_functional_acceptance:{mode,source},acceptance_bar},…]}; canonical JSON = UTF-8, sorted keys, no insignificant whitespace, absent arrays normalized to [])."}
+        "signed_scope_hash": {"type": "string", "description": "sha256(canonical_json(H)) per the exact hash spec in design §3.3.1 (H = {version:'v1', campaign_id, goal, charter_ref, charter_hash, milestones:[{id,objective,covers_req_ids,subsprint_sequence,depends_on,resolved_functional_acceptance:{mode,source},acceptance_bar,isolation_strategy,covered_req_surfaces?},…], authority:{budget,gap_followup,trunk_branch,milestone_isolation}}; per-milestone isolation_strategy + the top-level authority block are Track-2 T2-B; covered_req_surfaces (the {req_id:surface} basis, present only when a ledger is wired + the milestone covers reqs) is OW-M3 B1; canonical JSON = UTF-8, sorted keys, no insignificant whitespace, absent arrays normalized to [])."}
       },
       "if": {"required": ["signed_by_human"], "properties": {"signed_by_human": {"const": true}}},
       "then": {"required": ["signed_by_human", "signer", "signed_at", "charter_ref", "charter_hash", "scope_envelope", "signed_scope_hash"]}

@@ -69,9 +69,11 @@ def _base_plan():
 
 
 def _signed_plan():
-    # F1 signed resolved-scope snapshot bound to _SIDECAR_CHARTER. Sign WITH the wired
-    # ledger (production: --sign-plan + runner resolve the same ledger, so OW-M3 B1's
-    # covered_req_surfaces binds identically at sign + recompute → fresh, not false-stale).
+    # F1 signed resolved-scope snapshot bound to _SIDECAR_CHARTER. Direct-stamp fixture
+    # (bypasses the OW-M3 --sign-plan gate) that mirrors production's single-ledger
+    # invariant: sign-time and runtime bind covered_req_surfaces from the SAME ledger, so
+    # B1 recompute is fresh, not false-stale. (These covered reqs carry no `surface`, so
+    # the sign gate itself is out of scope here — this exercises B1/freshness mechanics.)
     return cp.stamp_signoff(_base_plan(), _SIDECAR_CHARTER, ledger=_ledger())
 
 

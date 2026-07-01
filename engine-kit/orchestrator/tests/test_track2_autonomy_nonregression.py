@@ -61,9 +61,10 @@ def _covms(mid, seq, reqs):
 def _signed(milestones, charter, *, ledger=None, **extra):
     plan = {"campaign_id": "camp-auto", "goal": "autonomy invariant",
             "signed_by_human": True, "milestones": milestones, **extra}
-    # Sign WITH the wired ledger (production: --sign-plan + runner resolve the same
+    # Direct-stamp with the wired ledger (bypasses the OW-M3 --sign-plan gate) mirroring
+    # production's single-ledger invariant: sign-time and the runner resolve the SAME
     # ledger, so OW-M3 B1 covered_req_surfaces binds identically → the runner's
-    # ledger-aware recompute stays 'signed', not false-stale).
+    # ledger-aware recompute stays 'signed', not false-stale.
     return cp.stamp_signoff(plan, charter, signed_at="t", ledger=ledger)
 
 

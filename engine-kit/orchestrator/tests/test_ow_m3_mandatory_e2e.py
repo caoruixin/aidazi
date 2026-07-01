@@ -216,6 +216,110 @@ class TestReclassifyAndResign(unittest.TestCase):
         self.assertEqual(cp.signoff_status(resigned, _CHARTER, led2), "signed")
 
 
+class TestGateStrictness(unittest.TestCase):
+    """Codex R1 blocking #1/#2: duplicate ids + out-of-enum surface must NOT bypass."""
+
+    def test_invalid_surface_value_is_refused(self):
+        # An out-of-enum surface ('banana') is NOT trusted as non-user-facing.
+        led = {"version": "v1", "requirements": [
+            {"id": "REQ-1", "statement": "s", "source": {"channel": "prd"},
+             "customer_disposition": "accepted", "surface": "banana"}]}
+        plan = _plan([_ms("m1", ["REQ-1"], functional_acceptance="browser_e2e")])
+        v = cp.mandatory_e2e_violations(plan, _CHARTER, led)
+        self.assertEqual([x["kind"] for x in v], ["unclassified"])
+
+    def test_duplicate_covered_req_is_refused(self):
+        # Duplicate REQ-1 (user_facing, then non_user_facing) on a static milestone: the
+        # gate must refuse (ambiguous) — never sign it off as non-user-facing.
+        led = _ledger([("REQ-1", "user_facing"), ("REQ-1", "non_user_facing")])
+        plan = _plan([_ms("m1", ["REQ-1"])])                 # static
+        v = cp.mandatory_e2e_violations(plan, _CHARTER, led)
+        self.assertEqual(len(v), 1)
+        self.assertEqual(v[0]["kind"], "unclassified")
+        self.assertIn("REQ-1", v[0]["req_ids"])
+
+    def test_duplicate_ids_helper(self):
+        led = _ledger([("REQ-1", "user_facing"), ("REQ-2", "non_user_facing"),
+                       ("REQ-1", "non_user_facing")])
+        self.assertEqual(cp.duplicate_requirement_ids(led), ["REQ-1"])
+        self.assertEqual(cp.duplicate_requirement_ids(_ledger([("REQ-1", "user_facing")])),
+                         [])
+
+    def test_ledger_surface_last_wins_matches_gate(self):
+        # _ledger_surface must agree with the gate's id->req map (last-wins) so a rejected
+        # duplicate can never leave the hash-bound basis disagreeing with the decision.
+        led = _ledger([("REQ-1", "user_facing"), ("REQ-1", "non_user_facing")])
+        self.assertEqual(cp._ledger_surface(led, "REQ-1"), "non_user_facing")
+
+    def test_campaign_construction_rejects_duplicate_ids(self):
+        import json as _json
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            lp = os.path.join(d, "ledger.json")
+            with open(lp, "w", encoding="utf-8") as fh:
+                _json.dump(_ledger([("REQ-1", "user_facing"),
+                                    ("REQ-1", "non_user_facing")]), fh)
+            plan = _plan([_ms("m1", ["REQ-1"], functional_acceptance="browser_e2e")])
+            with self.assertRaises(ValueError):
+                cp.Campaign(plan, os.path.join(d, "h"), lambda *a, **k: None,
+                            clock=lambda: "t", charter=_CHARTER, ledger_path=lp)
+
+
+class TestStrictLedgerLoader(unittest.TestCase):
+    """Codex R1 blocking #3: a wired-but-broken ledger must REFUSE, not go dormant."""
+
+    def _write(self, d, text):
+        import tempfile
+        lp = os.path.join(d, "ledger.json")
+        with open(lp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return lp
+
+    def test_absent_is_none(self):
+        import run_loop as rl
+        self.assertIsNone(rl.load_requirement_ledger_strict(
+            os.path.join("/nonexistent", "ledger.json")))
+        self.assertIsNone(rl.load_requirement_ledger_strict(None))
+
+    def test_malformed_json_raises(self):
+        import tempfile
+        import run_loop as rl
+        with tempfile.TemporaryDirectory() as d:
+            lp = self._write(d, "{not json")
+            with self.assertRaises(rl.LedgerError):
+                rl.load_requirement_ledger_strict(lp)
+
+    def test_out_of_enum_surface_raises(self):
+        import json as _json
+        import tempfile
+        import run_loop as rl
+        with tempfile.TemporaryDirectory() as d:
+            lp = self._write(d, _json.dumps({"version": "v1", "requirements": [
+                {"id": "REQ-1", "statement": "s", "source": {"channel": "prd"},
+                 "customer_disposition": "accepted", "surface": "banana"}]}))
+            with self.assertRaises(rl.LedgerError):
+                rl.load_requirement_ledger_strict(lp)
+
+    def test_duplicate_ids_raise(self):
+        import json as _json
+        import tempfile
+        import run_loop as rl
+        with tempfile.TemporaryDirectory() as d:
+            lp = self._write(d, _json.dumps(_ledger(
+                [("REQ-1", "user_facing"), ("REQ-1", "non_user_facing")])))
+            with self.assertRaises(rl.LedgerError):
+                rl.load_requirement_ledger_strict(lp)
+
+    def test_valid_ledger_loads(self):
+        import json as _json
+        import tempfile
+        import run_loop as rl
+        with tempfile.TemporaryDirectory() as d:
+            lp = self._write(d, _json.dumps(_ledger([("REQ-1", "user_facing")])))
+            led = rl.load_requirement_ledger_strict(lp)
+            self.assertEqual(led["requirements"][0]["surface"], "user_facing")
+
+
 class TestRunLoopPreflightGate(unittest.TestCase):
     """The runner allow_real preflight half of the gate (D4)."""
 

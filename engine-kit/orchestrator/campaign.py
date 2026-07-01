@@ -623,6 +623,13 @@ class Campaign:
             except OSError as exc:
                 raise ValueError(f"campaign requirement ledger unreadable: {exc}")
             _validate_or_raise(led, "requirement-ledger.schema.json", "ledger")
+            # OW-M3: a duplicate requirement id is an ambiguous surface classification the
+            # JSON Schema cannot catch — fail closed so the {rid: surface} basis is
+            # unambiguous for the mandate + the signed hash.
+            dups = duplicate_requirement_ids(led)
+            if dups:
+                raise ValueError(
+                    f"campaign requirement ledger has duplicate requirement id(s): {dups}")
             self.ledger = led
         self.budget = plan.get("budget") or {}
         iso = plan.get("milestone_isolation") or {}
@@ -1068,7 +1075,8 @@ class Campaign:
                 return "goal"
             if _canonical_json(stored.get("milestones")) != _canonical_json(
                     live.get("milestones")):
-                return "milestones(scope/acceptance/subsprint_sequence/covers_req_ids)"
+                return ("milestones(scope/acceptance/subsprint_sequence/covers_req_ids/"
+                        "covered_req_surfaces)")
             return "charter_or_signature"
         except Exception:  # noqa: BLE001 — a hint, never a gate
             return None
@@ -2534,16 +2542,42 @@ def resolve_functional_acceptance(charter: Optional[dict],
     return "static", "default"
 
 
+_VALID_SURFACES = frozenset({"user_facing", "non_user_facing"})
+
+
+def duplicate_requirement_ids(ledger: Optional[dict]) -> list:
+    """The requirement ids that appear MORE THAN ONCE in the ledger — a malformed input
+    contract (an AMBIGUOUS surface classification). Empty for a well-formed/absent ledger.
+    OW-M3 rejects a ledger with duplicates (the sign-off gate refuses; the runner + strict
+    sign/preflight loaders fail closed) so the {rid: surface} basis is unambiguous for BOTH
+    the gate and the signed hash — closing the 'first duplicate says user_facing, last says
+    non_user_facing' bypass."""
+    seen, dups = set(), []
+    for r in (ledger or {}).get("requirements") or []:
+        if not isinstance(r, dict):
+            continue
+        rid = r.get("id")
+        if rid is None:
+            continue
+        if rid in seen and rid not in dups:
+            dups.append(rid)
+        seen.add(rid)
+    return dups
+
+
 def _ledger_surface(ledger: Optional[dict], rid: str) -> Optional[str]:
     """OW-M3 / B1: the `surface` classification of requirement `rid` in the wired
     requirement ledger, or None when no ledger is wired, `rid` is absent from it, or the
-    requirement carries no surface. Deterministic — a post-sign surface flip/removal
-    changes this value, so the covered_req_surfaces map bound into H changes and the plan
-    goes 'stale' (the tamper-detection basis of the mandate)."""
+    requirement carries no surface. LAST occurrence wins — IDENTICAL to the id→req map the
+    sign-off gate builds ({r['id']: r for ...}), so the gate decision and the hash-bound
+    covered_req_surfaces can never disagree on a (rejected) duplicate id. Deterministic — a
+    post-sign surface flip/removal changes this value, so the covered_req_surfaces map bound
+    into H changes and the plan goes 'stale' (the tamper-detection basis of the mandate)."""
+    surface = None
     for r in (ledger or {}).get("requirements") or []:
         if isinstance(r, dict) and r.get("id") == rid:
-            return r.get("surface")
-    return None
+            surface = r.get("surface")
+    return surface
 
 
 def _covered_req_surfaces(milestone: dict, ledger: Optional[dict]) -> Optional[dict]:
@@ -2767,9 +2801,12 @@ def mandatory_e2e_violations(plan: Optional[dict], charter: Optional[dict],
     DORMANT (returns []) when no requirement ledger is wired — the mandate is inert until
     the OW-2 input contract exists (byte-identical to pre-OW-M3). For each milestone
     DECLARING a non-empty covers_req_ids:
-      • 'unclassified' — a covered rid is absent from the ledger or carries no `surface`
-        (D2: refuse; conservative-default rejected). Reported alone (the milestone's
-        user-facing-ness is unknowable until every covered rid is classified).
+      • 'unclassified' — a covered rid is absent from the ledger, carries no VALID
+        `surface` (∈ {user_facing, non_user_facing} — an out-of-enum value like 'banana'
+        is NOT trusted as non-user-facing), or is AMBIGUOUS (duplicated in the ledger with
+        conflicting classifications). (D2: refuse; conservative-default rejected.) Reported
+        alone (the milestone's user-facing-ness is unknowable until every covered rid is
+        unambiguously classified).
       • 'downgrade'    — the milestone is user-facing (ANY covered rid.surface ==
         'user_facing') yet its RESOLVED functional acceptance mode != 'browser_e2e'.
     A milestone with an ABSENT covers_req_ids field never trips this (dormant; N2)."""
@@ -2777,13 +2814,17 @@ def mandatory_e2e_violations(plan: Optional[dict], charter: Optional[dict],
         return []
     reqs = {r.get("id"): r for r in (ledger.get("requirements") or [])
             if isinstance(r, dict)}
+    dups = set(duplicate_requirement_ids(ledger))
     out = []
     for m in (plan or {}).get("milestones") or []:
         covered = list(m.get("covers_req_ids") or [])
         if not covered:
             continue
+        # Refuse a covered rid that is absent, out-of-enum, or ambiguously duplicated —
+        # any of these means the surface basis is not trustworthy for this milestone.
         unknown = [rid for rid in covered
-                   if rid not in reqs or not reqs[rid].get("surface")]
+                   if rid in dups or rid not in reqs
+                   or reqs[rid].get("surface") not in _VALID_SURFACES]
         if unknown:
             out.append({"milestone_id": m.get("id"), "kind": "unclassified",
                         "req_ids": unknown})
@@ -2812,8 +2853,10 @@ def render_mandatory_e2e_refusal(violations: list, *, action: str) -> str:
         if v.get("kind") == "unclassified":
             lines.append(
                 f"  - milestone {mid!r}: covers requirement id(s) [{rids}] that are "
-                f"absent from the requirement ledger or have no `surface` classification. "
-                f"Add a ledger entry with a surface for each, then re-sign.")
+                f"absent from the requirement ledger, have no valid `surface` "
+                f"classification (∈ user_facing | non_user_facing), or are ambiguously "
+                f"classified (duplicate ledger id). Ensure exactly one ledger entry with a "
+                f"valid surface per id, then re-sign.")
         else:  # downgrade
             mode = v.get("resolved_mode")
             lines.append(
