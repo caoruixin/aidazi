@@ -21,6 +21,14 @@
 
 ---
 
+## 0.0 Locked semantics (Customer design sign-off, 2026-07-01)
+
+The design is **APPROVED**. These three semantics are LOCKED and any implementation MUST honor them exactly (a deviation is a design regression, not an implementation choice):
+
+1. **`surface_status` / `surface_confidence` are ADVISORY ONLY.** They enter **none** of the verdict-affecting inputs — NOT the signed scope hash `H`, NOT `acceptance_input_hash`, and NOT the gap-report input (the §4 sidecar projection strips them before the resolver hash / gap-report facts). A flip of either field changes no verdict, no hash, no freshness.
+2. **The authoritative `surface` continues to bind via `covered_req_surfaces`** (the value-only `{rid: surface}` map in the signed hash) — unchanged from OW-M3. The surface VALUE is the only surface data that is authoritative or verdict-affecting.
+3. **A high-confidence proposal may be batch-reviewed at authoring time, but MUST NOT auto-become the authoritative classification before the Customer's campaign-plan sign-off.** `surface_status: confirmed` (an authoring-time human batch-accept) is a convenience to reduce sign-off surprise — it is NEVER the binding act and the engine never treats it as authority. The **only** thing that makes a surface authoritative is the Customer signing the covering campaign plan (`campaign_plan_signoff` → `covered_req_surfaces` in `H`). No batch-review, and no agent proposal, shortcuts that.
+
 ## 0. The gap this closes
 
 Today OW-M3 is **capability-available but opt-in**: it binds only when a knowledgeable human (a) creates a requirement ledger, (b) classifies each REQ's `surface`, and (c) fills milestone `covers_req_ids`. Every one of those is a manual act. Result: both live adopters route around it (OW-0). We want:
