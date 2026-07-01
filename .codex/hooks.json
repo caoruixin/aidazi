@@ -1,0 +1,8 @@
+{
+  "_doc": "MAINTAINER-ONLY, READ-ONLY, FAIL-OPEN codebase-map orientation entry for Codex CLI in the aidazi framework repo. OUTSIDE the vendor allowlist -> never lands in adopters. ONLY a UserPromptSubmit context-injector -> maintainer/map_briefing.py (read-only, ALWAYS exits 0) which injects via hookSpecificOutput.additionalContext. NO PreToolUse hook, NO receipt/epoch/mutation-ledger -> it can NEVER block Bash/apply_patch/commit/subagent/etc. Codex runs hooks with cwd=repo-root, so the command uses a GIT-FREE relative path (git is unreliable in the hook sandbox) and is wrapped to ALWAYS exit 0 (fail-open at the command level). One-time `/hooks` hash-trust is required per Codex security (the project is already trusted); after that it fires every session automatically. `codex features list` shows `hooks` as `stable`/enabled.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "sh -c '[ -f maintainer/map_briefing.py ] && python3 maintainer/map_briefing.py --hook codex; exit 0'"}]}
+    ]
+  }
+}
