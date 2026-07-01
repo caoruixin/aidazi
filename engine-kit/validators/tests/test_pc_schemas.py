@@ -113,6 +113,14 @@ class RequirementLedgerSchema(unittest.TestCase):
         with open(fx, encoding="utf-8") as fh:
             self.assertEqual(_errs(self.SCH, json.load(fh)), [])
 
+    def test_ow_auto_example_template_validates(self):
+        # OW-AUTO Phase 2: the seeded onboarding template (default new-adopter artifact)
+        # must validate — a broken template would mislead every new adopter.
+        tmpl = os.path.abspath(os.path.join(
+            _THIS, "..", "..", "..", "templates", "requirements-ledger.example.json"))
+        with open(tmpl, encoding="utf-8") as fh:
+            self.assertEqual(_errs(self.SCH, json.load(fh)), [])
+
     def test_machine_constraints_reject_violations(self):
         base = {"version": "v1", "requirements": [
             {"id": "REQ-1", "statement": "x", "source": {"channel": "prd"},
