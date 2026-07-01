@@ -310,6 +310,16 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
     structured per-REQ coverage report (design §3.6). Pure + deterministic."""
     state = state or {}
     ledger = ledger or {}
+    # Track-2 TD6: honor the authorized engine epoch (a deliver_followup re-stamp) recorded
+    # in campaign state, via the SAME pure reconstruction the runner uses, so EXTERNAL
+    # reporting agrees with Campaign.run's in-memory view — ONE epoch, no freshness-consumer
+    # divergence (Codex R2 B2). A no-op unless the recorded epoch reproduces against the
+    # plan-file signoff; never mutates the caller's plan (returns a re-stamped copy).
+    try:
+        import campaign as _cp
+        plan = _cp.apply_engine_restamp_to_plan(plan, charter, state.get("engine_restamp"))
+    except Exception:
+        pass
     reqs = [r for r in (ledger.get("requirements") or []) if isinstance(r, dict)]
     req_ids = {r.get("id") for r in reqs}
 

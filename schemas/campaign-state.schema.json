@@ -27,6 +27,42 @@
       }
     },
     "pending_milestone_advance": {"type": "boolean", "default": false, "description": "Internal: the current milestone is DONE but the cursor has NOT advanced yet — waiting at milestone_merge."},
+    "freshness_block": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Track-2 T2-A/B4 — the DURABLE freshness-block overlay. When a mid-run universal F1 freshness gate (_authority_fresh) detects that the signed plan went STALE (a post-sign authority/scope edit, or budget raise without re-sign), the campaign BLOCKS for re-sign as pause_reason='campaign_plan_signoff' WHILE preserving the ORIGINAL gate here, so a post-re-sign resume returns to that original gate (mechanism-A resume, deliver_followup_required, milestone_merge, decision-bound checkpoints). It is persisted campaign-state (NOT an in-memory flag) so a crash mid-block never loses the original gate. Additive; absent/null ⇒ no freshness block is active (byte-identical to today).",
+      "properties": {
+        "original_pause_reason": {"type": ["string", "null"], "description": "The pause_reason the campaign was at when the freshness gate fired — restored verbatim on a post-re-sign resume."},
+        "original_pause_checkpoint": {"type": ["string", "null"], "description": "The pause_checkpoint that accompanied original_pause_reason — restored alongside it so the original gate's decision file/nonce binding is unchanged."}
+      }
+    },
+    "engine_restamp": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Track-2 T2-A/TD6 — the engine-authored deliver_followup re-stamp record. The ONE legitimate mid-campaign plan mutation (a follow-up sub-sprint inserted at cursor+1) grows subsprint_sequence, which is inside the single signed hash, so the live plan would read 'stale'. Rather than write back the signed plan (re-authorization requires an explicit Human signoff artifact), the engine advances the SINGLE signed epoch by pinning the authorized signed_scope_hash here plus append-only provenance. Each invocation deterministically RE-APPLIES it to the in-memory signoff iff the live hash still equals signed_scope_hash, so every freshness consumer agrees (no divergence) and any FURTHER plan edit (changing the live hash) is refused. Additive; absent/null ⇒ no re-stamp has occurred (byte-identical to today).",
+      "properties": {
+        "signed_scope_hash": {"type": ["string", "null"], "description": "The pinned authorized epoch hash (sha256 of the signed-scope object H over the live, grown plan at re-stamp time). The cross-invocation proof: the live plan is effectively signed iff its recomputed live hash equals this."},
+        "restamp_version": {"type": "integer", "minimum": 0, "description": "Monotonic count of engine re-stamps (one per authorized deliver_followup insertion)."},
+        "deltas": {
+          "type": "array",
+          "description": "Append-only provenance for every authorized deliver_followup insertion the engine advanced the epoch for (audit; the pinned signed_scope_hash is the integrity proof).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["milestone_id", "subsprint_id", "restamp_version"],
+            "properties": {
+              "milestone_id": {"type": "string"},
+              "subsprint_id": {"type": ["string", "null"], "description": "The newly inserted follow-up sub-sprint id."},
+              "at_index": {"type": ["integer", "null"], "minimum": 0, "description": "The cursor+1 index the follow-up was inserted at in the milestone's subsprint_sequence."},
+              "authorizing_checkpoint": {"type": ["string", "null"], "description": "The deliver_followup_required pause checkpoint that authorized the insertion."},
+              "prior_signed_scope_hash": {"type": ["string", "null"], "description": "The signed_scope_hash before this re-stamp (epoch chain)."},
+              "new_signed_scope_hash": {"type": ["string", "null"], "description": "The signed_scope_hash after this re-stamp."},
+              "restamp_version": {"type": "integer", "minimum": 1}
+            }
+          }
+        }
+      }
+    },
     "gap_followup_state": {
       "type": "object",
       "additionalProperties": false,

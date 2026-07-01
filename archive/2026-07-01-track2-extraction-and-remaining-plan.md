@@ -1,0 +1,36 @@
+# Track-2 freshness hardening — extraction manifest + remaining implementation plan
+
+- **Date:** 2026-07-01
+- **Branch:** `feat/track2-freshness-hardening` · **Worktree:** `/Users/caoruixin/projects/aidazi-track2-freshness`
+- **Base:** latest `origin/main` `8e3b20f` (Merge PR #2 four-track-integration). Contains the entire Track-2 Phase-2 lineage (`042c202` §1.7-F auto-route + Requirement Ledger + gap_report — verified ancestor of origin/main). This is the correct logical base — the Bootstrap experiment branch is NOT a Track-2 baseline.
+
+## Extraction provenance (why this branch exists)
+Track-2 freshness/signed-input hardening implementation was started in the `track2-freshness-hardening-impl` worktree (off `2f0095d`), but that work was an *uncommitted partial* and the session that produced it was on `feat/session-context-bootstrap`, whose PreToolUse gate blocked completion. To keep Track-2 fully independent of the Bootstrap rollback / Map-Lite adjustment, the Track-2 work was extracted here onto latest main.
+
+- `feat/session-context-bootstrap` is SEALED — it carries ONLY Bootstrap commits (`cc5ca63`/`36de1cf`/`33a275a`) and touches ZERO Track-2 files; nothing Track-2 to recover there.
+- `feat/codebase-context-map-lite` carries ONLY the lightweight map — no Track-2 code migrated in.
+- The partial impl is byte-identical-migrated here (hash-verified): `campaign.py` `18c67454…`, `campaign-state.schema.json` `90e23a1b…`. `campaign.py`/`campaign-state.schema.json` are identical between `2f0095d` and `8e3b20f`, so the partial applies cleanly with no reconciliation.
+- **No Bootstrap dependency:** the partial code references none of context_bootstrap/gate/receipt/epoch/mutation-ledger/cc_bootstrap (grep-verified).
+
+## What is migrated (Track-2-owned only)
+- Partial impl: `engine-kit/orchestrator/campaign.py` (+95/−7), `schemas/campaign-state.schema.json` (+9).
+- Design + verdicts: `archive/2026-06-30-track2-freshness-signed-input-hardening-spec.md` (rev3, Codex R3 APPROVE) + `…-track2-codex-review-r1/r2/r3.md`.
+- This manifest + remaining plan.
+- Explicitly EXCLUDED: context-bootstrap core, gate/receipt/epoch/mutation-ledger, `.claude`/`.codex`/`.cursor` adapters, Bootstrap tests/design.
+
+## Current partial state (RED — to be completed)
+Landed (T2-B partial): `_resolve_plan_authority(plan)` normalizing `budget.*` / `gap_followup.{max_subsprints,max_no_progress_rounds}` / `trunk_branch` / `milestone_isolation.*`; `_envelope_milestone` emits per-milestone `isolation_strategy` ("inherit"); `compute_scope_envelope` + `_signed_scope_H` embed an `"authority"` block; `signoff_snapshot_authentic` reconstructs H with a conditional `authority` key. Schema: `freshness_block` object added to `campaign-state.schema.json`.
+**Dangling (causes RED):** N3 `raise_cap` branch already calls `self._authority_fresh()` / `self._block_for_resign(reason)` which do NOT exist yet; `CampaignState` dataclass does NOT round-trip `freshness_block`; the two literal-`H` tests will fail until updated.
+
+## Remaining implementation (per the approved spec §2 + Codex R1–R3; complete in THIS worktree)
+**A. `campaign.py` — add after `_signoff_status` (~1011):** `_authority_fresh` (True if not `f1_required(self.plan)` else `_signoff_status()=="signed"`); `_block_for_resign(original_reason)` (set durable `self.state.freshness_block={"original_pause_reason":…,"original_pause_checkpoint":self.state.pause_checkpoint}` if unset, then `_pause("campaign_plan_signoff",…)`, return "paused"); `_consume_freshness_block` (restore original reason+checkpoint, clear, save); `_stored_signed_envelope` (return `signoff.scope_envelope` iff `signoff_snapshot_authentic` else None); `_is_authorized_followup_insertion` (exact-diff guard: live `compute_scope_envelope` == stored signed envelope except ONE id inserted into the CURRENT milestone `subsprint_sequence` at `subsprint_index+1`, prefix+suffix unchanged, goal/authority/all other milestones byte-identical, inserted id not in `followup_baseline_seq`); `_restamp_followup_epoch` (if `f1_required` and guard passes: atomically set `signoff.scope_envelope`+`signoff.signed_scope_hash`+append `engine_authored_delta` provenance, leave `signed_by_human`/`signer` untouched; audit; return True; else False).
+**B. `CampaignState` dataclass:** add `freshness_block: Optional[dict]=None`; `to_dict` emit only when truthy; `from_dict` read `d.get("freshness_block")`.
+**C. T2-A invocation sites (all F1-gated, read-only, B5 placement):** `_drive_milestones` before each `run_unit` (~1998) → `if not _authority_fresh(): return _block_for_resign(self.state.pause_reason)`; `_handle_resume` — `deliver_followup_required` runs `_restamp_followup_epoch()` as PRE-freshness step then gates; `milestone_merge` before `_execute_milestone_merge()`; cursor-advancing dispatch before `_stamp_milestone_outcome`/cursor mutation/`_commit_dispatch_resolution`; `ACT_REDISPATCH_FRESH`; Mechanism-A `RESUME_DRIVER` proceed — each `if not _authority_fresh(): return _block_for_resign(reason)`; `run()` on a `campaign_plan_signoff` resume carrying `freshness_block` → if fresh `_consume_freshness_block()` and re-dispatch the ORIGINAL gate, else re-pause.
+**D. Gap-followup outer loop (`_gap_followup_round`, ~1596):** split — `no_gap`→`GAP_DONE`; `not_fresh_signed`→`_pause_gap_review("not_fresh_signed",gap_items); return GAP_PAUSED` (a stale plan at backlog exhaustion never reaches `STATUS_DONE`).
+**E. Tests (`test_campaign.py`, check `test_scope_report.py`):** per spec §7 — T2-A each resume reason + dispatch + gap-followup outer loop; TD6 legit insertion re-stamps+provenance vs any-other-diff/prompt-id-swap/multi-item refuses→blocked; T2-B each bound field raise→stale→blocked + snapshot reconstruction + `raise_cap` re-sign; B4 overlay durability + crash-replay preserving original pause; non-F1 byte-identical; placement no double-pause/stranded cursor. **Update** the two literal-H tests (`TestF1HashSpec.test_hash_matches_the_exact_spec_object`, `test_absent_arrays_normalize_to_empty`) to include the new `"authority"` block + per-milestone `"isolation_strategy":"inherit"`.
+
+## TD6 re-stamp persistence — DECIDED: in-memory (2026-07-01)
+**Resolved: in-memory per invocation. No plan-file write-back.** The re-stamp is a deterministic function of (stored signed envelope, live plan), recomputed as the pre-freshness step on `deliver_followup_required` each `run_campaign` invocation (`run_campaign_entry` reloads the plan from file each run). Rationale: **harness-agnostic** (pure `campaign.py` Python — no Claude Code / Codex / any adapter dependency; runs identically in any adopter runtime) and **zero new disk-write surface** (no CLI plan-file write-back path to add/secure). The rejected alternative (persist the re-stamped plan to the plan file) buys nothing here since the in-memory recompute is idempotent. Implement in-memory; the code-level Codex gate validates correctness (idempotence + the exact-diff guard).
+
+## Verification gates to pass before done
+Full suite (baseline `1351 passed, 3 skipped` on `8e3b20f`) green incl. new tests; kernel-equivalence + acceptance load-closure + WP-9 budget lint green; then code-level Codex gpt-5.5 xhigh implementation review.
