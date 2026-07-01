@@ -15,7 +15,8 @@
   - **B3 (onboarding citations not real on `main`)** — resolved by stacking on PR #5; citations verified (Step 4b `:358`, Step 6 `:535`).
   - **NB (wording)** — §1 tightened to "no new checkpoint/gate TYPE; existing OW-M3 gate becomes default-ACTIVE."
   - **NB (inventory)** — §7 expanded with the sidecar/resolver/hash/scope_report/gap_report/tests/process consumers. (`schemas/compact/` has no requirement-ledger projection — confirmed, nothing to re-hash.)
-- **rev3 (this doc)** → Codex R2 = REVISE with ONE remaining BLOCKING (B1/B3/NBs all confirmed resolved): the `pending`-sentinel carve-out was under-propagated. §4.1 now carries an **explicit 8-surface propagation table** (each currently-contradictory text + its exact replacement), and §7 points at it as the authoritative list. R2 verdict: `archive/2026-07-01-owauto-codex-review-r2.md`.
+- **rev3** → Codex R2 = REVISE with ONE remaining BLOCKING (B1/B3/NBs all confirmed resolved): the `pending`-sentinel carve-out was under-propagated. §4.1 gained an **explicit propagation table** (each currently-contradictory text + its exact replacement), and §7 points at it as the authoritative list. R2 verdict: `archive/2026-07-01-owauto-codex-review-r2.md`.
+- **rev4 (this doc)** → Codex R3 = REVISE with ONE narrow BLOCKING (R3 confirmed the 7 prose/schema contradictions covered + wording tight + list exhaustive): the propagation table's **tests row cited a non-existent authority test** (`test_pc_schemas.py:81` is the structural `RequirementLedgerSchema` class, not an authority assertion). rev4 corrects it to "no existing authority test → ADD a NEW impl test". R3 verdict: `archive/2026-07-01-owauto-codex-review-r3.md`.
 
 ---
 
@@ -128,7 +129,7 @@ IDENTICAL sentinel rule (Codex R2 B1; each currently CONTRADICTS the carve-out):
 | `ONBOARDING.md:380` (Step 4b) | "agents *propose*, never set it. There is no engine/agent write path" | "agents may seed `pending` on a new item; they never set a **decided** value" |
 | `process/self-governance.md:59` (§7.0) | Customer-only assertion | same sentinel carve-out |
 | `process/artifact-taxonomy.md:218` (Artifact #15 producer line) | "the Customer (`customer_disposition`, authority-only)" | "the Customer (decided `customer_disposition`); Research/onboarding may seed `pending`" |
-| tests (`test_pc_schemas.py:81` + any `customer_disposition`-authority test) | assert Customer-only | assert the sentinel rule (seed `pending` OK; decided value by agent = rejected) |
+| tests — **no existing authority test** (`test_pc_schemas.py` `RequirementLedgerSchema` is STRUCTURAL only: enum/required/`additionalProperties`/REQ-id — it does NOT assert Customer-only authority, which today is "enforced by construction", no engine write path) | — | **ADD a NEW impl test** on the generator/onboarding path: an agent/engine may create a new item with `customer_disposition: pending` ONLY; an agent-authored **decided** value is rejected; a `pending`→decided transition has no agent write path |
 
 The wording must be tight enough that it can NEVER be read as "agents may change dispositions": the ONLY agent-allowed value is `pending`, and ONLY on creation of a new item; every transition out of `pending` and every decided value stays Customer authority.
 
@@ -171,7 +172,7 @@ Each phase is additive and independently green; nothing hardens the loop.
 **Change (edited) surfaces:**
 - `schemas/requirement-ledger.schema.json:14-53` — add the 2 optional advisory fields (§3.1).
 - **`engine-kit/orchestrator/campaign.py:3284-3301`** — the requirement-context sidecar writer: project the ledger to strip advisory fields BEFORE the `json.dump` at `:3299` (§4 B1 fix; mirror the `campaign_state` projection at `:3294`).
-- **`customer_disposition` `pending`-sentinel carve-out — the AUTHORITATIVE surface list is the §4.1 propagation table** (8 surfaces: `schema:5` + `:31`, `requirement-ledger.md:47` + `:82`, `ONBOARDING.md:380`, `self-governance.md:59`, `artifact-taxonomy.md:218`, tests). Every one must state the IDENTICAL rule; do not update a subset.
+- **`customer_disposition` `pending`-sentinel carve-out — the AUTHORITATIVE surface list is the §4.1 propagation table**: 7 currently-contradictory live texts to edit (`schema:5` + `:31`, `requirement-ledger.md:47` + `:82`, `ONBOARDING.md:380`, `self-governance.md:59`, `artifact-taxonomy.md:218`) — each to the IDENTICAL rule, do not update a subset — PLUS **1 NEW authority test** (none exists today; `test_pc_schemas.py` is structural only).
 - `role-cards/research-agent.md` §2/§3 (`:45-113`) — proposal instruction + `pending`-sentinel note (§5.1).
 - `role-cards/deliver-agent.md` §2.0/§2.1 (`:55-84`) — auto covers_req_ids + self-consistent functional_acceptance (§5.2).
 - `ONBOARDING.md` Step 4b (`:358-449`, incl. the `:380` disposition line) + Step 6 (`:535-605`) — default-on + generation (§5.3). *(Verified on this PR#5-stacked branch.)*
