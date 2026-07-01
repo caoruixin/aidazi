@@ -1,7 +1,7 @@
 # Acceptance auto-proposal & initialization experience — design spec (design-only)
 
 - **Date:** 2026-07-01
-- **Status:** DESIGN-ONLY (no runtime code changed). Awaiting Codex GPT-5.5 xhigh read-only gate → human approval → separate implementation authorization.
+- **Status:** DESIGN-ONLY (no runtime code changed). **Codex GPT-5.5 xhigh read-only gate = APPROVE (R4)** after R1–R3 REVISE. Awaiting human approval → separate implementation authorization.
 - **Author intent (user, 2026-07-01):** *not* another runtime gate — complete the **automatic proposal + initialization experience** so a new adopter codebase **naturally, correctly enables Acceptance**, asking a human only at key authority points.
 - **Prerequisite:** PR #5 (`ONBOARDING.md` Step 4b, OW-2/OW-3) merged to `main`. This design **evolves** Step 4b from *optional* to *default-on*.
 - **Depends on / builds on:** OW-M3 (mandatory browser-E2E, landed `a8091019`, PR #4), the requirement ledger (Δ-19), Track-2 freshness hardening (`1e6946d`).
@@ -17,6 +17,7 @@
   - **NB (inventory)** — §7 expanded with the sidecar/resolver/hash/scope_report/gap_report/tests/process consumers. (`schemas/compact/` has no requirement-ledger projection — confirmed, nothing to re-hash.)
 - **rev3** → Codex R2 = REVISE with ONE remaining BLOCKING (B1/B3/NBs all confirmed resolved): the `pending`-sentinel carve-out was under-propagated. §4.1 gained an **explicit propagation table** (each currently-contradictory text + its exact replacement), and §7 points at it as the authoritative list. R2 verdict: `archive/2026-07-01-owauto-codex-review-r2.md`.
 - **rev4 (this doc)** → Codex R3 = REVISE with ONE narrow BLOCKING (R3 confirmed the 7 prose/schema contradictions covered + wording tight + list exhaustive): the propagation table's **tests row cited a non-existent authority test** (`test_pc_schemas.py:81` is the structural `RequirementLedgerSchema` class, not an authority assertion). rev4 corrects it to "no existing authority test → ADD a NEW impl test". R3 verdict: `archive/2026-07-01-owauto-codex-review-r3.md`.
+- **rev4 → Codex R4 = APPROVE** (`archive/2026-07-01-owauto-codex-review-r4.md`). Design gate CLOSED; design-only, not pushed; awaiting human approval before any implementation.
 
 ---
 
