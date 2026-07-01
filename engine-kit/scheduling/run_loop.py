@@ -258,14 +258,19 @@ def load_requirement_ledger_strict(ledger_path: Optional[str]) -> Optional[dict]
     JSON, schema-invalid (e.g. an out-of-enum `surface`), or carries duplicate requirement
     ids ⇒ raise ``LedgerError`` — a wired input contract that cannot be trusted must NOT be
     signed/run around. Mirrors the campaign runner's fail-closed construction ingress so the
-    ledger-less ``--sign-plan`` path (which builds no Campaign) is equally strict."""
-    if not ledger_path or not os.path.isfile(ledger_path):
+    ledger-less ``--sign-plan`` path (which builds no Campaign) is equally strict.
+
+    ABSENT vs PRESENT-BUT-BROKEN: use ``lexists`` (not ``isfile``) so a configured path that
+    is a directory, a broken symlink, or unreadable (permission/stat error) is PRESENT ⇒
+    REFUSE — only a path with NO entry at all is dormant. ``isfile`` collapses all of those
+    to False, which would silently stamp around a configured-but-broken ledger (Codex R2)."""
+    if not ledger_path or not os.path.lexists(ledger_path):
         return None
     try:
         with open(ledger_path, encoding="utf-8") as fh:
             led = json.load(fh)
     except (OSError, ValueError) as exc:
-        raise LedgerError(f"requirement ledger unreadable/malformed: {exc}")
+        raise LedgerError(f"requirement ledger present but unreadable/malformed: {exc}")
     try:
         import campaign as _cp  # lazy (campaign imports run_loop)
         _cp._validate_or_raise(led, "requirement-ledger.schema.json", "ledger")

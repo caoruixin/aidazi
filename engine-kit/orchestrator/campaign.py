@@ -616,12 +616,16 @@ class Campaign:
         # engine NEVER writes the ledger back (delivery_status is a derived projection).
         self.ledger_path = ledger_path
         self.ledger: Optional[dict] = None
-        if ledger_path and os.path.isfile(ledger_path):
+        # ABSENT vs PRESENT-BUT-BROKEN (Codex R2): lexists (not isfile) so a configured
+        # path that is a directory / broken symlink / unreadable is PRESENT ⇒ fail closed,
+        # not silently dormant. Only a path with no entry at all stays dormant (additive).
+        if ledger_path and os.path.lexists(ledger_path):
             try:
                 with open(ledger_path, encoding="utf-8") as fh:
                     led = json.load(fh)
-            except OSError as exc:
-                raise ValueError(f"campaign requirement ledger unreadable: {exc}")
+            except (OSError, ValueError) as exc:
+                raise ValueError(
+                    f"campaign requirement ledger present but unreadable/malformed: {exc}")
             _validate_or_raise(led, "requirement-ledger.schema.json", "ledger")
             # OW-M3: a duplicate requirement id is an ambiguous surface classification the
             # JSON Schema cannot catch — fail closed so the {rid: surface} basis is

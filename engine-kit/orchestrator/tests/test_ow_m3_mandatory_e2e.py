@@ -319,6 +319,24 @@ class TestStrictLedgerLoader(unittest.TestCase):
             led = rl.load_requirement_ledger_strict(lp)
             self.assertEqual(led["requirements"][0]["surface"], "user_facing")
 
+    def test_present_but_directory_raises(self):
+        # Codex R2: a configured path that is a DIRECTORY is PRESENT ⇒ refuse (not dormant).
+        import tempfile
+        import run_loop as rl
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(rl.LedgerError):
+                rl.load_requirement_ledger_strict(d)
+
+    def test_broken_symlink_raises(self):
+        # Codex R2: a broken symlink is PRESENT (lexists) but unreadable ⇒ refuse.
+        import tempfile
+        import run_loop as rl
+        with tempfile.TemporaryDirectory() as d:
+            link = os.path.join(d, "ledger.json")
+            os.symlink(os.path.join(d, "no-such-target.json"), link)
+            with self.assertRaises(rl.LedgerError):
+                rl.load_requirement_ledger_strict(link)
+
 
 class TestRunLoopPreflightGate(unittest.TestCase):
     """The runner allow_real preflight half of the gate (D4)."""
