@@ -1,0 +1,23 @@
+========================================================================
+OW-M3 airplat canary — real plan/charter copies, real CLI + shipped fns
+UI milestone under test: M-UI | requirement: REQ-UI-WORKBENCH
+========================================================================
+[PASS] control_asis_signs: exit=0; signoff stamped=True (OW-M3 dormant: no ledger, no covers)
+[PASS] control_covers_noledger_dormant: exit=0; signs (design: no ledger => mandate inert; ledger is the activation trigger, not covers_req_ids alone)
+[PASS] negative_static_refused_exit2: exit=2 (expect 2); no signoff stamp & file unchanged=True
+[PASS] negative_refusal_message_actionable: message names the milestone, the REQ, browser_e2e, and the 2 resolutions
+[PASS] positive_browser_e2e_signs: exit=0; signed_scope_hash=present
+[PASS] positive_covered_req_surfaces_bound_into_signed_basis: scope_envelope[M-UI].covered_req_surfaces={'REQ-UI-WORKBENCH': 'user_facing'}
+[PASS] positive_fresh_after_sign: signoff_status(live user_facing ledger) = 'signed'
+[PASS] item6_correctly_signed_no_new_pause: Campaign._authority_fresh()=True (dispatch gate would NOT re-pause a correctly authorized loop)
+[PASS] tamper_surface_flip_makes_signature_stale: signoff_status(flipped ledger)='stale' (signed basis bound {REQ-UI-WORKBENCH: user_facing}; live now non_user_facing => hash mismatch)
+[PASS] tamper_real_execution_blocked_under_old_signature: Campaign._authority_fresh()=False => the unconditional pre-dispatch gate (campaign.py:2340) blocks run_unit for re-sign
+
+========================================================================
+NEGATIVE-CASE refusal message (verbatim):
+------------------------------------------------------------------------
+OW-M3 mandatory browser-E2E acceptance — refusing to sign the plan:
+  - milestone 'M-UI': covers user_facing requirement(s) [REQ-UI-WORKBENCH] but its resolved functional acceptance is 'static' (must be 'browser_e2e'). Resolve by EITHER (1) set this milestone's functional_acceptance: "browser_e2e"; OR (2) (Customer) reclassify the requirement's surface to 'non_user_facing' in the ledger and re-sign.
+========================================================================
+
+CANARY RESULT: 10/10 checks PASS
