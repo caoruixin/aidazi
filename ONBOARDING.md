@@ -121,8 +121,9 @@ And one governing interaction style:
 ## The journey at a glance — the decisions you'll make
 
 Before the wizard drives you decision-by-decision, here is the whole route. The
-wizard runs **Step 0–9, including Step 0a and the Step 4a snapshot checkpoint** (12 entries
-below). This table is the **map only** — it does **not** restate the rules; each
+wizard runs **Step 0–9, including Step 0a, the Step 4a snapshot checkpoint, and the
+optional Step 4b requirement ledger** (13 entries below). This table is the **map only**
+— it does **not** restate the rules; each
 step section below is the source of truth. After this overview, execution still
 follows property 5: **one decision at a time**.
 
@@ -135,6 +136,7 @@ follows property 5: **one decision at a time**.
 | 3 | adoption track (Type A / B / C / A+B) + brownfield profile depth | recommend from signals (Δ-14); brownfield default = start at B/C | no | `track:` |
 | 4 | intent contract (goal / standard / proof_of_done) | draft with the `brainstorming` skill; human signs | no | first research brief |
 | **4a** | **adopter implementation-stack snapshot** (current tech facts) | **brownfield: read-only detect, then confirm; greenfield: track-informed starting point you confirm** | **yes — unknown items → `DEFERRED → Phase 3`** | **`docs/current/implementation-stack.md`** |
+| **4b** | **(optional) requirement ledger + `surface` classification** (OW-2 / OW-3) | **draft REQ entries from the PRD; agent proposes `user_facing` / `non_user_facing`; the Customer confirms by signing** | **yes — no ledger ⇒ OW-M3 dormant, byte-identical to today** | **`docs/requirements-ledger.json`** |
 | 5 | role config: 3 facets (execution = *agent execution stack*, capability, connector) | per-role defaults from `skills/registry.yaml`; connectors default-deny | partial | charter `tooling.*` |
 | 6 | generate the adopter artifacts | copy from `examples/minimal-greenfield/`; read-before-write | no | `AGENTS.md` / `CLAUDE.md` / `charter.yaml` / `docs/current/*` |
 | 7 | autonomy + checkpoint posture | default `human_in_the_loop`; the 9 MANDATORY_CHECKPOINTS always fire | no | charter `autonomy.*` |
@@ -353,6 +355,99 @@ governance chain.
 
 ---
 
+## Step 4b — (Optional) Seed the requirement ledger + `surface` classification (OW-2 / OW-3)
+
+If the adoption has a PRD (or any durable requirement source), seed the **requirement
+ledger** — the intake-agnostic record that lets Acceptance answer *"delivered vs the
+ORIGINAL requirements"* and that supplies the **input contract** for the OW-M3 mandatory
+browser-E2E gate. **Optional + additive:** with no ledger the mandate is dormant and the
+loop is byte-identical to today, so this whole step is deferrable. Full mechanics live in
+`process/requirement-ledger.md` (§2.1 `surface`, §3.1 signature integrity); schema
+`schemas/requirement-ledger.schema.json`.
+
+### OW-2 — turn PRD requirements into stable ledger entries
+
+**Action — write `docs/requirements-ledger.json`**: one durable item per requirement,
+normalized from any intake channel (a PRD line, a posed question, a matured bad-case, an
+acceptance gap, a direct Customer ask). Draft each entry with the human (read-before-write
++ confirm):
+
+- **`id`** — a **stable**, unique, path-safe `REQ-…` id. Stable = it never changes once
+  assigned; milestones reference it by id, so renaming silently breaks coverage.
+- **`statement`** — one human-readable requirement, **end-user-observable** where possible.
+- **`source.channel`** — provenance (`prd` / `posed_question` / `requirement_point` /
+  `matured_bad_case` / `acceptance_gap` / `customer_direct`).
+- **`customer_disposition`** — **Customer authority only** (start `pending`); agents
+  *propose*, never set it. There is no engine/agent write path to this field.
+- **`surface`** — the OW-3 classification below.
+
+**Connect milestones to requirements with `covers_req_ids`.** Coverage lives on the
+**signed campaign-plan milestone** (`covers_req_ids: ["REQ-…"]`) — NOT in the ledger. It is
+the single canonical, writable coverage source: the Deliver agent fills it and
+`campaign_plan_signoff` signs it (see `templates/campaign-plan.example.json`). The ledger
+stores no writable coverage and no delivery status.
+
+> **Declaring `covers_req_ids` on a milestone (with a ledger wired) activates strict
+> checks.** Every covered id must then (1) **exist** in the ledger, (2) be an
+> **unambiguous** id (no duplicate ledger entries for it), and (3) carry a **valid
+> `surface`** (∈ `user_facing | non_user_facing`). Any miss ⇒ sign-off refuses (OW-3).
+> *The wired ledger is the activation trigger* — a `covers_req_ids` with no ledger present
+> stays dormant.
+
+**Wiring (optional):** the ledger path defaults to `docs/requirements-ledger.json`. Set
+`charter.yaml` `requirements.ledger_path` only if you keep it elsewhere.
+
+### OW-3 — `surface`, the observable user journey, and the browser-E2E mandate
+
+Classify each requirement's `surface`:
+
+- **`user_facing`** — meeting it produces something the **end user OPERATES**: a
+  browser-operable UI or a user journey (e.g. *"a recruiter browses candidate cards and
+  clicks Shortlist, and the shortlist updates"*).
+- **`non_user_facing`** — a backend / data / infra requirement with no direct end-user
+  operation (e.g. *"import dedup merges records with an identical email"*).
+
+**For every `user_facing` requirement, write the `statement` as the observable user
+journey** browser-E2E must judge — the concrete steps a user performs and the result they
+should see. That journey *is* the acceptance target.
+
+**The mandate (OW-M3):** a milestone that covers ANY `user_facing` requirement MUST resolve
+its functional acceptance to **`browser_e2e`** — no downgrade to `static`. Browser-E2E is
+therefore **required evidence** for user-facing work. It is **advisory for ship
+authority**: OW-M3 mandates that the evidence is *produced and judged*; it does **not**
+auto-authorize shipping — the Customer's sign-off authority is unchanged (M3 stays advisory
+in v1).
+
+**When sign-off refuses** (`--sign-plan` and the real-run preflight both exit non-zero and
+write no signature), there are **exactly two valid resolutions** — there is **no waiver or
+bypass**:
+
+1. **Set the milestone's `functional_acceptance: "browser_e2e"`** — the requirement really
+   is user-facing, so give it the mandated evidence class; or
+2. **(Customer) correct the classification** — reclassify the requirement's `surface` to
+   `non_user_facing` in the ledger — and **re-sign**.
+
+The same refusal fires for an **unclassified** covered requirement (absent from the ledger,
+missing/invalid `surface`, or duplicated): add exactly one ledger entry with a valid
+`surface`, then re-sign.
+
+**Authority + integrity.** An agent MAY *propose* a `surface`; it binds only when the
+Customer **signs** the covering scope. The covered-requirement surface basis is snapshotted
+into the signed scope hash, so a **post-sign surface flip ⇒ `stale` ⇒ re-sign** (Customer
+authority — the same re-sign path as any scope change). A correctly-signed plan runs on with
+**no new pause**. Re-sign with:
+
+```bash
+python engine-kit/scheduling/run_loop.py --campaign <plan> --charter <charter> --sign-plan
+```
+
+> Properties: recommendation-driven (agent drafts entries + proposes `surface`; the
+> Customer confirms by signing), additive (no ledger ⇒ dormant, byte-identical),
+> audited (the ledger is version-controlled with an append-only `history`),
+> harness-agnostic (a JSON artifact + the sign CLI, no harness orchestration).
+
+---
+
 ## Step 5 — Role configuration: the three facets (recommend-then-confirm)
 
 Configure each of the 5 roles (Research / Deliver / Dev / Code Reviewer /
@@ -499,6 +594,11 @@ Generate / install:
    first use). **With Loop Memory OFF (the default), create NOTHING** — the loop is
    byte-identical to no memory. The root resolves against the charter dir and must stay
    inside it (`modules/m-memory.md`; `schemas/mission-charter.schema.json`).
+
+> **If you seeded a requirement ledger (Step 4b):** ensure `docs/requirements-ledger.json`
+> is present and version-controlled, and set `charter.yaml` `requirements.ledger_path` only
+> if it differs from the default. Milestone `covers_req_ids` and plan sign-off happen later
+> at campaign time (Step 9 / `FIRST-LOOP.md`), not here.
 
 > Properties: non-destructive (read-before-write + confirm-on-overwrite for every
 > artifact), idempotent (re-running skips files already recorded done), audited
