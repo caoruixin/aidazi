@@ -53,6 +53,10 @@ EXCLUDE=(
   --exclude=examples
   --exclude='*.pyc'
   --exclude=__pycache__
+  # maintainer-only: the aidazi-specific codebase map + its autonomous orientation entry are for
+  # THIS framework repo, not adopters. (.claude/.codex/.cursor/maintainer are already outside the
+  # INCLUDE allowlist above; this one is needed because process/ IS in the allowlist.)
+  --exclude=process/codebase-map.md
 )
 
 for item in "${INCLUDE[@]}"; do

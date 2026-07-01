@@ -1,0 +1,18 @@
+---
+description: Maintainer-only read-only codebase-map orientation (experimental; Cursor)
+alwaysApply: true
+---
+
+MAINTAINER-ONLY, READ-ONLY, FAIL-OPEN (experimental — Cursor lacks a UserPromptSubmit hook, so this
+is a rule, not a hook). Before your first non-trivial code change in this repo, get your bearings from
+the codebase map instead of re-scanning: run (read-only)
+
+    python3 maintainer/map_briefing.py --task "<a few words describing your task>"
+
+and use the structural pointers it prints (section titles + file/symbol anchors + tests + docs +
+changed-since-checkpoint flags) to open the right files directly. It is an ADVISORY aid only:
+
+- If it prints nothing, errors, the task is tiny/obvious, or `process/codebase-map.md` is missing —
+  just search the code normally and proceed. Never wait on it, never let it block your work.
+- It NEVER edits anything and has no authority over Edit/Bash/commit/worktree/cross-repo work.
+- Not vendored to adopters. This file governs the aidazi framework maintainer repo only.

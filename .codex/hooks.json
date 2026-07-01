@@ -1,0 +1,8 @@
+{
+  "_doc": "MAINTAINER-ONLY, READ-ONLY, FAIL-OPEN codebase-map orientation entry for Codex CLI in the aidazi framework repo. OUTSIDE the vendor allowlist -> never lands in adopters. ONLY a UserPromptSubmit context-injector -> maintainer/map_briefing.py (read-only) which injects via hookSpecificOutput.additionalContext. NO PreToolUse hook, NO receipt/epoch/mutation-ledger -> cannot block Bash/apply_patch/commit/subagent/etc. HARD TIMEOUT: the handler `timeout` (8s, external to Python, harness-enforced) kills a hung hook; Codex FAIL-OPENS on hook timeout (verified: prompt proceeds), and the trailing `exit 0` fail-opens on non-hang failures -> a slow/hung hook never blocks the prompt. (perl-based command timeouts do NOT work in the Codex read-only sandbox, so we use the native `timeout` field here; Claude uses a perl command-timeout instead because Claude fail-CLOSES on hook timeout.) Codex runs hooks with cwd=repo-root so the path is git-free relative. One-time `/hooks` hash-trust required (project already trusted); re-trust if this hook's content changes. `codex features list` shows `hooks` stable/enabled.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "sh -c '[ -f maintainer/map_briefing.py ] && python3 maintainer/map_briefing.py --hook codex; exit 0'", "timeout": 8}]}
+    ]
+  }
+}
