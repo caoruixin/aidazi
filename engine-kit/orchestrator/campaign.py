@@ -2597,6 +2597,54 @@ def load_and_validate_ledger(ledger_path: Optional[str]) -> Optional[dict]:
     return led
 
 
+# OW-AUTO: the ADVISORY authoring signals (proposal UX only). They enter NEITHER
+# verdict-affecting hash: not the signed scope hash H (value-only _covered_req_surfaces,
+# below), and NOT acceptance_input_hash — requirement_context_ledger_projection() strips them
+# before the requirement-context sidecar is written, so an advisory-field flip leaves the
+# sidecar bytes (and every hash / gap-report fact derived from them) byte-identical.
+_ADVISORY_LEDGER_FIELDS = ("surface_status", "surface_confidence")
+
+
+def requirement_context_ledger_projection(ledger: Optional[dict]) -> Optional[dict]:
+    """OW-AUTO (§4, boundary 2): project a requirement ledger for the requirement-context
+    SIDECAR — drop the ADVISORY authoring fields (surface_status / surface_confidence, and any
+    future advisory field) from every requirement so they never reach acceptance_input_hash or
+    the gap-report facts. Mirrors the minimal campaign_state projection at the sidecar write
+    site (which strips volatile spend counters for the same hash-stability reason). KEEPS
+    `surface` (a genuine gap-report input) and every other existing field. Tolerant: a
+    non-dict ledger / non-dict requirement passes through unchanged (the strict
+    load_and_validate_ledger already rejected a malformed wired ledger upstream)."""
+    if not isinstance(ledger, dict):
+        return ledger
+    reqs = ledger.get("requirements")
+    if not isinstance(reqs, list):
+        return ledger
+    projected = []
+    for r in reqs:
+        if isinstance(r, dict) and any(k in r for k in _ADVISORY_LEDGER_FIELDS):
+            projected.append({k: v for k, v in r.items()
+                              if k not in _ADVISORY_LEDGER_FIELDS})
+        else:
+            projected.append(r)
+    return {**ledger, "requirements": projected}
+
+
+def agent_seeded_disposition_allowed(new_value: Optional[str],
+                                     prev_value: Optional[str] = None) -> bool:
+    """OW-AUTO §4.1 authority contract (the `pending`-sentinel carve-out): may an
+    ENGINE/AGENT author this customer_disposition value? An agent MAY seed the undecided
+    sentinel `pending` on a NEW item (prev_value is None), OR leave an existing value
+    UNCHANGED. It may NEVER author a DECIDED value (accepted|deferred|skipped|dropped|
+    modified) on a new item, and NEVER transition an existing disposition — every decided
+    value and every transition out of `pending` stays CUSTOMER AUTHORITY ONLY (Constitution
+    §1.3/§1.7). This is the DOCUMENTED authority contract + its test surface; it is NOT wired
+    into any runtime gate — the constructional guarantee remains 'no engine/agent write path'
+    (the loop gains no new acceptance criterion)."""
+    if prev_value is None:                       # creating a NEW item
+        return new_value == "pending"
+    return new_value == prev_value               # existing item: only a no-op is agent-safe
+
+
 def _ledger_surface(ledger: Optional[dict], rid: str) -> Optional[str]:
     """OW-M3 / B1: the `surface` classification of requirement `rid` in the wired
     requirement ledger, or None when no ledger is wired, `rid` is absent from it, or the
@@ -3285,6 +3333,11 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
             try:
                 with open(ledger_path, encoding="utf-8") as fh:
                     _ledger = json.load(fh)
+                # OW-AUTO §4: strip the advisory authoring fields BEFORE the sidecar write
+                # (mirrors the campaign_state projection two blocks down) so a purely advisory
+                # surface_status/surface_confidence flip never churns acceptance_input_hash or
+                # the gap-report facts. Keeps `surface` and every existing field.
+                _ledger = requirement_context_ledger_projection(_ledger)
                 _state_proj = None
                 _state_file = os.path.join(
                     os.path.dirname(os.path.abspath(units_dir)), "campaign-state.json")

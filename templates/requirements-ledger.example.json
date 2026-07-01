@@ -1,0 +1,41 @@
+{
+  "version": "v1",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "statement": "A returning user signs in with email + password and lands on their dashboard.",
+      "source": {"channel": "prd", "ref": "docs/proposals/prd.md#auth"},
+      "customer_disposition": "pending",
+      "surface": "user_facing",
+      "surface_status": "proposed",
+      "surface_confidence": "high"
+    },
+    {
+      "id": "REQ-002",
+      "statement": "The dashboard renders the user's most-recent activity as browsable cards.",
+      "source": {"channel": "prd", "ref": "docs/proposals/prd.md#dashboard"},
+      "customer_disposition": "pending",
+      "surface": "user_facing",
+      "surface_status": "proposed",
+      "surface_confidence": "low"
+    },
+    {
+      "id": "REQ-003",
+      "statement": "Import dedup merges records that share an identical normalized email.",
+      "source": {"channel": "requirement_point"},
+      "customer_disposition": "pending",
+      "surface": "non_user_facing",
+      "surface_status": "proposed",
+      "surface_confidence": "high"
+    },
+    {
+      "id": "REQ-004",
+      "statement": "An admin disables a user account from the admin console and the user is signed out.",
+      "source": {"channel": "customer_direct"},
+      "customer_disposition": "pending",
+      "surface": "user_facing",
+      "surface_status": "confirmed",
+      "surface_confidence": "high"
+    }
+  ]
+}

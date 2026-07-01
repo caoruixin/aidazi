@@ -13,9 +13,9 @@ sources:
 - path: process/role-skill-model.md
   sha256: 33e903c8b9e1ce3fcb2f1ea98b912d02b3a4372443b6efbae0edd25ed630354e
 - path: role-cards/research-agent.md
-  sha256: 4b2f210283ba6c25abd6a6abf2a29d7ce41af9a2eab6d3c6143bd097430eb65a
+  sha256: 82c8a4304da7b60a97b89a9eeea7554e7b831586ead1486bfff2b1d6b6e10d7e
 - path: role-cards/deliver-agent.md
-  sha256: 7ea8298a09a12ebefc77a6cd30379f0dbf3f53dc739a904df0e54f5e06a1e606
+  sha256: f0763db5f44156b1a28065f3695848640645296cc3b18d1edd2dfb722f0e434f
 - path: role-cards/dev-agent.md
   sha256: 8abf572ff8965fdebf0051e16a5c2201a749b160f6a656eb89c566e3c5389499
 - path: role-cards/code-reviewer-agent.md

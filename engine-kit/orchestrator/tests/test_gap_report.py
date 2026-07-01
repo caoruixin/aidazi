@@ -273,5 +273,91 @@ class TestDriverGapReportEmission(unittest.TestCase):
                 drv.run(subsprint_id="sprint-001")
 
 
+def _adv_ledger(status, confidence):
+    """The _ledger() reqs + ONLY the OW-AUTO advisory fields. The sidecar projection strips
+    them, so projected(_adv_ledger()) == _ledger() (the _signed_plan() signing basis) ⇒ the
+    emitted gap_report / acceptance_input_hash are the clean 'signed' artifacts, and an
+    advisory flip leaves them byte-identical."""
+    led = _ledger()
+    for r in led["requirements"]:
+        r["surface_status"] = status
+        r["surface_confidence"] = confidence
+    return led
+
+
+class TestAdvisoryFlipInputHash(unittest.TestCase):
+    """OW-AUTO §4 mandatory regression (end-to-end): a purely advisory surface_status /
+    surface_confidence flip in the wired ledger — once PROJECTED by the campaign writer, as
+    requirement_context_ledger_projection mirrors — leaves BOTH the acceptance_input_hash the
+    Driver binds AND the advisory gap_report the Driver emits BYTE-IDENTICAL. The sidecar is
+    written PROJECTED (what campaign.py does), so neither the resolver-graph requirement_context
+    content hash nor the gap-report facts can move on an advisory edit."""
+
+    def _projected_sidecar(self, ledger):
+        return {"plan": _signed_plan(),
+                "ledger": cp.requirement_context_ledger_projection(ledger),
+                "campaign_state": _state(), "charter": _SIDECAR_CHARTER}
+
+    def _hash_for(self, drv, evid, d, ledger):
+        # write the PROJECTED sidecar (mirrors campaign.py's writer) into the live run_dir,
+        # then re-derive the resolver graph + fold it into acceptance_input_hash.
+        with open(os.path.join(d, "requirement-context.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(self._projected_sidecar(ledger), fh)
+        graph, missing = drv._acceptance_resolver_graph(evid, None)
+        self.assertEqual(missing, [])
+        self.assertIn("requirement_context", {g["purpose"] for g in graph})
+        return e2e_stage.acceptance_input_hash("P", graph)
+
+    def _emit_gap_report_bytes(self, ledger):
+        # A FULL acceptance run over the PROJECTED sidecar: the Driver emits the advisory
+        # gap_report to .orchestrator/acceptance/<scope>-gap-report.json (pure
+        # build_gap_report(compute_requirement_coverage(...)), sort_keys, no timestamp/run-id
+        # ⇒ byte-stable across runs). Return its raw bytes + parsed form.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "requirement-context.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(self._projected_sidecar(ledger), fh)
+            drv = _driver(d, charter=_acceptance_charter(),
+                          adapters=_acceptance_adapters(ACC_PASS))
+            drv.run(subsprint_id="sprint-001")
+            acc_dir = os.path.join(d, ".orchestrator", "acceptance")
+            files = [f for f in os.listdir(acc_dir) if f.endswith("-gap-report.json")]
+            self.assertEqual(len(files), 1)
+            with open(os.path.join(acc_dir, files[0]), encoding="utf-8") as fh:
+                return fh.read()
+
+    def test_advisory_flip_leaves_acceptance_input_hash_byte_identical(self):
+        with tempfile.TemporaryDirectory() as d:
+            # one real acceptance run to capture the authoritative evidence path.
+            with open(os.path.join(d, "requirement-context.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(_sidecar(), fh)
+            drv = _driver(d, charter=_acceptance_charter(),
+                          adapters=_acceptance_adapters(ACC_PASS))
+            drv.run(subsprint_id="sprint-001")
+            spawn = next(e for e in audit.read_events(drv.audit_ledger)
+                         if e["type"] == "acceptance_spawn")
+            evid = spawn["payload"]["evidence_path"]
+
+            # SAME run_dir (no cross-dir path drift): the projected sidecar bytes are
+            # identical for both advisory states ⇒ identical acceptance_input_hash.
+            base = self._hash_for(drv, evid, d, _adv_ledger("proposed", "high"))
+            flip = self._hash_for(drv, evid, d, _adv_ledger("confirmed", "low"))
+            self.assertEqual(base, flip)
+
+    def test_advisory_flip_leaves_emitted_gap_report_byte_identical(self):
+        # DIRECTLY emit, read, and compare the generated advisory gap_report for both advisory
+        # states (Codex impl-gate R1 BLOCKING: prove gap_report byte identity, not just a proxy).
+        base = self._emit_gap_report_bytes(_adv_ledger("proposed", "high"))
+        flip = self._emit_gap_report_bytes(_adv_ledger("confirmed", "low"))
+        self.assertEqual(base, flip)
+        # NON-VACUOUS: the emitted report is a real, populated gap (REQ-3 undelivered, signed)
+        # — not two empty reports comparing equal.
+        parsed = json.loads(base)
+        self.assertEqual(parsed["signoff_status"], "signed")
+        self.assertEqual([g["req_id"] for g in parsed["gap"]], ["REQ-3"])
+
+
 if __name__ == "__main__":
     unittest.main()

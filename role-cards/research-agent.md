@@ -111,6 +111,32 @@ sign_off_date: null                                 # filled by Customer at gate
    - Reservations / conditions (optional): <text>
    ```
 
+### §3.3 Requirement-ledger seeding (OW-AUTO — proposal, not authority)
+
+When authoring a brief, for each requirement it covers (its `related_r_items`), ensure a
+`docs/requirements-ledger.json` entry exists carrying:
+
+- `statement` and `source.channel` (provenance).
+- `customer_disposition: pending` — the ONLY disposition value you may write. `pending` is
+  the §4.1 **undecided sentinel**: you may seed it on a **NEW** item only, and you MUST NEVER
+  write or change a **decided** value (`accepted | deferred | skipped | dropped | modified`) —
+  every decided value and every transition out of `pending` stays **Customer authority**.
+- a **proposed `surface`** (`user_facing | non_user_facing`) using the test *"does the end
+  user OPERATE this — a browser-operable UI / a user journey?"*, plus a self-assessed
+  **`surface_confidence`** (`high | low`). Mark genuine ambiguity `surface_confidence: low` so
+  the wizard/loop escalates just that item for a lightweight human confirm; everything else
+  flows to sign-off. Leave `surface_status` at its default (`proposed`) — a human sets
+  `confirmed` at authoring time.
+
+Your `surface` is a **proposal** until sign-off, but its VALUE is NOT advisory: once the
+Customer signs the covering campaign plan (`campaign_plan_signoff`) the `surface` value binds —
+into the signed scope hash via `covered_req_surfaces`, and it drives the OW-M3 sign/preflight
+gate (a `user_facing` REQ forces browser-E2E). Reclassifying a *signed* surface ⇒ re-sign
+(Customer authority); your proposal never shortcuts that binding. By contrast `surface_status`
+and `surface_confidence` are **ADVISORY** authoring signals only — never bound into any hash and
+never gated on; a flip of either changes no verdict, hash, or freshness. The brief itself does
+NOT carry `surface` (single source of truth = the ledger; the brief links via `related_r_items`).
+
 ## §4 Closure contract drafting (Constitution §1.7-B)
 
 The closure_contract is YOUR most consequential output. The Acceptance Agent will judge delivered behavior against this paragraph; if the paragraph is shaky, the Acceptance verdict is ungrounded.

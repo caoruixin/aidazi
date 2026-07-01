@@ -122,7 +122,7 @@ And one governing interaction style:
 
 Before the wizard drives you decision-by-decision, here is the whole route. The
 wizard runs **Step 0–9, including Step 0a, the Step 4a snapshot checkpoint, and the
-optional Step 4b requirement ledger** (13 entries below). This table is the **map only**
+default-on Step 4b requirement ledger** (13 entries below). This table is the **map only**
 — it does **not** restate the rules; each
 step section below is the source of truth. After this overview, execution still
 follows property 5: **one decision at a time**.
@@ -136,7 +136,7 @@ follows property 5: **one decision at a time**.
 | 3 | adoption track (Type A / B / C / A+B) + brownfield profile depth | recommend from signals (Δ-14); brownfield default = start at B/C | no | `track:` |
 | 4 | intent contract (goal / standard / proof_of_done) | draft with the `brainstorming` skill; human signs | no | first research brief |
 | **4a** | **adopter implementation-stack snapshot** (current tech facts) | **brownfield: read-only detect, then confirm; greenfield: track-informed starting point you confirm** | **yes — unknown items → `DEFERRED → Phase 3`** | **`docs/current/implementation-stack.md`** |
-| **4b** | **(optional) requirement ledger + `surface` classification** (OW-2 / OW-3) | **draft REQ entries from the PRD; agent proposes `user_facing` / `non_user_facing`; the Customer confirms by signing** | **yes — no ledger ⇒ OW-M3 dormant, byte-identical to today** | **`docs/requirements-ledger.json`** |
+| **4b** | **requirement ledger + `surface` classification — default-on for new adopters** (OW-2 / OW-3) | **draft REQ entries from the PRD; agent proposes `user_facing` / `non_user_facing` + `surface_confidence`, escalating only `low`-confidence items; the Customer confirms by signing** | **brownfield-without-PRD only (defer ⇒ records a `divergent` row); a wired ledger ⇒ OW-M3 active** | **`docs/requirements-ledger.json`** |
 | 5 | role config: 3 facets (execution = *agent execution stack*, capability, connector) | per-role defaults from `skills/registry.yaml`; connectors default-deny | partial | charter `tooling.*` |
 | 6 | generate the adopter artifacts | copy from `examples/minimal-greenfield/`; read-before-write | no | `AGENTS.md` / `CLAUDE.md` / `charter.yaml` / `docs/current/*` |
 | 7 | autonomy + checkpoint posture | default `human_in_the_loop`; the 9 MANDATORY_CHECKPOINTS always fire | no | charter `autonomy.*` |
@@ -355,15 +355,22 @@ governance chain.
 
 ---
 
-## Step 4b — (Optional) Seed the requirement ledger + `surface` classification (OW-2 / OW-3)
+## Step 4b — Seed the requirement ledger + `surface` classification (default-on; OW-2 / OW-3)
 
-If the adoption has a PRD (or any durable requirement source), seed the **requirement
-ledger** — the intake-agnostic record that lets Acceptance answer *"delivered vs the
-ORIGINAL requirements"* and that supplies the **input contract** for the OW-M3 mandatory
-browser-E2E gate. **Optional + additive:** with no ledger the mandate is dormant and the
-loop is byte-identical to today, so this whole step is deferrable. Full mechanics live in
-`process/requirement-ledger.md` (§2.1 `surface`, §3.1 signature integrity); schema
-`schemas/requirement-ledger.schema.json`.
+Seed the **requirement ledger** — the intake-agnostic record that lets Acceptance answer
+*"delivered vs the ORIGINAL requirements"* and that supplies the **input contract** for the
+OW-M3 mandatory browser-E2E gate. **Default-on for new adopters (OW-AUTO):** when the
+adoption has a PRD (or any durable requirement source), the wizard **drafts the ledger from
+it by default** — one entry per requirement with an **agent-proposed `surface` +
+`surface_confidence`** (status `proposed`) — and escalates only `surface_confidence: low`
+items for a lightweight human confirm; everything else flows to sign-off. *The ledger's
+existence is the switch:* generating one is what makes the existing OW-M3 sign/preflight gate
+default-active for this adopter (no new gate). **Brownfield-without-PRD** may still defer
+(record a `divergent` row in `docs/current/adoption-state.md`) — with no ledger the mandate
+stays dormant and the loop is byte-identical to today. Full mechanics live in
+`process/requirement-ledger.md` (§2.1 `surface`, §2.2 the advisory proposal model, §3.1
+signature integrity); schema `schemas/requirement-ledger.schema.json`; a seeded starting
+shape is `templates/requirements-ledger.example.json`.
 
 ### OW-2 — turn PRD requirements into stable ledger entries
 
@@ -377,8 +384,10 @@ acceptance gap, a direct Customer ask). Draft each entry with the human (read-be
 - **`statement`** — one human-readable requirement, **end-user-observable** where possible.
 - **`source.channel`** — provenance (`prd` / `posed_question` / `requirement_point` /
   `matured_bad_case` / `acceptance_gap` / `customer_direct`).
-- **`customer_disposition`** — **Customer authority only** (start `pending`); agents
-  *propose*, never set it. There is no engine/agent write path to this field.
+- **`customer_disposition`** — **Customer authority for every decided value** (start
+  `pending`); an agent/onboarding may seed the undecided `pending` sentinel on a NEW item, but
+  agents *propose* and never set a decided value (`accepted | deferred | skipped | dropped |
+  modified`) — that has no engine/agent write path.
 - **`surface`** — the OW-3 classification below.
 
 **Connect milestones to requirements with `covers_req_ids`.** Coverage lives on the
@@ -567,19 +576,26 @@ Generate / install:
    (created in Step 4a). (`docs/domain-adaptation.md` walks the three domain
    contracts; the implementation-stack snapshot is separate — product facts, not
    domain semantics.)
-4. **Copy `engine-kit/`** into the adopter repo (the copyable reference
+4. **`docs/requirements-ledger.json`** — **default-on for new adopters (OW-AUTO)**. Seed
+   it from the PRD (Step 4b), copying the shape from `templates/requirements-ledger.example.json`
+   (**seeded, not blank**): one entry per requirement with an agent-proposed `surface` +
+   `surface_confidence` (status `proposed`) and `customer_disposition: pending`. **Skip ONLY
+   for brownfield-without-PRD** (record a `divergent` row) — its absence keeps OW-M3 dormant
+   (byte-identical to today). Schema: `schemas/requirement-ledger.schema.json`; the ledger's
+   existence is what makes the existing OW-M3 sign/preflight gate default-active (no new gate).
+5. **Copy `engine-kit/`** into the adopter repo (the copyable reference
    implementation — driver, adapters, validators, audit, connectors). It is
    non-normative: the spec wins on any conflict (`engine-kit/orchestrator/README.md`).
-5. **Vendor the default skills** under `skills/vendored/<id>/` (each with its
+6. **Vendor the default skills** under `skills/vendored/<id>/` (each with its
    upstream `LICENSE` + provenance), bound per Step 5; pins recorded in
    `skills/skills.lock`.
-6. **Create `.orchestrator/` with control + audit dirs** — `.orchestrator/control/`
+7. **Create `.orchestrator/` with control + audit dirs** — `.orchestrator/control/`
    for the lightweight default-session state index (`state.json`) and intent ledger
    (`intents.jsonl`), plus `.orchestrator/audit/` for the hash-chained per-loop
    ledger (charter `audit.ledger_dir`, default `.orchestrator/audit`). This is the
    **repo-side** registry/control area (`loops.json` plus control state); per-loop
    live state/audit/transcripts land under **`.runs/<loop_id>/`** (gitignored).
-7. **Ensure `.gitignore` covers loop + secret paths** — at minimum append (read-before-
+8. **Ensure `.gitignore` covers loop + secret paths** — at minimum append (read-before-
    write + diff-confirm if `.gitignore` already exists):
    ```
    .orchestrator/
@@ -588,17 +604,20 @@ Generate / install:
    ```
    `.runs/` is the default run-dir root (`run_loop.py`); keeping it gitignored lets
    you tail live progress in-repo without polluting the delivered diff.
-8. **(Optional — ONLY when enabling Loop Memory) Create the memory store.** If the
+9. **(Optional — ONLY when enabling Loop Memory) Create the memory store.** If the
    charter sets `memory.enabled: true`, scaffold `<memory.root>/` (default `memory/`)
    with an empty `entries/` subdir and a seed `index.md` (the store also self-creates on
    first use). **With Loop Memory OFF (the default), create NOTHING** — the loop is
    byte-identical to no memory. The root resolves against the charter dir and must stay
    inside it (`modules/m-memory.md`; `schemas/mission-charter.schema.json`).
 
-> **If you seeded a requirement ledger (Step 4b):** ensure `docs/requirements-ledger.json`
-> is present and version-controlled, and set `charter.yaml` `requirements.ledger_path` only
-> if it differs from the default. Milestone `covers_req_ids` and plan sign-off happen later
-> at campaign time (Step 9 / `FIRST-LOOP.md`), not here.
+> **Requirement ledger (item 4, default-on):** for a new adopter with a PRD, ensure
+> `docs/requirements-ledger.json` is generated (seeded from
+> `templates/requirements-ledger.example.json`), version-controlled, and that
+> `charter.yaml` `requirements.ledger_path` is set only if it differs from the default.
+> Only brownfield-without-PRD skips it (records a `divergent` row). Milestone
+> `covers_req_ids` and plan sign-off happen later at campaign time (Step 9 /
+> `FIRST-LOOP.md`), not here — Deliver auto-derives `covers_req_ids` from the ledger then.
 
 > Properties: non-destructive (read-before-write + confirm-on-overwrite for every
 > artifact), idempotent (re-running skips files already recorded done), audited

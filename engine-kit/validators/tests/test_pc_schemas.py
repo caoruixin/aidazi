@@ -113,6 +113,14 @@ class RequirementLedgerSchema(unittest.TestCase):
         with open(fx, encoding="utf-8") as fh:
             self.assertEqual(_errs(self.SCH, json.load(fh)), [])
 
+    def test_ow_auto_example_template_validates(self):
+        # OW-AUTO Phase 2: the seeded onboarding template (default new-adopter artifact)
+        # must validate — a broken template would mislead every new adopter.
+        tmpl = os.path.abspath(os.path.join(
+            _THIS, "..", "..", "..", "templates", "requirements-ledger.example.json"))
+        with open(tmpl, encoding="utf-8") as fh:
+            self.assertEqual(_errs(self.SCH, json.load(fh)), [])
+
     def test_machine_constraints_reject_violations(self):
         base = {"version": "v1", "requirements": [
             {"id": "REQ-1", "statement": "x", "source": {"channel": "prd"},
@@ -140,6 +148,29 @@ class RequirementLedgerSchema(unittest.TestCase):
         bad_version = json.loads(json.dumps(base))
         bad_version["version"] = "v2"                                        # const v1
         self.assertTrue(_errs(self.SCH, bad_version))
+
+    def test_ow_auto_advisory_fields_optional_and_enumerated(self):
+        # OW-AUTO: the advisory authoring signals are additive-optional. A ledger that
+        # OMITS them is valid (legacy byte-identical) and one that carries them is valid;
+        # out-of-enum values are rejected.
+        base = {"version": "v1", "requirements": [
+            {"id": "REQ-1", "statement": "x", "source": {"channel": "prd"},
+             "customer_disposition": "pending", "surface": "user_facing"}]}
+        self.assertEqual(_errs(self.SCH, base), [])                          # omitted ⇒ valid
+        with_fields = json.loads(json.dumps(base))
+        with_fields["requirements"][0]["surface_status"] = "proposed"
+        with_fields["requirements"][0]["surface_confidence"] = "low"
+        self.assertEqual(_errs(self.SCH, with_fields), [])                   # present ⇒ valid
+        confirmed = json.loads(json.dumps(with_fields))
+        confirmed["requirements"][0]["surface_status"] = "confirmed"
+        confirmed["requirements"][0]["surface_confidence"] = "high"
+        self.assertEqual(_errs(self.SCH, confirmed), [])
+        bad_status = json.loads(json.dumps(with_fields))
+        bad_status["requirements"][0]["surface_status"] = "accepted"         # not in enum
+        self.assertTrue(_errs(self.SCH, bad_status))
+        bad_conf = json.loads(json.dumps(with_fields))
+        bad_conf["requirements"][0]["surface_confidence"] = "medium"         # not in enum
+        self.assertTrue(_errs(self.SCH, bad_conf))
 
 
 class CampaignPlanSignoffSchema(unittest.TestCase):

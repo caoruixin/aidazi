@@ -172,10 +172,20 @@ another, pausing only at human-authority gates), use the **Campaign Loop**
    ordered milestone backlog as a `campaign-plan.json` — start from
    `templates/campaign-plan.example.json`; the contract is
    `schemas/campaign-plan.schema.json`. Each milestone lists its ordered
-   `subsprint_sequence`.
+   `subsprint_sequence`. **With a requirement ledger wired (OW-AUTO):** Deliver
+   auto-derives each milestone's `covers_req_ids` from the ledger REQs it delivers and sets
+   `functional_acceptance: browser_e2e` for any milestone covering a `user_facing` REQ, so
+   the plan is self-consistent BEFORE you sign (no OW-M3 refuse-to-sign surprise).
 2. **Sign it once (the one upfront human gate).** Review the backlog and set
    `"signed_by_human": true` — the `campaign_plan_signoff` gate. 以终为始: you sign
-   the *whole goal* once, not each milestone.
+   the *whole goal* once, not each milestone. **Confidence-confirm UX (OW-AUTO):** you are
+   proactively shown only the ledger's `surface_confidence: low` surface proposals to
+   confirm; `high`-confidence proposals flow through untouched. Confirming a `low` item at
+   authoring is a convenience (`surface_status: confirmed`) — it is NOT the binding act.
+   **Signing the plan is the single binding confirmation of every covered surface**
+   (`campaign_plan_signoff` → `covered_req_surfaces` in the signed hash); the advisory
+   `surface_status` / `surface_confidence` never gate the sign-off and a later flip of
+   either never re-opens it.
 3. **Drive it.** The runner auto-advances every milestone × sub-sprint through the
    SAME Driver, running Acceptance at each milestone's close, pausing only at genuine
    human gates:
