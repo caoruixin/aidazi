@@ -111,6 +111,29 @@ sign_off_date: null                                 # filled by Customer at gate
    - Reservations / conditions (optional): <text>
    ```
 
+### §3.3 Requirement-ledger seeding (OW-AUTO — proposal, not authority)
+
+When authoring a brief, for each requirement it covers (its `related_r_items`), ensure a
+`docs/requirements-ledger.json` entry exists carrying:
+
+- `statement` and `source.channel` (provenance).
+- `customer_disposition: pending` — the ONLY disposition value you may write. `pending` is
+  the §4.1 **undecided sentinel**: you may seed it on a **NEW** item only, and you MUST NEVER
+  write or change a **decided** value (`accepted | deferred | skipped | dropped | modified`) —
+  every decided value and every transition out of `pending` stays **Customer authority**.
+- a **proposed `surface`** (`user_facing | non_user_facing`) using the test *"does the end
+  user OPERATE this — a browser-operable UI / a user journey?"*, plus a self-assessed
+  **`surface_confidence`** (`high | low`). Mark genuine ambiguity `surface_confidence: low` so
+  the wizard/loop escalates just that item for a lightweight human confirm; everything else
+  flows to sign-off. Leave `surface_status` at its default (`proposed`) — a human sets
+  `confirmed` at authoring time.
+
+`surface` / `surface_status` / `surface_confidence` are **ADVISORY** ledger signals — never
+bound into a signed hash and never gated on. A surface becomes authoritative ONLY when the
+Customer signs the covering campaign plan (`campaign_plan_signoff`); your proposal never
+shortcuts that. The brief itself does NOT carry `surface` (single source of truth = the
+ledger; the brief links via `related_r_items`).
+
 ## §4 Closure contract drafting (Constitution §1.7-B)
 
 The closure_contract is YOUR most consequential output. The Acceptance Agent will judge delivered behavior against this paragraph; if the paragraph is shaky, the Acceptance verdict is ungrounded.

@@ -273,5 +273,57 @@ class TestDriverGapReportEmission(unittest.TestCase):
                 drv.run(subsprint_id="sprint-001")
 
 
+def _adv_ledger(status, confidence):
+    """The _ledger() reqs + the OW-AUTO advisory fields (surface added so the projection
+    still has a real gap-report input to keep)."""
+    led = _ledger()
+    for r in led["requirements"]:
+        r["surface"] = "non_user_facing"
+        r["surface_status"] = status
+        r["surface_confidence"] = confidence
+    return led
+
+
+class TestAdvisoryFlipInputHash(unittest.TestCase):
+    """OW-AUTO §4 mandatory regression (end-to-end): a purely advisory surface_status /
+    surface_confidence flip in the wired ledger — once PROJECTED by the campaign writer, as
+    requirement_context_ledger_projection mirrors — leaves the acceptance_input_hash the
+    Driver binds BYTE-IDENTICAL. The sidecar is written PROJECTED (what campaign.py does), so
+    the resolver graph's requirement_context content hash cannot move on an advisory edit."""
+
+    def _hash_for(self, drv, evid, d, ledger):
+        # write the PROJECTED sidecar (mirrors campaign.py's writer) into the live run_dir,
+        # then re-derive the resolver graph + fold it into acceptance_input_hash.
+        sidecar = {"plan": _signed_plan(),
+                   "ledger": cp.requirement_context_ledger_projection(ledger),
+                   "campaign_state": _state(), "charter": _SIDECAR_CHARTER}
+        with open(os.path.join(d, "requirement-context.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(sidecar, fh)
+        graph, missing = drv._acceptance_resolver_graph(evid, None)
+        self.assertEqual(missing, [])
+        self.assertIn("requirement_context", {g["purpose"] for g in graph})
+        return e2e_stage.acceptance_input_hash("P", graph)
+
+    def test_advisory_flip_leaves_acceptance_input_hash_byte_identical(self):
+        with tempfile.TemporaryDirectory() as d:
+            # one real acceptance run to capture the authoritative evidence path.
+            with open(os.path.join(d, "requirement-context.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(_sidecar(), fh)
+            drv = _driver(d, charter=_acceptance_charter(),
+                          adapters=_acceptance_adapters(ACC_PASS))
+            drv.run(subsprint_id="sprint-001")
+            spawn = next(e for e in audit.read_events(drv.audit_ledger)
+                         if e["type"] == "acceptance_spawn")
+            evid = spawn["payload"]["evidence_path"]
+
+            # SAME run_dir (no cross-dir path drift): the projected sidecar bytes are
+            # identical for both advisory states ⇒ identical acceptance_input_hash.
+            base = self._hash_for(drv, evid, d, _adv_ledger("proposed", "high"))
+            flip = self._hash_for(drv, evid, d, _adv_ledger("confirmed", "low"))
+            self.assertEqual(base, flip)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -73,6 +73,17 @@ YOU author the plan (`templates/campaign-plan.example.json` is the starting shap
 resolve `deliver_followup_required` / `milestone_decompose_required` pauses by editing
 the plan; you do NOT run the CLI.
 
+**Auto-derive `covers_req_ids` from the ledger (OW-AUTO).** When a requirement ledger is
+wired (`docs/requirements-ledger.json`), at campaign-plan authoring / milestone decompose
+auto-fill each milestone's `covers_req_ids` from the ledger REQs that milestone delivers
+(carrying their proposed `surface`). For any milestone that covers a `user_facing` REQ, set
+that milestone's `functional_acceptance: "browser_e2e"` yourself, so the signed plan is
+**self-consistent BEFORE sign-off** — no OW-M3 refuse-to-sign surprise at
+`campaign_plan_signoff`. This mirrors the `task_signals` authoring pattern (§3.6): you author
+it in the signed plan, it binds at sign-off, and a post-sign mutation goes `stale` via the
+existing scope hash (no new gate). The `surface` VALUE is what binds; the advisory
+`surface_status` / `surface_confidence` never affect the plan or its hash.
+
 ### §2.1 Path 1 — Research-driven (most common)
 
 Trigger: a Research Agent brief lands with `customer_signed: true` (gate 1 passed).

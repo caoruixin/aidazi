@@ -44,7 +44,7 @@ not.
 
 | Field | Owner | Stored where | Notes |
 |---|---|---|---|
-| `customer_disposition` ∈ `pending\|accepted\|deferred\|skipped\|dropped\|modified` | **Customer ONLY** | the ledger item | §3 below. NEVER written by any engine/agent. |
+| `customer_disposition` ∈ `pending\|accepted\|deferred\|skipped\|dropped\|modified` | **Customer ONLY for decided values** | the ledger item | §3 below. An engine/agent may seed `pending` (the undecided sentinel) on a NEW item; it NEVER writes or changes a decided value. |
 | `delivery_status` ∈ `delivered\|waived\|in_progress\|not_started\|not_covered` | nobody — **DERIVED** | NOWHERE (a `scope_report` projection) | computed at report time from the milestone's terminal outcome (§4). |
 
 The REQ→milestone map is the signed campaign-plan milestone `covers_req_ids` — the
@@ -79,11 +79,15 @@ class from the `surface` of the requirements it covers.
   `stale` ⇒ re-sign. OW-M3 mandates **evidence** (browser-E2E runs), not auto-ship — M3
   authority stays advisory in v1.
 
-## §3 customer_disposition is Customer-only (HARD — §4.E)
+## §3 customer_disposition is Customer-only for decided values (HARD — §4.E)
 
 `customer_disposition` is **Customer authority, never LLM** (Constitution §1.3/§1.7;
-`governance/self-governance.md` §7.0). Agents *propose*; the Customer decides. Enforced
-by construction — there is no engine/agent write path to this field.
+`governance/self-governance.md` §7.0). Agents *propose*; the Customer decides every **decided**
+value. Enforced by construction — there is no engine/agent write path to a decided
+disposition. An engine/agent MAY seed the **undecided sentinel `pending`** on a NEW item (the
+initialization state); it MUST NEVER write or change a decided value
+(`accepted | deferred | skipped | dropped | modified`) — every transition out of `pending`
+stays Customer authority.
 
 - **Unsigned-backlog REQ** (covered by no signed milestone / contract): the Customer
   edits the ledger directly (schema-validated; appended to `history`).

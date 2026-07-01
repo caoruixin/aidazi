@@ -377,8 +377,10 @@ acceptance gap, a direct Customer ask). Draft each entry with the human (read-be
 - **`statement`** — one human-readable requirement, **end-user-observable** where possible.
 - **`source.channel`** — provenance (`prd` / `posed_question` / `requirement_point` /
   `matured_bad_case` / `acceptance_gap` / `customer_direct`).
-- **`customer_disposition`** — **Customer authority only** (start `pending`); agents
-  *propose*, never set it. There is no engine/agent write path to this field.
+- **`customer_disposition`** — **Customer authority for every decided value** (start
+  `pending`); an agent/onboarding may seed the undecided `pending` sentinel on a NEW item, but
+  agents *propose* and never set a decided value (`accepted | deferred | skipped | dropped |
+  modified`) — that has no engine/agent write path.
 - **`surface`** — the OW-3 classification below.
 
 **Connect milestones to requirements with `covers_req_ids`.** Coverage lives on the
