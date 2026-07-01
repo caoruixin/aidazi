@@ -128,11 +128,14 @@ When authoring a brief, for each requirement it covers (its `related_r_items`), 
   flows to sign-off. Leave `surface_status` at its default (`proposed`) — a human sets
   `confirmed` at authoring time.
 
-`surface` / `surface_status` / `surface_confidence` are **ADVISORY** ledger signals — never
-bound into a signed hash and never gated on. A surface becomes authoritative ONLY when the
-Customer signs the covering campaign plan (`campaign_plan_signoff`); your proposal never
-shortcuts that. The brief itself does NOT carry `surface` (single source of truth = the
-ledger; the brief links via `related_r_items`).
+Your `surface` is a **proposal** until sign-off, but its VALUE is NOT advisory: once the
+Customer signs the covering campaign plan (`campaign_plan_signoff`) the `surface` value binds —
+into the signed scope hash via `covered_req_surfaces`, and it drives the OW-M3 sign/preflight
+gate (a `user_facing` REQ forces browser-E2E). Reclassifying a *signed* surface ⇒ re-sign
+(Customer authority); your proposal never shortcuts that binding. By contrast `surface_status`
+and `surface_confidence` are **ADVISORY** authoring signals only — never bound into any hash and
+never gated on; a flip of either changes no verdict, hash, or freshness. The brief itself does
+NOT carry `surface` (single source of truth = the ledger; the brief links via `related_r_items`).
 
 ## §4 Closure contract drafting (Constitution §1.7-B)
 
