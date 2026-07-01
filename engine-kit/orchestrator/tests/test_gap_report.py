@@ -69,8 +69,10 @@ def _base_plan():
 
 
 def _signed_plan():
-    # F1 signed resolved-scope snapshot bound to _SIDECAR_CHARTER.
-    return cp.stamp_signoff(_base_plan(), _SIDECAR_CHARTER)
+    # F1 signed resolved-scope snapshot bound to _SIDECAR_CHARTER. Sign WITH the wired
+    # ledger (production: --sign-plan + runner resolve the same ledger, so OW-M3 B1's
+    # covered_req_surfaces binds identically at sign + recompute → fresh, not false-stale).
+    return cp.stamp_signoff(_base_plan(), _SIDECAR_CHARTER, ledger=_ledger())
 
 
 def _state():

@@ -42,7 +42,8 @@
                   "depends_on": {"type": "array", "items": {"type": "string"}},
                   "resolved_functional_acceptance": {"type": "object", "additionalProperties": false, "required": ["mode", "source"], "properties": {"mode": {"type": "string"}, "source": {"type": "string"}}, "description": "The RESOLVED acceptance class {mode, source} (not the literal functional_acceptance which may be absent and inherit the charter default)."},
                   "acceptance_bar": {"type": ["string", "null"]},
-                  "isolation_strategy": {"type": ["string", "null"], "description": "Track-2 T2-B: the per-milestone branch-vs-worktree isolation authority resolved into the envelope ('inherit' when absent), so a post-sign per-milestone strategy edit flips the hash. OPTIONAL so a pre-T2-B snapshot (no isolation_strategy) still validates and is independently flagged stale for the one-time re-sign."}
+                  "isolation_strategy": {"type": ["string", "null"], "description": "Track-2 T2-B: the per-milestone branch-vs-worktree isolation authority resolved into the envelope ('inherit' when absent), so a post-sign per-milestone strategy edit flips the hash. OPTIONAL so a pre-T2-B snapshot (no isolation_strategy) still validates and is independently flagged stale for the one-time re-sign."},
+                  "covered_req_surfaces": {"type": "object", "additionalProperties": {"type": ["string", "null"]}, "description": "OW-M3 B1: the {req_id: surface} basis (from the LIVE requirement ledger) that justified this milestone's required acceptance class, bound into the signed hash H. Emitted ONLY when a ledger is wired AND the milestone covers requirements (absent otherwise ⇒ byte-identical to pre-OW-M3). A post-sign surface flip/removal changes this map ⇒ signed_scope_hash mismatch ⇒ 'stale'. OPTIONAL so a dormant/legacy snapshot validates."}
                 }
               }
             },

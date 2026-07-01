@@ -1756,15 +1756,19 @@ def _gap_campaign(tmp, charter, *, milestones=None, ledger_reqs=("REQ-1",),
     prelude attrs are primed)."""
     home = os.path.join(tmp, "camp")
     ledger_path = os.path.join(tmp, "ledger.json")
+    led = _ledger(ledger_reqs)
     with open(ledger_path, "w", encoding="utf-8") as fh:
-        json.dump(_ledger(ledger_reqs), fh)
+        json.dump(led, fh)
     ms = milestones if milestones is not None else [_covms("m1", ["s1"], ["REQ-1"])]
     extra = {}
     if gap_followup is not None:
         extra["gap_followup"] = gap_followup
     if budget is not None:
         extra["budget"] = budget
-    plan = cp.stamp_signoff(_plan(ms, **extra), charter, signed_at="t")
+    # Mirror production: --sign-plan and the runner both resolve the SAME ledger, so the
+    # signed hash binds covered_req_surfaces (OW-M3 B1). Sign WITH the wired ledger, else
+    # the runner's ledger-aware recompute would read a false 'stale'.
+    plan = cp.stamp_signoff(_plan(ms, **extra), charter, signed_at="t", ledger=led)
     c = cp.Campaign(plan, home, run_unit or _gap_fake_run_unit({}), clock=_clock(),
                     charter=charter, ledger_path=ledger_path)
     c.state.milestone_index = len(c.milestones)
@@ -2707,13 +2711,14 @@ class TestTrack2DeliverFollowupRestamp(unittest.TestCase):
     def _fresh(pf):
         return json.loads(json.dumps(pf))
 
-    def _to_followup(self, d, pf, script):
+    def _to_followup(self, d, pf, script, ledger_path=None):
         """Drive to a deliver_followup_required pause (s1 → fix → followup route)."""
         cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
-                        charter=_STATIC_CHARTER)
+                        charter=_STATIC_CHARTER, ledger_path=ledger_path)
         paused = cp.run_campaign(
             self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
-            charter=_STATIC_CHARTER, resume=True, decision_resolver=self._resolver(
+            charter=_STATIC_CHARTER, resume=True, ledger_path=ledger_path,
+            decision_resolver=self._resolver(
                 {"acceptance_fix_required": {"confirm": "yes",
                                              "route": "deliver_fix_iteration"}}))
         self.assertEqual(paused.pause_reason, "deliver_followup_required")
@@ -2919,19 +2924,27 @@ class TestTrack2DeliverFollowupRestamp(unittest.TestCase):
         # it never reports 'stale' while the runner treats the re-stamped plan as 'signed'.
         import scope_report as sr
         with tempfile.TemporaryDirectory() as d:
-            pf = _signed_f1([_covms("m1", ["s1"], ["REQ-1"])])
+            ledger = {"version": "v1", "requirements": [
+                {"id": "REQ-1", "statement": "s", "source": {"channel": "prd"},
+                 "customer_disposition": "accepted"}]}
+            lp = os.path.join(d, "ledger.json")
+            with open(lp, "w", encoding="utf-8") as fh:
+                json.dump(ledger, fh)
+            # Sign AND run with the SAME ledger (production: --sign-plan + runner resolve
+            # one ledger), so the engine-restamp hash is pinned WITH covered_req_surfaces
+            # and coverage recompute agrees.
+            pf = cp.stamp_signoff(_plan([_covms("m1", ["s1"], ["REQ-1"])]),
+                                  _STATIC_CHARTER, signed_at="t", ledger=ledger)
             script = {"s1": {"final_state": "halted", "spawn_count": 1,
                              "pause_reason": "acceptance_fix_required"},
                       "s_fix": {"final_state": "halted", "spawn_count": 1,
                                 "pause_reason": "advisory_acceptance_pass_signoff"}}
-            self._to_followup(d, pf, script)
+            self._to_followup(d, pf, script, ledger_path=lp)
             pf["milestones"][0]["subsprint_sequence"] = ["s1", "s_fix"]
             mid = cp.run_campaign(self._fresh(pf), d, _fake_run_unit(script), clock=_clock(),
-                                  charter=_STATIC_CHARTER, resume=True)   # engine re-stamp
+                                  charter=_STATIC_CHARTER, resume=True,
+                                  ledger_path=lp)   # engine re-stamp
             self.assertIsNotNone(mid.engine_restamp)
-            ledger = {"version": "v1", "requirements": [
-                {"id": "REQ-1", "statement": "s", "source": {"channel": "prd"},
-                 "customer_disposition": "accepted"}]}
             # The RAW plan file still carries the ORIGINAL signoff over [s1]; honoring the
             # state's engine_restamp, scope_report reports 'signed' (matches the runner).
             cov = sr.compute_requirement_coverage(
