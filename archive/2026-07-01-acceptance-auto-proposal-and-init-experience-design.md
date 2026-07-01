@@ -15,6 +15,7 @@
   - **B3 (onboarding citations not real on `main`)** — resolved by stacking on PR #5; citations verified (Step 4b `:358`, Step 6 `:535`).
   - **NB (wording)** — §1 tightened to "no new checkpoint/gate TYPE; existing OW-M3 gate becomes default-ACTIVE."
   - **NB (inventory)** — §7 expanded with the sidecar/resolver/hash/scope_report/gap_report/tests/process consumers. (`schemas/compact/` has no requirement-ledger projection — confirmed, nothing to re-hash.)
+- **rev3 (this doc)** → Codex R2 = REVISE with ONE remaining BLOCKING (B1/B3/NBs all confirmed resolved): the `pending`-sentinel carve-out was under-propagated. §4.1 now carries an **explicit 8-surface propagation table** (each currently-contradictory text + its exact replacement), and §7 points at it as the authoritative list. R2 verdict: `archive/2026-07-01-owauto-codex-review-r2.md`.
 
 ---
 
@@ -113,9 +114,23 @@ DECISION — it is the *undecided* initialization state. Refine the rule to:
 > has no engine/agent write path.
 
 This keeps the authority seal intact (the Customer still owns every actual decision) while
-allowing an agent-drafted backlog. **Propagation (impact §7):** the schema `description`,
-`process/requirement-ledger.md` §3, `process/self-governance.md` §7.0, and the enforcing
-tests must all state the sentinel carve-out identically (Codex will check lockstep).
+allowing an agent-drafted backlog.
+
+**Propagation — EVERY live "Customer-only / never-agent-written" text must be updated to the
+IDENTICAL sentinel rule (Codex R2 B1; each currently CONTRADICTS the carve-out):**
+
+| Surface | Current contradictory text | Must become |
+|---|---|---|
+| `schemas/requirement-ledger.schema.json:5` (top `description`) | "Records **ONLY** Customer-authored disposition" | "…Customer-authored disposition **(an engine/agent may seed a NEW item at `pending` only; all decided values remain Customer-authored)**" |
+| `schemas/requirement-ledger.schema.json:31` (`customer_disposition` field) | "CUSTOMER AUTHORITY ONLY … NEVER written by any engine/agent" | add: "except an engine/agent MAY seed `pending` on a NEW item; it MUST NEVER write/change a decided value" |
+| `process/requirement-ledger.md:47` (§2 table row) | "**Customer ONLY** … NEVER written by any engine/agent" | "**Customer ONLY for decided values**; an agent may seed `pending` on a new item" |
+| `process/requirement-ledger.md:82-86` (§3 body) | "no engine/agent write path to this field" | "no engine/agent write path to a **decided** disposition; `pending` is an agent-seedable undecided sentinel" |
+| `ONBOARDING.md:380` (Step 4b) | "agents *propose*, never set it. There is no engine/agent write path" | "agents may seed `pending` on a new item; they never set a **decided** value" |
+| `process/self-governance.md:59` (§7.0) | Customer-only assertion | same sentinel carve-out |
+| `process/artifact-taxonomy.md:218` (Artifact #15 producer line) | "the Customer (`customer_disposition`, authority-only)" | "the Customer (decided `customer_disposition`); Research/onboarding may seed `pending`" |
+| tests (`test_pc_schemas.py:81` + any `customer_disposition`-authority test) | assert Customer-only | assert the sentinel rule (seed `pending` OK; decided value by agent = rejected) |
+
+The wording must be tight enough that it can NEVER be read as "agents may change dispositions": the ONLY agent-allowed value is `pending`, and ONLY on creation of a new item; every transition out of `pending` and every decided value stays Customer authority.
 
 **Considered alternative (B):** make `customer_disposition` OPTIONAL (absent ⇒ `pending`) so
 agents literally never write it. Cleaner on "no write path" but a larger change
@@ -154,14 +169,13 @@ Each phase is additive and independently green; nothing hardens the loop.
 ## 7. Exhaustive impact inventory (verify each at impl; Codex-citation-checkable)
 
 **Change (edited) surfaces:**
-- `schemas/requirement-ledger.schema.json:14-53` — add 2 optional fields (§3.1); refine `customer_disposition` description for the `pending`-sentinel carve-out (`:31`, §4.1).
+- `schemas/requirement-ledger.schema.json:14-53` — add the 2 optional advisory fields (§3.1).
 - **`engine-kit/orchestrator/campaign.py:3284-3301`** — the requirement-context sidecar writer: project the ledger to strip advisory fields BEFORE the `json.dump` at `:3299` (§4 B1 fix; mirror the `campaign_state` projection at `:3294`).
+- **`customer_disposition` `pending`-sentinel carve-out — the AUTHORITATIVE surface list is the §4.1 propagation table** (8 surfaces: `schema:5` + `:31`, `requirement-ledger.md:47` + `:82`, `ONBOARDING.md:380`, `self-governance.md:59`, `artifact-taxonomy.md:218`, tests). Every one must state the IDENTICAL rule; do not update a subset.
 - `role-cards/research-agent.md` §2/§3 (`:45-113`) — proposal instruction + `pending`-sentinel note (§5.1).
 - `role-cards/deliver-agent.md` §2.0/§2.1 (`:55-84`) — auto covers_req_ids + self-consistent functional_acceptance (§5.2).
-- `ONBOARDING.md` Step 4b (`:358-449`) + Step 6 (`:535-605`) — default-on + generation (§5.3). *(Verified on this PR#5-stacked branch.)*
-- `process/requirement-ledger.md` §2.1 (`:55-80`) + §3 (`:82-94`) — document the advisory model + the `pending`-sentinel carve-out (§5.4, §4.1).
-- `process/self-governance.md` §7.0 (`:59`) — align the `customer_disposition` Customer-only text with the `pending`-sentinel carve-out (§4.1).
-- `process/artifact-taxonomy.md` (`:218`) — ledger producer/consumer text now includes the sidecar-projection consumer.
+- `ONBOARDING.md` Step 4b (`:358-449`, incl. the `:380` disposition line) + Step 6 (`:535-605`) — default-on + generation (§5.3). *(Verified on this PR#5-stacked branch.)*
+- `process/requirement-ledger.md` §2.1 (`:55-80`) — document the advisory model (§5.4).
 - `templates/adoption-state-template.md` (`:58`) — reflect that the ledger is a default new-adopter artifact.
 - (optional) `templates/requirements-ledger.example.json` — NEW additive template (seeded, with proposed surfaces + confidence).
 
