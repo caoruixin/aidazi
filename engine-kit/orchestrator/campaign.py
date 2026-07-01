@@ -29,6 +29,7 @@ import copy
 import hashlib
 import json
 import os
+import stat as _stat
 import re
 import sys
 from dataclasses import dataclass, field
@@ -615,15 +616,11 @@ class Campaign:
         # ingress, mirroring the plan/state gates). Load + schema-validate ONLY; the
         # engine NEVER writes the ledger back (delivery_status is a derived projection).
         self.ledger_path = ledger_path
-        self.ledger: Optional[dict] = None
-        if ledger_path and os.path.isfile(ledger_path):
-            try:
-                with open(ledger_path, encoding="utf-8") as fh:
-                    led = json.load(fh)
-            except OSError as exc:
-                raise ValueError(f"campaign requirement ledger unreadable: {exc}")
-            _validate_or_raise(led, "requirement-ledger.schema.json", "ledger")
-            self.ledger = led
+        # STRICT ABSENT-vs-PRESENT-BROKEN probe (Codex R2/R3): a truly-absent ledger stays
+        # dormant (None, additive); a PRESENT-but-broken one (non-regular / unstatable /
+        # malformed / schema-invalid / duplicate ids) raises ValueError → fail closed. Shared
+        # with the run_loop sign/preflight gate so both agree.
+        self.ledger: Optional[dict] = load_and_validate_ledger(ledger_path)
         self.budget = plan.get("budget") or {}
         iso = plan.get("milestone_isolation") or {}
         # Legacy top-level isolation_strategy (shared|worktree) → map when milestone_isolation absent.
@@ -1033,7 +1030,7 @@ class Campaign:
         active, 'signed' requires the stored signed_scope_hash to MATCH the live
         recomputed hash; a post-signoff edit (or a charter-default flip — G1) ⇒ 'stale';
         a bare top-level signed_by_human with no signoff block ⇒ 'pre_f1' (one re-sign)."""
-        return signoff_status(self.plan, self.charter)
+        return signoff_status(self.plan, self.charter, self.ledger)
 
     # ----- Track-2 T2-A universal F1 freshness gate (design §2.1) --------- #
     def _authority_fresh(self) -> bool:
@@ -1060,7 +1057,7 @@ class Campaign:
             stored = signoff.get("scope_envelope")
             if not isinstance(stored, dict):
                 return None
-            live = compute_scope_envelope(self.plan, self.charter)
+            live = compute_scope_envelope(self.plan, self.charter, self.ledger)
             if _canonical_json(stored.get("authority")) != _canonical_json(
                     live.get("authority")):
                 return "authority(budget/gap_followup/trunk_branch/milestone_isolation)"
@@ -1068,7 +1065,8 @@ class Campaign:
                 return "goal"
             if _canonical_json(stored.get("milestones")) != _canonical_json(
                     live.get("milestones")):
-                return "milestones(scope/acceptance/subsprint_sequence/covers_req_ids)"
+                return ("milestones(scope/acceptance/subsprint_sequence/covers_req_ids/"
+                        "covered_req_surfaces)")
             return "charter_or_signature"
         except Exception:  # noqa: BLE001 — a hint, never a gate
             return None
@@ -1132,7 +1130,7 @@ class Campaign:
             self.state.engine_restamp = None   # human re-sign supersedes the engine epoch
             return
         self.plan = apply_engine_restamp_to_plan(
-            self.plan, self.charter, self.state.engine_restamp)
+            self.plan, self.charter, self.state.engine_restamp, self.ledger)
 
     @staticmethod
     def _entry_equal_except_seq(a: dict, b: dict) -> bool:
@@ -1229,7 +1227,7 @@ class Campaign:
         if _canonical_sha256(self.charter or {}) != signoff.get("charter_hash"):
             return False
         stored_env = signoff.get("scope_envelope")
-        live_env = compute_scope_envelope(self.plan, self.charter)
+        live_env = compute_scope_envelope(self.plan, self.charter, self.ledger)
         if not self._is_authorized_followup_insertion(
                 stored_env, live_env, inserted_index):
             return False
@@ -1454,7 +1452,8 @@ class Campaign:
         signoff = self.plan.get("signoff") or {}
         try:
             return compute_signed_scope_hash(
-                self.plan, self.charter or {}, charter_ref=signoff.get("charter_ref"))
+                self.plan, self.charter or {}, charter_ref=signoff.get("charter_ref"),
+                ledger=self.ledger)
         except Exception:  # noqa: BLE001 — None → the resume bind check fails closed
             return None
 
@@ -2533,17 +2532,147 @@ def resolve_functional_acceptance(charter: Optional[dict],
     return "static", "default"
 
 
-def _envelope_milestone(charter: Optional[dict], milestone: dict) -> dict:
+_VALID_SURFACES = frozenset({"user_facing", "non_user_facing"})
+
+
+def duplicate_requirement_ids(ledger: Optional[dict]) -> list:
+    """The requirement ids that appear MORE THAN ONCE in the ledger — a malformed input
+    contract (an AMBIGUOUS surface classification). Empty for a well-formed/absent ledger.
+    OW-M3 rejects a ledger with duplicates (the sign-off gate refuses; the runner + strict
+    sign/preflight loaders fail closed) so the {rid: surface} basis is unambiguous for BOTH
+    the gate and the signed hash — closing the 'first duplicate says user_facing, last says
+    non_user_facing' bypass."""
+    seen, dups = set(), []
+    for r in (ledger or {}).get("requirements") or []:
+        if not isinstance(r, dict):
+            continue
+        rid = r.get("id")
+        if rid is None:
+            continue
+        if rid in seen and rid not in dups:
+            dups.append(rid)
+        seen.add(rid)
+    return dups
+
+
+def load_and_validate_ledger(ledger_path: Optional[str]) -> Optional[dict]:
+    """STRICT ABSENT-vs-PRESENT-BROKEN requirement-ledger probe (Codex R3), shared by the
+    Campaign runner ingress AND the run_loop --sign-plan / preflight gate so both agree.
+
+    Returns the schema-validated ledger dict, or None ONLY when the path is TRULY absent (no
+    directory entry — dormant, byte-identical to pre-OW-M3). Anything PRESENT-but-broken
+    RAISES ValueError — a wired input contract that cannot be trusted must never be treated
+    as dormant (which would silently sign/run around the mandate):
+      • os.path.lexists/isfile swallow OSError, so a permission/stat failure on a PRESENT
+        path collapses to 'absent'. We os.lstat EXPLICITLY: only FileNotFoundError is
+        dormant; any other OSError (permission, ELOOP, …) raises.
+      • a non-regular target (directory, FIFO, socket, device) or a broken symlink raises
+        BEFORE open() — never blocks on a FIFO, never reads a directory.
+      • malformed JSON, schema-invalid (out-of-enum surface …), or duplicate ids raise."""
+    if not ledger_path:
+        return None
+    try:
+        st = os.lstat(ledger_path)                     # does the PATH ENTRY exist at all?
+    except FileNotFoundError:
+        return None                                    # truly absent → dormant (additive)
+    except (OSError, ValueError) as exc:               # PRESENT but unstatable (perm/ELOOP…)
+        raise ValueError(f"requirement ledger present but unstatable: {exc}")
+    if _stat.S_ISLNK(st.st_mode):
+        try:
+            st = os.stat(ledger_path)                  # resolve the symlink target
+        except OSError as exc:                          # broken symlink / unreadable target
+            raise ValueError(f"requirement ledger symlink present but broken: {exc}")
+    if not _stat.S_ISREG(st.st_mode):                  # directory / FIFO / socket / device
+        raise ValueError(
+            f"requirement ledger path present but not a regular file: {ledger_path}")
+    try:
+        with open(ledger_path, encoding="utf-8") as fh:
+            led = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"requirement ledger present but unreadable/malformed: {exc}")
+    _validate_or_raise(led, "requirement-ledger.schema.json", "ledger")
+    dups = duplicate_requirement_ids(led)
+    if dups:
+        raise ValueError(f"requirement ledger has duplicate requirement id(s): {dups}")
+    return led
+
+
+def _ledger_surface(ledger: Optional[dict], rid: str) -> Optional[str]:
+    """OW-M3 / B1: the `surface` classification of requirement `rid` in the wired
+    requirement ledger, or None when no ledger is wired, `rid` is absent from it, or the
+    requirement carries no surface. LAST occurrence wins — IDENTICAL to the id→req map the
+    sign-off gate builds ({r['id']: r for ...}), so the gate decision and the hash-bound
+    covered_req_surfaces can never disagree on a (rejected) duplicate id. Deterministic — a
+    post-sign surface flip/removal changes this value, so the covered_req_surfaces map bound
+    into H changes and the plan goes 'stale' (the tamper-detection basis of the mandate)."""
+    surface = None
+    for r in (ledger or {}).get("requirements") or []:
+        if isinstance(r, dict) and r.get("id") == rid:
+            surface = r.get("surface")
+    return surface
+
+
+def _covered_req_surfaces(milestone: dict, ledger: Optional[dict]) -> Optional[dict]:
+    """OW-M3 / B1: the {rid: surface} basis that justifies THIS milestone's required
+    acceptance class, bound into the signed envelope + H. Returns None — so the key is
+    OMITTED from the envelope entry, byte-identical to pre-OW-M3 — when no ledger is
+    wired OR the milestone covers no requirement; a legacy/dormant plan therefore hashes
+    EXACTLY as today (additivity). Otherwise the map is over the milestone's
+    covers_req_ids (canonical JSON sorts keys, so declared order is irrelevant). Sign-time
+    and live freshness recompute both read the SAME (effective) ledger, so the field's
+    presence never diverges (design §5.1 N1). `ledger` is the EFFECTIVE ledger from
+    _effective_surfaces_ledger — the live one, or a stored-basis reconstruction."""
+    if not ledger:
+        return None
+    covered = list(milestone.get("covers_req_ids") or [])
+    if not covered:
+        return None
+    return {rid: _ledger_surface(ledger, rid) for rid in covered}
+
+
+def _effective_surfaces_ledger(plan: Optional[dict],
+                               ledger: Optional[dict]) -> Optional[dict]:
+    """OW-M3: the ledger the covered_req_surfaces recompute uses. The LIVE ledger when
+    available (so a post-sign surface flip flips the hash ⇒ 'stale'). When the live
+    ledger is ABSENT/unreadable but the plan was SIGNED WITH covered_req_surfaces,
+    reconstruct a minimal {id, surface} ledger from the STORED signed envelope so a
+    transiently-unavailable ledger does NOT spuriously invalidate a signed plan —
+    preserving Track-2's 'ledger-unreadable-on-resume / self-contained marker' resilience
+    (a flip you cannot read cannot be detected, but the last SIGNED classification is
+    honored — fail-safe). Returns None (⇒ dormant, field omitted) only when there is
+    neither a live ledger nor a stored surface basis. NB: this is for the FRESHNESS
+    recompute only; the sign-off / preflight GATE (mandatory_e2e_violations) always reads
+    the raw live ledger."""
+    if ledger:
+        return ledger
+    signoff = (plan or {}).get("signoff")
+    env = signoff.get("scope_envelope") if isinstance(signoff, dict) else None
+    if not isinstance(env, dict):
+        return None
+    surfaces: dict = {}
+    for m in env.get("milestones") or []:
+        for rid, s in (m.get("covered_req_surfaces") or {}).items():
+            surfaces[rid] = s
+    if not surfaces:
+        return None
+    return {"requirements": [{"id": rid, "surface": s}
+                             for rid, s in surfaces.items()]}
+
+
+def _envelope_milestone(charter: Optional[dict], milestone: dict,
+                        ledger: Optional[dict] = None) -> dict:
     """One milestone's RESOLVED scope-envelope entry (design §3.3.1): the scope-bearing
     fields + the RESOLVED acceptance {mode,source} (not the literal, possibly-absent
     functional_acceptance). Absent arrays normalize to [] so absent-vs-empty doesn't
     churn the hash; acceptance_bar is the string or null. Track-2 T2-B: the per-milestone
     isolation_strategy (legacy/per-milestone branch-vs-worktree authority) joins the
     entry so a post-sign per-milestone strategy edit flips the hash (resolved to the
-    same precedence the runner reads — absent ⇒ 'inherit')."""
+    same precedence the runner reads — absent ⇒ 'inherit'). OW-M3 B1: when a requirement
+    ledger is wired AND this milestone covers requirements, the {rid: surface} basis is
+    bound in as covered_req_surfaces (absent otherwise ⇒ byte-identical to pre-OW-M3)."""
     mode, source = resolve_functional_acceptance(
         charter, milestone.get("functional_acceptance"))
-    return {
+    entry = {
         "id": milestone.get("id"),
         "objective": milestone.get("objective"),
         "covers_req_ids": list(milestone.get("covers_req_ids") or []),
@@ -2555,6 +2684,10 @@ def _envelope_milestone(charter: Optional[dict], milestone: dict) -> dict:
         # when absent (the same default _resolve_milestone_strategy reads).
         "isolation_strategy": milestone.get("isolation_strategy") or "inherit",
     }
+    surfaces = _covered_req_surfaces(milestone, ledger)
+    if surfaces is not None:
+        entry["covered_req_surfaces"] = surfaces
+    return entry
 
 
 def _resolve_plan_authority(plan: dict) -> dict:
@@ -2607,36 +2740,42 @@ def _resolve_plan_authority(plan: dict) -> dict:
     }
 
 
-def compute_scope_envelope(plan: dict, charter: Optional[dict]) -> dict:
+def compute_scope_envelope(plan: dict, charter: Optional[dict],
+                           ledger: Optional[dict] = None) -> dict:
     """The STORED signed scope-envelope snapshot {goal, milestones:[…], authority}
     (design §3.3.1, G4: stored not just hashed, so prior signed coverage is
     reconstructable for stale-signoff rendering). Milestones are in the plan's DECLARED
     order (reordering is a scope change → a new hash → stale). Track-2 T2-B: the resolved
     top-level `authority` block (budget/gap_followup/trunk_branch/milestone_isolation) is
     stored alongside so signoff_snapshot_authentic reconstructs the SAME H from the stored
-    envelope (lockstep)."""
+    envelope (lockstep). OW-M3 B1: `ledger` (the LIVE requirement ledger) binds each
+    covering milestone's covered_req_surfaces basis; absent ⇒ pre-OW-M3-identical."""
+    ledger = _effective_surfaces_ledger(plan, ledger)
     return {
         "goal": plan.get("goal"),
-        "milestones": [_envelope_milestone(charter, m)
+        "milestones": [_envelope_milestone(charter, m, ledger)
                        for m in (plan.get("milestones") or [])],
         "authority": _resolve_plan_authority(plan),
     }
 
 
 def _signed_scope_H(plan: dict, charter: Optional[dict], *,
-                    charter_ref: Optional[str], charter_hash: str) -> dict:
+                    charter_ref: Optional[str], charter_hash: str,
+                    ledger: Optional[dict] = None) -> dict:
     """The EXACT hash-input object H (design §3.3.1): goal/charter_hash live INSIDE H
     (not concatenated alongside the envelope), so the input is unambiguous. Track-2 T2-B:
     H carries the resolved top-level `authority` block, so every authority-bearing plan
     field (budget/gap_followup/trunk_branch/milestone_isolation/per-milestone
-    isolation_strategy) is inside the SINGLE signed hash."""
+    isolation_strategy) is inside the SINGLE signed hash. OW-M3 B1: each covering
+    milestone's covered_req_surfaces (from the LIVE `ledger`) is inside H too, so a
+    post-sign surface flip flips the hash."""
     return {
         "version": "v1",
         "campaign_id": plan.get("campaign_id"),
         "goal": plan.get("goal"),
         "charter_ref": charter_ref,
         "charter_hash": charter_hash,
-        "milestones": [_envelope_milestone(charter, m)
+        "milestones": [_envelope_milestone(charter, m, ledger)
                        for m in (plan.get("milestones") or [])],
         "authority": _resolve_plan_authority(plan),
     }
@@ -2644,23 +2783,30 @@ def _signed_scope_H(plan: dict, charter: Optional[dict], *,
 
 def compute_signed_scope_hash(plan: dict, charter: Optional[dict], *,
                               charter_ref: Optional[str] = None,
-                              charter_hash: Optional[str] = None) -> str:
+                              charter_hash: Optional[str] = None,
+                              ledger: Optional[dict] = None) -> str:
     """signed_scope_hash = sha256(canonical_json(H)) per design §3.3.1. charter_hash
     defaults to the canonical hash of `charter` (the LIVE charter when the runner
-    recomputes; the sign-time charter when stamping)."""
+    recomputes; the sign-time charter when stamping). OW-M3 B1: pass the LIVE `ledger`
+    so covered_req_surfaces enters H identically at sign time and at freshness recompute
+    (design §5.1 N1); absent ⇒ pre-OW-M3-identical."""
     ch = charter or {}
     if charter_hash is None:
         charter_hash = _canonical_sha256(ch)
-    H = _signed_scope_H(plan, ch, charter_ref=charter_ref, charter_hash=charter_hash)
+    ledger = _effective_surfaces_ledger(plan, ledger)
+    H = _signed_scope_H(plan, ch, charter_ref=charter_ref, charter_hash=charter_hash,
+                        ledger=ledger)
     return hashlib.sha256(_canonical_json(H).encode("utf-8")).hexdigest()
 
 
 def stamp_signoff(plan: dict, charter: Optional[dict], *, signer: str = "human",
-                  signed_at: str = "", charter_ref: str = "") -> dict:
+                  signed_at: str = "", charter_ref: str = "",
+                  ledger: Optional[dict] = None) -> dict:
     """Return a DEEP COPY of `plan` with a freshly-stamped `signoff` block — the F1
     "sign" action (the human can't hand-compute the hash). Used by the --sign-plan CLI
     and tests. Re-running it after a scope edit RE-STAMPS the snapshot (a new signature
-    epoch)."""
+    epoch). OW-M3 B1: the LIVE `ledger` binds covered_req_surfaces into both the stored
+    envelope and the signed hash, so a later surface flip is detected as drift."""
     out = copy.deepcopy(plan)
     ch = charter or {}
     charter_hash = _canonical_sha256(ch)
@@ -2670,11 +2816,88 @@ def stamp_signoff(plan: dict, charter: Optional[dict], *, signer: str = "human",
         "signed_at": signed_at,
         "charter_ref": charter_ref,
         "charter_hash": charter_hash,
-        "scope_envelope": compute_scope_envelope(out, ch),
+        "scope_envelope": compute_scope_envelope(out, ch, ledger),
         "signed_scope_hash": compute_signed_scope_hash(
-            out, ch, charter_ref=charter_ref, charter_hash=charter_hash),
+            out, ch, charter_ref=charter_ref, charter_hash=charter_hash, ledger=ledger),
     }
     return out
+
+
+def mandatory_e2e_violations(plan: Optional[dict], charter: Optional[dict],
+                             ledger: Optional[dict]) -> list:
+    """OW-M3 sign-off gate (design §3.1–§3.2): the list of milestones whose declared
+    coverage would accept a user-facing requirement on non-browser-E2E evidence, or that
+    reference a requirement the ledger does not classify. Empty ⇒ the plan may be signed
+    / run.
+
+    DORMANT (returns []) when no requirement ledger is wired — the mandate is inert until
+    the OW-2 input contract exists (byte-identical to pre-OW-M3). For each milestone
+    DECLARING a non-empty covers_req_ids:
+      • 'unclassified' — a covered rid is absent from the ledger, carries no VALID
+        `surface` (∈ {user_facing, non_user_facing} — an out-of-enum value like 'banana'
+        is NOT trusted as non-user-facing), or is AMBIGUOUS (duplicated in the ledger with
+        conflicting classifications). (D2: refuse; conservative-default rejected.) Reported
+        alone (the milestone's user-facing-ness is unknowable until every covered rid is
+        unambiguously classified).
+      • 'downgrade'    — the milestone is user-facing (ANY covered rid.surface ==
+        'user_facing') yet its RESOLVED functional acceptance mode != 'browser_e2e'.
+    A milestone with an ABSENT covers_req_ids field never trips this (dormant; N2)."""
+    if not ledger:
+        return []
+    reqs = {r.get("id"): r for r in (ledger.get("requirements") or [])
+            if isinstance(r, dict)}
+    dups = set(duplicate_requirement_ids(ledger))
+    out = []
+    for m in (plan or {}).get("milestones") or []:
+        covered = list(m.get("covers_req_ids") or [])
+        if not covered:
+            continue
+        # Refuse a covered rid that is absent, out-of-enum, or ambiguously duplicated —
+        # any of these means the surface basis is not trustworthy for this milestone.
+        unknown = [rid for rid in covered
+                   if rid in dups or rid not in reqs
+                   or reqs[rid].get("surface") not in _VALID_SURFACES]
+        if unknown:
+            out.append({"milestone_id": m.get("id"), "kind": "unclassified",
+                        "req_ids": unknown})
+            continue
+        user_facing = [rid for rid in covered
+                       if reqs[rid].get("surface") == "user_facing"]
+        if user_facing:
+            mode, source = resolve_functional_acceptance(
+                charter, m.get("functional_acceptance"))
+            if mode != "browser_e2e":
+                out.append({"milestone_id": m.get("id"), "kind": "downgrade",
+                            "req_ids": user_facing, "resolved_mode": mode,
+                            "resolved_source": source})
+    return out
+
+
+def render_mandatory_e2e_refusal(violations: list, *, action: str) -> str:
+    """The actionable refusal message (design §3.2, §8 friction guard): for every
+    violation, the two — and ONLY two — resolutions, so adopters never bypass via the
+    no-ledger path. `action` is a short verb phrase for the header (e.g. 'refusing to
+    sign the plan')."""
+    lines = [f"OW-M3 mandatory browser-E2E acceptance — {action}:"]
+    for v in violations:
+        mid = v.get("milestone_id")
+        rids = ", ".join(v.get("req_ids") or [])
+        if v.get("kind") == "unclassified":
+            lines.append(
+                f"  - milestone {mid!r}: covers requirement id(s) [{rids}] that are "
+                f"absent from the requirement ledger, have no valid `surface` "
+                f"classification (∈ user_facing | non_user_facing), or are ambiguously "
+                f"classified (duplicate ledger id). Ensure exactly one ledger entry with a "
+                f"valid surface per id, then re-sign.")
+        else:  # downgrade
+            mode = v.get("resolved_mode")
+            lines.append(
+                f"  - milestone {mid!r}: covers user_facing requirement(s) [{rids}] but "
+                f"its resolved functional acceptance is {mode!r} (must be 'browser_e2e'). "
+                f"Resolve by EITHER (1) set this milestone's functional_acceptance: "
+                f"\"browser_e2e\"; OR (2) (Customer) reclassify the requirement's surface "
+                f"to 'non_user_facing' in the ledger and re-sign.")
+    return "\n".join(lines)
 
 
 def f1_required(plan: Optional[dict]) -> bool:
@@ -2729,21 +2952,25 @@ def signoff_snapshot_authentic(plan: Optional[dict]) -> bool:
     return recomputed == stored
 
 
-def signoff_status(plan: Optional[dict], charter: Optional[dict] = None) -> str:
+def signoff_status(plan: Optional[dict], charter: Optional[dict] = None,
+                   ledger: Optional[dict] = None) -> str:
     """campaign_plan_signoff status: 'signed' | 'stale' | 'pre_f1' | 'unsigned'
     (design §3.3.1). When F1 is inactive this is the legacy bare-`signed_by_human`
     check. When active: a `signoff` block with signed_by_human:true is 'signed' ⟺ its
     stored signed_scope_hash == the live recomputed hash, else 'stale'; a bare top-level
     signed_by_human with no signoff block is 'pre_f1' (one re-sign); else 'unsigned'.
     Legacy precedence: when a signoff block exists it is authoritative and the bare flag
-    is ignored."""
+    is ignored. OW-M3 B1: pass the LIVE `ledger` so the recompute binds the SAME
+    covered_req_surfaces the sign-time hash did — a post-sign surface flip ⇒ 'stale'
+    (design §5.1 N1). A ledger MUST be supplied wherever it was at sign time, else the
+    field's presence diverges and the plan reads falsely 'stale'."""
     plan = plan or {}
     if not f1_required(plan):
         return "signed" if plan.get("signed_by_human") else "unsigned"
     signoff = plan.get("signoff")
     if isinstance(signoff, dict) and signoff.get("signed_by_human") is True:
         live = compute_signed_scope_hash(
-            plan, charter or {}, charter_ref=signoff.get("charter_ref"))
+            plan, charter or {}, charter_ref=signoff.get("charter_ref"), ledger=ledger)
         return "signed" if signoff.get("signed_scope_hash") == live else "stale"
     if plan.get("signed_by_human") is True:
         return "pre_f1"
@@ -2794,7 +3021,8 @@ def _hash_from_envelope(plan: dict, charter: Optional[dict],
 
 
 def apply_engine_restamp_to_plan(plan: Optional[dict], charter: Optional[dict],
-                                 engine_restamp: Optional[dict]) -> dict:
+                                 engine_restamp: Optional[dict],
+                                 ledger: Optional[dict] = None) -> dict:
     """Return `plan` with its signoff aligned to the authorized engine epoch (E* = the
     plan-file signed envelope + the append-only deltas pinned in `engine_restamp`) IFF that
     reconstruction reproduces the pinned signed_scope_hash; otherwise `plan` unchanged. PURE
@@ -2808,7 +3036,7 @@ def apply_engine_restamp_to_plan(plan: Optional[dict], charter: Optional[dict],
     plan = plan or {}
     if not f1_required(plan):
         return plan
-    if signoff_status(plan, charter) == "signed":
+    if signoff_status(plan, charter, ledger) == "signed":
         return plan   # genuinely / human re-signed → the engine epoch is moot
     restamp = engine_restamp or {}
     pinned = restamp.get("signed_scope_hash")

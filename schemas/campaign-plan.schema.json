@@ -42,7 +42,8 @@
                   "depends_on": {"type": "array", "items": {"type": "string"}},
                   "resolved_functional_acceptance": {"type": "object", "additionalProperties": false, "required": ["mode", "source"], "properties": {"mode": {"type": "string"}, "source": {"type": "string"}}, "description": "The RESOLVED acceptance class {mode, source} (not the literal functional_acceptance which may be absent and inherit the charter default)."},
                   "acceptance_bar": {"type": ["string", "null"]},
-                  "isolation_strategy": {"type": ["string", "null"], "description": "Track-2 T2-B: the per-milestone branch-vs-worktree isolation authority resolved into the envelope ('inherit' when absent), so a post-sign per-milestone strategy edit flips the hash. OPTIONAL so a pre-T2-B snapshot (no isolation_strategy) still validates and is independently flagged stale for the one-time re-sign."}
+                  "isolation_strategy": {"type": ["string", "null"], "description": "Track-2 T2-B: the per-milestone branch-vs-worktree isolation authority resolved into the envelope ('inherit' when absent), so a post-sign per-milestone strategy edit flips the hash. OPTIONAL so a pre-T2-B snapshot (no isolation_strategy) still validates and is independently flagged stale for the one-time re-sign."},
+                  "covered_req_surfaces": {"type": "object", "additionalProperties": {"type": ["string", "null"]}, "description": "OW-M3 B1: the {req_id: surface} basis (from the LIVE requirement ledger) that justified this milestone's required acceptance class, bound into the signed hash H. Emitted ONLY when a ledger is wired AND the milestone covers requirements (absent otherwise ⇒ byte-identical to pre-OW-M3). A post-sign surface flip/removal changes this map ⇒ signed_scope_hash mismatch ⇒ 'stale'. OPTIONAL so a dormant/legacy snapshot validates."}
                 }
               }
             },
@@ -84,7 +85,7 @@
             }
           }
         },
-        "signed_scope_hash": {"type": "string", "description": "sha256(canonical_json(H)) per the exact hash spec in design §3.3.1 (H = {version:'v1', campaign_id, goal, charter_ref, charter_hash, milestones:[{id,objective,covers_req_ids,subsprint_sequence,depends_on,resolved_functional_acceptance:{mode,source},acceptance_bar},…]}; canonical JSON = UTF-8, sorted keys, no insignificant whitespace, absent arrays normalized to [])."}
+        "signed_scope_hash": {"type": "string", "description": "sha256(canonical_json(H)) per the exact hash spec in design §3.3.1 (H = {version:'v1', campaign_id, goal, charter_ref, charter_hash, milestones:[{id,objective,covers_req_ids,subsprint_sequence,depends_on,resolved_functional_acceptance:{mode,source},acceptance_bar,isolation_strategy,covered_req_surfaces?},…], authority:{budget,gap_followup,trunk_branch,milestone_isolation}}; per-milestone isolation_strategy + the top-level authority block are Track-2 T2-B; covered_req_surfaces (the {req_id:surface} basis, present only when a ledger is wired + the milestone covers reqs) is OW-M3 B1; canonical JSON = UTF-8, sorted keys, no insignificant whitespace, absent arrays normalized to [])."}
       },
       "if": {"required": ["signed_by_human"], "properties": {"signed_by_human": {"const": true}}},
       "then": {"required": ["signed_by_human", "signer", "signed_at", "charter_ref", "charter_hash", "scope_envelope", "signed_scope_hash"]}

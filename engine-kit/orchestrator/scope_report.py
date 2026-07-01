@@ -277,16 +277,20 @@ _WAIVED_TERMINALS = {
 }
 
 
-def _signoff_status_and_hash(plan: dict, charter: Optional[dict]):
+def _signoff_status_and_hash(plan: dict, charter: Optional[dict],
+                             ledger: Optional[dict] = None):
     """(status, live_hash) for the plan's F1 signoff, via the campaign module (lazy
     import — same contract as topological_order below). Never raises: a missing campaign
-    module / bad input degrades to ('unsigned', None)."""
+    module / bad input degrades to ('unsigned', None). OW-M3 B1: pass the LIVE `ledger`
+    so covered_req_surfaces enters the recompute identically to sign time — else a
+    plan signed WITH a ledger reads a false 'stale' here (external reporting divergence)."""
     try:
         import campaign as _cp
-        status = _cp.signoff_status(plan, charter)
+        status = _cp.signoff_status(plan, charter, ledger)
         signoff = plan.get("signoff") or {}
         live = _cp.compute_signed_scope_hash(
-            plan, charter or {}, charter_ref=signoff.get("charter_ref")) \
+            plan, charter or {}, charter_ref=signoff.get("charter_ref"),
+            ledger=ledger) \
             if isinstance(signoff, dict) and signoff.get("signed_by_human") else None
         return status, live
     except Exception:
@@ -317,7 +321,8 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
     # plan-file signoff; never mutates the caller's plan (returns a re-stamped copy).
     try:
         import campaign as _cp
-        plan = _cp.apply_engine_restamp_to_plan(plan, charter, state.get("engine_restamp"))
+        plan = _cp.apply_engine_restamp_to_plan(
+            plan, charter, state.get("engine_restamp"), ledger)
     except Exception:
         pass
     reqs = [r for r in (ledger.get("requirements") or []) if isinstance(r, dict)]
@@ -349,7 +354,7 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
     cursor_mi = (state.get("cursor") or {}).get("milestone_index", 0)
     started = state.get("status") is not None
 
-    status, live_hash = _signoff_status_and_hash(plan, charter)
+    status, live_hash = _signoff_status_and_hash(plan, charter, ledger)
     fresh_signed = status == "signed"
     stale = status == "stale"
     blocked = status in ("stale", "pre_f1")   # signed-intent, but blocked pending re-sign

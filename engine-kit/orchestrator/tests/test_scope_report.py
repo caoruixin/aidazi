@@ -390,10 +390,13 @@ class TestRequirementProjectionDelivery(unittest.TestCase):
 
 class TestRequirementUncoveredAndDrift(unittest.TestCase):
     def test_uncovered_is_the_prd_gap(self):
-        plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1"])]), _STATIC_CHARTER,
-                                signed_at="t")
         led = _ledger([("REQ-1", "accepted"), ("REQ-2", "accepted"),  # REQ-2 in no ms
                        ("REQ-3", "dropped")])                          # validly retired
+        # Direct-stamp (bypasses the --sign-plan gate) with the SAME ledger coverage uses
+        # — production's single-ledger invariant: covered_req_surfaces binds identically at
+        # sign + recompute → fresh, not false-stale.
+        plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1"])]), _STATIC_CHARTER,
+                                signed_at="t", ledger=led)
         rep = sr.compute_requirement_coverage(plan, _reqstate(0, []), led,
                                               charter=_STATIC_CHARTER)
         self.assertEqual(rep["uncovered_requirements"], ["REQ-2"])    # not REQ-3 (dropped)
@@ -413,9 +416,11 @@ class TestInvalidSignedDisposition(unittest.TestCase):
     (G2/F2) — it stays in the continue menu until a re-sign reconciles it."""
 
     def test_dropped_on_fresh_signed_is_kept(self):
-        plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1"])]), _STATIC_CHARTER,
-                                signed_at="t")
         led = _ledger([("REQ-1", "dropped")])    # dropped but bound to fresh-signed m1
+        # Direct-stamp with the ledger (bypasses the --sign-plan gate; mirrors the
+        # single-ledger invariant), else the ledger-aware recompute here reads a false 'stale'.
+        plan = cp.stamp_signoff(_covplan([("m1", ["REQ-1"])]), _STATIC_CHARTER,
+                                signed_at="t", ledger=led)
         rep = sr.compute_requirement_coverage(plan, _reqstate(0, []), led,
                                               charter=_STATIC_CHARTER)
         self.assertEqual(rep["invalid_signed_disposition"], ["REQ-1"])

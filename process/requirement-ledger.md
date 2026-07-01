@@ -52,6 +52,33 @@ The REQ→milestone map is the signed campaign-plan milestone `covers_req_ids` �
 `campaign_plan_signoff` signs it). The ledger stores **no** writable `covers[]` and
 **no** stored `delivery_status`.
 
+## §2.1 `surface` — the OW-M3 input contract (mandatory browser-E2E)
+
+Each requirement MAY carry `surface ∈ user_facing | non_user_facing` — *"does meeting
+this requirement produce something the end user OPERATES (browser-operable UI / a user
+journey)?"* It is the **input contract** of the OW-M3 acceptance mandate: at
+`campaign_plan_signoff`, the sign-off gate derives each milestone's REQUIRED acceptance
+class from the `surface` of the requirements it covers.
+
+- A milestone is **user-facing** ⟺ ANY covered REQ has `surface: user_facing`. A
+  user-facing milestone MUST resolve its functional acceptance to `browser_e2e` (M3) — no
+  downgrade to static (M1). Otherwise `--sign-plan` (and the real-run preflight) **refuse
+  to sign**, with exactly two resolutions: (1) set the milestone's
+  `functional_acceptance: "browser_e2e"`, OR (2) (Customer) reclassify the requirement's
+  `surface` and re-sign.
+- **Unclassified** — a covered REQ absent from the ledger or with no `surface` while
+  `covers_req_ids` is non-empty → also refuse-to-sign (conservative-default rejected: it
+  would force browser-E2E on backend milestones). Add a ledger entry + surface, then
+  re-sign.
+- **Authority:** Research/agent MAY propose `surface`; it binds only by being on a REQ the
+  Customer signs into scope. Reclassifying a *signed* REQ ⇒ re-sign (Customer authority) —
+  distinct from `customer_disposition`.
+- **Dormant + additive:** no ledger / no `covers_req_ids` ⇒ the mandate is inert
+  (byte-identical to pre-OW-M3). The covered-REQ `surface` basis is snapshotted into the
+  signed scope hash (`covered_req_surfaces`), so a post-sign surface flip flips the hash ⇒
+  `stale` ⇒ re-sign. OW-M3 mandates **evidence** (browser-E2E runs), not auto-ship — M3
+  authority stays advisory in v1.
+
 ## §3 customer_disposition is Customer-only (HARD — §4.E)
 
 `customer_disposition` is **Customer authority, never LLM** (Constitution §1.3/§1.7;

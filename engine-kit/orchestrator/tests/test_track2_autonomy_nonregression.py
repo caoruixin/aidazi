@@ -58,10 +58,14 @@ def _covms(mid, seq, reqs):
             "covers_req_ids": list(reqs)}
 
 
-def _signed(milestones, charter, **extra):
+def _signed(milestones, charter, *, ledger=None, **extra):
     plan = {"campaign_id": "camp-auto", "goal": "autonomy invariant",
             "signed_by_human": True, "milestones": milestones, **extra}
-    return cp.stamp_signoff(plan, charter, signed_at="t")
+    # Direct-stamp with the wired ledger (bypasses the OW-M3 --sign-plan gate) mirroring
+    # production's single-ledger invariant: sign-time and the runner resolve the SAME
+    # ledger, so OW-M3 B1 covered_req_surfaces binds identically → the runner's
+    # ledger-aware recompute stays 'signed', not false-stale.
+    return cp.stamp_signoff(plan, charter, signed_at="t", ledger=ledger)
 
 
 def _ledger(reqs):
@@ -186,7 +190,8 @@ class Track2AutonomyInvariant(unittest.TestCase):
             ledger_path = os.path.join(d, "ledger.json")
             with open(ledger_path, "w", encoding="utf-8") as fh:
                 json.dump(_ledger(["REQ-1"]), fh)
-            pf = _signed([_covms("m1", ["s1"], ["REQ-1"])], _ONL_CHARTER)
+            pf = _signed([_covms("m1", ["s1"], ["REQ-1"])], _ONL_CHARTER,
+                         ledger=_ledger(["REQ-1"]))
             ru = _run_unit({"m1-gapfix-1": {"final_state": "done", "spawn_count": 1}})
             # Seed a real mid-loop RUNNING state at backlog-exhausted with an in-envelope gap
             # (m1's covers signed but not yet delivered) — the idiomatic resume-into-gap state.
@@ -235,8 +240,9 @@ class Track2AutonomyInvariant(unittest.TestCase):
 
             # --- ATTACK: max_subsprints 1→2 after signoff (no re-sign) → stale → blocked. ---
             attack_home = os.path.join(d, "attack")
-            pf = _signed(ms, _ONL_CHARTER, gap_followup={"max_subsprints": 1,
-                                                         "max_no_progress_rounds": 1})
+            pf = _signed(ms, _ONL_CHARTER, ledger=_ledger(["REQ-1", "REQ-2"]),
+                         gap_followup={"max_subsprints": 1,
+                                       "max_no_progress_rounds": 1})
             rec = []
             ru = _run_unit({"m1-gapfix-2": {"final_state": "done", "spawn_count": 1}}, rec)
             self._seed_gap_after_round1(attack_home, ledger_path, pf, ru)
@@ -294,6 +300,7 @@ class Track2AutonomyInvariant(unittest.TestCase):
             with open(ledger_path, "w", encoding="utf-8") as fh:
                 json.dump(_ledger(["REQ-1"]), fh)
             pf = _signed([_covms("m1", ["s1"], ["REQ-1"])], _ONL_CHARTER,
+                         ledger=_ledger(["REQ-1"]),
                          gap_followup={"max_subsprints": 2, "max_no_progress_rounds": 1})
             self.assertEqual(cp.signoff_status(_fresh(pf), _ONL_CHARTER), "signed")
             rec = []

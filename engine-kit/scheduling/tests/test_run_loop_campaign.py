@@ -687,8 +687,9 @@ class TestRequirementCoverageWiring(unittest.TestCase):
     def test_valid_ledger_emits_requirement_coverage_and_derives_delivery(self):
         with tempfile.TemporaryDirectory() as d:
             led_path = os.path.join(d, "requirements-ledger.json")
+            led = _ledger([("REQ-1", "accepted"), ("REQ-2", "accepted")])
             with open(led_path, "w", encoding="utf-8") as fh:
-                json.dump(_ledger([("REQ-1", "accepted"), ("REQ-2", "accepted")]), fh)
+                json.dump(led, fh)
             charter = self._charter_with_ledger(led_path)
             adapters = _acceptance_adapters(ACC_PASS)
             clk = _clock()
@@ -698,7 +699,11 @@ class TestRequirementCoverageWiring(unittest.TestCase):
             plan = _plan("reqB", [{"id": "m1", "objective": "first",
                                    "covers_req_ids": ["REQ-1"],
                                    "subsprint_sequence": ["sprint-001"]}])
-            signed = cp.stamp_signoff(plan, charter, signed_at="2026", charter_ref="ch")
+            # Direct-stamp with the wired ledger (bypasses the --sign-plan gate; mock run,
+            # no allow_real preflight) mirroring the single-ledger invariant so OW-M3 B1
+            # covered_req_surfaces binds identically → 'signed'.
+            signed = cp.stamp_signoff(plan, charter, signed_at="2026", charter_ref="ch",
+                                      ledger=led)
 
             r1 = rl.run_campaign_entry(signed, charter, clock=clk,
                                        campaign_run_dir=home, adapters=adapters)
@@ -752,6 +757,89 @@ class TestSignPlanCli(unittest.TestCase):
             self.assertEqual(cp.signoff_status(stamped, charter), "signed")
             # the stamped plan still validates against the formal schema.
             cp._validate_or_raise(stamped, "campaign-plan.schema.json", "plan")
+
+    def _write_ledger_charter(self, d, surface):
+        led_path = os.path.join(d, "requirements-ledger.json")
+        with open(led_path, "w", encoding="utf-8") as fh:
+            json.dump({"version": "v1", "requirements": [
+                {"id": "REQ-1", "statement": "s", "source": {"channel": "prd"},
+                 "customer_disposition": "accepted", "surface": surface}]}, fh)
+        charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+        charter["requirements"] = {"ledger_path": led_path}   # absolute
+        charter_path = os.path.join(d, "charter.json")        # JSON is valid YAML
+        with open(charter_path, "w", encoding="utf-8") as fh:
+            json.dump(charter, fh)
+        return charter_path, led_path
+
+    def test_sign_plan_refuses_user_facing_downgrade(self):
+        # OW-M3 (design §3.2 / D4): --sign-plan REFUSES (exit 2) a plan that would accept a
+        # user_facing requirement on static evidence, and does NOT stamp the plan file.
+        with tempfile.TemporaryDirectory() as d:
+            charter_path, _ = self._write_ledger_charter(d, "user_facing")
+            plan = _plan("owm3refuse", [{"id": "m1", "objective": "ui",
+                                         "covers_req_ids": ["REQ-1"],
+                                         "subsprint_sequence": ["sprint-001"]}])  # static
+            plan_path = os.path.join(d, "plan.json")
+            with open(plan_path, "w", encoding="utf-8") as fh:
+                json.dump(plan, fh)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = rl.main(["--charter", charter_path, "--campaign", plan_path,
+                              "--sign-plan", "--repo-dir", d])
+            self.assertEqual(rc, 2)
+            self.assertIn("browser_e2e", buf.getvalue())
+            with open(plan_path, encoding="utf-8") as fh:
+                self.assertNotIn("signoff", json.load(fh))    # NOT stamped
+
+    def test_sign_plan_signs_user_facing_browser_e2e(self):
+        # Control: the SAME user_facing REQ + functional_acceptance browser_e2e SIGNS, and
+        # binds covered_req_surfaces into the stamped envelope (B1).
+        with tempfile.TemporaryDirectory() as d:
+            charter_path, led_path = self._write_ledger_charter(d, "user_facing")
+            plan = _plan("owm3sign", [{"id": "m1", "objective": "ui",
+                                       "covers_req_ids": ["REQ-1"],
+                                       "functional_acceptance": "browser_e2e",
+                                       "subsprint_sequence": ["sprint-001"]}])
+            plan_path = os.path.join(d, "plan.json")
+            with open(plan_path, "w", encoding="utf-8") as fh:
+                json.dump(plan, fh)
+            rc = rl.main(["--charter", charter_path, "--campaign", plan_path,
+                          "--sign-plan", "--repo-dir", d])
+            self.assertEqual(rc, 0)
+            with open(plan_path, encoding="utf-8") as fh:
+                after = json.load(fh)
+            self.assertIn("signoff", after)
+            env_ms = after["signoff"]["scope_envelope"]["milestones"][0]
+            self.assertEqual(env_ms["covered_req_surfaces"], {"REQ-1": "user_facing"})
+
+    def test_sign_plan_refuses_broken_ledger(self):
+        # OW-M3 (Codex R1 #3): a WIRED-but-invalid ledger (duplicate ids here) REFUSES
+        # (exit 2) — it must NOT collapse to dormant and silently stamp.
+        with tempfile.TemporaryDirectory() as d:
+            led_path = os.path.join(d, "requirements-ledger.json")
+            with open(led_path, "w", encoding="utf-8") as fh:
+                json.dump({"version": "v1", "requirements": [
+                    {"id": "REQ-1", "statement": "a", "source": {"channel": "prd"},
+                     "customer_disposition": "accepted", "surface": "user_facing"},
+                    {"id": "REQ-1", "statement": "b", "source": {"channel": "prd"},
+                     "customer_disposition": "accepted", "surface": "non_user_facing"}]},
+                    fh)
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            charter["requirements"] = {"ledger_path": led_path}
+            charter_path = os.path.join(d, "charter.json")
+            with open(charter_path, "w", encoding="utf-8") as fh:
+                json.dump(charter, fh)
+            plan = _plan("owm3broken", [{"id": "m1", "objective": "ui",
+                                         "covers_req_ids": ["REQ-1"],
+                                         "subsprint_sequence": ["sprint-001"]}])
+            plan_path = os.path.join(d, "plan.json")
+            with open(plan_path, "w", encoding="utf-8") as fh:
+                json.dump(plan, fh)
+            rc = rl.main(["--charter", charter_path, "--campaign", plan_path,
+                          "--sign-plan", "--repo-dir", d])
+            self.assertEqual(rc, 2)
+            with open(plan_path, encoding="utf-8") as fh:
+                self.assertNotIn("signoff", json.load(fh))    # NOT stamped
 
 
 class TestSamplePlanCoversReqIds(unittest.TestCase):

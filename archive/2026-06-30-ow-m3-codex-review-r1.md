@@ -1,0 +1,26 @@
+VERDICT: REVISE
+SUMMARY: The core direction is right: requirement-derived M3 evidence is the correct fix for UI milestones, and most cited runtime M3 mechanics already exist. But the spec over-relies on existing signed-hash/stale-signoff behavior and does not yet bind the new `surface` input itself, leaving real mid-campaign and ledger-mutation bypasses.
+
+PART A — CITATION VERIFICATION:
+  1. campaign.py:2189-2238 — OK — `resolved_functional_acceptance` is emitted by `_envelope_milestone` at campaign.py:2189-2197 and reused in hash input `H` at campaign.py:2218-2225; `stamp_signoff` stores both `scope_envelope` and `signed_scope_hash` at campaign.py:2251-2259.
+  2. driver.py:712-716 — OK — anchor drift: the actual constructor hard-fail is driver.py:697-701: `_acceptance_class() == "browser_e2e"` and `acceptance_mode(charter) == "off"` raises `ValueError`.
+  3. driver.py:3204-3212 — OK — anchor drift: M3 advisory is enforced at driver.py:3071-3081; `browser_e2e` returns `False` for authoritative regardless of `judge_calibration_m3`, then advisory pass halts at driver.py:4539-4561.
+  4. campaign.py:2169-2181 — OK — milestone `functional_acceptance` wins at campaign.py:2177-2178, charter mode next at campaign.py:2179-2180, otherwise `("static", "default")` at campaign.py:2181.
+  5. campaign.py:2264-2274 — OK — F1 is opt-in by `signoff` block or presence of `covers_req_ids`; campaign.py:2272-2275 keys on field presence, including empty arrays.
+  6. scope_report.py:342-345 — OVERSTATED — these lines only compute `blocked = status in ("stale", "pre_f1")`; runner blocking is elsewhere and incomplete. Initial run pauses at campaign.py:1894-1907, but most resume paths do not re-check freshness before proceeding.
+  7. driver.py:3160-3168 — OK — anchor drift and indirect: `_acceptance_class()` reads `tooling.acceptance.functional.mode` at driver.py:3029-3037; campaign projection materializes the per-milestone resolved mode into that derived charter at campaign.py:2355-2368.
+
+BLOCKING (must fix before impl):
+  B1. `surface` is not hash-bound — the proposed guarantee freezes only the derived mode, not the input fact that justified it. A plan can be signed while a REQ is `non_user_facing` + static, then the ledger can change that same REQ to `user_facing` without changing `signed_scope_hash`, because current `H` only includes milestone envelope fields (campaign.py:2218-2225). Fix: include a per-covered-REQ signed surface snapshot, ledger item hash, or ledger root hash in the signed envelope/H, and make post-sign surface/waiver changes stale.
+  B2. Stale signoff is not a universal runtime barrier — `_handle_resume` re-checks freshness only for `campaign_plan_signoff` (campaign.py:1691-1697). Resume from `advisory_acceptance_pass_signoff`, `deliver_followup_required`, merge, or other gates can advance without `_signoff_status()=="signed"` (campaign.py:1744-1764, 1766-1834). Fix: enforce F1 freshness before any resume decision and before every dispatch; add tests for post-sign `functional_acceptance` downgrade, `covers_req_ids` mutation, and deliver-followup sequence insertion while paused.
+  B3. The OW-0 bypass closure claim is conditional, not actual — airecruiter’s M1 `eval.cmd` E2E, airplat’s manual live step, and airecruiter’s `acceptance.enabled:false` are refused only if OW-2 ledger + `covers_req_ids` + `surface:user_facing` are present. The context says both audited adopters had no ledger, while the spec says “No ledger => dormant” and also says the canary should be refused. Fix: either require a valid ledger for any F1/covers plan and refuse missing/unknown REQs, or weaken the closure/canary claims explicitly.
+  B4. Waiver path is underspecified — “record an explicit waiver” is a bypass unless it has a schema, Customer-only semantics, and inclusion in the signed envelope/H. Fix: define the waiver field and hash it, or remove waiver from v1.
+
+NON-BLOCKING / NITS:
+  N1. D1 needs tighter wording: binary is acceptable only if `user_facing` means browser-operable UI/user journey. “User-visible output” such as reports may need a non-browser evidence class later.
+  N2. D2 is correct, but should cover unknown REQ ids and missing ledger whenever `covers_req_ids` is present.
+  N3. D3 single-loop deferral is acceptable, but call out that single-milestone delivery remains outside the mandate.
+  N4. D4 is directionally right, but “validator on F1 sign path” must include `--sign-plan`, real-run preflight, and resume-time freshness enforcement, not only charter validation.
+  N5. For `browser_e2e + acceptance.mode:off`, current protection is driver-construction failure, not sign refusal; add a preflight/sign-time diagnostic for usability.
+
+PART C — residual gap assessment: OW-M3 plus OW-2 meaningfully moves the framework toward end-user, end-to-end validation against original requirements by making UI-covered milestones require structured browser evidence instead of arbitrary M1 eval output. The largest deliberate residual gap is per-REQ verdict wiring: the design still does not prove every original REQ has a corresponding checklist criterion, browser case, and passing result. Deferring that is reasonable for v1, but only after the signed-input and resume-freshness holes above are closed.
