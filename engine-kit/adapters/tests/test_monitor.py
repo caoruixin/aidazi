@@ -270,9 +270,12 @@ class LivenessLeaseIntegrationTests(unittest.TestCase):
         with self.assertRaises(AgentStuckError):
             self._run(src)  # no factory => the single line then silence => killed
 
-    def test_lease_released_on_tool_result_then_killed(self):
+    def test_lease_held_past_window_then_released_and_killed(self):
+        # ONE end-to-end case (Code-NB1): tool_use -> silence PAST the window
+        # (lease holds) -> tool_result (release) -> silence past the window ->
+        # killed by the silence watchdog.
         src = self._emit_then_sleep([
-            (self._tool_use(), 0.3), (self._tool_result(), 3.0)])
+            (self._tool_use(), 1.8), (self._tool_result(), 3.0)])
         with self.assertRaises(AgentStuckError):
             self._run(src, factory=ToolLeaseProbe)
 

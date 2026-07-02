@@ -332,6 +332,18 @@ class ClaudeStreamParseTests(unittest.TestCase):
             ClaudeCodeAdapter._final_result_from_stream(
                 json.dumps({"result": "legacy"}), "review"), "legacy")
 
+    def test_single_nonterminal_event_raises(self):
+        # A truncated one-line stream carrying a NON-terminal event must NOT be
+        # accepted as success (back-compat was too permissive — Code-B1).
+        for evt in (
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash"}]}},
+            {"type": "system", "subtype": "init"},
+        ):
+            with self.assertRaises(AdapterError):
+                ClaudeCodeAdapter._final_result_from_stream(
+                    json.dumps(evt) + "\n", "dev")
+
     def test_artifact_and_verdict_via_stream(self):
         art = _stream({"type": "result", "subtype": "success",
                        "result": "impl + handoff", "is_error": False})

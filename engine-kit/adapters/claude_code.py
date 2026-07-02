@@ -302,12 +302,17 @@ class ClaudeCodeAdapter(Adapter):
             if isinstance(obj, dict) and obj.get("type") == "result":
                 terminal = obj
         if terminal is None:
-            # back-compat: a single bare JSON object (stray --output-format json)
+            # back-compat: ONLY a legacy result-BEARING envelope (a stray
+            # --output-format json object: type==result, or a bare
+            # {"result": ...}). A single NON-terminal event — e.g. a truncated
+            # one-line {"type":"assistant",...} — must NOT be accepted as
+            # success; it falls through to the no-terminal-event AdapterError.
             s = stdout.strip()
             if s:
                 try:
                     obj = json.loads(s)
-                    if isinstance(obj, dict):
+                    if isinstance(obj, dict) and (
+                            obj.get("type") == "result" or "result" in obj):
                         terminal = obj
                 except json.JSONDecodeError:
                     pass
