@@ -1,0 +1,12 @@
+aidazi (ai 搭子)
+Copyright 2026 aidazi authors
+
+This product is licensed under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License in the accompanying LICENSE file or at
+http://www.apache.org/licenses/LICENSE-2.0
+
+When you adopt aidazi by vendoring the framework into your own repository, retain
+this NOTICE file and the LICENSE file with it, and — per Apache 2.0 §4(b) — mark any
+framework files you modify with a prominent notice that you changed them. Your own
+adopter-side artifacts (docs/current/*, your charter, your product code) are your
+work and may carry your own copyright and license.
