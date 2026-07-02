@@ -18,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 
 class AgentStuckError(subprocess.SubprocessError):
@@ -48,6 +48,7 @@ def run_with_monitor(
     role: str = "",
     harness: str = "",
     monitor_config: Optional[MonitorConfig] = None,
+    liveness_probe_factory: Optional[Callable[[], Any]] = None,
 ):
     """Run a subprocess with a tiny stuck detector and one optional restart.
 
@@ -74,6 +75,7 @@ def run_with_monitor(
                 harness=harness,
                 cfg=cfg,
                 attempt=attempt,
+                liveness_probe_factory=liveness_probe_factory,
             )
             if notes:
                 prefix = "\n".join(notes) + "\n"
@@ -112,12 +114,15 @@ def _run_once(
     harness: str,
     cfg: MonitorConfig,
     attempt: int,
+    liveness_probe_factory: Optional[Callable[[], Any]] = None,
 ):
     start = time.monotonic()
     last_output = {"t": start}
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
     writer_error: list[BaseException] = []
+    probe = liveness_probe_factory() if liveness_probe_factory else None
+    line_buf = {"buf": b""} if probe is not None else None
 
     popen_stdin = subprocess.PIPE if input is not None else stdin
     popen_stdout = subprocess.PIPE if capture_output else None
@@ -144,7 +149,8 @@ def _run_once(
         threads.append(t)
     if capture_output and proc.stdout is not None:
         t = threading.Thread(
-            target=_read_stream, args=(proc.stdout, stdout_chunks, last_output),
+            target=_read_stream,
+            args=(proc.stdout, stdout_chunks, last_output, probe, line_buf),
             daemon=True)
         t.start()
         threads.append(t)
@@ -155,7 +161,7 @@ def _run_once(
         t.start()
         threads.append(t)
 
-    last_cpu = _cpu_seconds(proc.pid)
+    last_cpu = _effective_cpu_seconds(proc.pid)
     last_cpu_change = start
 
     while True:
@@ -183,7 +189,7 @@ def _run_once(
             stderr = _decode(stderr_chunks, text)
             raise subprocess.TimeoutExpired(list(argv), timeout, stdout, stderr)
 
-        cpu = _cpu_seconds(proc.pid)
+        cpu = _effective_cpu_seconds(proc.pid)
         if cpu is not None and last_cpu is not None:
             if cpu - last_cpu > cfg.cpu_idle_delta_seconds:
                 last_cpu_change = now
@@ -195,7 +201,8 @@ def _run_once(
         no_output_for = now - last_output["t"]
         idle_for = now - last_cpu_change
         cpu_unknown = cpu is None
-        stuck = (
+        active_tool = probe is not None and probe.active()
+        stuck = (not active_tool) and (
             no_output_for >= cfg.no_output_seconds
             and (
                 idle_for >= cfg.idle_cpu_seconds
@@ -227,14 +234,27 @@ def _write_and_close(stream, data, errors):
         errors.append(exc)
 
 
-def _read_stream(stream, chunks, last_output):
+def _read_stream(stream, chunks, last_output, probe=None, line_buf=None):
     try:
         while True:
-            data = stream.read(4096)
+            data = (stream.read1(4096) if hasattr(stream, "read1")
+                    else stream.read(4096))
             if not data:
                 break
             chunks.append(data)
-            last_output["t"] = time.monotonic()
+            last_output["t"] = time.monotonic()   # (a) output-liveness FIRST
+            if probe is not None and line_buf is not None:   # (b) then the lease
+                line_buf["buf"] += data
+                while True:
+                    nl = line_buf["buf"].find(b"\n")
+                    if nl < 0:
+                        break
+                    line = line_buf["buf"][:nl]
+                    line_buf["buf"] = line_buf["buf"][nl + 1:]
+                    try:
+                        probe.observe(line.decode("utf-8", "replace"))
+                    except Exception:
+                        pass
     finally:
         try:
             stream.close()
@@ -259,24 +279,99 @@ def _cpu_seconds(pid: int) -> Optional[float]:
     return _parse_ps_time(proc.stdout.strip())
 
 
+def _group_cpu_seconds(pgid: int) -> Optional[float]:
+    """Total CPU seconds across the process GROUP ``pgid`` (P1-b).
+
+    The monitored ``claude`` is a SUPERVISOR that sits near-idle while its
+    Bash-tool children (mvn/java/npm) do the work; a parent-only sample would
+    misread that as idle and false-kill a busy in-session build. ``ps -A -o
+    pgid=,time=`` (portable macOS + Linux) lists every process's pgid + CPU
+    time; we sum the rows whose pgid matches. Returns None on query failure or
+    no matching rows so the caller can fall back to the single-pid sample (never
+    worse than parent-only).
+    """
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed ps invocation
+            ["ps", "-A", "-o", "pgid=,time="],
+            capture_output=True, text=True, timeout=2)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    total = 0.0
+    matched = False
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            if int(parts[0]) != pgid:
+                continue
+        except ValueError:
+            continue
+        secs = _parse_ps_time(parts[1])
+        if secs is not None:
+            total += secs
+            matched = True
+    return total if matched else None
+
+
+def _effective_cpu_seconds(pid: int) -> Optional[float]:
+    """Group-aware CPU (P1-b) with a single-pid fallback (P1-a).
+
+    Prefers the process-group total (so a supervisor driving a CPU-bound child
+    is not misread as idle); falls back to the parent-only sample if the group
+    query is unavailable or fails. Group total ⊇ parent, so this is never a
+    weaker liveness signal than the pre-P1-b behavior.
+    """
+    if hasattr(os, "getpgid"):
+        try:
+            g = _group_cpu_seconds(os.getpgid(pid))
+        except Exception:
+            g = None
+        if g is not None:
+            return g
+    return _cpu_seconds(pid)
+
+
 def _parse_ps_time(value: str) -> Optional[float]:
-    if not value:
+    """Parse a ``ps`` CPU-time field to float seconds.
+
+    Handles BOTH macOS fractional format (``[[D-]H:]MM:SS.ss`` — the seconds
+    field carries a decimal, e.g. ``0:05.62``; minutes may exceed 60) and Linux
+    integer format (``[[D-]HH:]MM:SS``). The LAST colon-group is parsed as
+    ``float`` (so a fractional ``.ss`` no longer raises); the preceding groups
+    are ``int``. A bare ``SS.ss`` (no colon) is accepted. Empty/malformed → None.
+
+    macOS regression this fixes: the old ``int(p)`` on every colon-part raised
+    ValueError on the ``.ss`` fraction, so ``_cpu_seconds`` returned None on
+    EVERY poll → the CPU liveness signal went blind and the watchdog
+    false-killed live sessions at ~180s.
+    """
+    if value is None:
+        return None
+    rest = value.strip()
+    if not rest:
         return None
     try:
         days = 0
-        rest = value
         if "-" in rest:
             day_s, rest = rest.split("-", 1)
             days = int(day_s)
-        parts = [int(p) for p in rest.split(":")]
-        if len(parts) == 2:
-            minutes, seconds = parts
-            hours = 0
-        elif len(parts) == 3:
-            hours, minutes, seconds = parts
-        else:
+        groups = rest.split(":")
+        if not 1 <= len(groups) <= 3:
             return None
-        return float(days * 86400 + hours * 3600 + minutes * 60 + seconds)
+        seconds = float(groups[-1])            # SS or SS.ss (fractional OK)
+        head = [int(g) for g in groups[:-1]]   # H, M as ints
+        hours, minutes = 0, 0
+        if len(head) == 1:
+            minutes = head[0]
+        elif len(head) == 2:
+            hours, minutes = head
+        return float(days * 86400 + hours * 3600 + minutes * 60) + seconds
     except ValueError:
         return None
 

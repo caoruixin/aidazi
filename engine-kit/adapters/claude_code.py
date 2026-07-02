@@ -3,7 +3,7 @@
 
 Reference adapter for the ``claude_code`` harness (ADR-0001 #3; plan §4.1 facet
 A). It runs Claude Code in headless / print mode via subprocess
-(``claude -p <prompt> --output-format json ...``), then extracts the role's JSON
+(``claude -p <prompt> --output-format stream-json ...``), then extracts the role's JSON
 verdict from the model's structured output. The DRIVER validates that verdict
 against the role's schema; this adapter never lowers the bar.
 
@@ -41,6 +41,64 @@ from .base import Adapter, AdapterError
 from .monitor import run_with_monitor
 
 _ALLOW_ENV = "AIDAZI_ALLOW_REAL_ADAPTER"
+
+
+class ToolLeaseProbe:
+    """Active-tool lease derived from ``--output-format stream-json`` events.
+
+    An ``assistant`` event carrying a ``tool_use`` content block OPENS an
+    invocation (keyed by the block ``id``); the matching ``user`` event
+    ``tool_result`` block (``tool_use_id``) CLOSES it — a ``tool_result`` with
+    ``is_error`` still closes it (a tool error ends the invocation). The terminal
+    ``result`` event clears everything. ``active()`` is true while >=1 invocation
+    is open.
+
+    The monitor (adapters/monitor.py) suppresses its SILENCE kill (only) while a
+    lease is active, so a legitimately long, output-silent + CPU-idle tool call
+    (a build, a sleep, a network/DB wait) is not false-killed; a hung tool is
+    still bounded by the per-role hard ``timeout_seconds``. Liveness is NEVER
+    inferred from a child PID — only from an observed ``tool_use`` without its
+    ``tool_result``. A FRESH probe is built per monitor attempt (the monitor
+    calls the factory in ``_run_once``), so no lease is carried across a restart.
+    Malformed / unknown-id events never open or extend a lease.
+    """
+
+    def __init__(self):
+        self._open: set = set()
+
+    def observe(self, line: str) -> None:
+        line = line.strip()
+        if not line:
+            return
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            return  # malformed -> never opens/extends a lease
+        if not isinstance(obj, dict):
+            return
+        etype = obj.get("type")
+        if etype == "result":
+            self._open.clear()
+            return
+        if etype not in ("assistant", "user"):
+            return
+        msg = obj.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if etype == "assistant" and btype == "tool_use":
+                bid = block.get("id")
+                if bid:
+                    self._open.add(bid)
+            elif etype == "user" and btype == "tool_result":
+                self._open.discard(block.get("tool_use_id"))
+
+    def active(self) -> bool:
+        return bool(self._open)
 
 
 class ClaudeCodeAdapter(Adapter):
@@ -103,8 +161,9 @@ class ClaudeCodeAdapter(Adapter):
         mcp_config_path: Optional[str] = None,
         permission_mode: Optional[str] = None,
     ) -> list[str]:
-        # `claude -p` runs headless and prints the result; --output-format json
-        # makes it machine-parseable. The PROMPT IS PASSED ON STDIN (subprocess
+        # `claude -p` runs headless; --output-format stream-json emits newline-
+        # delimited events (streamed => output-liveness) ending in a terminal
+        # {"type":"result"} envelope. The PROMPT IS PASSED ON STDIN (subprocess
         # ``input=``), NOT as an argv token: a prompt whose first line starts with
         # ``--`` (surviving YAML front-matter, or any body line) would otherwise be
         # mis-parsed as a CLI option by ``claude -p``. Reading the prompt from
@@ -116,7 +175,7 @@ class ClaudeCodeAdapter(Adapter):
         # Granted connectors contribute extra allowed-tools (mcp__<id>[__tool]) + an
         # --mcp-config fragment; when no connectors are granted these are omitted
         # entirely (default-deny).
-        argv = [self.binary, "-p", "--output-format", "json"]
+        argv = [self.binary, "-p", "--output-format", "stream-json", "--verbose"]
         if self.model:
             argv += ["--model", self.model]
         if self.reasoning_effort:
@@ -186,6 +245,7 @@ class ClaudeCodeAdapter(Adapter):
                     cwd=self.cwd,
                     role=role,
                     harness=self.harness,
+                    liveness_probe_factory=ToolLeaseProbe,
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 raise AdapterError(
@@ -210,25 +270,66 @@ class ClaudeCodeAdapter(Adapter):
                 os.unlink(mcp_path)
 
     @staticmethod
-    def _envelope_result(stdout: str, role: str):
-        """Parse the `claude --output-format json` envelope and return its
-        ``result`` (the model's final message). The envelope itself MUST be JSON
-        (claude always emits it); a non-JSON envelope is an ``AdapterError``."""
-        try:
-            envelope = json.loads(stdout)
-        except json.JSONDecodeError as exc:
+    def _final_result_from_stream(stdout: str, role: str):
+        """Extract the final message from a ``--output-format stream-json`` run.
+
+        The stream is newline-delimited JSON: streamed system/assistant/user
+        events, then a single terminal ``{"type": "result", ...}``. We scan for
+        that terminal event and return its ``result`` (the model's final message
+        — artifact prose or a JSON verdict string). Errors are surfaced, never
+        silently downgraded:
+          * terminal ``is_error`` true / an ``error_*`` subtype -> AdapterError
+          * no terminal result event (truncated/killed stream) -> AdapterError
+        A single bare JSON object (a stray ``--output-format json`` envelope) is
+        accepted as the terminal event (back-compat). A non-JSON line is an
+        error EXCEPT a final truncation fragment once a terminal result was seen.
+        """
+        terminal = None
+        lines = stdout.split("\n")
+        for i, raw in enumerate(lines):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                # tolerate ONLY a trailing truncation fragment after a terminal
+                if terminal is not None and i == len(lines) - 1:
+                    continue
+                raise AdapterError(
+                    f"claude_code stream-json had a non-JSON line: {line[:120]!r}",
+                    role=role)
+            if isinstance(obj, dict) and obj.get("type") == "result":
+                terminal = obj
+        if terminal is None:
+            # back-compat: a single bare JSON object (stray --output-format json)
+            s = stdout.strip()
+            if s:
+                try:
+                    obj = json.loads(s)
+                    if isinstance(obj, dict):
+                        terminal = obj
+                except json.JSONDecodeError:
+                    pass
+        if terminal is None:
             raise AdapterError(
-                f"claude_code output was not JSON: {exc}", role=role
-            ) from exc
-        return (envelope.get("result", envelope)
-                if isinstance(envelope, dict) else envelope)
+                "claude_code stream-json produced no terminal result event",
+                role=role)
+        if terminal.get("is_error") or str(
+                terminal.get("subtype", "")).startswith("error"):
+            detail = terminal.get("result") or terminal.get("error") or ""
+            raise AdapterError(
+                f"claude_code session errored (subtype="
+                f"{terminal.get('subtype')!r}): {str(detail)[:200]!r}",
+                role=role)
+        return terminal.get("result", terminal)
 
     @classmethod
     def _extract_artifact(cls, stdout: str, role: str) -> dict:
         """ARTIFACT spawn (dev / research): the final message IS the artifact
         (code + handoff prose). Return it wrapped, WITHOUT requiring JSON — the
         driver consumes the side-effect (files written), not this return value."""
-        result = cls._envelope_result(stdout, role)
+        result = cls._final_result_from_stream(stdout, role)
         return result if isinstance(result, dict) else {"artifact": result}
 
     @classmethod
@@ -237,7 +338,7 @@ class ClaudeCodeAdapter(Adapter):
         emit a JSON verdict as its final message. We parse the envelope's
         ``result`` as that verdict, tolerating ```json fences / surrounding prose.
         Any non-object shape is an ``AdapterError`` (driver → gate_hard_fail)."""
-        result = cls._envelope_result(stdout, role)
+        result = cls._final_result_from_stream(stdout, role)
         if isinstance(result, dict):
             return result
         if isinstance(result, str):

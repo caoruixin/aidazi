@@ -36,6 +36,7 @@ from adapters import (  # noqa: E402
     ADAPTER_REGISTRY,
     resolve_adapter_class,
 )
+from adapters.claude_code import ToolLeaseProbe  # noqa: E402
 
 _ALLOW_ENV = "AIDAZI_ALLOW_REAL_ADAPTER"
 _SCHEMA = {"type": "object"}
@@ -114,8 +115,8 @@ class ClaudeArgvTests(unittest.TestCase):
         self.assertEqual(argv[1], "-p")
         # The prompt is passed on STDIN, never as an argv token (no dash-injection).
         self.assertNotIn("hello", argv)
-        self.assertIn("--output-format", argv)
-        self.assertIn("json", argv)
+        self.assertEqual(_arg_after(argv, "--output-format"), "stream-json")
+        self.assertIn("--verbose", argv)
         self.assertEqual(_arg_after(argv, "--model"), "claude-sonnet-4-6")
         self.assertEqual(_arg_after(argv, "--effort"), "high")
         self.assertEqual(_arg_after(argv, "--permission-mode"), "acceptEdits")
@@ -275,6 +276,140 @@ class ClaudeWriteCapabilityIntegrationTests(unittest.TestCase):
             pass  # verdict-shape is secondary; the write below is the assertion
         self.assertTrue(os.path.exists(os.path.join(d, "SENTINEL.txt")),
                         "workspace_write session did not write SENTINEL.txt")
+
+
+def _stream(*events):
+    return "\n".join(json.dumps(e) for e in events) + "\n"
+
+
+class ClaudeStreamParseTests(unittest.TestCase):
+    """P2: _final_result_from_stream parses a stream-json transcript."""
+
+    def test_terminal_result_extracted(self):
+        s = _stream(
+            {"type": "system", "subtype": "init"},
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "hi"}]}},
+            {"type": "result", "subtype": "success",
+             "result": "the answer", "is_error": False})
+        self.assertEqual(
+            ClaudeCodeAdapter._final_result_from_stream(s, "dev"), "the answer")
+
+    def test_is_error_raises(self):
+        s = _stream({"type": "result", "subtype": "error_during_execution",
+                     "is_error": True})
+        with self.assertRaises(AdapterError):
+            ClaudeCodeAdapter._final_result_from_stream(s, "dev")
+
+    def test_error_subtype_raises(self):
+        s = _stream({"type": "result", "subtype": "error_max_turns",
+                     "is_error": False})
+        with self.assertRaises(AdapterError):
+            ClaudeCodeAdapter._final_result_from_stream(s, "dev")
+
+    def test_no_terminal_event_raises(self):
+        s = _stream({"type": "system", "subtype": "init"},
+                    {"type": "assistant", "message": {"content": [
+                        {"type": "text", "text": "x"}]}})
+        with self.assertRaises(AdapterError):
+            ClaudeCodeAdapter._final_result_from_stream(s, "dev")
+
+    def test_trailing_truncation_fragment_tolerated(self):
+        s = _stream({"type": "result", "subtype": "success",
+                     "result": "ok", "is_error": False}) + '{"type":"partial'
+        self.assertEqual(
+            ClaudeCodeAdapter._final_result_from_stream(s, "dev"), "ok")
+
+    def test_midstream_garbage_raises(self):
+        s = "this is not json\n" + _stream(
+            {"type": "result", "subtype": "success", "result": "x",
+             "is_error": False})
+        with self.assertRaises(AdapterError):
+            ClaudeCodeAdapter._final_result_from_stream(s, "dev")
+
+    def test_single_envelope_backcompat(self):
+        self.assertEqual(
+            ClaudeCodeAdapter._final_result_from_stream(
+                json.dumps({"result": "legacy"}), "review"), "legacy")
+
+    def test_artifact_and_verdict_via_stream(self):
+        art = _stream({"type": "result", "subtype": "success",
+                       "result": "impl + handoff", "is_error": False})
+        self.assertEqual(ClaudeCodeAdapter._extract_artifact(art, "dev"),
+                         {"artifact": "impl + handoff"})
+        ver = _stream({"type": "result", "subtype": "success",
+                       "result": "{\"decision\": \"pass\"}", "is_error": False})
+        self.assertEqual(ClaudeCodeAdapter._extract_verdict(ver, "review"),
+                         {"decision": "pass"})
+
+
+class ToolLeaseProbeTests(unittest.TestCase):
+    """P2-L: the active-tool lease opens/closes strictly on stream-json events."""
+
+    @staticmethod
+    def _tu(tid="t1"):
+        return json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": tid, "name": "Bash"}]}})
+
+    @staticmethod
+    def _tr(tid="t1", err=False):
+        return json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": tid, "is_error": err}]}})
+
+    def test_open_then_close(self):
+        p = ToolLeaseProbe()
+        self.assertFalse(p.active())
+        p.observe(self._tu())
+        self.assertTrue(p.active())
+        p.observe(self._tr())
+        self.assertFalse(p.active())
+
+    def test_error_result_still_closes(self):
+        p = ToolLeaseProbe()
+        p.observe(self._tu())
+        p.observe(self._tr(err=True))
+        self.assertFalse(p.active())
+
+    def test_unknown_id_result_is_noop(self):
+        p = ToolLeaseProbe()
+        p.observe(self._tu("t1"))
+        p.observe(self._tr("SOMETHING_ELSE"))
+        self.assertTrue(p.active())          # t1 still open
+
+    def test_malformed_line_never_opens(self):
+        p = ToolLeaseProbe()
+        p.observe("not json")
+        p.observe("{ broken")
+        p.observe("")
+        self.assertFalse(p.active())
+        p.observe(self._tu())
+        p.observe("garbage")                 # does not close/extend
+        self.assertTrue(p.active())
+
+    def test_terminal_result_clears_all(self):
+        p = ToolLeaseProbe()
+        p.observe(self._tu("a"))
+        p.observe(self._tu("b"))
+        self.assertTrue(p.active())
+        p.observe(json.dumps({"type": "result", "subtype": "success",
+                              "result": "x", "is_error": False}))
+        self.assertFalse(p.active())
+
+    def test_parallel_tools_close_independently(self):
+        p = ToolLeaseProbe()
+        p.observe(self._tu("a"))
+        p.observe(self._tu("b"))
+        p.observe(self._tr("a"))
+        self.assertTrue(p.active())          # b still open
+        p.observe(self._tr("b"))
+        self.assertFalse(p.active())
+
+    def test_non_tool_events_ignored(self):
+        p = ToolLeaseProbe()
+        p.observe(json.dumps({"type": "system", "subtype": "init"}))
+        p.observe(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "hi"}]}}))
+        self.assertFalse(p.active())
 
 
 if __name__ == "__main__":

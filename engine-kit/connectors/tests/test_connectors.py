@@ -271,7 +271,7 @@ class AdapterBackwardCompatTests(unittest.TestCase):
         base_argv = a._build_argv(["Read", "Grep"])
         self.assertEqual(
             base_argv,
-            ["claude", "-p", "--output-format", "json",
+            ["claude", "-p", "--output-format", "stream-json", "--verbose",
              "--model", "claude-x", "--allowed-tools", "Read,Grep"],
         )
         self.assertNotIn("--mcp-config", base_argv)
