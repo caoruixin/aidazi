@@ -218,20 +218,69 @@ Then a **fresh session** fed `FIRST-LOOP.md` drives `engine-kit/scheduling/run_l
 
 ## 6. FAQ
 
-### aidazi vs. directly using a coding agent (Claude Code / Cursor / …)
+### Where aidazi sits — the altitude pyramid
 
-- **Difference.** A coding agent is a single-session, ad-hoc prompt→edit loop: one context that plans, codes, and implicitly judges its own output; verification is whatever you eyeball; artifacts are chat scrollback. aidazi adds (1) a **constitution + forbidden list** fixing which decisions are the model's vs the runtime's; (2) **five role walls in fresh isolated sessions** where *no role grades its own work* and Acceptance is structurally isolated; (3) **human gates** the loop *cannot self-close*; (4) **durable, versioned artifacts** (briefs, handoffs, findings, acceptance reports, requirement ledger, hash-chained audit) instead of ephemeral prompting.
-- **Relationship.** aidazi doesn't replace the coding agent — it **orchestrates** it. The coding agent is the **backing agent for a role**, wired via the adapter abstraction (`charter.tooling.<role>.agent_kind`). aidazi is the governance and role structure *around* whichever coding agent you already use.
+The concepts people care about most in AI coding — **Coding Agent**, **Prompt Engineering**, **Harness Engineering**, **Loop Engineering** — are not competitors; they stack. A **Coding Agent** is the raw capability; three engineering disciplines wield it at increasing altitude; and **aidazi** sits at the apex — the governed framework that turns the highest-altitude discipline into something you can trust to run without quietly going wrong.
 
-### aidazi vs. a "loop engineer"
+```
+                     ┌───────────────────────────┐
+                     │          aidazi           │   governed multi-agent delivery:
+                     │   (governed delivery)     │   constitution · 5 roles · human gates · Acceptance
+                   ┌─┴───────────────────────────┴─┐
+                   │       Loop Engineering        │   the system that prompts the agent:
+                   │                               │   scheduling · worktrees · maker/checker
+                 ┌─┴───────────────────────────────┴─┐
+                 │       Harness Engineering         │   one agent run:
+                 │                                   │   tools · context window · sandbox · model
+               ┌─┴───────────────────────────────────┴─┐
+               │         Prompt Engineering            │   a single request:
+               │                                       │   the wording of one prompt
+               └───────────────────────────────────────┘
+                        ▲ higher leverage · broader scope · more governance
+```
 
-- **Difference.** "Loop engineering" (Cherny, Osmani, Steinberger) is the emerging practice of *designing the system that prompts the agent for you* instead of prompting turn-by-turn — assembled by hand from building blocks (scheduling/heartbeat, worktrees, skills, connectors, maker/checker sub-agents, persistent `STATE.md`). It's candid about the danger (unattended loops make unattended mistakes) but leaves the remedy to the reader's discipline.
-- **Relationship.** **aidazi *is* a productized loop-engineering discipline** — the loop engine + governance a loop engineer would otherwise build by hand, encoded once as a reusable, audited framework. The mapping is near one-to-one: scheduling → the Δ-18/Campaign orchestrator; worktrees → scope envelope + charters; skills → the role-skill model; connectors → per-role charter tooling; maker/checker → the 5-role chain with Acceptance structurally isolated; persistent state → handoff + ledgers + evidence. Where the canon leaves discipline *advisory*, aidazi makes it *structural*. *Loop engineering names the opportunity; aidazi supplies the constitution, checkpoints, and boundary invariants that keep the loop from quietly going wrong.*
+*(A Coding Agent isn't a layer — it's the thing every layer wields.)*
 
-### aidazi vs. a "harness engineer"
+### At a glance — compared across the key dimensions
 
-- **Difference.** Harness engineering equips a *single agent run* — its tools, context window, sandbox, provider/model plumbing (the runtime substrate one level below loop engineering). A harness engineer optimizes *how one agent executes*.
-- **Relationship.** aidazi sits **above** the harness, via the **adapter abstraction**, and is **harness-agnostic**. Each role binds a `harness × provider × model` (`claude_code`, `codex`, `mock`, …) in the charter; role boundaries stay invariant no matter which harness backs a role, and the reference engine's outer loop uses only read/write/shell. A harness engineer improves the substrate aidazi runs *on top of*; aidazi consumes any harness through the adapter and adds the governance/role/gate layer the harness itself doesn't provide.
+| Dimension | **Coding Agent** (used directly) | **Harness Engineering** | **Loop Engineering** | **aidazi** |
+|---|---|---|---|---|
+| **Unit of focus** | one session, one edit | one agent run | many runs over time | milestones & campaigns |
+| **What it optimizes** | this reply | *how* one agent executes (tools/context/sandbox) | the *system* that keeps prompting | the *delivery discipline* itself |
+| **Who prompts the agent** | you, turn by turn | you, better-equipped | the loop you built | the governed chain + runner |
+| **How work is verified** | you eyeball it | still ad-hoc | maker/checker (advisory) | **Acceptance vs a signed `closure_contract`, from execution evidence** |
+| **Human's role** | in the loop every turn | operator of one run | designs the loop, steps back | a **role** with gates the loop *cannot self-close* |
+| **Durable artifacts** | chat scrollback | run config | some `STATE.md` | briefs · handoffs · findings · acceptance reports · ledger · hash-chained audit |
+| **Relationship to aidazi** | aidazi orchestrates it as a role's backing agent | aidazi runs on top, harness-agnostic | aidazi productizes it + adds governance | — |
+
+### aidazi vs. Coding Agent
+
+- **Difference.** A Coding Agent is a single-session, ad-hoc prompt→edit loop: one context that plans, codes, and implicitly judges its own output; verification is whatever you eyeball; artifacts are chat scrollback. aidazi adds a **constitution + forbidden list** (which decisions are the model's vs the runtime's), **five role walls in fresh isolated sessions** where *no role grades its own work*, **human gates the loop cannot self-close**, and **durable, versioned artifacts** instead of ephemeral prompting.
+- **Relationship.** aidazi doesn't replace the Coding Agent — it **orchestrates** it: the Coding Agent is the **backing agent for a role** (`charter.tooling.<role>.agent_kind`).
+- **In one line:** *a Coding Agent is the worker; aidazi is the governed team, contract, and acceptance gate around it.*
+
+### aidazi vs. Harness Engineering
+
+- **Difference.** Harness Engineering equips a *single agent run* — its tools, context window, sandbox, provider/model plumbing. It optimizes *how one agent executes*, one level below the loop.
+- **Relationship.** aidazi sits **above** the harness via the **adapter abstraction** and is **harness-agnostic**: each role binds a `harness × provider × model` (`claude_code`, `codex`, `mock`, …), role boundaries stay invariant regardless, and the reference engine's outer loop uses only read/write/shell.
+- **In one line:** *Harness Engineering makes one agent run well; aidazi decides what a well-run agent is allowed to do, and who signs off.*
+
+### aidazi vs. Loop Engineering
+
+- **Difference.** Loop Engineering (Cherny, Osmani, Steinberger) is the practice of *designing the system that prompts the agent for you* instead of prompting turn-by-turn — hand-assembled from scheduling, worktrees, skills, connectors, maker/checker sub-agents, and a persistent `STATE.md`. It's candid that unattended loops make unattended mistakes, but leaves the remedy to the reader's discipline.
+- **Relationship.** **aidazi *is* a productized Loop Engineering discipline** — near one-to-one: scheduling → the Δ-18/Campaign orchestrator; worktrees → scope envelope + charters; skills → the role-skill model; connectors → per-role charter tooling; maker/checker → the 5-role chain with Acceptance structurally isolated; persistent state → handoff + ledgers + evidence. Where the canon leaves discipline *advisory*, aidazi makes it *structural*.
+- **In one line:** *Loop Engineering names the opportunity; aidazi supplies the constitution, checkpoints, and boundary invariants that keep the loop from quietly going wrong.*
+
+### Other common questions
+
+- **Do I have to use the orchestrator / the automation?** No. The 5-role chain works fully by hand (human-paste). The orchestrator + Campaign Loop are *conditional* on `autonomy.level`; a pure human-paste adoption is complete and valid.
+- **Which Coding Agents / harnesses are supported?** aidazi is harness-agnostic through adapters; today `claude_code` and `codex` are `supported` (with recorded real-run evidence), `mock` is the offline default, and unsupported harnesses **fail closed**. You bind one per role.
+- **Does adopting aidazi lock me to one LLM provider?** No — each role sets its own `harness × provider × model`, and you're encouraged to spread roles across providers (e.g. Dev on one, Code Reviewer + Acceptance on another) so review/acceptance are genuinely cross-provider from Dev.
+- **Will an agent ever ship without me?** Only under a narrow, explicit combination (`mode==auto` **and** the judge is *calibrated* for the class **and** `fully_autonomous_within_budget`). Otherwise Acceptance is **advisory** and a human signs. An uncalibrated judge auto-degrades to human-on-the-loop.
+- **Is it greenfield-only?** No. Brownfield adoption reconciles rather than rip-and-replaces — start with the **Acceptance gate** (highest value, lowest disruption), then adopt the rest gradually, recording each divergence in `adoption-state.md`.
+- **How do framework updates reach my repo?** They don't automatically. aidazi is **vendored** (copied in); you consume updates on your own cadence, and load-bearing lessons flow both ways via the **fold-back** protocol.
+- **When is aidazi overkill?** For a throwaway demo or a one-off script where "it ran" is enough, the light path (5-role chain + one `closure_contract` + one Acceptance pass, no orchestrator) or even just the Acceptance gate is the right dose. The overhead pays off when correctness and drift-control matter.
+- **What about my existing eval / CI?** aidazi *specifies* an eval pyramid + a 6-primitive `trace_check` DSL but you instantiate them; Acceptance judges from **execution evidence**, so it complements (not replaces) your CI.
 
 ### Read order for newcomers
 
