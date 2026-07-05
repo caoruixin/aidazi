@@ -2142,6 +2142,10 @@ class Driver:
         # as input"). Empty on the first implementation, so the initial Dev prompt is
         # byte-identical to the pre-fix behaviour (offline/mock test suite included).
         prompt += self._fix_round_guidance()
+        # §1.7-G: on a browser_e2e remediation round the framework failure brief (the failing
+        # criteria + their in-envelope {req_id, module, layer} scope) is appended. "" on every
+        # other Dev dispatch, so the normal prompt is byte-identical to pre-P3.
+        prompt += self._e2e_fix_brief_block()
         verdict = self._spawn(
             "dev", prompt,
             schema_key=None,  # spawn_dev's artifact IS the code+handoff, no verdict schema
@@ -3451,6 +3455,333 @@ class Driver:
         self.state.last_verdict = None
         self._save_state()
 
+    # ----- §1.7-G: deterministic trigger + framework failure brief ---------- #
+    def _e2e_failing_criteria(self, run_id: Optional[str]) -> list:
+        """§5.1: the DETERMINISTIC failing-criterion set from the committed evidence — the sorted
+        MAPPED signed criterion_ids whose captured executor_status ∈ {fail, error} in the FULL
+        managed run (§3). This is the §1.7-G TRIGGER + the strict-progress set — framework-observed
+        FACTS, never the interpretive LLM verdict. (unmapped never publishes — pre-publication HALT
+        in _commit_e2e; a reporter-skipped criterion is NOT a code-fault and is EXCLUDED here, so it
+        routes to §3.5-human via the Acceptance consistency gate, not §1.7-G.)"""
+        failing = set()
+        for row in self._load_checklist_results(run_id):
+            if (str(row.get("mapping_state", "mapped")) != "unmapped"
+                    and str(row.get("executor_status")) in ("fail", "error")):
+                cid = row.get("criterion_id")
+                if cid:
+                    failing.add(str(cid))
+        return sorted(failing)
+
+    def _build_e2e_failure_briefs(self, failing: list, run_id: str,
+                                  manifest: Optional[dict]) -> list:
+        """§5.2a: FRAMEWORK-generated, criterion-bound failure briefs from the executor FACTS
+        (deterministic; no LLM/clock/network). Each binds a failing criterion_id to its SIGNED
+        {req_id, module, layer} (from the frozen functional-checklist) + the captured
+        executor_status/observed_result + an evidence_ref bound into the committed manifest — the
+        containment inputs (§5.2b/c) and the Dev fix scope."""
+        checklist = {str(c.get("criterion_id")): c
+                     for c in (self._e2e_checklist().get("criteria") or [])
+                     if isinstance(c, dict) and c.get("criterion_id")}
+        observed = {str(r.get("criterion_id")): r
+                    for r in self._load_checklist_results(run_id)
+                    if isinstance(r, dict) and r.get("criterion_id")}
+        prefix = self._e2e_rel_prefix(run_id)
+        arts = {a.get("name"): a.get("sha256")
+                for a in (manifest or {}).get("artifacts", []) if isinstance(a, dict)}
+        briefs = []
+        for cid in failing:
+            c = checklist.get(cid) or {}
+            row = observed.get(cid) or {}
+            evidence_ref = None
+            for ref in (row.get("evidence_refs") or []):
+                name = str(ref)
+                if name in arts:
+                    evidence_ref = {"path": prefix + "/" + name, "sha256": arts[name]}
+                    break
+            briefs.append({
+                "criterion_id": cid,
+                "executor_status": str(row.get("executor_status")),
+                "criterion": c.get("criterion"),
+                "req_id": c.get("req_id"),
+                "module": c.get("module"),
+                "layer": c.get("layer"),
+                "observed_result": row.get("observed_result"),
+                "evidence_ref": evidence_ref,
+            })
+        return briefs
+
+    # ----- §1.7-G: in-envelope containment (§5.2) --------------------------- #
+    def _e2e_changed_files(self) -> Optional[set]:
+        """The working-tree changed-file set (tracked-modified + untracked, work-dir-relative) in
+        the Dev git work dir, or None when unavailable (no ingress work dir / not a git repo / git
+        error). The observed input to the §1.7-G observed-diff containment gate."""
+        handle = self.context_handle
+        wd = getattr(handle, "work_dir", None) if handle is not None else None
+        if not wd:
+            return None
+        try:
+            out = li._run_git(wd, ["status", "--porcelain", "--untracked-files=all"])
+        except Exception:  # noqa: BLE001 - any git failure ⇒ gate unavailable (fail-closed)
+            return None
+        files = set()
+        for line in out.splitlines():
+            p = (line[3:] if len(line) > 3 else "").strip().strip('"')
+            if " -> " in p:                      # rename: XY old -> new
+                p = p.split(" -> ", 1)[1]
+            if p:
+                files.add(p.replace("\\", "/"))
+        return files
+
+    def _e2e_observed_diff_available(self) -> bool:
+        """§5.2c HARD gate: the observed-diff scope check is mechanically available IFF there is a
+        git Dev work dir (loop ingress on) AND a non-empty approved_scope.modules_in_scope
+        path-prefix envelope. Absent EITHER, the containment guarantee cannot be enforced and
+        §1.7-G FAILS CLOSED to the §3.5 human gate (design's explicit escape hatch — never dispatch
+        an uncontained autonomous fix)."""
+        return bool(self._modules_in_scope()) and self._e2e_changed_files() is not None
+
+    def _e2e_diff_out_of_envelope(self, changed: set) -> list:
+        """The subset of `changed` files OUTSIDE every in-scope module path-prefix
+        (approved_scope.modules_in_scope treated as normalized path prefixes). [] ⇒ in-envelope."""
+        modules = [str(m).replace("\\", "/").rstrip("/") for m in self._modules_in_scope() if m]
+        return sorted(f for f in changed
+                      if not any(f == m or f.startswith(m + "/") for m in modules))
+
+    def _e2e_signed_covers(self) -> Optional[set]:
+        """§5.2b: the SIGNED req_id envelope — the union of the campaign plan's signed
+        covers_req_ids (from the requirement-context sidecar, the same signed source the gap-report
+        binds). None when no signed covers set is derivable (no campaign requirement-context) — then
+        the req_id check falls back to signed-checklist-scope (a failing criterion is itself a signed
+        checklist item, so a PRESENT req_id binding is signed scope by construction)."""
+        try:
+            ctx = self._load_requirement_context()
+        except GateHardFail:
+            return None
+        if not isinstance(ctx, dict):
+            return None
+        plan = ctx.get("plan") or {}
+        covers = set()
+        for m in (plan.get("milestones") or []):
+            if isinstance(m, dict):
+                covers.update(str(r) for r in (m.get("covers_req_ids") or []) if r)
+        return covers or None
+
+    def _e2e_remediation_containment(self, briefs: list) -> tuple:
+        """§5.2 pre-dispatch containment. Returns (ok, reason). Proves the fix is IN-ENVELOPE
+        BEFORE any Dev dispatch and that the observed-diff gate is mechanically present:
+          1. HARD GATE (§5.2c) — the observed-diff scope check is AVAILABLE (git work dir +
+             modules_in_scope). Unavailable ⇒ (False, "observed_diff_gate_unavailable") ⇒ the caller
+             FAILS CLOSED to §3.5 (never dispatch an uncontained fix).
+          2. Every failing criterion carries a SIGNED {req_id, module} binding, module ∈
+             modules_in_scope (and layer ∈ layers_allowed when bound). A missing binding or an
+             out-of-envelope module/layer ⇒ (False, reason) ⇒ scope re-auth HALT.
+          3. When a signed covers set is derivable (campaign), every criterion's req_id ∈ the signed
+             covers envelope; out-of-envelope ⇒ (False, reason) ⇒ scope re-auth HALT."""
+        if not self._e2e_observed_diff_available():
+            return False, "observed_diff_gate_unavailable"
+        modules = set(self._modules_in_scope())
+        layers = set(self._layers_allowed())
+        covers = self._e2e_signed_covers()
+        for b in briefs:
+            cid = b.get("criterion_id")
+            if not b.get("req_id"):
+                return False, f"criterion {cid!r} has no signed req_id binding (uncontainable)"
+            if not b.get("module"):
+                return False, f"criterion {cid!r} has no signed module binding (uncontainable)"
+            if b["module"] not in modules:
+                return False, (f"criterion {cid!r} module {b['module']!r} is out of "
+                               f"approved_scope.modules_in_scope")
+            if b.get("layer") and layers and b["layer"] not in layers:
+                return False, (f"criterion {cid!r} layer {b['layer']!r} is out of "
+                               f"approved_scope.layers_allowed")
+            if covers is not None and b["req_id"] not in covers:
+                return False, (f"criterion {cid!r} req_id {b['req_id']!r} is out of the signed "
+                               f"covers_req_ids envelope")
+        return True, "in_envelope"
+
+    # ----- §1.7-G: the bounded autonomous remediation lane (§5.2/§5.3) ------- #
+    def _e2e_fix_brief_block(self) -> str:
+        """§1.7-G: the E2E failure-brief fix directive appended to the Dev prompt DURING a
+        remediation round. "" outside a §1.7-G round (self._e2e_fix_brief unset/None) so a normal
+        Dev prompt is byte-identical to the pre-P3 behavior."""
+        brief = getattr(self, "_e2e_fix_brief", None)
+        return ("\n" + brief + "\n") if brief else ""
+
+    def _render_e2e_fix_brief(self, briefs: list) -> str:
+        """A bounded, in-envelope Dev fix brief (§5.2 step 3) built from the framework failure
+        briefs — fix ONLY the failing criteria, stay within the bound modules/req_ids, do not
+        widen scope."""
+        lines = [
+            f"## §1.7-G E2E remediation round {self.state.e2e_remediation_round + 1} — "
+            f"fix THESE failing browser_e2e criteria",
+            "The managed browser_e2e run captured a DETERMINISTIC failure on the signed "
+            "functional-checklist criteria below. Make the MINIMAL in-envelope edits that make "
+            "each criterion pass on a fresh managed rerun. Fix ONLY these; do NOT widen scope, do "
+            "NOT touch modules/req_ids outside those listed, and preserve passing work.",
+            "",
+        ]
+        for b in briefs:
+            head = (f"- criterion `{b['criterion_id']}` "
+                    f"(executor_status={b.get('executor_status')})")
+            scope = [x for x in (
+                f"req_id={b['req_id']}" if b.get("req_id") else "",
+                f"module={b['module']}" if b.get("module") else "",
+                f"layer={b['layer']}" if b.get("layer") else "") if x]
+            if scope:
+                head += "  [in-envelope: " + ", ".join(scope) + "]"
+            lines.append(head)
+            if b.get("criterion"):
+                lines.append(f"    - criterion: {b['criterion']}")
+            if b.get("observed_result"):
+                lines.append(f"    - observed: {b['observed_result']}")
+            if b.get("evidence_ref"):
+                lines.append(f"    - evidence: {b['evidence_ref']['path']}")
+        return "\n".join(lines) + "\n"
+
+    def _e2e_remediation_halt(self, reason: str, failing: list, detail: str) -> bool:
+        """§5.2/§5.3 clause 3 fail-closed HALT + escalate — NEVER silent. Out-of-envelope reasons
+        write the scope re-auth checkpoint (post_gate1_scope_expansion); budget/progress reasons
+        write a needs_human escalation checkpoint. Sets STATE_HALTED and returns False (the caller
+        MUST NOT run Acceptance). The #9 ship gate is never reached from here."""
+        assert self.state is not None
+        scope_reason = reason in ("out_of_envelope", "observed_diff_out_of_envelope")
+        checkpoint = "post_gate1_scope_expansion" if scope_reason else "e2e_remediation_escalation"
+        self._write_checkpoint(
+            checkpoint, self.state.subsprint_id,
+            context_md=(
+                f"§1.7-G autonomous browser_e2e remediation HALTED ({reason}) on sub-sprint "
+                f"{self.state.subsprint_id} at round {self.state.e2e_remediation_round}. {detail}. "
+                f"Failing criteria: {failing}. Per Constitution §1.7-G the orchestrator fails "
+                f"closed and escalates to a human — it never silently stops and never loops; the "
+                f"#9 ship gate is not reached."),
+            options_md=("- widen_approved_scope\n- narrow_fix\n- abort" if scope_reason
+                        else "- raise_e2e_remediation_budget\n- fix_manually\n- abort"))
+        self._audit("e2e_remediation_halt",
+                    {"subsprint_id": self.state.subsprint_id, "reason": reason,
+                     "detail": detail, "failing_criteria": failing,
+                     "e2e_remediation_round": self.state.e2e_remediation_round,
+                     "needs_human": True})
+        self.state.state = STATE_HALTED
+        self._save_state()
+        return False
+
+    def _run_e2e_remediation_lane(self, manifest: Optional[dict], run_id: str) -> bool:
+        """§1.7-G autonomous browser_e2e remediation. Called AFTER _commit_e2e produced fresh
+        evidence, BEFORE Acceptance. Returns True to PROCEED to Acceptance (the failing set is empty
+        — never failed, lane disabled/legacy, or remediated to all-pass, incl. the fail-closed
+        route-to-§3.5-human via Acceptance's consistency gate); False when the run HALTED (state
+        STATE_HALTED; the caller MUST NOT run Acceptance).
+
+        Facts-only + fail-closed: the trigger + progress set is the DETERMINISTIC executor facts
+        (_e2e_failing_criteria); containment is proven BEFORE dispatch and re-checked (observed-diff)
+        BEFORE rerun; every bound/progress/containment failure HALTs + escalates (never loops)."""
+        assert self.state is not None
+        while True:
+            failing = self._e2e_failing_criteria(run_id)
+            cur = set(failing)
+
+            if not cur:
+                if self.state.e2e_remediation_round:
+                    self._audit("e2e_remediation_resolved",
+                                {"subsprint_id": self.state.subsprint_id,
+                                 "rounds": self.state.e2e_remediation_round})
+                return True  # all-pass (or never failed) → proceed to Acceptance (→ #9 human ship)
+
+            if not self._e2e_remediation_enabled():
+                # Legacy-safe (§14.1): deterministic criterion failures route to §3.5 via
+                # Acceptance (its consistency gate coerces a contradicting pass to needs_human).
+                # No state pollution — a disabled/legacy browser_e2e milestone round-trips as pre-P3.
+                self._audit("e2e_remediation_disabled_route_human",
+                            {"subsprint_id": self.state.subsprint_id,
+                             "failing_criteria": failing})
+                return True
+
+            # In-lane (enabled + failing): record THIS round's observation at index
+            # e2e_remediation_round (idempotent on resume — re-recording the same index/value is a
+            # no-op, so a resumed rerun re-reading the same committed evidence never spuriously halts).
+            r = self.state.e2e_remediation_round
+            fcbr = self.state.failing_criteria_by_round
+            while len(fcbr) <= r:
+                fcbr.append([])
+            if fcbr[r] != failing:
+                fcbr[r] = failing
+                self._save_state()
+
+            # Strict-progress guard vs the PRIOR round r-1 (§5.3): a non-proper-subset round is a
+            # regression (new criterion) or no-progress — HALT on the first (max_no_progress pinned
+            # to 1 by the validator). Indexing by round (not the last appended entry) is resume-safe.
+            if r > 0:
+                prior = set(fcbr[r - 1])
+                if not (cur < prior):
+                    if cur - prior:
+                        return self._e2e_remediation_halt(
+                            "regression", failing,
+                            f"a new failing criterion appeared: {sorted(cur - prior)}")
+                    return self._e2e_remediation_halt(
+                        "no_progress", failing,
+                        "the failing-criterion set did not strictly shrink")
+
+            # Budget: about to dispatch round e2e_remediation_round+1 — HALT if the SIGNED cap is
+            # already reached (fail-closed; _check_budget is the hard backstop after the increment).
+            max_rounds = self._e2e_remediation_cfg().get("max_rounds")
+            if isinstance(max_rounds, int) and self.state.e2e_remediation_round >= max_rounds:
+                return self._e2e_remediation_halt(
+                    "budget_exhausted", failing,
+                    f"e2e_remediation rounds exhausted (max_rounds={max_rounds})")
+
+            # Containment BEFORE dispatch (§5.2). Gate unavailable ⇒ fail-closed to §3.5 via
+            # Acceptance; out-of-envelope ⇒ scope re-auth HALT.
+            briefs = self._build_e2e_failure_briefs(failing, run_id, manifest)
+            ok, reason = self._e2e_remediation_containment(briefs)
+            if not ok:
+                if reason == "observed_diff_gate_unavailable":
+                    self._audit("e2e_remediation_containment_unavailable",
+                                {"subsprint_id": self.state.subsprint_id,
+                                 "failing_criteria": failing, "reason": reason})
+                    return True  # fail-closed to the §3.5 human gate (via Acceptance)
+                return self._e2e_remediation_halt("out_of_envelope", failing, reason)
+
+            # Dispatch a bounded, in-envelope Dev fix scoped to the failing criteria (§5.2 step 3).
+            pre = self._e2e_changed_files() or set()
+            self._audit("e2e_remediation_round_dispatch",
+                        {"subsprint_id": self.state.subsprint_id,
+                         "round": self.state.e2e_remediation_round + 1,
+                         "failing_criteria": failing,
+                         "criterion_scope": [{"criterion_id": b["criterion_id"],
+                                              "req_id": b.get("req_id"),
+                                              "module": b.get("module")} for b in briefs]})
+            self._e2e_fix_brief = self._render_e2e_fix_brief(briefs)
+            try:
+                self.state.state = STATE_DEV_PENDING
+                self._save_state()
+                self._step_dev()
+                if self.state.state == STATE_HALTED:
+                    return False  # dev-spec refine halt mid-remediation (checkpoint written)
+                self.state.state = STATE_GATE_PENDING
+                self._save_state()
+                self._step_gate()          # deterministic gates; gate_hard_fail raises (resumable)
+            finally:
+                self._e2e_fix_brief = None
+
+            # Observed-diff scope re-check AFTER the fix, BEFORE rerun (§5.2c).
+            post = self._e2e_changed_files() or set()
+            oos = self._e2e_diff_out_of_envelope(post - pre)
+            if oos:
+                return self._e2e_remediation_halt(
+                    "observed_diff_out_of_envelope", failing,
+                    f"the Dev fix touched out-of-envelope files: {oos}")
+
+            # Advance the round: full cache invalidation (fresh dir + nonce) → managed rerun.
+            self.state.e2e_remediation_round += 1
+            self._save_state()
+            self._check_budget()           # hard backstop: BudgetExceeded if over the signed cap
+            self._invalidate_e2e_round_cache()
+            self.state.state = STATE_E2E_PENDING
+            self._save_state()
+            manifest = self._commit_e2e()  # NEW round run_id (§5.4) → fresh managed evidence
+            run_id = self._e2e_run_id()
+            # loop: re-read the DETERMINISTIC failing set from the fresh committed evidence.
+
     def _e2e_rel_prefix(self, run_id: str) -> str:
         """The committed run dir RELATIVE to run_dir — the prefix a verdict's
         functional_evidence_refs must use (.orchestrator/audit/browser/<loop>/<run>)."""
@@ -3911,7 +4242,15 @@ class Driver:
         self._milestone_closed = True
         self._save_state()
         self._check_dev_self_smoke()       # §6a structural gate (resumable halt if absent)
-        self._commit_e2e()                 # reconcile-or-run; gate_hard_fail on runtime fail
+        manifest = self._commit_e2e()      # reconcile-or-run; gate_hard_fail on runtime fail
+        # §1.7-G (Phase 3): on a DETERMINISTIC, criterion-bound executor failure with a SIGNED
+        # remediation budget at HOTL+, autonomously remediate (framework failure brief → in-envelope
+        # containment → bounded Dev fix → fresh-round managed rerun) BEFORE Acceptance. Returns
+        # False when the lane HALTED (fail-closed escalation / scope re-auth) — do NOT run
+        # Acceptance. Returns True to proceed (never failed, disabled/legacy → §3.5 via Acceptance,
+        # or remediated to all-pass → the #9 human ship gate is preserved, unchanged).
+        if not self._run_e2e_remediation_lane(manifest, self._e2e_run_id()):
+            return
         if self._acceptance_enabled():
             self._run_acceptance()
 
