@@ -15,6 +15,7 @@ state; every function is a deterministic transform of its inputs.
 from __future__ import annotations
 
 import copy
+import datetime
 import hashlib
 import json
 import os
@@ -34,6 +35,16 @@ except Exception:  # pragma: no cover - import path shim
 
 #: the single hash-chained Audit Spine event type that anchors a committed evidence set.
 EVIDENCE_EVENT_TYPE = "browser_e2e_evidence"
+# A2: paired execution-window anchors on the Audit Spine (driver-owned). e2e_start is
+# appended BEFORE the managed spawn (with the fresh invocation_nonce); e2e_end AFTER the
+# runner returns. The pre-spawn provenance gate requires BOTH (matching the nonce) + a
+# valid chain, so a hand-authored evidence dir cannot forge the execution window.
+E2E_START_EVENT_TYPE = "browser_e2e_start"
+E2E_END_EVENT_TYPE = "browser_e2e_end"
+# Real-execution executor kinds: the ONLY classes that may route to a browser_e2e
+# Acceptance verdict (they carry framework-generated provenance). local_http is a
+# deterministic DRY-RUN class — the driver refuses it for a real browser_e2e acceptance.
+REAL_EXECUTION_KINDS = frozenset({"playwright", "external_test_runner"})
 
 
 # =========================================================================== #
@@ -81,8 +92,9 @@ def write_checklist_results(staging_dir: str, criteria) -> str:
     """Write checklist-results.json from the executor's CriterionResult list (the
     criterion → action → observed → evidence_refs → executor_status mapping, §5).
     Deterministic (sorted keys, no clock). Returns its run-dir-relative name."""
-    rows = [
-        {
+    rows = []
+    for c in criteria:
+        row = {
             "criterion_id": c.criterion_id,
             "criterion": c.criterion,
             "action_performed": c.action_performed,
@@ -90,8 +102,13 @@ def write_checklist_results(staging_dir: str, criteria) -> str:
             "evidence_refs": list(c.evidence_refs),
             "executor_status": c.executor_status,
         }
-        for c in criteria
-    ]
+        # A2: emit mapping_state ONLY when non-default ('unmapped') — the declarative
+        # local_http/playwright executors always produce 'mapped' criteria, so their
+        # checklist-results rows (and thus manifest hash) stay byte-identical.
+        mstate = getattr(c, "mapping_state", "mapped")
+        if mstate != "mapped":
+            row["mapping_state"] = mstate
+        rows.append(row)
     rel = "checklist-results.json"
     with open(os.path.join(staging_dir, rel), "w", encoding="utf-8") as fh:
         json.dump(rows, fh, sort_keys=True, indent=2)
@@ -103,11 +120,17 @@ def _cmd_str(cmd) -> str:
 
 
 def build_manifest(staging_dir: str, executor_result, contract: dict, *,
-                   run_id: str, loop_id: str) -> dict:
+                   run_id: str, loop_id: str,
+                   provenance: Optional[dict] = None) -> dict:
     """Hash every artifact the executor wrote PLUS the freshly-written
     checklist-results.json, and assemble the manifest dict
     (browser-evidence-manifest.schema.json). Does NOT write manifest.json — the caller
-    publishes it last so the manifest hash never includes manifest.json itself."""
+    publishes it last so the manifest hash never includes manifest.json itself.
+
+    ``provenance`` (A2) is the driver-owned execution binding
+    ``{invocation_nonce, e2e_start_ts, e2e_end_ts}`` recorded for the real-execution
+    class; omitted (None) for the deterministic local_http dry-run class so its manifest
+    stays byte-identical."""
     cr_rel = write_checklist_results(staging_dir, executor_result.criteria)
     rels = sorted(set(list(executor_result.artifacts) + [cr_rel]))
     artifacts = []
@@ -116,7 +139,7 @@ def build_manifest(staging_dir: str, executor_result, contract: dict, *,
             "name": rel, "path": rel,
             "sha256": sha256_file(os.path.join(staging_dir, rel)),
         })
-    return {
+    manifest = {
         "run_id": run_id,
         "loop_id": loop_id,
         "executor_kind": contract.get("executor_kind", ""),
@@ -126,6 +149,9 @@ def build_manifest(staging_dir: str, executor_result, contract: dict, *,
         "artifacts": artifacts,
         "artifact_manifest_hash": artifact_manifest_hash(artifacts),
     }
+    if provenance is not None:
+        manifest["provenance"] = provenance
+    return manifest
 
 
 # =========================================================================== #
@@ -207,6 +233,90 @@ def evidence_event_present(ledger_events: list, run_id: str, manifest_hash: str)
             if p.get("run_id") == run_id and p.get("manifest_sha256") == manifest_hash:
                 return True
     return False
+
+
+def _parse_iso(ts) -> Optional[datetime.datetime]:
+    """Parse an ISO-8601 timestamp to an aware datetime (UTC-normalized), or None."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(datetime.timezone.utc)
+
+
+def verify_execution_provenance(*, manifest, provenance, provenance_schema,
+                                checklist_results, events, expected_nonce,
+                                audit_chain_ok) -> Optional[str]:
+    """A2 fail-closed provenance gate for the REAL-execution class. Returns a REASON string
+    on ANY failure (the driver gate_hard_fails BEFORE Acceptance) or None when the evidence
+    is a validated, framework-owned, LIVE execution.
+
+    PURE: the caller (driver ``_verify_execution_provenance``) supplies the already-loaded
+    ``manifest`` / ``provenance`` (run-provenance.json) / ``checklist_results`` /
+    Audit-Spine ``events`` + the driver-generated ``expected_nonce`` + precomputed
+    ``audit_chain_ok`` (from ``audit_log.verify_chain``). Every check fails closed — a
+    missing/inconsistent field, a stale window, an adopter-supplied nonce, an exit/report
+    disagreement, an unmapped criterion, or a broken chain all return a reason."""
+    # 1. Framework-owned nonce must be present + non-trivial (adopter cannot supply it).
+    if not expected_nonce or len(str(expected_nonce)) < 8:
+        return "driver invocation_nonce missing/too-short (framework-owned nonce required)"
+    # 2. run-provenance.json present + schema-valid.
+    if not isinstance(provenance, dict):
+        return "run-provenance.json missing or unparseable"
+    perr = validate(provenance, provenance_schema)
+    if perr:
+        return f"run-provenance.json schema-invalid: {perr}"
+    # 3. Nonce must agree across driver / provenance / manifest (a pre-existing or
+    #    adopter-authored provenance carries a different/absent nonce → fails here).
+    if provenance.get("invocation_nonce") != expected_nonce:
+        return "run-provenance invocation_nonce != driver nonce (adopter/stale provenance)"
+    mprov = (manifest or {}).get("provenance") or {}
+    if mprov.get("invocation_nonce") != expected_nonce:
+        return "manifest.provenance.invocation_nonce != driver nonce"
+    # 4. Paired e2e_start/e2e_end events for THIS nonce must exist on the Spine.
+    def _has(ev_type):
+        return any(e.get("type") == ev_type
+                   and (e.get("payload") or {}).get("invocation_nonce") == expected_nonce
+                   for e in (events or []))
+    if not (_has(E2E_START_EVENT_TYPE) and _has(E2E_END_EVENT_TYPE)):
+        return "missing paired e2e_start/e2e_end Audit-Spine events for this nonce"
+    # 5. The Audit Spine must verify (tamper-evidence over the whole chain).
+    if not audit_chain_ok:
+        return "Audit-Spine chain verification failed"
+    # 6. Freshness: the real wall-clock must fall inside the driver's execution window.
+    ws = _parse_iso(provenance.get("wall_clock_start"))
+    we = _parse_iso(provenance.get("wall_clock_end"))
+    w0 = _parse_iso(mprov.get("e2e_start_ts"))
+    w1 = _parse_iso(mprov.get("e2e_end_ts"))
+    if not (ws and we and w0 and w1):
+        return "provenance freshness window incomplete (unparseable timestamps)"
+    if not (w0 <= ws <= we <= w1):
+        return "provenance wall-clock outside the driver execution window (stale/replayed)"
+    # 7. At least one NON-deterministic real artifact (trace/screenshot/video) — defeats a
+    #    byte-identical hand-authored replay.
+    names = [str(a.get("name", "")) for a in (manifest.get("artifacts") or [])]
+    if not any(n.startswith("test-results/")
+               or n.endswith((".zip", ".png", ".webm", ".jpg", ".jpeg"))
+               for n in names):
+        return "no non-deterministic real artifact (trace/screenshot/video) in the manifest"
+    # 8. Exit / report agreement (all-pass ⇔ clean exit).
+    rows = checklist_results if isinstance(checklist_results, list) else []
+    statuses = [str(r.get("executor_status")) for r in rows]
+    has_failure = any(s in ("fail", "error") for s in statuses)
+    exit_code = provenance.get("exit_code")
+    if has_failure and exit_code == 0:
+        return "exit/report disagreement: criteria fail/error but runner exit_code=0"
+    if (not has_failure) and exit_code not in (0, None):
+        return (f"exit/report disagreement: no failing criteria but runner "
+                f"exit_code={exit_code}")
+    # 9. Mapping completeness: no unmapped signed criterion may reach Acceptance.
+    if any(str(r.get("mapping_state")) == "unmapped" for r in rows):
+        return "unmapped signed criterion in evidence (runner-contract completeness fault)"
+    return None
 
 
 def load_manifest(final_dir: str) -> Optional[dict]:
