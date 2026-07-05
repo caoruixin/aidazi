@@ -180,6 +180,40 @@ on an uncalibrated authoritative verdict — a §1.7-D-consistent ADD (one more 
 pre-authorized decision), not a checkpoint override. [ENF: campaign/driver runtime gap-followup gates
 + validator gap_followup bounds — Track 2 Phase 2-γ]
 
+## §1.7-G Pre-authorized in-envelope autonomous browser_e2e remediation (facts-only)
+
+The DETERMINISTIC execution-fault sibling of §1.7-F. Distinct from the interpretive quality channel
+(§3.5, UNCHANGED), the autonomous browser_e2e remediation lane triggers ONLY from **DETERMINISTIC,
+framework-observed, criterion-bound execution facts** — a signed functional-checklist criterion whose
+`CriterionResult` `executor_status ∈ {fail, error}` in a **FULL managed real-execution run** (§3). The
+interpretive Acceptance `fix_required` / `needs_human` / unbound `failure_briefs` are **NOT a §1.7-G
+trigger** and **route to the existing §3.5 human gate**; a reporter-skipped bound criterion **routes to
+§3.5-human**, and an unmapped signed criterion is a **pre-publication contract HALT** (never a code-fault).
+Under `autonomy.level: human_on_the_loop` (or higher), IFF the milestone carries an explicit **SIGNED
+`authority.e2e_remediation` budget**, the orchestrator MAY, WITHOUT a fresh human-confirm checkpoint,
+dispatch a bounded in-envelope Dev fix, rerun the managed suite, and re-judge — IFF ALL hold:
+1. **In-envelope containment (proven BEFORE the fix, re-checked BEFORE rerun).** The framework-generated
+   failure brief **binds each failing criterion_id to {req_id, module, layer}**; a **req_id-envelope check**
+   proves the fix targets ⊆ (**F1 signed snapshot ∩ the milestone signed covers_req_ids**); and an
+   **observed-diff scope check** confirms the Dev fix touched only in-envelope modules/req_ids **BEFORE
+   rerun**. If the **containment guarantee is mechanically unavailable**, the lane does NOT dispatch an
+   unbounded fix — it **FAILS CLOSED to the §3.5 human gate**.
+2. **Bounded, strictly-shrinking.** A signed `authority.e2e_remediation.max_rounds` cap per milestone
+   (persisted `e2e_remediation_round` counter, enforced by `driver._check_budget`); each round's
+   failing-criterion set MUST **strictly shrink** — a **PROPER SUBSET of the prior round** (persisted
+   `failing_criteria_by_round`, proper-subset, NOT identical); a round that INTRODUCES a new failing
+   criterion is a **regression HALT**.
+3. **Fail-closed.** On any bound exceeded, any non-shrinking round, or an unavailable containment
+   guarantee, the orchestrator HALTs and escalates — it **never silently stops, never loops**
+   (strict-progress guarantees termination).
+Absent a signed budget, deterministic criterion failures **route to the §3.5 human gate exactly as today**
+(legacy-safe; no silent behavior change); auto-dispatch is permitted only under `human_on_the_loop` or
+higher. §1.7-G **iterates on executor FACTS** toward deterministic criterion-pass, **NEVER toward ship**:
+the final ship/reject stays the human #9 `advisory_acceptance_pass_signoff` gate (unchanged), **M3 stays
+advisory**, and §1.7-G **grants NO authority to ship, to widen scope**, or to change authority — a
+§1.7-D-consistent ADD (§3.6 reconciliation: auto-iterating on deterministic executor facts is not
+auto-iterating on an uncalibrated verdict toward ship).
+
 ## §1.8 No self-subtraction
 
 - Adopters MAY NOT subtract from the framework §1.7 forbidden list; an `adoption-state.md` row
@@ -250,6 +284,10 @@ The 5 roles are real walls (#1–#5); #6 makes those walls hold through intra-ro
   [ENF: driver:_handle_acceptance_verdict]
 - `tooling.acceptance.on_fix_required.human_confirm_required` MUST be `true` and `route_options`
   MUST be a non-empty list. [ENF: validator:_check_acceptance_on_fix_required]
+- **§1.7-G carve-out (scoped):** a browser_e2e milestone's DETERMINISTIC criterion-fail
+  (`executor_status ∈ {fail, error}` from a full managed run) under a signed `authority.e2e_remediation`
+  budget is dispatched autonomously via §1.7-G — NOT this human gate; the INTERPRETIVE `fix_required` /
+  `needs_human` verdict stays §3.5 human-gated at every autonomy level. [ENF: driver:_run_e2e_evidence]
 
 ## §3.6 Acceptance judge calibration gate
 
@@ -261,6 +299,10 @@ The 5 roles are real walls (#1–#5); #6 makes those walls hold through intra-ro
   `advisory_acceptance_pass_signoff`. [ENF: driver:_calibration_gate]
 - Switching the Acceptance `agent_kind`, `model`, or mounted skills invalidates calibration and
   requires a re-run. [JUDGMENT; validator only WARNs on skills-change-while-calibrated]
+- **§1.7-G reconciliation:** §1.7-G auto-iterates on deterministic executor FACTS toward
+  criterion-pass, never toward ship on an uncalibrated verdict — §3.6's bar on auto-iterating an
+  uncalibrated *authoritative* verdict is preserved; the #9 ship gate is unchanged.
+  [ENF: driver:_run_e2e_evidence]
 
 ## §5 State ledgers — authorship boundaries
 

@@ -123,6 +123,44 @@ rows:
     - "grants NO authority to ship, to widen scope"
     - "to auto-iterate on a quality fault"
     - "act on an uncalibrated authoritative verdict"
+  # --- §1.7-G pre-authorized in-envelope autonomous browser_e2e remediation (Phase 3) ---
+  # Non-vacuous: EVERY mandatory subpart of each clause is pinned (facts-only trigger, the four
+  # containment mechanisms + fail-closed, the bounded/strict-shrink/regression bounds, and the
+  # no-ship/HOTL+/legacy-safe authority envelope) so a future kernel edit cannot drop a subpart.
+  con-1.7g-facts-only-trigger:
+    - "DETERMINISTIC, framework-observed, criterion-bound execution facts"
+    - "executor_status ∈ {fail, error}"
+    - "FULL managed real-execution run"
+    - "NOT a §1.7-G trigger"
+    - "route to the existing §3.5 human gate"
+    - "routes to §3.5-human"
+    - "pre-publication contract HALT"
+  con-1.7g-in-envelope-containment:
+    - "binds each failing criterion_id to {req_id, module, layer}"
+    - "req_id-envelope check"
+    - "F1 signed snapshot ∩ the milestone signed covers_req_ids"
+    - "observed-diff scope check"
+    - "BEFORE rerun"
+    - "containment guarantee is mechanically unavailable"
+    - "FAILS CLOSED to the §3.5 human gate"
+  con-1.7g-bounded-progress:
+    - "authority.e2e_remediation.max_rounds"
+    - "e2e_remediation_round counter"
+    - "strictly shrink"
+    - "PROPER SUBSET of the prior round"
+    - "failing_criteria_by_round"
+    - "proper-subset, NOT identical"
+    - "regression HALT"
+  con-1.7g-no-ship-authority:
+    - "explicit SIGNED authority.e2e_remediation budget"
+    - "route to the §3.5 human gate exactly as today"
+    - "auto-dispatch is permitted only under human_on_the_loop or higher"
+    - "iterates on executor FACTS"
+    - "NEVER toward ship"
+    - "advisory_acceptance_pass_signoff"
+    - "M3 stays advisory"
+    - "grants NO authority to ship, to widen scope"
+    - "never silently stops, never loops"
   con-1.8-may-not-subtract-forbidden-list:
     - "MAY NOT subtract from the framework §1.7 forbidden list"
     - "MUST NOT carry status:divergent"
