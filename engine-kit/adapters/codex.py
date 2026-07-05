@@ -63,6 +63,94 @@ from .monitor import run_with_monitor
 _ALLOW_ENV = "AIDAZI_ALLOW_REAL_ADAPTER"
 
 
+class CodexStreamProbe:
+    """Active-work lease derived from ``codex exec --json`` JSONL events (A3).
+
+    codex-cli 0.134.0 emits (VERIFIED against real captured streams):
+    ``thread.started`` → ``turn.started`` → paired ``item.started`` /
+    ``item.completed`` events (keyed by ``item.id``; ``item.type`` ∈
+    ``command_execution | agent_message | reasoning | …``) → a terminal
+    ``turn.completed``. Unlike ``claude -p`` (which STREAMS assistant tokens, so
+    its model-reasoning keeps output-liveness fresh), ``codex exec`` is SILENT
+    while the remote model reasons and while a managed shell command runs — it
+    emits an item's ``item.completed`` only when the item is DONE. A codex
+    process waiting on the network/model uses ~0 local CPU, so the shared
+    monitor's SILENCE + idle-CPU kill (adapters/monitor.py) false-kills a
+    legitimately-busy long spawn at ``no_output_seconds`` (~180s). That is the
+    root cause of the observed "codex produced no schema-conforming verdict in
+    the JSONL stream (truncated)" acceptance/review failure.
+
+    This probe OPENS a lease on ``turn``/``thread`` start (a session sentinel,
+    covering the turn.started→first-item latency) and on each ``item.started``
+    (keyed by ``item.id``, covering a long silent reasoning step or managed
+    command), and CLOSES it on the matching ``item.completed``/``.failed`` and on
+    a terminal ``turn.completed``/``turn.failed``/``thread.completed`` (clear
+    all). ``active()`` is true while ≥1 lease is open; the monitor suppresses its
+    silence-kill (ONLY) while active. NET EFFECT: for the duration of an active
+    codex turn the silence-kill is replaced by the per-role HARD
+    ``timeout_seconds`` — which is correct, because in-turn silence is EXPECTED
+    for codex; a genuinely hung codex is still bounded by that hard timeout (the
+    monitor's separate ``timeout`` path, which the probe does NOT suppress).
+
+    Discipline (mirrors claude_code.ToolLeaseProbe): liveness is NEVER inferred
+    from a child PID — only from an observed start without its completion.
+    Malformed / non-dict / unknown events never open or extend a lease. Both the
+    session lease and the item leases are kept as mutual version-robustness (if a
+    future CLI drops the ``turn.*`` envelope but keeps ``item.*``, or vice versa,
+    coverage survives). A FRESH probe is built per monitor attempt.
+    """
+
+    _SESSION = "\x00turn"
+    _OPEN_SESSION = ("turn.started", "thread.started")
+    _CLEAR = ("turn.completed", "turn.failed", "thread.completed")
+    _CLOSE_ITEM = ("item.completed", "item.failed", "item.incomplete")
+
+    def __init__(self):
+        self._open: set = set()
+
+    @staticmethod
+    def _item_id(obj: dict) -> Optional[str]:
+        item = obj.get("item")
+        if isinstance(item, dict):
+            iid = item.get("id")
+            if isinstance(iid, str) and iid:
+                return iid
+        return None
+
+    def observe(self, line: str) -> None:
+        line = line.strip()
+        if not line:
+            return
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            return  # malformed -> never opens/extends a lease
+        if not isinstance(obj, dict):
+            return
+        etype = obj.get("type")
+        if not isinstance(etype, str):
+            return
+        if etype in self._CLEAR:
+            self._open.clear()
+            return
+        if etype in self._OPEN_SESSION:
+            self._open.add(self._SESSION)
+            return
+        if etype == "item.started":
+            iid = self._item_id(obj)
+            # A start with an id opens a precise lease; a start without one
+            # (defensive; unobserved in 0.134.0) falls back to the session lease,
+            # which the terminal turn event clears.
+            self._open.add(iid if iid else self._SESSION)
+        elif etype in self._CLOSE_ITEM:
+            iid = self._item_id(obj)
+            if iid:
+                self._open.discard(iid)
+
+    def active(self) -> bool:
+        return bool(self._open)
+
+
 class CodexAdapter(Adapter):
     """Adapter for the OpenAI Codex CLI in non-interactive (``exec``) mode."""
 
@@ -242,6 +330,12 @@ class CodexAdapter(Adapter):
                     cwd=self.cwd,
                     role=role,
                     harness=self.harness,
+                    # A3: codex is silent while the remote model reasons / a
+                    # managed command runs; the stream-derived lease suppresses
+                    # the monitor's ~180s silence-kill so a long verdict/review
+                    # spawn is not false-killed (hard timeout_seconds still bounds
+                    # a truly hung process).
+                    liveness_probe_factory=CodexStreamProbe,
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 raise AdapterError(

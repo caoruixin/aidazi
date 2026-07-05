@@ -466,8 +466,31 @@ class RunState:
     e2e_run_id: Optional[str] = None
     e2e_evidence_ref: Optional[str] = None
     e2e_manifest_hash: Optional[str] = None
+    #: A2 framework-owned per-run provenance nonce (external_test_runner). Persisted in
+    #: RunState — NOT in the evidence dir — so an adopter-authored/pre-existing evidence
+    #: set can never supply the nonce the pre-spawn provenance gate expects.
+    e2e_invocation_nonce: Optional[str] = None
     acceptance_evidence_hash: Optional[str] = None
     acceptance_snapshot: Optional[dict] = None
+    #: P3 §1.7-G autonomous browser_e2e remediation lane (persisted for resume; §5.3/§5.4).
+    #: e2e_remediation_round  — count of COMPLETED fix→rerun cycles this milestone (0 on the
+    #:                          initial run). Bounded by the SIGNED authority.e2e_remediation.
+    #:                          max_rounds via _check_budget; a DISTINCT counter from fix_round
+    #:                          (the review loop) — the two caps compose, they never double-count.
+    #: failing_criteria_by_round — the FULL managed-run failing criterion_id set observed each
+    #:                          round (index 0 = the initial run), driving the strict-proper-subset
+    #:                          progress + regression guard (§5.3). Both default so a non-remediated
+    #:                          browser_e2e RunState round-trips byte-identically (emitted only when
+    #:                          non-default, like task_signals_digest).
+    e2e_remediation_round: int = 0
+    failing_criteria_by_round: list = field(default_factory=list)
+    #: e2e_selfsmoke_round — count of COMPLETED bounded autonomous Dev self-smoke re-dispatch
+    #:                       rounds this milestone (§6b.2, in-process playwright class only). A
+    #:                       DISTINCT counter from e2e_remediation_round (a pre-commit self-smoke
+    #:                       concern vs the post-commit criterion-remediation loop). Bounded by the
+    #:                       SAME SIGNED e2e_remediation.max_rounds cap; exhaustion → HALT (authority
+    #:                       pause). Default 0, emitted only when non-zero (byte-identical round-trip).
+    e2e_selfsmoke_round: int = 0
     #: Track 1 1-c — integrity digest over the per-sub-sprint task_signals AUTHORED by Deliver at
     #: decompose (set only when at least one sub-sprint carries task_signals). Bound here so a
     #: post-decompose change to any task_signal is detected: the driver recomputes it before
@@ -498,12 +521,21 @@ class RunState:
             "e2e_run_id": self.e2e_run_id,
             "e2e_evidence_ref": self.e2e_evidence_ref,
             "e2e_manifest_hash": self.e2e_manifest_hash,
+            "e2e_invocation_nonce": self.e2e_invocation_nonce,
             "acceptance_evidence_hash": self.acceptance_evidence_hash,
             "acceptance_snapshot": self.acceptance_snapshot,
             # 1-c: emit ONLY when set, so a run that authored no task_signals round-trips
             # byte-identically to a pre-1-c state.json (additive; from_dict tolerates absence).
             **({"task_signals_digest": self.task_signals_digest}
                if self.task_signals_digest is not None else {}),
+            # P3 §1.7-G: emit ONLY when the lane has run (round > 0 or a set was recorded), so a
+            # non-remediated browser_e2e RunState round-trips byte-identically to a pre-P3 one.
+            **({"e2e_remediation_round": self.e2e_remediation_round}
+               if self.e2e_remediation_round else {}),
+            **({"failing_criteria_by_round": [list(s) for s in self.failing_criteria_by_round]}
+               if self.failing_criteria_by_round else {}),
+            **({"e2e_selfsmoke_round": self.e2e_selfsmoke_round}
+               if self.e2e_selfsmoke_round else {}),
         }
 
     @classmethod
@@ -530,9 +562,14 @@ class RunState:
             e2e_run_id=d.get("e2e_run_id"),
             e2e_evidence_ref=d.get("e2e_evidence_ref"),
             e2e_manifest_hash=d.get("e2e_manifest_hash"),
+            e2e_invocation_nonce=d.get("e2e_invocation_nonce"),
             acceptance_evidence_hash=d.get("acceptance_evidence_hash"),
             acceptance_snapshot=d.get("acceptance_snapshot"),
             task_signals_digest=d.get("task_signals_digest"),
+            e2e_remediation_round=int(d.get("e2e_remediation_round", 0)),
+            failing_criteria_by_round=[list(s) for s in
+                                       d.get("failing_criteria_by_round", [])],
+            e2e_selfsmoke_round=int(d.get("e2e_selfsmoke_round", 0)),
         )
 
 
@@ -867,6 +904,17 @@ class Driver:
             raise BudgetExceeded(
                 f"fix_round {self.state.fix_round} exceeds "
                 f"budget.max_fix_rounds_total {max_fix}",
+            )
+        # §1.7-G (design §5.3): the autonomous E2E-remediation loop is bounded by its OWN signed
+        # cap on a DISTINCT counter (state.e2e_remediation_round — NOT max_fix_rounds_total, which
+        # bounds the review dev↔review loop; the two caps compose, they never double-count). Same
+        # fail-closed shape. NO-OP for a non-remediated run (round 0 ≤ any cap ≥ 0) and when no
+        # e2e_remediation budget is configured (max_rounds None ⇒ skip).
+        max_rounds = self._e2e_remediation_cfg().get("max_rounds")
+        if isinstance(max_rounds, int) and self.state.e2e_remediation_round > max_rounds:
+            raise BudgetExceeded(
+                f"e2e_remediation_round {self.state.e2e_remediation_round} exceeds "
+                f"authority.e2e_remediation.max_rounds {max_rounds}",
             )
 
     # ----- the spawn boundary (driver → adapter → schema-valid verdict) ----- #
@@ -2104,6 +2152,10 @@ class Driver:
         # as input"). Empty on the first implementation, so the initial Dev prompt is
         # byte-identical to the pre-fix behaviour (offline/mock test suite included).
         prompt += self._fix_round_guidance()
+        # §1.7-G: on a browser_e2e remediation round the framework failure brief (the failing
+        # criteria + their in-envelope {req_id, module, layer} scope) is appended. "" on every
+        # other Dev dispatch, so the normal prompt is byte-identical to pre-P3.
+        prompt += self._e2e_fix_brief_block()
         verdict = self._spawn(
             "dev", prompt,
             schema_key=None,  # spawn_dev's artifact IS the code+handoff, no verdict schema
@@ -3317,19 +3369,483 @@ class Driver:
 
     # ----- P-C: browser-E2E evidence stage (STATE_E2E_PENDING; §2/§3.5a) ------ #
     def _e2e_run_id(self) -> str:
-        """Deterministic, PERSISTED per-(loop, subsprint) run id (§3.5a). Generated once
-        on first entry and reused on resume, so recovery keys on it + the ledger event —
-        never on the unsaved cache fields."""
+        """Deterministic, PERSISTED per-(loop, subsprint[, remediation round]) run id (§3.5a/§5.4).
+        Generated once on first entry and reused on resume, so recovery keys on it + the ledger
+        event — never on the unsaved cache fields. §1.7-G: the persisted e2e_remediation_round is
+        folded in, PRESERVING the "r" prefix — round 0 is BYTE-IDENTICAL to the pre-P3 code (a
+        non-remediated milestone is unchanged); round N>0 appends NUL+str(N) for a distinct dir +
+        fresh provenance. The FULL per-round cache invalidation (_invalidate_e2e_round_cache)
+        clears e2e_run_id, so a bumped round regenerates a NEW id here."""
         assert self.state is not None
         if not self.state.e2e_run_id:
-            digest = hashlib.sha256(
-                (self.loop_id + "\x00" + self.state.subsprint_id).encode()).hexdigest()
-            self.state.e2e_run_id = "r" + digest[:16]
+            seed = self.loop_id + "\x00" + self.state.subsprint_id
+            if self.state.e2e_remediation_round:
+                seed += "\x00" + str(self.state.e2e_remediation_round)
+            self.state.e2e_run_id = "r" + hashlib.sha256(seed.encode()).hexdigest()[:16]
             self._save_state()
         return self.state.e2e_run_id
 
     def _e2e_final_dir(self, run_id: str) -> str:
         return os.path.join(self.browser_dir, run_id)
+
+    # ----- A2: framework-owned execution provenance ------------------------ #
+    def _e2e_invocation_nonce(self) -> str:
+        """A2: the framework-owned, unforgeable per-run nonce, generated ONCE and persisted
+        in RunState (NOT in the evidence dir). The pre-spawn provenance gate requires the
+        run-provenance.json + manifest + paired audit events to ALL carry this exact value,
+        so an adopter-authored or pre-existing evidence set can never satisfy the gate."""
+        assert self.state is not None
+        if not self.state.e2e_invocation_nonce:
+            seed = (self.loop_id + "\x00" + self.state.subsprint_id + "\x00"
+                    + self._e2e_run_id() + "\x00" + self.clock())
+            self.state.e2e_invocation_nonce = (
+                "n" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24])
+            self._save_state()
+        return self.state.e2e_invocation_nonce
+
+    def _e2e_marker_path(self, run_id: str) -> str:
+        """Driver-owned in-flight marker, OUTSIDE the hashed evidence dir (so it is never a
+        no-strays violation). A residual marker at reconcile ⇒ the prior run did not commit
+        ⇒ re-run (fail-closed on residual in-flight state)."""
+        return os.path.join(self.browser_dir, ".e2e-inflight", run_id + ".json")
+
+    def _e2e_requires_real_execution(self) -> bool:
+        """True when this is a REAL run (allow_real, or any non-Mock acceptance adapter) —
+        in which case a browser_e2e milestone MUST use a real-execution executor kind; the
+        deterministic local_http dry-run class cannot produce a real acceptance verdict.
+        Offline/mock test runs (Mock acceptance, no allow_real) stay exempt."""
+        if bool(self.context.get("allow_real")):
+            return True
+        acc = self.adapters.get("acceptance")
+        return acc is not None and not isinstance(acc, MockAdapter)
+
+    # ----- §1.7-G: autonomous browser_e2e remediation lane (config + state) --- #
+    def _e2e_remediation_cfg(self) -> dict:
+        """The §1.7-G budget block (charter.autonomy.e2e_remediation) — the SIGNED authority the
+        driver enforces (charter_hash ⊂ the campaign H, so a post-sign raise flips H → stale →
+        re-sign). Absent ⇒ {} (default-OFF: deterministic criterion failures route to the §3.5
+        human gate exactly as today — legacy-safe, no silent behavior change)."""
+        er = (self.charter.get("autonomy") or {}).get("e2e_remediation")
+        return er if isinstance(er, dict) else {}
+
+    def _e2e_remediation_enabled(self) -> bool:
+        """§1.7-G is default-on ONLY when the milestone carries an explicit SIGNED e2e_remediation
+        budget (enabled + an integer max_rounds cap) at autonomy human_on_the_loop or higher
+        (§5/§14). Absent / OFF / HITL ⇒ False (the deterministic criterion failure routes to §3.5
+        exactly as today). Reads the LIVE autonomy level (post any §3.6 calibration degrade), so an
+        uncalibrated-autonomous run that auto-degraded to human_on_the_loop still qualifies — HOTL
+        is the floor."""
+        cfg = self._e2e_remediation_cfg()
+        if cfg.get("enabled") is not True or not isinstance(cfg.get("max_rounds"), int):
+            return False
+        return self.autonomy.get("level", "human_in_the_loop") in (
+            "human_on_the_loop", "fully_autonomous_within_budget")
+
+    def _e2e_remediation_max_no_progress(self) -> int:
+        """§1.7-G no-progress bound; default 1 (HALT on the FIRST non-shrinking round, mirroring
+        gap_followup) when unset. charter_validator pins any explicit value to 1."""
+        v = self._e2e_remediation_cfg().get("max_no_progress_rounds")
+        return v if isinstance(v, int) and v >= 1 else 1
+
+    def _invalidate_e2e_round_cache(self) -> None:
+        """§5.4 FULL per-round cache invalidation on a §1.7-G remediation-round increment: clear
+        ALL persisted E2E + acceptance cache + provenance-nonce fields so the NEXT round writes a
+        NEW evidence dir with a FRESH provenance nonce and CANNOT re-bind prior-round evidence or
+        reuse a prior verdict. _e2e_run_id + _e2e_invocation_nonce regenerate from the cleared
+        fields (round-suffixed seed). Prior-round dirs are retained on disk for audit but never
+        reused (the new run_id points elsewhere). Clearing e2e_invocation_nonce is CRITICAL — else
+        the new round reuses the stale nonce and the A2 provenance window-anchor mismatches (§4.1)."""
+        assert self.state is not None
+        self.state.e2e_run_id = None
+        self.state.e2e_evidence_ref = None
+        self.state.e2e_manifest_hash = None
+        self.state.e2e_invocation_nonce = None
+        self.state.acceptance_evidence_hash = None
+        self.state.acceptance_snapshot = None
+        self.state.last_verdict = None
+        self._save_state()
+
+    # ----- §1.7-G: deterministic trigger + framework failure brief ---------- #
+    def _e2e_failing_criteria(self, run_id: Optional[str]) -> list:
+        """§5.1: the DETERMINISTIC failing-criterion set from the committed evidence — the sorted
+        MAPPED signed criterion_ids whose captured executor_status ∈ {fail, error} in the FULL
+        managed run (§3). This is the §1.7-G TRIGGER + the strict-progress set — framework-observed
+        FACTS, never the interpretive LLM verdict. (unmapped never publishes — pre-publication HALT
+        in _commit_e2e; a reporter-skipped criterion is NOT a code-fault and is EXCLUDED here, so it
+        routes to §3.5-human via the Acceptance consistency gate, not §1.7-G.)"""
+        failing = set()
+        for row in self._load_checklist_results(run_id):
+            if (str(row.get("mapping_state", "mapped")) != "unmapped"
+                    and str(row.get("executor_status")) in ("fail", "error")):
+                cid = row.get("criterion_id")
+                if cid:
+                    failing.add(str(cid))
+        return sorted(failing)
+
+    def _build_e2e_failure_briefs(self, failing: list, run_id: str,
+                                  manifest: Optional[dict]) -> list:
+        """§5.2a: FRAMEWORK-generated, criterion-bound failure briefs from the executor FACTS
+        (deterministic; no LLM/clock/network). Each binds a failing criterion_id to its SIGNED
+        {req_id, module, layer} (from the frozen functional-checklist) + the captured
+        executor_status/observed_result + an evidence_ref bound into the committed manifest — the
+        containment inputs (§5.2b/c) and the Dev fix scope."""
+        checklist = {str(c.get("criterion_id")): c
+                     for c in (self._e2e_checklist().get("criteria") or [])
+                     if isinstance(c, dict) and c.get("criterion_id")}
+        observed = {str(r.get("criterion_id")): r
+                    for r in self._load_checklist_results(run_id)
+                    if isinstance(r, dict) and r.get("criterion_id")}
+        prefix = self._e2e_rel_prefix(run_id)
+        arts = {a.get("name"): a.get("sha256")
+                for a in (manifest or {}).get("artifacts", []) if isinstance(a, dict)}
+        briefs = []
+        for cid in failing:
+            c = checklist.get(cid) or {}
+            row = observed.get(cid) or {}
+            evidence_ref = None
+            for ref in (row.get("evidence_refs") or []):
+                name = str(ref)
+                if name in arts:
+                    evidence_ref = {"path": prefix + "/" + name, "sha256": arts[name]}
+                    break
+            briefs.append({
+                "criterion_id": cid,
+                "executor_status": str(row.get("executor_status")),
+                "criterion": c.get("criterion"),
+                "req_id": c.get("req_id"),
+                "module": c.get("module"),
+                "layer": c.get("layer"),
+                "observed_result": row.get("observed_result"),
+                "evidence_ref": evidence_ref,
+            })
+        return briefs
+
+    # ----- §1.7-G: in-envelope containment (§5.2) --------------------------- #
+    def _e2e_changed_files(self) -> Optional[set]:
+        """The working-tree changed-file set (tracked-modified + untracked, work-dir-relative) in
+        the Dev git work dir, or None when unavailable (no ingress work dir / not a git repo / git
+        error). The observed input to the §1.7-G observed-diff containment gate."""
+        handle = self.context_handle
+        wd = getattr(handle, "work_dir", None) if handle is not None else None
+        if not wd:
+            return None
+        try:
+            # --no-renames: a rename is reported as a DELETE (old) + ADD (new), so an
+            # out-of-envelope SOURCE path is never hidden behind an in-envelope destination
+            # (Codex P3-R2). Defensively, any residual "old -> new" line still contributes BOTH
+            # sides below.
+            out = li._run_git(wd, ["status", "--porcelain", "--untracked-files=all",
+                                   "--no-renames"])
+        except Exception:  # noqa: BLE001 - any git failure ⇒ gate unavailable (fail-closed)
+            return None
+        files = set()
+        for line in out.splitlines():
+            p = (line[3:] if len(line) > 3 else "").strip()
+            parts = [q.strip().strip('"') for q in p.split(" -> ")] if " -> " in p \
+                else [p.strip('"')]
+            for q in parts:                      # rename ⇒ BOTH old (source) + new are in-scope
+                if q:
+                    files.add(q.replace("\\", "/"))
+        return files
+
+    def _e2e_observed_diff_available(self) -> bool:
+        """§5.2c HARD gate: the observed-diff scope check is mechanically available IFF there is a
+        git Dev work dir (loop ingress on) AND a non-empty approved_scope.modules_in_scope
+        path-prefix envelope. Absent EITHER, the containment guarantee cannot be enforced and
+        §1.7-G FAILS CLOSED to the §3.5 human gate (design's explicit escape hatch — never dispatch
+        an uncontained autonomous fix)."""
+        return bool(self._modules_in_scope()) and self._e2e_changed_files() is not None
+
+    def _e2e_diff_out_of_envelope(self, changed: set) -> list:
+        """The subset of `changed` files OUTSIDE every in-scope module path-prefix
+        (approved_scope.modules_in_scope treated as normalized path prefixes). [] ⇒ in-envelope."""
+        modules = [str(m).replace("\\", "/").rstrip("/") for m in self._modules_in_scope() if m]
+        return sorted(f for f in changed
+                      if not any(f == m or f.startswith(m + "/") for m in modules))
+
+    def _current_milestone_id(self) -> Optional[str]:
+        """THIS unit's signed milestone id, from the per-unit derived-context.json provenance
+        sidecar (campaign.derive_milestone_context writes an unambiguous ``milestone_id``). None
+        when absent (a non-campaign / standalone run) or unreadable — then the req_id envelope is
+        UNVERIFIABLE (fail-closed). Resolving by the unique milestone_id — NOT by subsprint_sequence
+        membership — is what makes containment sound when a sub-sprint id repeats across milestones,
+        a shape the campaign layer permits (Codex P3-R3)."""
+        path = os.path.join(self.run_dir, "derived-context.json")
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                dc = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        mid = dc.get("milestone_id") if isinstance(dc, dict) else None
+        return str(mid) if mid else None
+
+    def _e2e_signed_covers(self) -> Optional[set]:
+        """§5.2b: THIS milestone's SIGNED req_id envelope = (F1 signed snapshot ∩ this milestone's
+        signed covers_req_ids), from the requirement-context sidecar — the SAME authentic-snapshot
+        basis campaign._req_id_envelope_check / _f1_envelope use (Codex P3-R2: NOT the union of
+        every milestone's covers). THIS milestone is resolved by the UNIQUE signed milestone_id
+        (derived-context.json), never by ambiguous subsprint_sequence membership (Codex P3-R3).
+        Returns that set, or None when it is not DERIVABLE — no campaign requirement-context, no
+        signed milestone_id, an UNVERIFIABLE F1 snapshot (fails against its own signed_scope_hash),
+        THIS milestone_id not in the signed snapshot, or an empty envelope. None ⇒ containment
+        treats the req_id envelope as UNVERIFIABLE and the lane FAILS CLOSED to §3.5 (a PRESENT
+        req_id binding on a signed checklist criterion is NOT a substitute for the signed
+        covers_req_ids proof — Codex P3-R1). A PRESENT-but-corrupt sidecar raises GateHardFail
+        (propagated → fail-closed integrity HALT, never silently swallowed)."""
+        ctx = self._load_requirement_context()   # None (absent) | dict | raises (corrupt)
+        if not isinstance(ctx, dict):
+            return None
+        plan = ctx.get("plan")
+        if not isinstance(plan, dict):
+            return None
+        mid = self._current_milestone_id()
+        if not mid:
+            return None   # no unambiguous signed milestone id ⇒ unverifiable ⇒ fail-closed
+        import campaign as _cp  # lazy: campaign imports driver lazily too, so no import cycle
+        # Authentic F1 snapshot ONLY (fail-closed on an unverifiable snapshot — Codex R-P2a #2):
+        # the snapshot must verify against its own signed_scope_hash before it can PROVE anything.
+        if not _cp.signoff_snapshot_authentic(plan):
+            return None
+        snapshot = (plan.get("signoff") or {}).get("scope_envelope") or {}
+        ms = [m for m in (snapshot.get("milestones") or []) if isinstance(m, dict)]
+        this = next((m for m in ms if m.get("id") == mid), None)
+        if this is None:
+            return None   # signed milestone_id not in the snapshot ⇒ unverifiable
+        this_covers = {str(r) for r in (this.get("covers_req_ids") or []) if r}
+        envelope = {str(r) for m in ms for r in (m.get("covers_req_ids") or []) if r}
+        return (this_covers & envelope) or None
+
+    def _e2e_remediation_containment(self, briefs: list) -> tuple:
+        """§5.2 pre-dispatch containment. Returns (ok, reason). Proves the fix is IN-ENVELOPE
+        BEFORE any Dev dispatch and that the observed-diff gate is mechanically present:
+          1. HARD GATE (§5.2c) — the observed-diff scope check is AVAILABLE (git work dir +
+             modules_in_scope). Unavailable ⇒ (False, "observed_diff_gate_unavailable").
+          2. HARD GATE (§5.2b) — a SIGNED covers_req_ids envelope is derivable. Unverifiable ⇒
+             (False, "signed_covers_unverifiable").
+          Both "*_unavailable/unverifiable" reasons ⇒ the caller FAILS CLOSED to §3.5 (never
+          dispatch an uncontained fix — the containment guarantee must be mechanically present).
+          3. Every failing criterion carries a SIGNED {req_id, module} binding, module ∈
+             modules_in_scope, req_id ∈ the signed covers envelope (and layer ∈ layers_allowed when
+             bound). A missing binding or an out-of-envelope module/layer/req_id ⇒ (False, reason) ⇒
+             scope re-auth HALT."""
+        if not self._e2e_observed_diff_available():
+            return False, "observed_diff_gate_unavailable"
+        covers = self._e2e_signed_covers()
+        if covers is None:
+            return False, "signed_covers_unverifiable"
+        modules = set(self._modules_in_scope())
+        layers = set(self._layers_allowed())
+        for b in briefs:
+            cid = b.get("criterion_id")
+            if not b.get("req_id"):
+                return False, f"criterion {cid!r} has no signed req_id binding (uncontainable)"
+            if not b.get("module"):
+                return False, f"criterion {cid!r} has no signed module binding (uncontainable)"
+            if b["module"] not in modules:
+                return False, (f"criterion {cid!r} module {b['module']!r} is out of "
+                               f"approved_scope.modules_in_scope")
+            if b.get("layer") and layers and b["layer"] not in layers:
+                return False, (f"criterion {cid!r} layer {b['layer']!r} is out of "
+                               f"approved_scope.layers_allowed")
+            if b["req_id"] not in covers:
+                return False, (f"criterion {cid!r} req_id {b['req_id']!r} is out of the signed "
+                               f"covers_req_ids envelope")
+        return True, "in_envelope"
+
+    # ----- §1.7-G: the bounded autonomous remediation lane (§5.2/§5.3) ------- #
+    def _e2e_fix_brief_block(self) -> str:
+        """§1.7-G: the E2E failure-brief fix directive appended to the Dev prompt DURING a
+        remediation round. "" outside a §1.7-G round (self._e2e_fix_brief unset/None) so a normal
+        Dev prompt is byte-identical to the pre-P3 behavior."""
+        brief = getattr(self, "_e2e_fix_brief", None)
+        return ("\n" + brief + "\n") if brief else ""
+
+    def _render_e2e_fix_brief(self, briefs: list) -> str:
+        """A bounded, in-envelope Dev fix brief (§5.2 step 3) built from the framework failure
+        briefs — fix ONLY the failing criteria, stay within the bound modules/req_ids, do not
+        widen scope."""
+        lines = [
+            f"## §1.7-G E2E remediation round {self.state.e2e_remediation_round + 1} — "
+            f"fix THESE failing browser_e2e criteria",
+            "The managed browser_e2e run captured a DETERMINISTIC failure on the signed "
+            "functional-checklist criteria below. Make the MINIMAL in-envelope edits that make "
+            "each criterion pass on a fresh managed rerun. Fix ONLY these; do NOT widen scope, do "
+            "NOT touch modules/req_ids outside those listed, and preserve passing work.",
+            "",
+        ]
+        for b in briefs:
+            head = (f"- criterion `{b['criterion_id']}` "
+                    f"(executor_status={b.get('executor_status')})")
+            scope = [x for x in (
+                f"req_id={b['req_id']}" if b.get("req_id") else "",
+                f"module={b['module']}" if b.get("module") else "",
+                f"layer={b['layer']}" if b.get("layer") else "") if x]
+            if scope:
+                head += "  [in-envelope: " + ", ".join(scope) + "]"
+            lines.append(head)
+            if b.get("criterion"):
+                lines.append(f"    - criterion: {b['criterion']}")
+            if b.get("observed_result"):
+                lines.append(f"    - observed: {b['observed_result']}")
+            if b.get("evidence_ref"):
+                lines.append(f"    - evidence: {b['evidence_ref']['path']}")
+        return "\n".join(lines) + "\n"
+
+    def _e2e_remediation_halt(self, reason: str, failing: list, detail: str) -> bool:
+        """§5.2/§5.3 clause 3 fail-closed HALT + escalate — NEVER silent. Out-of-envelope reasons
+        write the scope re-auth checkpoint (post_gate1_scope_expansion); budget/progress reasons
+        write a needs_human escalation checkpoint. Sets STATE_HALTED and returns False (the caller
+        MUST NOT run Acceptance). The #9 ship gate is never reached from here."""
+        assert self.state is not None
+        scope_reason = reason in ("out_of_envelope", "observed_diff_out_of_envelope")
+        checkpoint = "post_gate1_scope_expansion" if scope_reason else "e2e_remediation_escalation"
+        self._write_checkpoint(
+            checkpoint, self.state.subsprint_id,
+            context_md=(
+                f"§1.7-G autonomous browser_e2e remediation HALTED ({reason}) on sub-sprint "
+                f"{self.state.subsprint_id} at round {self.state.e2e_remediation_round}. {detail}. "
+                f"Failing criteria: {failing}. Per Constitution §1.7-G the orchestrator fails "
+                f"closed and escalates to a human — it never silently stops and never loops; the "
+                f"#9 ship gate is not reached."),
+            options_md=("- widen_approved_scope\n- narrow_fix\n- abort" if scope_reason
+                        else "- raise_e2e_remediation_budget\n- fix_manually\n- abort"))
+        self._audit("e2e_remediation_halt",
+                    {"subsprint_id": self.state.subsprint_id, "reason": reason,
+                     "detail": detail, "failing_criteria": failing,
+                     "e2e_remediation_round": self.state.e2e_remediation_round,
+                     "needs_human": True})
+        self.state.state = STATE_HALTED
+        self._save_state()
+        return False
+
+    def _run_e2e_remediation_lane(self, manifest: Optional[dict], run_id: str) -> bool:
+        """§1.7-G autonomous browser_e2e remediation. Called AFTER _commit_e2e produced fresh
+        evidence, BEFORE Acceptance. Returns True to PROCEED to Acceptance (the failing set is empty
+        — never failed, lane disabled/legacy, or remediated to all-pass, incl. the fail-closed
+        route-to-§3.5-human via Acceptance's consistency gate); False when the run HALTED (state
+        STATE_HALTED; the caller MUST NOT run Acceptance).
+
+        Facts-only + fail-closed: the trigger + progress set is the DETERMINISTIC executor facts
+        (_e2e_failing_criteria); containment is proven BEFORE dispatch and re-checked (observed-diff)
+        BEFORE rerun; every bound/progress/containment failure HALTs + escalates (never loops)."""
+        assert self.state is not None
+        while True:
+            failing = self._e2e_failing_criteria(run_id)
+            cur = set(failing)
+
+            if not cur:
+                if self.state.e2e_remediation_round:
+                    self._audit("e2e_remediation_resolved",
+                                {"subsprint_id": self.state.subsprint_id,
+                                 "rounds": self.state.e2e_remediation_round})
+                return True  # all-pass (or never failed) → proceed to Acceptance (→ #9 human ship)
+
+            if not self._e2e_remediation_enabled():
+                # Legacy-safe (§14.1): deterministic criterion failures route to §3.5 via
+                # Acceptance (its consistency gate coerces a contradicting pass to needs_human).
+                # No state pollution — a disabled/legacy browser_e2e milestone round-trips as pre-P3.
+                self._audit("e2e_remediation_disabled_route_human",
+                            {"subsprint_id": self.state.subsprint_id,
+                             "failing_criteria": failing})
+                return True
+
+            # In-lane (enabled + failing): record THIS round's observation at index
+            # e2e_remediation_round (idempotent on resume — re-recording the same index/value is a
+            # no-op, so a resumed rerun re-reading the same committed evidence never spuriously halts).
+            r = self.state.e2e_remediation_round
+            fcbr = self.state.failing_criteria_by_round
+            while len(fcbr) <= r:
+                fcbr.append([])
+            if fcbr[r] != failing:
+                fcbr[r] = failing
+                self._save_state()
+
+            # Strict-progress guard vs the PRIOR round r-1 (§5.3): a non-proper-subset round is a
+            # regression (new criterion) or no-progress — HALT on the first (max_no_progress pinned
+            # to 1 by the validator). Indexing by round (not the last appended entry) is resume-safe.
+            if r > 0:
+                prior = set(fcbr[r - 1])
+                if not (cur < prior):
+                    if cur - prior:
+                        return self._e2e_remediation_halt(
+                            "regression", failing,
+                            f"a new failing criterion appeared: {sorted(cur - prior)}")
+                    return self._e2e_remediation_halt(
+                        "no_progress", failing,
+                        "the failing-criterion set did not strictly shrink")
+
+            # Budget: about to dispatch round e2e_remediation_round+1 — HALT if the SIGNED cap is
+            # already reached (fail-closed; _check_budget is the hard backstop after the increment).
+            max_rounds = self._e2e_remediation_cfg().get("max_rounds")
+            if isinstance(max_rounds, int) and self.state.e2e_remediation_round >= max_rounds:
+                return self._e2e_remediation_halt(
+                    "budget_exhausted", failing,
+                    f"e2e_remediation rounds exhausted (max_rounds={max_rounds})")
+
+            # Containment BEFORE dispatch (§5.2). A containment gate that is mechanically
+            # UNAVAILABLE (no git work dir / empty modules_in_scope / no signed covers envelope) ⇒
+            # fail-closed to §3.5 via Acceptance (never dispatch an uncontained fix); an
+            # out-of-envelope binding ⇒ scope re-auth HALT.
+            briefs = self._build_e2e_failure_briefs(failing, run_id, manifest)
+            ok, reason = self._e2e_remediation_containment(briefs)
+            if not ok:
+                if reason in ("observed_diff_gate_unavailable", "signed_covers_unverifiable"):
+                    self._audit("e2e_remediation_containment_unavailable",
+                                {"subsprint_id": self.state.subsprint_id,
+                                 "failing_criteria": failing, "reason": reason})
+                    return True  # fail-closed to the §3.5 human gate (via Acceptance)
+                return self._e2e_remediation_halt("out_of_envelope", failing, reason)
+
+            # Dispatch a bounded, in-envelope Dev fix scoped to the failing criteria (§5.2 step 3).
+            # The persisted state stays STATE_E2E_PENDING THROUGHOUT the fix (NOT flipped to
+            # DEV/GATE_PENDING) so a crash mid-fix resumes back INTO this lane via _drive's
+            # STATE_E2E_PENDING re-entry — never into the ordinary linear Dev→Gate→Review→Close
+            # path (which would lose the transient fix brief + the round/cache control). The lane
+            # is idempotent: resume re-reads the same failing set + reconstructs the brief and
+            # re-dispatches this round's fix (Codex P3-R1 blocker 3).
+            self._audit("e2e_remediation_round_dispatch",
+                        {"subsprint_id": self.state.subsprint_id,
+                         "round": self.state.e2e_remediation_round + 1,
+                         "failing_criteria": failing,
+                         "criterion_scope": [{"criterion_id": b["criterion_id"],
+                                              "req_id": b.get("req_id"),
+                                              "module": b.get("module")} for b in briefs]})
+            self._e2e_fix_brief = self._render_e2e_fix_brief(briefs)
+            try:
+                self._step_dev()           # state stays STATE_E2E_PENDING (resume re-enters lane)
+                if self.state.state == STATE_HALTED:
+                    return False  # dev-spec refine halt mid-remediation (checkpoint written)
+                self._step_gate()          # deterministic gates; gate_hard_fail raises (resumable)
+            finally:
+                self._e2e_fix_brief = None
+
+            # Observed-diff scope re-check AFTER the fix, BEFORE rerun (§5.2c). Check the FULL
+            # working-tree diff (vs HEAD) against the envelope — stateless (resume-safe, no pre/post
+            # delta) and fail-closed: if the gate became UNAVAILABLE after the fix (git failure),
+            # HALT rather than treat it as an empty in-envelope diff (Codex P3-R1 blocker 1).
+            changed = self._e2e_changed_files()
+            if changed is None:
+                return self._e2e_remediation_halt(
+                    "observed_diff_unavailable", failing,
+                    "the observed-diff scope gate became unavailable after the Dev fix")
+            oos = self._e2e_diff_out_of_envelope(changed)
+            if oos:
+                return self._e2e_remediation_halt(
+                    "observed_diff_out_of_envelope", failing,
+                    f"the Dev fix touched out-of-envelope files: {oos}")
+
+            # Advance the round: full cache invalidation (fresh dir + nonce) → managed rerun.
+            self.state.e2e_remediation_round += 1
+            self._save_state()
+            self._check_budget()           # hard backstop: BudgetExceeded if over the signed cap
+            self._invalidate_e2e_round_cache()
+            self.state.state = STATE_E2E_PENDING
+            self._save_state()
+            manifest = self._commit_e2e()  # NEW round run_id (§5.4) → fresh managed evidence
+            run_id = self._e2e_run_id()
+            # loop: re-read the DETERMINISTIC failing set from the fresh committed evidence.
 
     def _e2e_rel_prefix(self, run_id: str) -> str:
         """The committed run dir RELATIVE to run_dir — the prefix a verdict's
@@ -3622,18 +4138,41 @@ class Driver:
         assert self.state is not None
         run_id = self._e2e_run_id()
         final = self._e2e_final_dir(run_id)
+        kind = self._e2e_config().get("executor_kind", "")
+        # A2 dry-run routing refusal: a REAL browser_e2e run must use a real-execution
+        # executor; the deterministic local_http dry-run class cannot produce a real
+        # acceptance verdict (offline/mock test runs stay exempt via _requires_real_execution).
+        if (self._e2e_requires_real_execution()
+                and kind not in e2e_stage.REAL_EXECUTION_KINDS):
+            raise self._gate_hard_fail(
+                f"browser_e2e acceptance requires a real-execution executor "
+                f"(playwright/external_test_runner); executor_kind={kind!r} is a dry-run "
+                f"class and cannot produce a real acceptance verdict", STATE_E2E_PENDING)
+        prov_required = kind in e2e_stage.PROVENANCE_REQUIRED_KINDS
+        # A residual in-flight marker ⇒ the prior run never committed ⇒ do NOT trust a
+        # (possibly stale/partial) final dir; force a fresh run (fail-closed).
+        residual_inflight = prov_required and os.path.isfile(self._e2e_marker_path(run_id))
         m_schema = self._pc_schema("browser-evidence-manifest.schema.json")
         cr_item = (m_schema.get("$defs") or {}).get("checklist_result")
         events = (audit.read_events(self.audit_ledger)
                   if os.path.isfile(self.audit_ledger) else [])
 
-        if e2e_stage.dir_complete_and_hashes_ok(final, m_schema, cr_item):
+        if (not residual_inflight
+                and e2e_stage.dir_complete_and_hashes_ok(final, m_schema, cr_item)):
             manifest = e2e_stage.load_manifest(final)
             mh = manifest.get("artifact_manifest_hash")
-            if not e2e_stage.evidence_event_present(events, run_id, mh):
-                self._emit_e2e_event(run_id, final, manifest)   # B
-            self._cache_e2e_commit(run_id, final, mh)           # A / B
-            return manifest
+            # A2: for the real-execution class, only anchor/reuse a committed dir whose
+            # FRAMEWORK-OWNED provenance verifies. An unverifiable (hand-authored/stale)
+            # complete dir is NEVER anchored via the B-path — fall through to a fresh run (C).
+            prov_reason = (self._execution_provenance_reason(run_id, final, events)
+                           if prov_required else None)
+            if prov_reason is None:
+                if not e2e_stage.evidence_event_present(events, run_id, mh):
+                    self._emit_e2e_event(run_id, final, manifest)   # B
+                self._cache_e2e_commit(run_id, final, mh)           # A / B
+                return manifest
+            self._audit("e2e_reconcile_provenance_reject",
+                        {"run_id": run_id, "reason": prov_reason})
 
         # C — (re)run into a fresh staging dir; publish atomically.
         staging = final + ".staging"
@@ -3644,10 +4183,30 @@ class Driver:
         self._audit("e2e_start", {"subsprint_id": self.state.subsprint_id,
                                   "run_id": run_id,
                                   "executor_kind": contract.get("executor_kind")})
+        # A2 PRE-SPAWN (real-execution class): generate the framework-owned nonce, write the
+        # driver-owned in-flight marker OUTSIDE the hashed dir, and record e2e_start on the
+        # Audit Spine BEFORE the spawn; hand the nonce to the runner via env.
+        env: dict = {}
+        provenance_meta = None
+        e2e_start_ts = None
+        nonce = ""
+        if prov_required:
+            nonce = self._e2e_invocation_nonce()
+            os.makedirs(os.path.dirname(self._e2e_marker_path(run_id)), exist_ok=True)
+            e2e_start_ts = self.clock()
+            with open(self._e2e_marker_path(run_id), "w", encoding="utf-8") as fh:
+                json.dump({"run_id": run_id, "subsprint_id": self.state.subsprint_id,
+                           "invocation_nonce": nonce, "e2e_start_ts": e2e_start_ts},
+                          fh, sort_keys=True)
+            self._audit(e2e_stage.E2E_START_EVENT_TYPE, {
+                "run_id": run_id, "invocation_nonce": nonce,
+                "executor_kind": contract.get("executor_kind"),
+                "e2e_start_ts": e2e_start_ts})
+            env = {"AIDAZI_E2E_INVOCATION_NONCE": nonce}
         os.makedirs(staging, exist_ok=True)
         try:
             executor = e2e_executor.make_executor(contract.get("executor_kind", ""))
-            result = executor.run(contract, checklist, staging, env={})
+            result = executor.run(contract, checklist, staging, env=env)
         except e2e_executor.ExecutorUnavailable as exc:
             shutil.rmtree(staging, ignore_errors=True)
             raise self._gate_hard_fail(
@@ -3661,8 +4220,32 @@ class Driver:
             raise self._gate_hard_fail(
                 f"browser executor config error: {exc}", STATE_E2E_PENDING)
 
+        # A2 PRE-PUBLICATION contract HALT: a signed criterion with NO mapped test
+        # (mapping_state 'unmapped') is a runner-contract completeness fault — never publish
+        # acceptance-eligible evidence with one (§5.1).
+        if prov_required and any(
+                getattr(c, "mapping_state", "mapped") == "unmapped"
+                for c in result.criteria):
+            shutil.rmtree(staging, ignore_errors=True)
+            unmapped = sorted(c.criterion_id for c in result.criteria
+                              if getattr(c, "mapping_state", "mapped") == "unmapped")
+            raise self._gate_hard_fail(
+                f"browser_e2e runner contract incomplete: signed criteria with no mapped "
+                f"test (unmapped): {unmapped}; bind them via @crit:<id> or criterion_map",
+                STATE_E2E_PENDING)
+
+        # A2 POST-SPAWN: record e2e_end + assemble the driver execution window into the
+        # manifest provenance (validated by the pre-spawn provenance gate before Acceptance).
+        if prov_required:
+            e2e_end_ts = self.clock()
+            self._audit(e2e_stage.E2E_END_EVENT_TYPE, {
+                "run_id": run_id, "invocation_nonce": nonce, "e2e_end_ts": e2e_end_ts})
+            provenance_meta = {"invocation_nonce": nonce,
+                               "e2e_start_ts": e2e_start_ts, "e2e_end_ts": e2e_end_ts}
+
         manifest = e2e_stage.build_manifest(
-            staging, result, contract, run_id=run_id, loop_id=self.loop_id)
+            staging, result, contract, run_id=run_id, loop_id=self.loop_id,
+            provenance=provenance_meta)
         with open(os.path.join(staging, "manifest.json"), "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, sort_keys=True, indent=2)
         if not e2e_stage.dir_complete_and_hashes_ok(staging, m_schema, cr_item):
@@ -3676,7 +4259,33 @@ class Driver:
         mh = manifest.get("artifact_manifest_hash")
         self._emit_e2e_event(run_id, final, manifest)
         self._cache_e2e_commit(run_id, final, mh)
+        # A2: the run committed cleanly — clear the in-flight marker (no residual state).
+        if prov_required:
+            try:
+                os.remove(self._e2e_marker_path(run_id))
+            except OSError:
+                pass
         return manifest
+
+    def _dev_self_smoke_reason(self) -> Optional[str]:
+        """PURE check (NO checkpoint/audit side effects): None when a valid docs/self-smoke.json
+        {command, result} is present, else a human-readable reason. Shared by the §6a structural
+        gate (_check_dev_self_smoke) AND the §6b bounded re-dispatch (_ensure_dev_self_smoke), so
+        the RECOVERABLE re-dispatch path never emits a spurious gate_hard_fail checkpoint each round
+        (which would make autonomous recovery look like a routine human halt)."""
+        path = os.path.join(self.run_dir, "docs", "self-smoke.json")
+        if not os.path.isfile(path):
+            return ("browser_e2e milestone requires a Dev self-smoke attestation at "
+                    "docs/self-smoke.json ({command, result} — run the app + exercise the "
+                    "changed happy path once); none found")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                ss = json.load(fh)
+        except (OSError, ValueError) as exc:
+            return f"Dev self-smoke attestation is not valid JSON: {exc}"
+        if not (isinstance(ss, dict) and ss.get("command") and ss.get("result")):
+            return "Dev self-smoke attestation must contain non-empty {command, result}"
+        return None
 
     def _check_dev_self_smoke(self) -> None:
         """§6a (Codex MAJOR-2) — a browser_e2e milestone REQUIRES a Dev self-smoke
@@ -3685,26 +4294,127 @@ class Driver:
         (NOT a judgment of correctness — necessary, not authoritative; distinct from the
         independent browser evidence gate). Absent/malformed → resumable gate_hard_fail."""
         assert self.state is not None
-        path = os.path.join(self.run_dir, "docs", "self-smoke.json")
-        if not os.path.isfile(path):
-            raise self._gate_hard_fail(
-                "browser_e2e milestone requires a Dev self-smoke attestation at "
-                "docs/self-smoke.json ({command, result} — run the app + exercise the "
-                "changed happy path once); none found", STATE_E2E_PENDING)
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                ss = json.load(fh)
-        except (OSError, ValueError) as exc:
-            raise self._gate_hard_fail(
-                f"Dev self-smoke attestation is not valid JSON: {exc}",
-                STATE_E2E_PENDING)
-        if not (isinstance(ss, dict) and ss.get("command") and ss.get("result")):
-            raise self._gate_hard_fail(
-                "Dev self-smoke attestation must contain non-empty {command, result}",
-                STATE_E2E_PENDING)
-        self._audit("dev_self_smoke_present",
-                    {"subsprint_id": self.state.subsprint_id,
-                     "command": str(ss.get("command"))[:200]})
+        reason = self._dev_self_smoke_reason()
+        if reason is not None:
+            raise self._gate_hard_fail(reason, STATE_E2E_PENDING)
+        self._audit("dev_self_smoke_present", {"subsprint_id": self.state.subsprint_id})
+
+    # ----- §6b: Dev self-smoke autonomy (subsume | bounded re-dispatch) ------ #
+    def _e2e_executor_kind(self) -> str:
+        """charter.tooling.e2e.executor_kind ('' when unset). Selects the §6b self-smoke path:
+        external_test_runner SUBSUMES the gate; the in-process playwright class gets a bounded
+        autonomous re-dispatch; everything else keeps the §6a structural presence gate."""
+        return str(self._e2e_config().get("executor_kind", "") or "")
+
+    def _e2e_selfsmoke_rel_path(self) -> Optional[str]:
+        """docs/self-smoke.json RELATIVE to the Dev git work dir (the space the observed-diff gate
+        reports in), so the §6b.2 re-dispatch may author it without tripping the out-of-envelope
+        guard. None when there is no work dir or the artifact is OUTSIDE it (then no whitelist is
+        needed — an out-of-work-dir artifact never appears in the changed set)."""
+        handle = self.context_handle
+        wd = getattr(handle, "work_dir", None) if handle is not None else None
+        if not wd:
+            return None
+        rel = os.path.relpath(os.path.join(self.run_dir, "docs", "self-smoke.json"),
+                              wd).replace(os.sep, "/")
+        return rel if not rel.startswith("..") else None
+
+    def _e2e_selfsmoke_out_of_envelope(self, changed: set) -> list:
+        """§6b.2 containment: the self-smoke re-dispatch may touch ONLY in-scope modules
+        (approved_scope.modules_in_scope) PLUS the mandated docs/self-smoke.json artifact. Reuses
+        the lane's observed-diff envelope, whitelisting only the self-smoke artifact path."""
+        allowed = self._e2e_selfsmoke_rel_path()
+        return [f for f in self._e2e_diff_out_of_envelope(changed) if f != allowed]
+
+    def _render_e2e_selfsmoke_brief(self) -> str:
+        """§6b.2 bounded in-envelope Dev brief: author docs/self-smoke.json only, stay in-envelope."""
+        return (
+            f"## §6b Dev self-smoke re-dispatch round {self.state.e2e_selfsmoke_round + 1} — "
+            f"author the browser_e2e self-smoke attestation\n"
+            "A browser_e2e milestone REQUIRES a Dev self-smoke attestation at docs/self-smoke.json "
+            "= {command, result}: RUN the app, exercise the changed happy path ONCE, and record the "
+            "command you ran plus the observed result. Author ONLY docs/self-smoke.json (plus, if "
+            "strictly necessary, MINIMAL in-envelope fixes so the happy path runs); do NOT widen "
+            "scope or touch modules outside approved_scope.modules_in_scope. This is a bounded "
+            "autonomous round under the signed e2e_remediation budget.\n")
+
+    def _ensure_dev_self_smoke(self) -> None:
+        """§6b — the Dev self-smoke is NEVER a routine human halt.
+        PRIMARY (external_test_runner): the managed run's app-start + first-criterion pass with
+          framework-owned provenance IS the attestation; the separate structural gate is SUBSUMED.
+        FALLBACK (in-process playwright + a SIGNED e2e_remediation budget): a missing/malformed
+          self-smoke is a bounded AUTONOMOUS Dev re-dispatch (author docs/self-smoke.json), contained
+          by the observed-diff envelope (+ the self-smoke artifact) and bounded by max_rounds; the
+          containment gate unavailable, an out-of-envelope diff, or the budget exhausted → HALT (an
+          authority pause, R4-a/b — not routine).
+        OTHERWISE (local_http, or playwright without a signed budget): the §6a structural presence
+          gate stands (legacy-safe; byte-identical). A mid-round _step_dev dev-spec-refine pause
+          leaves STATE_HALTED (the caller must not commit)."""
+        assert self.state is not None
+        kind = self._e2e_executor_kind()
+        if kind == "external_test_runner":
+            self._audit("dev_self_smoke_subsumed",
+                        {"subsprint_id": self.state.subsprint_id, "executor_kind": kind})
+            return
+        # Legacy / non-recoverable classes (local_http, or playwright without a signed budget): the
+        # §6a structural gate stands (writes the gate_hard_fail checkpoint on a genuine terminal halt).
+        if kind != "playwright" or not self._e2e_remediation_enabled():
+            self._check_dev_self_smoke()
+            return
+        # FALLBACK — playwright + signed budget: a bounded autonomous re-dispatch. Uses the PURE
+        # predicate (no per-round gate_hard_fail checkpoint on the recoverable path); a checkpoint is
+        # written ONLY at a genuine terminal HALT (containment unavailable / budget exhausted /
+        # out-of-envelope), which is an R4-a/b authority pause — never a routine one.
+        while True:
+            reason = self._dev_self_smoke_reason()
+            if reason is None:
+                self._audit("dev_self_smoke_present", {"subsprint_id": self.state.subsprint_id})
+                return
+            # Containment must be MECHANICALLY present (the design's fail-closed rule) — else HALT
+            # for the human rather than dispatch an uncontained fix.
+            if not self._e2e_observed_diff_available():
+                raise self._gate_hard_fail(
+                    "browser_e2e self-smoke is missing/malformed and the observed-diff containment "
+                    "gate is unavailable (no git work dir / empty modules_in_scope) — cannot "
+                    "autonomously re-dispatch; human authority required", STATE_E2E_PENDING)
+            max_rounds = self._e2e_remediation_cfg().get("max_rounds")
+            if isinstance(max_rounds, int) and self.state.e2e_selfsmoke_round >= max_rounds:
+                raise self._gate_hard_fail(
+                    f"Dev self-smoke re-dispatch budget exhausted "
+                    f"(e2e_remediation.max_rounds={max_rounds}); self-smoke still missing/malformed "
+                    f"— human authority required", STATE_E2E_PENDING)
+            self._audit("dev_self_smoke_redispatch",
+                        {"subsprint_id": self.state.subsprint_id,
+                         "round": self.state.e2e_selfsmoke_round + 1, "reason": reason})
+            # Dispatch a bounded, in-envelope Dev round to author the attestation. State stays
+            # STATE_E2E_PENDING THROUGHOUT so a crash mid-round resumes back into this pre-commit path
+            # (idempotent: the persisted counter honors the budget across resume).
+            self._e2e_fix_brief = self._render_e2e_selfsmoke_brief()
+            try:
+                self._step_dev()
+                if self.state.state == STATE_HALTED:
+                    return   # dev-spec refine paused mid re-dispatch (checkpoint already written)
+                self._step_gate()          # deterministic gates; gate_hard_fail raises (resumable)
+            finally:
+                self._e2e_fix_brief = None
+            # Observed-diff containment AFTER the fix (fail-closed): the gate must still be available,
+            # and the fix must touch only in-envelope modules + the self-smoke artifact.
+            changed = self._e2e_changed_files()
+            if changed is None:
+                raise self._gate_hard_fail(
+                    "the observed-diff scope gate became unavailable during the Dev self-smoke "
+                    "re-dispatch", STATE_E2E_PENDING)
+            oos = self._e2e_selfsmoke_out_of_envelope(changed)
+            if oos:
+                raise self._gate_hard_fail(
+                    f"the Dev self-smoke re-dispatch touched out-of-envelope files: {oos} "
+                    f"(allowed: approved_scope.modules_in_scope + docs/self-smoke.json)",
+                    STATE_E2E_PENDING)
+            self.state.e2e_selfsmoke_round += 1
+            self.state.state = STATE_E2E_PENDING
+            self._save_state()
+            # loop: re-check the (now authored) attestation — success returns; a still-missing
+            # artifact dispatches the next bounded round until the signed budget cap.
 
     def _run_e2e_evidence(self) -> None:
         """Drive STATE_E2E_PENDING (§2): verify the Dev self-smoke attestation (§6a),
@@ -3717,8 +4427,23 @@ class Driver:
             self.state.history.append(STATE_E2E_PENDING)
         self._milestone_closed = True
         self._save_state()
-        self._check_dev_self_smoke()       # §6a structural gate (resumable halt if absent)
-        self._commit_e2e()                 # reconcile-or-run; gate_hard_fail on runtime fail
+        # §6b: the managed run SUBSUMES self-smoke for external_test_runner (its app-start +
+        # first-criterion pass with framework provenance IS the attestation); the in-process
+        # playwright class gets a bounded AUTONOMOUS Dev re-dispatch under the signed §5.3 budget
+        # instead of a routine human halt; local_http / disabled-budget keep the §6a structural
+        # presence gate. A mid-dispatch dev-spec-refine HALT leaves STATE_HALTED — do NOT commit.
+        self._ensure_dev_self_smoke()
+        if self.state.state == STATE_HALTED:
+            return
+        manifest = self._commit_e2e()      # reconcile-or-run; gate_hard_fail on runtime fail
+        # §1.7-G (Phase 3): on a DETERMINISTIC, criterion-bound executor failure with a SIGNED
+        # remediation budget at HOTL+, autonomously remediate (framework failure brief → in-envelope
+        # containment → bounded Dev fix → fresh-round managed rerun) BEFORE Acceptance. Returns
+        # False when the lane HALTED (fail-closed escalation / scope re-auth) — do NOT run
+        # Acceptance. Returns True to proceed (never failed, disabled/legacy → §3.5 via Acceptance,
+        # or remediated to all-pass → the #9 human ship gate is preserved, unchanged).
+        if not self._run_e2e_remediation_lane(manifest, self._e2e_run_id()):
+            return
         if self._acceptance_enabled():
             self._run_acceptance()
 
@@ -4166,9 +4891,56 @@ class Driver:
                 "browser evidence not anchored on the Audit Spine (no matching "
                 "browser_e2e_evidence event); refusing to judge unanchored evidence",
                 STATE_ACCEPTANCE_PENDING)
+        # A2: for the real-execution (external_test_runner) class, validate the
+        # framework-owned execution provenance BEFORE Acceptance spawns.
+        self._verify_execution_provenance(run_id, final, events)
         rel = os.path.relpath(os.path.join(final, "manifest.json"),
                               self.run_dir).replace(os.sep, "/")
         return manifest, rel, run_id
+
+    def _execution_provenance_reason(self, run_id: str, final_dir: str,
+                                     events: list) -> Optional[str]:
+        """A2: return a fail REASON for the real-execution (external_test_runner) provenance
+        gate, or None. SOFT (never raises) so callers choose the consequence — acceptance
+        gate_hard_fails, reconcile re-runs. Loads run-provenance.json + manifest +
+        checklist-results + the Audit-Spine chain state and delegates to
+        :func:`e2e_stage.verify_execution_provenance` with the FRAMEWORK-OWNED nonce + run_id
+        from RunState (never read from the evidence dir). None for non-provenance kinds."""
+        assert self.state is not None
+        if (self._e2e_config().get("executor_kind", "")
+                not in e2e_stage.PROVENANCE_REQUIRED_KINDS):
+            return None
+        prov_schema = self._pc_schema("run-provenance.schema.json")
+        try:
+            with open(os.path.join(final_dir, "run-provenance.json"),
+                      "r", encoding="utf-8") as fh:
+                provenance = json.load(fh)
+        except (OSError, ValueError):
+            provenance = None
+        try:
+            with open(os.path.join(final_dir, "checklist-results.json"),
+                      "r", encoding="utf-8") as fh:
+                checklist_results = json.load(fh)
+        except (OSError, ValueError):
+            checklist_results = []
+        chain_ok = (audit.verify_chain(self.audit_ledger).ok
+                    if os.path.isfile(self.audit_ledger) else False)
+        return e2e_stage.verify_execution_provenance(
+            manifest=e2e_stage.load_manifest(final_dir),
+            provenance=provenance, provenance_schema=prov_schema,
+            checklist_results=checklist_results, events=events,
+            expected_nonce=self.state.e2e_invocation_nonce,
+            expected_run_id=run_id, audit_chain_ok=chain_ok)
+
+    def _verify_execution_provenance(self, run_id: str, final_dir: str,
+                                     events: list) -> None:
+        """Pre-spawn provenance gate: gate_hard_fail BEFORE Acceptance on any reason
+        (fail-closed on missing/inconsistent/stale/dry-run/unmapped/chain-broken evidence)."""
+        reason = self._execution_provenance_reason(run_id, final_dir, events)
+        if reason:
+            raise self._gate_hard_fail(
+                f"browser evidence failed the real-execution provenance gate: {reason}; "
+                f"refusing to judge unverified evidence", STATE_ACCEPTANCE_PENDING)
 
     def _browser_evidence_prompt_section(self, run_id: str,
                                          manifest: Optional[dict]) -> str:

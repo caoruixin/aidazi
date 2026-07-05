@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/run-provenance.schema.json",
+  "title": "External-test-runner execution provenance (A2 — framework-generated)",
+  "description": "run-provenance.json — written by the ExternalTestRunnerExecutor from the REAL managed subprocess (argv, pid, real wall-clock, exit code, tool version, spec sha256) and stamped with the DRIVER's invocation_nonce (handed in via env). It is a real-execution attestation, NOT a deterministic artifact: it deliberately carries real timestamps so a byte-identical hand-authored replay is impossible. The driver's pre-spawn provenance gate validates: schema-valid; invocation_nonce == manifest.provenance == paired e2e_start/e2e_end audit events; wall_clock_start/end ⊆ [e2e_start_ts, e2e_end_ts]; exit_code consistent with the normalized criterion results; and the Audit-Spine chain verifies — else gate_hard_fail before any Acceptance verdict. Missing/inconsistent ⇒ fail closed.",
+  "type": "object",
+  "required": ["executor_kind", "argv", "wall_clock_start", "wall_clock_end", "exit_code", "invocation_nonce"],
+  "additionalProperties": false,
+  "properties": {
+    "executor_kind": {"type": "string", "description": "The real-execution executor kind (e.g. external_test_runner)."},
+    "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "The exact managed runner command spawned (structured, shell=False)."},
+    "cwd": {"type": "string"},
+    "pid": {"type": ["integer", "null"], "description": "OS pid of the managed runner process."},
+    "exit_code": {"type": "integer", "description": "Real subprocess exit code (non-zero when tests failed); reconciled against the normalized criterion results. MUST be a concrete integer — a null exit code is incomplete real-subprocess provenance and is rejected fail-closed."},
+    "wall_clock_start": {"type": "string", "description": "ISO-8601 UTC real start of the managed run."},
+    "wall_clock_end": {"type": "string", "description": "ISO-8601 UTC real end of the managed run."},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "tool_version": {"type": "string"},
+    "host": {"type": "string"},
+    "spec_sha256": {"type": "string", "description": "sha256 of the adopter spec that ran (empty when no single spec_path)."},
+    "invocation_nonce": {"type": "string", "minLength": 8, "description": "The DRIVER-generated per-run nonce (framework-owned). An adopter-supplied nonce can never match the driver's marker/events, so a hand-authored provenance cannot satisfy the gate."}
+  }
+}

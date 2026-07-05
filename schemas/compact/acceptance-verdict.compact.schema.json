@@ -120,6 +120,28 @@
               "P1",
               "P2"
             ]
+          },
+          "criterion_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_ref": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^\\.orchestrator/audit/browser/.+"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
           }
         }
       }
@@ -241,5 +263,5 @@
     }
   ],
   "x-canonical-source": "acceptance-verdict.schema.json",
-  "x-canonical-sha256": "60590e269dc10199167cbd56996d89901aff9305750b1573ffc9781ef87117a2"
+  "x-canonical-sha256": "5c4327c019db2a059a6f75b1a071284c9ab0e05ca16d2b1c8c289611226ff07f"
 }

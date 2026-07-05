@@ -1,0 +1,31 @@
+{
+  "$schema_ref": "schemas/framework-capabilities.schema.json",
+  "contract_version": "1",
+  "framework_version": "4.1.0",
+  "capabilities": [
+    {
+      "id": "native_managed_external_e2e",
+      "version": "1.0",
+      "code_anchor": "engine-kit/orchestrator/e2e_executor.py:ExternalTestRunnerExecutor",
+      "summary": "Framework-managed external_test_runner executor: the loop starts the app, runs the adopter spec-runner (fixed argv, shell=False), captures exit code + JSON report + trace + screenshots + logs, and cleans up — no human runs the runner."
+    },
+    {
+      "id": "framework_owned_e2e_provenance",
+      "version": "1.0",
+      "code_anchor": "engine-kit/orchestrator/e2e_stage.py:verify_execution_provenance",
+      "summary": "Framework-generated fail-closed execution provenance: in-flight nonce + start/end audit-spine window + run-provenance.json, verified before Acceptance spawns; a hand-authored or stale evidence dir is refused (never trusted)."
+    },
+    {
+      "id": "autonomous_e2e_remediation",
+      "version": "1.0",
+      "code_anchor": "engine-kit/orchestrator/driver.py:_run_e2e_remediation_lane",
+      "summary": "Constitution §1.7-G deterministic, facts-only, bounded, in-envelope autonomous browser_e2e remediation lane (criterion-bound executor facts -> in-envelope Dev fix -> full managed rerun -> rejudge); it never ships (the #9 human ship gate is unchanged)."
+    },
+    {
+      "id": "codex_adapter_liveness",
+      "version": "1.0",
+      "code_anchor": "engine-kit/adapters/codex.py:CodexStreamProbe",
+      "summary": "Codex adapter stream-liveness probe wired into run_with_monitor so a legitimately-busy codex Acceptance/Review spawn is not false-killed by the macOS watchdog."
+    }
+  ]
+}

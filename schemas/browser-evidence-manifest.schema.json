@@ -25,7 +25,17 @@
         }
       }
     },
-    "artifact_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256(canonical_json(sorted [{name, sha256}])). Recomputed by the driver at reconcile + pre-acceptance; mismatch → gate_hard_fail."}
+    "artifact_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256(canonical_json(sorted [{name, sha256}])). Recomputed by the driver at reconcile + pre-acceptance; mismatch → gate_hard_fail."},
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["invocation_nonce", "e2e_start_ts", "e2e_end_ts"],
+      "description": "A2 framework-owned execution binding for the managed external_test_runner class (this phase scopes the provenance gate to external_test_runner; the env-gated in-process playwright class is a tracked follow-up). Absent for the deterministic local_http dry-run class. The driver GENERATES the nonce and writes the in-flight marker + paired e2e_start/e2e_end Audit-Spine events BEFORE/AFTER the spawn; the pre-spawn provenance gate re-verifies nonce+run_id == run-provenance.json == events, that this window EQUALS the Audit-Spine event timestamps, the run-provenance wall-clock ⊆ that window, the exit/report agreement (concrete integer exit code), ≥1 concrete real-browser artifact (trace/screenshot/video), and the Audit-Spine chain — else gate_hard_fail before any verdict. An adopter-supplied nonce/marker can never satisfy the gate.",
+      "properties": {
+        "invocation_nonce": {"type": "string", "minLength": 8},
+        "e2e_start_ts": {"type": "string", "description": "ISO-8601 UTC; the driver's e2e_start audit event time (window lower bound)."},
+        "e2e_end_ts": {"type": "string", "description": "ISO-8601 UTC; the driver's e2e_end audit event time (window upper bound)."}
+      }
+    }
   },
   "$defs": {
     "checklist_result": {
@@ -37,7 +47,8 @@
         "action_performed": {"type": "string"},
         "observed_result": {"type": "string"},
         "evidence_refs": {"type": "array", "items": {"type": "string"}, "description": "Relative paths under the run dir (screenshots/console/network/...)."},
-        "executor_status": {"type": "string", "enum": ["pass", "fail", "error", "skipped"], "description": "OBSERVATION ONLY. Acceptance judges independently; the driver vetoes a milestone pass that contradicts a critical 'fail'/'error' (§3.2)."}
+        "executor_status": {"type": "string", "enum": ["pass", "fail", "error", "skipped"], "description": "OBSERVATION ONLY. Acceptance judges independently; the driver vetoes a milestone pass that contradicts a critical 'fail'/'error' (§3.2)."},
+        "mapping_state": {"type": "string", "enum": ["mapped", "unmapped"], "description": "A2/§5.1 router disambiguation for the external_test_runner. 'mapped' — a runner test is bound to this signed criterion (executor_status is authoritative). 'unmapped' — NO test is bound (a runner-CONTRACT completeness fault): the driver refuses to publish an acceptance-eligible manifest with any unmapped signed criterion (pre-publication HALT), so 'unmapped' is never emitted as 'skipped' and never routes as a code-fix. Absent ⇒ 'mapped' (the declarative local_http/playwright executors drive the checklist directly)."}
       }
     }
   }

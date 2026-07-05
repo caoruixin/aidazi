@@ -1,0 +1,23 @@
+{
+  "checklist_id": "M1-functional-checklist",
+  "signed_by_human": true,
+  "closure_contract_ref": "docs/research-briefs/RB-001-job-search.md",
+  "criteria": [
+    {
+      "criterion_id": "shows_welcome",
+      "criterion": "After login the dashboard greets the user by name",
+      "critical": true,
+      "req_id": "REQ-001",
+      "module": "frontend/app",
+      "layer": "ui"
+    },
+    {
+      "criterion_id": "job_search_returns_results",
+      "criterion": "A keyword search returns at least one matching job card",
+      "critical": true,
+      "req_id": "REQ-001",
+      "module": "frontend/app",
+      "layer": "ui"
+    }
+  ]
+}

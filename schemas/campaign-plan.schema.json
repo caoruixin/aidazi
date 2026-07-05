@@ -69,6 +69,16 @@
                     "max_no_progress_rounds": {"type": ["integer", "null"]}
                   }
                 },
+                "e2e_remediation": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "P3 §1.7-G (design §5.3/§10). The RESOLVED signed mirror of charter.autonomy.e2e_remediation, folded into the top-level authority so a post-sign raise of the autonomous-remediation budget flips H → stale → re-sign (redundant with charter_hash ⊂ H, which also binds it; surfaced here so signoff_snapshot_authentic renders it explicitly). OPTIONAL so a pre-P3 snapshot (no e2e_remediation) still validates and is independently flagged stale for the one-time re-sign.",
+                  "properties": {
+                    "enabled": {"type": ["boolean", "null"]},
+                    "max_rounds": {"type": ["integer", "null"]},
+                    "max_no_progress_rounds": {"type": ["integer", "null"]}
+                  }
+                },
                 "trunk_branch": {"type": ["string", "null"]},
                 "milestone_isolation": {
                   "type": "object",

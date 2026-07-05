@@ -3,7 +3,7 @@
 version: 1
 sources:
 - path: governance/constitution.md
-  sha256: ca49b0196b659e5fb2e815fe79cc5f4190c20af19de4b97a8050df07a489aaf5
+  sha256: f8df862559d7b57f85c49bdddd37acda8c1ce053576cf02d950826a489bd5392
 - path: governance/doc_governance.md
   sha256: 0df5b552f21f2b5474c5daec0bc579a9c97e895b5b7a4672e60b04e5502b65cb
 - path: governance/context_briefing.md
@@ -17,7 +17,7 @@ sources:
 - path: role-cards/deliver-agent.md
   sha256: f0763db5f44156b1a28065f3695848640645296cc3b18d1edd2dfb722f0e434f
 - path: role-cards/dev-agent.md
-  sha256: 8abf572ff8965fdebf0051e16a5c2201a749b160f6a656eb89c566e3c5389499
+  sha256: 57f5604dca629e54929db18cddc4be6ef6644805a3b7352baaac1ad056d0e784
 - path: role-cards/code-reviewer-agent.md
   sha256: 293a094e032c40f5fe9dd88cde9b203f1126f7a7aab59babd6120de0447fc551
 - path: role-cards/acceptance-agent.md

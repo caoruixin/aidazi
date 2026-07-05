@@ -186,6 +186,34 @@
   condition: gap_report_routing
   current_enforcement: 'campaign:_gap_followup_round'
   notes: 'Phase 2-γ §1.7-F autonomy routing + no-new-authority. Runtime routing wired Step 3 in campaign:_gap_followup_round — human_in_the_loop routes a completeness gap_report to needs_human (the completeness_gap_review pause); auto-dispatch only under _AUTO_GAP_DISPATCH_LEVELS (human_on_the_loop+); grants no ship/scope-widen authority (the req_id-envelope check is in-envelope-only).'
+- id: con-1.7g-facts-only-trigger
+  anchor: 'governance/constitution.md §1.7-G'
+  statement: 'The autonomous browser_e2e remediation lane (§1.7-G) triggers ONLY from DETERMINISTIC, framework-observed, criterion-bound execution facts — a signed functional-checklist criterion whose CriterionResult.executor_status is fail or error in a FULL managed real-execution run; the failure brief is framework-generated from these facts, NOT the LLM verdict. The interpretive Acceptance fix_required / needs_human / unbound failure_briefs are NOT a §1.7-G trigger and route to the existing §3.5 human gate; a reporter-skipped bound criterion routes to §3.5-human and an unmapped signed criterion is a pre-publication contract HALT (never a code-fault).'
+  roles: [acceptance, control-plane]
+  condition: browser_e2e_criterion_outcome
+  current_enforcement: 'driver:_run_e2e_evidence'
+  notes: 'Phase 3 §1.7-G clause 0 + trigger basis (design §5.1). Facts-only, criterion-bound; the total (mapping_state, executor_status) partition routes pass→pass, fail|error→§1.7-G, skipped→§3.5-human, unmapped→pre-publication contract HALT.'
+- id: con-1.7g-in-envelope-containment
+  anchor: 'governance/constitution.md §1.7-G'
+  statement: 'Before dispatching a §1.7-G Dev fix the orchestrator MUST prove containment: the framework-generated failure brief binds each failing criterion_id to {req_id, module, layer}; a req_id-envelope check proves the fix targets are a subset of (F1 signed snapshot intersect the milestone signed covers_req_ids), DISTINCT from post_gate1_scope_expansion (modules/layers only); and an observed-diff scope check confirms the actual Dev diff touched only in-envelope modules/req_ids BEFORE rerun. If the containment guarantee is mechanically unavailable the lane does NOT dispatch an unbounded fix — it FAILS CLOSED to the §3.5 human gate.'
+  roles: [control-plane, deliver]
+  condition: e2e_remediation_dispatch
+  current_enforcement: 'driver:_e2e_remediation_containment'
+  notes: 'Phase 3 §1.7-G clause 1 (design §5.2). Containment is a §1.7-G PREREQUISITE, not an assumed guarantee — the observed-diff scope check is delivered here; absent it, the lane fails closed to §3.5 (the design escape hatch).'
+- id: con-1.7g-bounded-progress
+  anchor: 'governance/constitution.md §1.7-G'
+  statement: 'The §1.7-G lane MUST be runtime-bounded: a signed authority.e2e_remediation.max_rounds cap per milestone (persisted e2e_remediation_round counter, enforced by driver._check_budget as a DISTINCT sibling of the review fix_round cap — no double-count); each round''s failing-criterion set MUST strictly shrink — a PROPER SUBSET of the prior round (persisted failing_criteria_by_round; proper-subset, NOT identical); a round that INTRODUCES a new failing criterion is a regression HALT; each successful round strictly shrinks the set (termination guaranteed).'
+  roles: [control-plane]
+  condition: e2e_remediation_dispatch
+  current_enforcement: 'driver:_check_budget'
+  notes: 'Phase 3 §1.7-G clause 2 (design §5.3). max_fix_rounds_total bounds the review loop; e2e_remediation.max_rounds bounds THIS loop; the two compose, they do not double-count.'
+- id: con-1.7g-no-ship-authority
+  anchor: 'governance/constitution.md §1.7-G'
+  statement: '§1.7-G is default-on ONLY for a browser_e2e milestone carrying an explicit SIGNED authority.e2e_remediation budget at human_on_the_loop or higher; absent a signed budget deterministic criterion failures route to the §3.5 human gate exactly as today (legacy-safe). It iterates on executor FACTS toward deterministic criterion-pass, NEVER toward ship: the final ship/reject stays the human #9 advisory_acceptance_pass_signoff gate (unchanged), M3 stays advisory, and §1.7-G grants NO authority to ship, to widen scope, or to change authority. On any bound exceeded, non-shrinking round, or unavailable containment the orchestrator HALTs and escalates — never silently stops, never loops. A raise of any e2e_remediation bound flips H → stale → re-sign; a normal round adds no re-sign.'
+  roles: [control-plane, customer, acceptance]
+  condition: e2e_remediation_routing
+  current_enforcement: 'driver:_run_e2e_evidence'
+  notes: 'Phase 3 §1.7-G clause 3 + enablement + §3.6 reconciliation (design §5/§10/§14). charter_hash ⊂ H binds autonomy.e2e_remediation; charter_validator._check_e2e_remediation_bound is the static §1.7-D evasion guard (max_rounds required, no_progress pinned to 1, HOTL+ only).'
 - id: con-1.8-may-not-subtract-forbidden-list
   anchor: 'governance/constitution.md §1.8'
   statement: 'Adopters MAY NOT subtract from the framework §1.7 forbidden list; a row in adoption-state.md targeting §1.7 MUST NOT carry status:divergent (such divergence is a framework breach, not a project override).'

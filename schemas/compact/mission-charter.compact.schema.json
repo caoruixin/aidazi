@@ -38,6 +38,26 @@
         }
       }
     },
+    "required_framework_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "min_version": {
+            "type": "string",
+            "pattern": "^[0-9]+(\\.[0-9]+)*$"
+          }
+        }
+      }
+    },
     "autonomy": {
       "type": "object",
       "required": [
@@ -134,6 +154,23 @@
                   "minimum": 0
                 }
               }
+            }
+          }
+        },
+        "e2e_remediation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "max_rounds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_no_progress_rounds": {
+              "type": "integer",
+              "minimum": 1
             }
           }
         }
@@ -980,5 +1017,5 @@
     }
   },
   "x-canonical-source": "mission-charter.schema.json",
-  "x-canonical-sha256": "f492e8d96c3f6096a992044a9330aa9a506f08689b2b6c39464e17943576979f"
+  "x-canonical-sha256": "6d79f3421de2cc217ac193816c18cc4c6f669544a5688ca95b6b7c3838692530"
 }

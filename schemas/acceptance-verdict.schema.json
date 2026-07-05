@@ -92,7 +92,22 @@
             "type": "string",
             "description": "Paragraph describing what Deliver should fix if confirm: yes + route: deliver_fix_iteration."
           },
-          "severity": {"type": "string", "enum": ["P0", "P1", "P2"]}
+          "severity": {"type": "string", "enum": ["P0", "P1", "P2"]},
+          "criterion_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "P3 §1.7-G. OPTIONAL binding of this brief to the signed functional-checklist criterion_id it addresses, so the deterministic (criterion-bound) subset is machine-identifiable. The §1.7-G autonomous-remediation TRIGGER is the FRAMEWORK-observed executor facts (checklist-results.json executor_status ∈ {fail,error}), NOT this LLM-authored field (design §5.1); an interpretive brief WITHOUT a criterion_id never qualifies for §1.7-G and routes to the §3.5 human gate. Additive/optional."
+          },
+          "evidence_ref": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256"],
+            "properties": {
+              "path": {"type": "string", "pattern": "^\\.orchestrator/audit/browser/.+"},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            },
+            "description": "P3 §1.7-G. OPTIONAL citation into the committed browser-evidence-manifest of the captured artifact evidencing this criterion's failure; paired with criterion_id on a deterministic brief."
+          }
         }
       },
       "description": "Required (non-empty) iff milestone_verdict = fix_required (enforced by the conditional below)."

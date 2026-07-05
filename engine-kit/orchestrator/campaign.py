@@ -532,6 +532,9 @@ GAP_FOLLOWUP_DEFAULT_MAX_SUBSPRINTS = 3
 # charter_validator (Step 4) rejects a higher (non-shrink-tolerating) value as a §1.7-D
 # evasion.
 GAP_FOLLOWUP_DEFAULT_MAX_NO_PROGRESS = 1
+# §1.7-G (Phase 3): the E2E-remediation no-progress default — HALT on the FIRST non-shrinking
+# failing-criterion round (mirrors gap_followup; charter_validator pins any explicit value to 1).
+E2E_REMEDIATION_DEFAULT_MAX_NO_PROGRESS = 1
 # §1.7-F clause 2: when the campaign plan declares NO countable budget AND the charter
 # declares no budget.max_fix_rounds_total, the gap-followup dimension still gets a
 # conservative TOTAL-rounds effective-cap — it does NOT inherit today's unbounded default.
@@ -2738,7 +2741,7 @@ def _envelope_milestone(charter: Optional[dict], milestone: dict,
     return entry
 
 
-def _resolve_plan_authority(plan: dict) -> dict:
+def _resolve_plan_authority(plan: dict, charter: Optional[dict] = None) -> dict:
     """Track-2 T2-B: the RESOLVED top-level authority block bound into the signed hash H
     (and stored in the scope_envelope). It mirrors the EXACT resolution the runner's
     constructor applies (Campaign.__init__: budget, milestone_isolation/legacy
@@ -2753,6 +2756,17 @@ def _resolve_plan_authority(plan: dict) -> dict:
     folded into default_strategy) so absent-vs-explicit-default does not churn the hash and
     so the live re-read (which resolves the same way) compares equal byte-for-byte.
 
+    P3 §1.7-G (design §10): the OPTIONAL ``charter`` surfaces the resolved
+    ``e2e_remediation`` authority (charter.autonomy.e2e_remediation — the SIGNED budget the
+    DRIVER enforces per-milestone) into the top-level authority, so signoff_snapshot_authentic
+    renders it explicitly and a post-sign raise flips H → stale. This is REDUNDANT with
+    charter_hash ⊂ H (which already binds the whole charter, including this block); surfacing
+    it here makes the E2E-remediation budget a first-class, explicitly-rendered authority. Both
+    callers (compute_scope_envelope / _signed_scope_H) pass the SAME charter used everywhere in
+    H, so the sign-time store and the live recompute read it identically (byte-stable). ADDITIVE:
+    the key is emitted ONLY when the charter carries an e2e_remediation dict — a pre-P3 charter
+    (or the charter=None call path) omits it (byte-identical to before).
+
     Additivity: this is ONLY ever inside H/scope_envelope, which signoff_status reads ONLY
     when f1_required(plan) — a legacy non-F1 plan never reaches this (byte-identical)."""
     budget = plan.get("budget") or {}
@@ -2764,7 +2778,7 @@ def _resolve_plan_authority(plan: dict) -> dict:
     elif not default_iso and legacy == "shared":
         default_iso = li.STRATEGY_CURRENT_BRANCH
     gf = plan.get("gap_followup") or {}
-    return {
+    resolved = {
         "budget": {
             "max_subsprints": budget.get("max_subsprints"),
             "max_total_spawns": budget.get("max_total_spawns"),
@@ -2786,6 +2800,15 @@ def _resolve_plan_authority(plan: dict) -> dict:
             "cleanup_policy": iso.get("cleanup_policy") or li.CLEANUP_KEEP,
         },
     }
+    er = ((charter or {}).get("autonomy") or {}).get("e2e_remediation")
+    if isinstance(er, dict):
+        resolved["e2e_remediation"] = {
+            "enabled": bool(er.get("enabled", False)),
+            "max_rounds": er.get("max_rounds"),
+            "max_no_progress_rounds": er.get("max_no_progress_rounds",
+                                             E2E_REMEDIATION_DEFAULT_MAX_NO_PROGRESS),
+        }
+    return resolved
 
 
 def compute_scope_envelope(plan: dict, charter: Optional[dict],
@@ -2803,7 +2826,7 @@ def compute_scope_envelope(plan: dict, charter: Optional[dict],
         "goal": plan.get("goal"),
         "milestones": [_envelope_milestone(charter, m, ledger)
                        for m in (plan.get("milestones") or [])],
-        "authority": _resolve_plan_authority(plan),
+        "authority": _resolve_plan_authority(plan, charter),
     }
 
 
@@ -2825,7 +2848,7 @@ def _signed_scope_H(plan: dict, charter: Optional[dict], *,
         "charter_hash": charter_hash,
         "milestones": [_envelope_milestone(charter, m, ledger)
                        for m in (plan.get("milestones") or [])],
-        "authority": _resolve_plan_authority(plan),
+        "authority": _resolve_plan_authority(plan, charter),
     }
 
 

@@ -291,6 +291,31 @@ def enforce_mandatory_e2e_for_real_run(plan: dict, charter: dict,
         _cp.render_mandatory_e2e_refusal(violations, action="refusing the real run"))
 
 
+def enforce_required_capabilities_for_real_run(charter: dict) -> None:
+    """ENFORCE the Phase-4 native-E2E capability contract (design §2/§13) for a REAL run: raise
+    ``CharterValidationError`` when the charter DECLARES a required framework capability the
+    DEPLOYED aidazi does not provide (or provides below the required min_version), or when the
+    framework contract is missing/malformed (fail-closed) — BEFORE any adapter is built, so a
+    plan pinned to a capability this framework lacks never reaches a live model. DORMANT (no-op)
+    when the charter declares no required_framework_capabilities (legacy-safe). Mirrors
+    enforce_mandatory_e2e_for_real_run; the raised ValueError maps to the INVALID exit."""
+    if not (charter or {}).get("required_framework_capabilities"):
+        return
+    try:
+        import framework_capabilities as _fc  # engine-kit/framework_capabilities.py on sys.path
+    except Exception as exc:  # noqa: BLE001 — accessor unavailable ⇒ cannot verify ⇒ fail-closed
+        raise CharterValidationError(
+            "charter declares required_framework_capabilities but the framework capability "
+            f"accessor is unavailable — refusing the real run (fail-closed): {exc}") from exc
+    try:
+        violations = _fc.required_capability_violations(charter)
+    except _fc.CapabilityContractError as exc:
+        raise CharterValidationError(str(exc)) from exc
+    if violations:
+        raise CharterValidationError(
+            _fc.render_capability_refusal(violations, action="refusing the real run"))
+
+
 def advisory_validate_charter(charter: dict) -> Optional[str]:
     """Non-raising one-shot schema SUMMARY string (for visibility without
     enforcement). Real-run ENFORCEMENT lives in ``enforce_charter_for_real_run``
@@ -653,6 +678,10 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         # own fail-closed plan-schema ingress.
         if allow_real:
             enforce_campaign_plan_for_real_run(plan)
+            # Phase-4 native-E2E: refuse a real run pinned to a framework capability this
+            # deployed aidazi does not provide (fail-closed; dormant when the charter declares
+            # none). Placed alongside the other real-run preflights, before any adapter build.
+            enforce_required_capabilities_for_real_run(charter)
             # Strict ledger load: a wired-but-unreadable/invalid ledger raises LedgerError
             # (a ValueError) → caught below → INVALID, rather than dormantly skipping the
             # mandate. An absent ledger stays dormant (additive).
@@ -1082,6 +1111,20 @@ def main(argv=None) -> int:
                 print(_cp.render_mandatory_e2e_refusal(
                     _ow_violations, action="refusing to sign the plan"))
                 return 2
+            # Phase-4 native-E2E capability contract (design §2/§13): refuse to SIGN a plan
+            # whose charter pins a framework capability this deployed aidazi does not provide
+            # (deterministic, fail-closed). Dormant when the charter declares none.
+            if charter.get("required_framework_capabilities"):
+                import framework_capabilities as _fc  # engine-kit on sys.path
+                try:
+                    _cap_violations = _fc.required_capability_violations(charter)
+                except _fc.CapabilityContractError as exc:
+                    print(f"--sign-plan REFUSED: {exc}")
+                    return 2
+                if _cap_violations:
+                    print(_fc.render_capability_refusal(
+                        _cap_violations, action="refusing to sign the plan"))
+                    return 2
             signed = _cp.stamp_signoff(plan, charter,
                                        signed_at=_production_clock()(),
                                        charter_ref=os.path.abspath(args.charter),

@@ -24,6 +24,19 @@
         "ledger_path": {"type": "string", "default": "docs/requirements-ledger.json", "description": "Path to the project requirement ledger (requirement-ledger.schema.json)."}
       }
     },
+    "required_framework_capabilities": {
+      "type": "array",
+      "description": "Phase-4 native-E2E capability contract (design §2/§13). OPTIONAL, ADDITIVE. The machine-readable framework capabilities this charter REQUIRES the deployed/pinned aidazi to PROVIDE — checked DETERMINISTICALLY + FAIL-CLOSED at plan sign-off (--sign-plan) and at the real-run preflight against the framework-owned governance/framework-capabilities.json contract. A missing/under-versioned capability REFUSES the sign/run and names the missing capability, the deployed framework capability/version, and the upgrade action. Absent ⇒ no pinned requirement (legacy-safe, byte-identical to pre-Phase-4). Lives in the charter, so it is bound into charter_hash ⊂ the signed campaign hash H — a post-sign change is an authority change → re-sign.",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "description": "Capability id declared by governance/framework-capabilities.json, e.g. native_managed_external_e2e | framework_owned_e2e_provenance | autonomous_e2e_remediation | codex_adapter_liveness."},
+          "min_version": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$", "description": "Minimum required capability version (dotted integers, compared component-wise). Absent ⇒ presence of the capability suffices."}
+        }
+      }
+    },
     "autonomy": {
       "type": "object",
       "required": ["level", "approved_scope", "auto_pass_rules"],
@@ -82,6 +95,16 @@
                 "max_inserted_subsprints": {"type": "integer", "minimum": 0}
               }
             }
+          }
+        },
+        "e2e_remediation": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "P3 §1.7-G (design §5.3). User-authored, SIGNED budget for the autonomous browser_e2e remediation lane: on a DETERMINISTIC criterion-bound executor failure (checklist-results.json executor_status ∈ {fail,error} from a FULL managed real-execution run) the orchestrator may, WITHOUT a fresh human-confirm checkpoint, dispatch a bounded in-envelope Dev fix + rerun + re-judge — NEVER shipping (checkpoint #9 is unchanged). Default-OFF: absent or enabled:false ⇒ deterministic criterion failures route to the existing §3.5 human gate exactly as today (legacy-safe). Enabled ONLY at autonomy.level human_on_the_loop or higher. This block is inside charter_hash ⊂ the campaign signed hash H, so raising any bound post-sign flips H → stale → re-sign (an authority change); a NORMAL remediation round adds no re-sign. The interpretive Acceptance fix_required / needs_human path stays §3.5 human-gated (§1.7-G is facts-only).",
+          "properties": {
+            "enabled": {"type": "boolean", "description": "Master switch. Default (absent) OFF."},
+            "max_rounds": {"type": "integer", "minimum": 0, "description": "Max bounded fix→rerun→re-judge cycles before fail-closed HALT (driver._check_budget sibling cap on state.e2e_remediation_round). Required when enabled."},
+            "max_no_progress_rounds": {"type": "integer", "minimum": 1, "description": "Halt-threshold for a round whose failing-criterion set is NOT a strict proper subset of the prior round's (mirrors gap_followup). A round that INTRODUCES a new failing criterion is an immediate regression HALT. Default (absent) 1 — no-progress HALTs on the first occurrence; a value > 1 tolerates non-progress and is rejected by charter_validator as a §1.7-D evasion."}
           }
         }
       }

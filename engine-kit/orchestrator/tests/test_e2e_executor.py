@@ -20,6 +20,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ORCH_DIR = os.path.dirname(_TESTS_DIR)                       # orchestrator/
@@ -373,6 +374,166 @@ class TestFactoryAndGate(unittest.TestCase):
         finally:
             if old is not None:
                 os.environ["AIDAZI_E2E_PLAYWRIGHT"] = old
+
+
+class ExternalTestRunnerTests(unittest.TestCase):
+    """A1: managed external_test_runner — report parsing, criterion mapping,
+    mapping_state, provenance emission, and gating (all offline: the runner subprocess
+    is mocked; the parsing/mapping logic is pure)."""
+
+    _CHECKLIST = {"criteria": [
+        {"criterion_id": "AUTH-login", "criterion": "login works"},
+        {"criterion_id": "ISO-cross-org", "criterion": "cross-org blocked"},
+        {"criterion_id": "PII-absent", "criterion": "no PII in body"},
+    ]}
+
+    @staticmethod
+    def _report():
+        # nested suite; AUTH via @crit tag (passed), ISO via criterion_map (failed),
+        # PII has NO test → must land unmapped.
+        return {"suites": [{"title": "browser.spec.ts", "specs": [
+            {"title": "user can login @crit:AUTH-login", "tags": ["@crit:AUTH-login"],
+             "tests": [{"status": "expected", "results": [
+                 {"status": "passed", "attachments": [
+                     {"name": "trace", "path": "/abs/test-results/a/trace.zip"}]}]}]},
+            {"title": "cross org isolation returns 403",
+             "tests": [{"status": "unexpected", "results": [
+                 {"status": "failed", "attachments": []}]}]},
+        ]}], "stats": {"expected": 1, "unexpected": 1}}
+
+    # --- pure parsing / mapping --------------------------------------------- #
+    def test_apply_report_maps_status_and_mapping_state(self):
+        crits = ex.ExternalTestRunnerExecutor._seed_unmapped(self._CHECKLIST)
+        contract = {"criterion_map": {"cross org isolation": "ISO-cross-org"}}
+        ex.ExternalTestRunnerExecutor._apply_report(self._report(), crits, contract)
+        self.assertEqual(crits["AUTH-login"].executor_status, "pass")
+        self.assertEqual(crits["AUTH-login"].mapping_state, "mapped")
+        self.assertIn("playwright-report.json", crits["AUTH-login"].evidence_refs)
+        self.assertEqual(crits["ISO-cross-org"].executor_status, "fail")
+        self.assertEqual(crits["ISO-cross-org"].mapping_state, "mapped")
+        # PII-absent had NO mapped test → stays unmapped (a contract-completeness fault)
+        self.assertEqual(crits["PII-absent"].mapping_state, "unmapped")
+        self.assertEqual(crits["PII-absent"].executor_status, "skipped")
+
+    def test_worst_wins_fold_across_tests(self):
+        report = {"suites": [{"title": "s", "specs": [
+            {"title": "a @crit:AUTH-login", "tests": [{"results": [
+                {"status": "passed"}]}]},
+            {"title": "b @crit:AUTH-login", "tests": [{"results": [
+                {"status": "failed"}]}]},
+        ]}]}
+        crits = ex.ExternalTestRunnerExecutor._seed_unmapped(self._CHECKLIST)
+        ex.ExternalTestRunnerExecutor._apply_report(report, crits, {})
+        self.assertEqual(crits["AUTH-login"].executor_status, "fail")  # fail > pass
+
+    def test_timedout_maps_to_error(self):
+        report = {"suites": [{"title": "s", "specs": [
+            {"title": "x @crit:AUTH-login", "tests": [{"results": [
+                {"status": "timedOut"}]}]}]}]}
+        crits = ex.ExternalTestRunnerExecutor._seed_unmapped(self._CHECKLIST)
+        ex.ExternalTestRunnerExecutor._apply_report(report, crits, {})
+        self.assertEqual(crits["AUTH-login"].executor_status, "error")
+
+    def test_match_criterion_explicit_map_wins_over_tag(self):
+        crits = {"A": None, "B": None}
+        # title has @crit:A but the explicit map routes it to B → map wins
+        cid = ex.ExternalTestRunnerExecutor._match_criterion(
+            "do thing @crit:A", [], {"do thing": "B"}, crits)
+        self.assertEqual(cid, "B")
+
+    def test_match_criterion_tag_fallback_and_miss(self):
+        crits = {"A": None}
+        self.assertEqual(ex.ExternalTestRunnerExecutor._match_criterion(
+            "x @crit:A", [], {}, crits), "A")
+        self.assertIsNone(ex.ExternalTestRunnerExecutor._match_criterion(
+            "no tag here", [], {}, crits))
+
+    def test_runner_argv_default_and_override(self):
+        self.assertEqual(
+            ex.ExternalTestRunnerExecutor._runner_argv({"spec_path": "e2e/x.spec.ts"}),
+            ["npx", "playwright", "test", "e2e/x.spec.ts", "--reporter=json"])
+        self.assertEqual(
+            ex.ExternalTestRunnerExecutor._runner_argv({"runner_argv": ["yarn", "e2e"]}),
+            ["yarn", "e2e"])
+
+    def test_spec_outcome_collects_attachments(self):
+        spec = {"title": "t", "tests": [{"results": [
+            {"status": "passed", "attachments": [
+                {"name": "trace", "path": "/x/test-results/d/trace.zip"}]}]}]}
+        status, atts = ex.ExternalTestRunnerExecutor._spec_outcome(spec)
+        self.assertEqual(status, "passed")
+        self.assertIn("test-results/trace.zip", atts)
+
+    def test_exec_runner_captures_real_pid(self):
+        # Regression for the CompletedProcess-has-no-pid bug: _exec_runner uses Popen and
+        # returns a real pid + stdout + returncode (subprocess.run's CompletedProcess had
+        # no .pid, which run() dereferences for provenance).
+        r = ex.ExternalTestRunnerExecutor()
+        with tempfile.TemporaryDirectory() as d:
+            res = r._exec_runner(
+                [sys.executable, "-c", "print('ok')"],
+                {"cwd": d}, os.path.join(d, "out"), os.path.join(d, "report.json"), {})
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("ok", res.stdout)
+            self.assertIsInstance(res.pid, int)
+            self.assertGreater(res.pid, 0)
+
+    # --- gating + factory --------------------------------------------------- #
+    def test_gated_off_raises_unavailable(self):
+        old = os.environ.pop("AIDAZI_E2E_EXTERNAL_RUNNER", None)
+        try:
+            r = ex.make_executor("external_test_runner")
+            self.assertIsInstance(r, ex.ExternalTestRunnerExecutor)
+            with self.assertRaises(ex.ExecutorUnavailable):
+                r.run({}, {"criteria": []}, tempfile.mkdtemp(), {})
+        finally:
+            if old is not None:
+                os.environ["AIDAZI_E2E_EXTERNAL_RUNNER"] = old
+
+    def test_make_executor_unknown_still_fails_closed(self):
+        with self.assertRaises(ValueError):
+            ex.make_executor("no_such_kind")
+
+    # --- run() end-to-end (mocked subprocess) ------------------------------- #
+    def test_run_emits_provenance_and_criteria(self):
+        r = ex.ExternalTestRunnerExecutor()
+        r._enabled = True
+        report = self._report()
+
+        class _Proc:
+            returncode = 0
+            pid = 4321
+            stdout = json.dumps(report)
+            stderr = ""
+
+        def _fake_exec(argv, contract, output_dir, report_path, env):
+            with open(report_path, "w", encoding="utf-8") as fh:
+                json.dump(report, fh)
+            return _Proc()
+
+        with tempfile.TemporaryDirectory() as d:
+            contract = {"spec_path": "e2e/browser.spec.ts", "cwd": d,
+                        "criterion_map": {"cross org isolation": "ISO-cross-org"}}
+            env = {"AIDAZI_E2E_INVOCATION_NONCE": "nonce-abc123"}
+            with mock.patch.object(r, "_exec_runner", side_effect=_fake_exec), \
+                 mock.patch.object(r, "_tool_version", return_value="pw-1.0"), \
+                 mock.patch.object(ex.PlaywrightExecutor, "_await_remote_readiness",
+                                   staticmethod(lambda contract: None)):
+                result = r.run(contract, self._CHECKLIST, d, env)
+
+            self.assertEqual(result.exit_code, 0)
+            by_id = {c.criterion_id: c for c in result.criteria}
+            self.assertEqual(by_id["AUTH-login"].executor_status, "pass")
+            self.assertEqual(by_id["ISO-cross-org"].executor_status, "fail")
+            self.assertEqual(by_id["PII-absent"].mapping_state, "unmapped")
+            self.assertIn("run-provenance.json", result.artifacts)
+            self.assertIn("playwright-report.json", result.artifacts)
+            prov = json.load(open(os.path.join(d, "run-provenance.json")))
+            self.assertEqual(prov["invocation_nonce"], "nonce-abc123")
+            self.assertEqual(prov["executor_kind"], "external_test_runner")
+            self.assertEqual(prov["exit_code"], 0)
+            self.assertEqual(prov["pid"], 4321)
+            self.assertTrue(prov["wall_clock_start"] and prov["wall_clock_end"])
 
 
 if __name__ == "__main__":
