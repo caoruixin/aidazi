@@ -643,6 +643,22 @@ class CodexStreamProbeTests(unittest.TestCase):
         p.observe(self._item_completed("item_9", itype="reasoning"))
         self.assertFalse(p.active())
 
+    def test_terminal_variants_clear(self):
+        # turn.failed and thread.completed are terminal like turn.completed.
+        for terminal in ("turn.failed", "thread.completed"):
+            p = CodexStreamProbe()
+            p.observe(json.dumps({"type": "turn.started"}))
+            p.observe(self._item_started("item_1"))
+            self.assertTrue(p.active(), terminal)
+            p.observe(json.dumps({"type": terminal}))
+            self.assertFalse(p.active(), terminal)
+
+    def test_item_incomplete_closes(self):
+        p = CodexStreamProbe()
+        p.observe(self._item_started("item_1"))
+        p.observe(json.dumps({"type": "item.incomplete", "item": {"id": "item_1"}}))
+        self.assertFalse(p.active())
+
 
 class CodexProbeWiringTests(unittest.TestCase):
     """A3: the adapter actually passes the probe factory into the monitor."""
