@@ -466,6 +466,10 @@ class RunState:
     e2e_run_id: Optional[str] = None
     e2e_evidence_ref: Optional[str] = None
     e2e_manifest_hash: Optional[str] = None
+    #: A2 framework-owned per-run provenance nonce (external_test_runner). Persisted in
+    #: RunState — NOT in the evidence dir — so an adopter-authored/pre-existing evidence
+    #: set can never supply the nonce the pre-spawn provenance gate expects.
+    e2e_invocation_nonce: Optional[str] = None
     acceptance_evidence_hash: Optional[str] = None
     acceptance_snapshot: Optional[dict] = None
     #: Track 1 1-c — integrity digest over the per-sub-sprint task_signals AUTHORED by Deliver at
@@ -498,6 +502,7 @@ class RunState:
             "e2e_run_id": self.e2e_run_id,
             "e2e_evidence_ref": self.e2e_evidence_ref,
             "e2e_manifest_hash": self.e2e_manifest_hash,
+            "e2e_invocation_nonce": self.e2e_invocation_nonce,
             "acceptance_evidence_hash": self.acceptance_evidence_hash,
             "acceptance_snapshot": self.acceptance_snapshot,
             # 1-c: emit ONLY when set, so a run that authored no task_signals round-trips
@@ -530,6 +535,7 @@ class RunState:
             e2e_run_id=d.get("e2e_run_id"),
             e2e_evidence_ref=d.get("e2e_evidence_ref"),
             e2e_manifest_hash=d.get("e2e_manifest_hash"),
+            e2e_invocation_nonce=d.get("e2e_invocation_nonce"),
             acceptance_evidence_hash=d.get("acceptance_evidence_hash"),
             acceptance_snapshot=d.get("acceptance_snapshot"),
             task_signals_digest=d.get("task_signals_digest"),
@@ -3331,6 +3337,37 @@ class Driver:
     def _e2e_final_dir(self, run_id: str) -> str:
         return os.path.join(self.browser_dir, run_id)
 
+    # ----- A2: framework-owned execution provenance ------------------------ #
+    def _e2e_invocation_nonce(self) -> str:
+        """A2: the framework-owned, unforgeable per-run nonce, generated ONCE and persisted
+        in RunState (NOT in the evidence dir). The pre-spawn provenance gate requires the
+        run-provenance.json + manifest + paired audit events to ALL carry this exact value,
+        so an adopter-authored or pre-existing evidence set can never satisfy the gate."""
+        assert self.state is not None
+        if not self.state.e2e_invocation_nonce:
+            seed = (self.loop_id + "\x00" + self.state.subsprint_id + "\x00"
+                    + self._e2e_run_id() + "\x00" + self.clock())
+            self.state.e2e_invocation_nonce = (
+                "n" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24])
+            self._save_state()
+        return self.state.e2e_invocation_nonce
+
+    def _e2e_marker_path(self, run_id: str) -> str:
+        """Driver-owned in-flight marker, OUTSIDE the hashed evidence dir (so it is never a
+        no-strays violation). A residual marker at reconcile ⇒ the prior run did not commit
+        ⇒ re-run (fail-closed on residual in-flight state)."""
+        return os.path.join(self.browser_dir, ".e2e-inflight", run_id + ".json")
+
+    def _e2e_requires_real_execution(self) -> bool:
+        """True when this is a REAL run (allow_real, or any non-Mock acceptance adapter) —
+        in which case a browser_e2e milestone MUST use a real-execution executor kind; the
+        deterministic local_http dry-run class cannot produce a real acceptance verdict.
+        Offline/mock test runs (Mock acceptance, no allow_real) stay exempt."""
+        if bool(self.context.get("allow_real")):
+            return True
+        acc = self.adapters.get("acceptance")
+        return acc is not None and not isinstance(acc, MockAdapter)
+
     def _e2e_rel_prefix(self, run_id: str) -> str:
         """The committed run dir RELATIVE to run_dir — the prefix a verdict's
         functional_evidence_refs must use (.orchestrator/audit/browser/<loop>/<run>)."""
@@ -3622,12 +3659,27 @@ class Driver:
         assert self.state is not None
         run_id = self._e2e_run_id()
         final = self._e2e_final_dir(run_id)
+        kind = self._e2e_config().get("executor_kind", "")
+        # A2 dry-run routing refusal: a REAL browser_e2e run must use a real-execution
+        # executor; the deterministic local_http dry-run class cannot produce a real
+        # acceptance verdict (offline/mock test runs stay exempt via _requires_real_execution).
+        if (self._e2e_requires_real_execution()
+                and kind not in e2e_stage.REAL_EXECUTION_KINDS):
+            raise self._gate_hard_fail(
+                f"browser_e2e acceptance requires a real-execution executor "
+                f"(playwright/external_test_runner); executor_kind={kind!r} is a dry-run "
+                f"class and cannot produce a real acceptance verdict", STATE_E2E_PENDING)
+        prov_required = kind in e2e_stage.PROVENANCE_REQUIRED_KINDS
+        # A residual in-flight marker ⇒ the prior run never committed ⇒ do NOT trust a
+        # (possibly stale/partial) final dir; force a fresh run (fail-closed).
+        residual_inflight = prov_required and os.path.isfile(self._e2e_marker_path(run_id))
         m_schema = self._pc_schema("browser-evidence-manifest.schema.json")
         cr_item = (m_schema.get("$defs") or {}).get("checklist_result")
         events = (audit.read_events(self.audit_ledger)
                   if os.path.isfile(self.audit_ledger) else [])
 
-        if e2e_stage.dir_complete_and_hashes_ok(final, m_schema, cr_item):
+        if (not residual_inflight
+                and e2e_stage.dir_complete_and_hashes_ok(final, m_schema, cr_item)):
             manifest = e2e_stage.load_manifest(final)
             mh = manifest.get("artifact_manifest_hash")
             if not e2e_stage.evidence_event_present(events, run_id, mh):
@@ -3644,10 +3696,30 @@ class Driver:
         self._audit("e2e_start", {"subsprint_id": self.state.subsprint_id,
                                   "run_id": run_id,
                                   "executor_kind": contract.get("executor_kind")})
+        # A2 PRE-SPAWN (real-execution class): generate the framework-owned nonce, write the
+        # driver-owned in-flight marker OUTSIDE the hashed dir, and record e2e_start on the
+        # Audit Spine BEFORE the spawn; hand the nonce to the runner via env.
+        env: dict = {}
+        provenance_meta = None
+        e2e_start_ts = None
+        nonce = ""
+        if prov_required:
+            nonce = self._e2e_invocation_nonce()
+            os.makedirs(os.path.dirname(self._e2e_marker_path(run_id)), exist_ok=True)
+            e2e_start_ts = self.clock()
+            with open(self._e2e_marker_path(run_id), "w", encoding="utf-8") as fh:
+                json.dump({"run_id": run_id, "subsprint_id": self.state.subsprint_id,
+                           "invocation_nonce": nonce, "e2e_start_ts": e2e_start_ts},
+                          fh, sort_keys=True)
+            self._audit(e2e_stage.E2E_START_EVENT_TYPE, {
+                "run_id": run_id, "invocation_nonce": nonce,
+                "executor_kind": contract.get("executor_kind"),
+                "e2e_start_ts": e2e_start_ts})
+            env = {"AIDAZI_E2E_INVOCATION_NONCE": nonce}
         os.makedirs(staging, exist_ok=True)
         try:
             executor = e2e_executor.make_executor(contract.get("executor_kind", ""))
-            result = executor.run(contract, checklist, staging, env={})
+            result = executor.run(contract, checklist, staging, env=env)
         except e2e_executor.ExecutorUnavailable as exc:
             shutil.rmtree(staging, ignore_errors=True)
             raise self._gate_hard_fail(
@@ -3661,8 +3733,32 @@ class Driver:
             raise self._gate_hard_fail(
                 f"browser executor config error: {exc}", STATE_E2E_PENDING)
 
+        # A2 PRE-PUBLICATION contract HALT: a signed criterion with NO mapped test
+        # (mapping_state 'unmapped') is a runner-contract completeness fault — never publish
+        # acceptance-eligible evidence with one (§5.1).
+        if prov_required and any(
+                getattr(c, "mapping_state", "mapped") == "unmapped"
+                for c in result.criteria):
+            shutil.rmtree(staging, ignore_errors=True)
+            unmapped = sorted(c.criterion_id for c in result.criteria
+                              if getattr(c, "mapping_state", "mapped") == "unmapped")
+            raise self._gate_hard_fail(
+                f"browser_e2e runner contract incomplete: signed criteria with no mapped "
+                f"test (unmapped): {unmapped}; bind them via @crit:<id> or criterion_map",
+                STATE_E2E_PENDING)
+
+        # A2 POST-SPAWN: record e2e_end + assemble the driver execution window into the
+        # manifest provenance (validated by the pre-spawn provenance gate before Acceptance).
+        if prov_required:
+            e2e_end_ts = self.clock()
+            self._audit(e2e_stage.E2E_END_EVENT_TYPE, {
+                "run_id": run_id, "invocation_nonce": nonce, "e2e_end_ts": e2e_end_ts})
+            provenance_meta = {"invocation_nonce": nonce,
+                               "e2e_start_ts": e2e_start_ts, "e2e_end_ts": e2e_end_ts}
+
         manifest = e2e_stage.build_manifest(
-            staging, result, contract, run_id=run_id, loop_id=self.loop_id)
+            staging, result, contract, run_id=run_id, loop_id=self.loop_id,
+            provenance=provenance_meta)
         with open(os.path.join(staging, "manifest.json"), "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, sort_keys=True, indent=2)
         if not e2e_stage.dir_complete_and_hashes_ok(staging, m_schema, cr_item):
@@ -3676,6 +3772,12 @@ class Driver:
         mh = manifest.get("artifact_manifest_hash")
         self._emit_e2e_event(run_id, final, manifest)
         self._cache_e2e_commit(run_id, final, mh)
+        # A2: the run committed cleanly — clear the in-flight marker (no residual state).
+        if prov_required:
+            try:
+                os.remove(self._e2e_marker_path(run_id))
+            except OSError:
+                pass
         return manifest
 
     def _check_dev_self_smoke(self) -> None:
@@ -4166,9 +4268,49 @@ class Driver:
                 "browser evidence not anchored on the Audit Spine (no matching "
                 "browser_e2e_evidence event); refusing to judge unanchored evidence",
                 STATE_ACCEPTANCE_PENDING)
+        # A2: for the real-execution (external_test_runner) class, validate the
+        # framework-owned execution provenance BEFORE Acceptance spawns.
+        self._verify_execution_provenance(run_id, final, events)
         rel = os.path.relpath(os.path.join(final, "manifest.json"),
                               self.run_dir).replace(os.sep, "/")
         return manifest, rel, run_id
+
+    def _verify_execution_provenance(self, run_id: str, final_dir: str,
+                                     events: list) -> None:
+        """A2 pre-spawn provenance gate for the real-execution (external_test_runner) class.
+        Loads run-provenance.json + manifest + checklist-results + the Audit-Spine chain
+        state and delegates to :func:`e2e_stage.verify_execution_provenance` with the
+        FRAMEWORK-OWNED nonce from RunState (never read from the evidence dir). Any failure
+        → gate_hard_fail BEFORE Acceptance spawns (fail-closed on missing/inconsistent/
+        stale/dry-run/unmapped/chain-broken evidence). A no-op for non-provenance kinds."""
+        assert self.state is not None
+        if (self._e2e_config().get("executor_kind", "")
+                not in e2e_stage.PROVENANCE_REQUIRED_KINDS):
+            return
+        prov_schema = self._pc_schema("run-provenance.schema.json")
+        try:
+            with open(os.path.join(final_dir, "run-provenance.json"),
+                      "r", encoding="utf-8") as fh:
+                provenance = json.load(fh)
+        except (OSError, ValueError):
+            provenance = None
+        try:
+            with open(os.path.join(final_dir, "checklist-results.json"),
+                      "r", encoding="utf-8") as fh:
+                checklist_results = json.load(fh)
+        except (OSError, ValueError):
+            checklist_results = []
+        chain_ok = (audit.verify_chain(self.audit_ledger).ok
+                    if os.path.isfile(self.audit_ledger) else False)
+        reason = e2e_stage.verify_execution_provenance(
+            manifest=e2e_stage.load_manifest(final_dir),
+            provenance=provenance, provenance_schema=prov_schema,
+            checklist_results=checklist_results, events=events,
+            expected_nonce=self.state.e2e_invocation_nonce, audit_chain_ok=chain_ok)
+        if reason:
+            raise self._gate_hard_fail(
+                f"browser evidence failed the real-execution provenance gate: {reason}; "
+                f"refusing to judge unverified evidence", STATE_ACCEPTANCE_PENDING)
 
     def _browser_evidence_prompt_section(self, run_id: str,
                                          manifest: Optional[dict]) -> str:
