@@ -3520,16 +3520,22 @@ class Driver:
         if not wd:
             return None
         try:
-            out = li._run_git(wd, ["status", "--porcelain", "--untracked-files=all"])
+            # --no-renames: a rename is reported as a DELETE (old) + ADD (new), so an
+            # out-of-envelope SOURCE path is never hidden behind an in-envelope destination
+            # (Codex P3-R2). Defensively, any residual "old -> new" line still contributes BOTH
+            # sides below.
+            out = li._run_git(wd, ["status", "--porcelain", "--untracked-files=all",
+                                   "--no-renames"])
         except Exception:  # noqa: BLE001 - any git failure ⇒ gate unavailable (fail-closed)
             return None
         files = set()
         for line in out.splitlines():
-            p = (line[3:] if len(line) > 3 else "").strip().strip('"')
-            if " -> " in p:                      # rename: XY old -> new
-                p = p.split(" -> ", 1)[1]
-            if p:
-                files.add(p.replace("\\", "/"))
+            p = (line[3:] if len(line) > 3 else "").strip()
+            parts = [q.strip().strip('"') for q in p.split(" -> ")] if " -> " in p \
+                else [p.strip('"')]
+            for q in parts:                      # rename ⇒ BOTH old (source) + new are in-scope
+                if q:
+                    files.add(q.replace("\\", "/"))
         return files
 
     def _e2e_observed_diff_available(self) -> bool:
@@ -3548,23 +3554,37 @@ class Driver:
                       if not any(f == m or f.startswith(m + "/") for m in modules))
 
     def _e2e_signed_covers(self) -> Optional[set]:
-        """§5.2b: the SIGNED req_id envelope — the union of the campaign plan's signed
-        covers_req_ids (from the requirement-context sidecar, the same signed source the gap-report
-        binds). None when no signed covers set is DERIVABLE (no campaign requirement-context, or a
-        present sidecar carries no covers) — containment then treats the req_id envelope as
-        UNVERIFIABLE and the lane FAILS CLOSED to §3.5 (a PRESENT req_id binding on a signed
-        checklist criterion is NOT a substitute for the signed covers_req_ids proof — Codex P3-R1).
-        A PRESENT-but-corrupt sidecar raises GateHardFail (propagated → fail-closed integrity HALT,
-        never silently swallowed)."""
+        """§5.2b: THIS milestone's SIGNED req_id envelope = (F1 signed snapshot ∩ this milestone's
+        signed covers_req_ids), from the requirement-context sidecar — the SAME authentic-snapshot
+        basis campaign._req_id_envelope_check / _f1_envelope use (Codex P3-R2: NOT the union of
+        every milestone's covers). Returns that set, or None when it is not DERIVABLE — no campaign
+        requirement-context, an UNVERIFIABLE F1 snapshot (fails against its own signed_scope_hash),
+        THIS milestone not resolvable in the signed snapshot, or an empty envelope. None ⇒
+        containment treats the req_id envelope as UNVERIFIABLE and the lane FAILS CLOSED to §3.5 (a
+        PRESENT req_id binding on a signed checklist criterion is NOT a substitute for the signed
+        covers_req_ids proof — Codex P3-R1). A PRESENT-but-corrupt sidecar raises GateHardFail
+        (propagated → fail-closed integrity HALT, never silently swallowed)."""
         ctx = self._load_requirement_context()   # None (absent) | dict | raises (corrupt)
         if not isinstance(ctx, dict):
             return None
-        plan = ctx.get("plan") or {}
-        covers = set()
-        for m in (plan.get("milestones") or []):
-            if isinstance(m, dict):
-                covers.update(str(r) for r in (m.get("covers_req_ids") or []) if r)
-        return covers or None
+        plan = ctx.get("plan")
+        if not isinstance(plan, dict):
+            return None
+        import campaign as _cp  # lazy: campaign imports driver lazily too, so no import cycle
+        # Authentic F1 snapshot ONLY (fail-closed on an unverifiable snapshot — Codex R-P2a #2):
+        # the snapshot must verify against its own signed_scope_hash before it can PROVE anything.
+        if not _cp.signoff_snapshot_authentic(plan):
+            return None
+        snapshot = (plan.get("signoff") or {}).get("scope_envelope") or {}
+        ms = [m for m in (snapshot.get("milestones") or []) if isinstance(m, dict)]
+        # Resolve THIS milestone by the signed subsprint_sequence that contains our sub-sprint id.
+        this = next((m for m in ms
+                     if self.state.subsprint_id in (m.get("subsprint_sequence") or [])), None)
+        if this is None:
+            return None   # cannot resolve THIS milestone's signed covers ⇒ unverifiable
+        this_covers = {str(r) for r in (this.get("covers_req_ids") or []) if r}
+        envelope = {str(r) for m in ms for r in (m.get("covers_req_ids") or []) if r}
+        return (this_covers & envelope) or None
 
     def _e2e_remediation_containment(self, briefs: list) -> tuple:
         """§5.2 pre-dispatch containment. Returns (ok, reason). Proves the fix is IN-ENVELOPE

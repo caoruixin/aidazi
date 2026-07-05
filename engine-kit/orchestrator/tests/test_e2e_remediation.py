@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ORCH_DIR = os.path.dirname(_TESTS_DIR)
@@ -28,6 +29,7 @@ for _p in (_ORCH_DIR, _ENGINE_KIT_DIR, _TESTS_DIR):
 
 import driver as D  # noqa: E402
 import loop_ingress as li  # noqa: E402
+import campaign as cp  # noqa: E402
 from test_e2e_acceptance import (  # noqa: E402
     _browser_charter, _prep, _clock, _acceptance_adapters)
 
@@ -287,6 +289,69 @@ class ChangedFilesGitTests(unittest.TestCase):
                 repo_dir=repo, created=False, base_ref=None)
             self.assertEqual(drv._e2e_changed_files(), {"app/a.py"})
             self.assertTrue(drv._e2e_observed_diff_available())
+
+    def test_rename_from_out_of_envelope_is_not_hidden(self):
+        # Codex P3-R2 blocker: renaming an OUT-of-envelope source into an in-envelope module must
+        # NOT hide the source path — else it slips past the prefix check.
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(os.path.join(repo, "other"))
+            os.makedirs(os.path.join(repo, "app"))
+            for args in (["init", "-q"], ["config", "user.email", "t@t"],
+                         ["config", "user.name", "t"]):
+                subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True)
+            open(os.path.join(repo, "other", "leak.py"), "w").write("x=1\n")
+            subprocess.run(["git", "-C", repo, "add", "-A"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", repo, "commit", "-qm", "base"], check=True,
+                           capture_output=True)
+            subprocess.run(["git", "-C", repo, "mv", "other/leak.py", "app/leak.py"],
+                           check=True, capture_output=True)
+            drv = _drv(d, _ext_rem_charter(modules=("app",)))
+            drv.context_handle = li.ContextHandle(
+                work_dir=repo, branch="main", strategy=li.STRATEGY_CURRENT_BRANCH,
+                repo_dir=repo, created=False, base_ref=None)
+            changed = drv._e2e_changed_files()
+            self.assertIn("other/leak.py", changed)      # the out-of-envelope SOURCE is surfaced
+            self.assertEqual(drv._e2e_diff_out_of_envelope(changed), ["other/leak.py"])
+
+
+class SignedCoversResolutionTests(unittest.TestCase):
+    """Codex P3-R2: the req_id envelope is THIS milestone's signed covers (∩ F1), not the union."""
+
+    def _ctx(self, run_dir, plan):
+        with open(os.path.join(run_dir, "requirement-context.json"), "w") as fh:
+            json.dump({"plan": plan}, fh)
+
+    def _plan(self):
+        return {"signoff": {"scope_envelope": {"milestones": [
+            {"id": "m1", "subsprint_sequence": ["sprint-001"],
+             "covers_req_ids": ["REQ-A", "REQ-B"]},
+            {"id": "m2", "subsprint_sequence": ["sprint-002"],
+             "covers_req_ids": ["REQ-C"]}]}}}
+
+    def test_current_milestone_covers_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter())
+            drv.state.subsprint_id = "sprint-001"
+            self._ctx(d, self._plan())
+            with mock.patch.object(cp, "signoff_snapshot_authentic", return_value=True):
+                self.assertEqual(drv._e2e_signed_covers(), {"REQ-A", "REQ-B"})  # NOT REQ-C
+
+    def test_unverifiable_snapshot_is_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter())
+            drv.state.subsprint_id = "sprint-001"
+            self._ctx(d, self._plan())
+            with mock.patch.object(cp, "signoff_snapshot_authentic", return_value=False):
+                self.assertIsNone(drv._e2e_signed_covers())
+
+    def test_subsprint_not_in_any_signed_milestone_is_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter())
+            drv.state.subsprint_id = "sprint-999"
+            self._ctx(d, self._plan())
+            with mock.patch.object(cp, "signoff_snapshot_authentic", return_value=True):
+                self.assertIsNone(drv._e2e_signed_covers())
 
 
 # --------------------------------------------------------------------------- #
