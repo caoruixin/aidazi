@@ -1523,6 +1523,29 @@ class TestF1SignoffStatus(unittest.TestCase):
         flipped = {"tooling": {"acceptance": {"functional": {"mode": "browser_e2e"}}}}
         self.assertEqual(cp.signoff_status(signed, flipped), "stale")
 
+    def test_e2e_remediation_authority_resolves_and_is_additive(self):
+        # §1.7-G (design §10): the charter's autonomy.e2e_remediation is surfaced into the
+        # RESOLVED authority (defaults filled), and is ADDITIVE — absent charter/block ⇒ no key
+        # (byte-identical to pre-P3, so the exact-H-spec test above still holds).
+        plan = _plan([_covms("m1", ["s1"], ["REQ-1"])])
+        ch = {"autonomy": {"e2e_remediation": {"enabled": True, "max_rounds": 2}}}
+        self.assertEqual(cp._resolve_plan_authority(plan, ch)["e2e_remediation"],
+                         {"enabled": True, "max_rounds": 2, "max_no_progress_rounds": 1})
+        self.assertNotIn("e2e_remediation", cp._resolve_plan_authority(plan))
+        self.assertNotIn("e2e_remediation", cp._resolve_plan_authority(plan, {}))
+
+    def test_e2e_remediation_budget_raise_is_stale_but_normal_is_signed(self):
+        # §1.7-G invariant: raising the SIGNED remediation budget is an AUTHORITY change ⇒
+        # H flips ⇒ stale ⇒ re-sign; an unchanged (normal) run adds NO re-sign.
+        ch = {"tooling": {"acceptance": {"functional": {"mode": "static"}}},
+              "autonomy": {"e2e_remediation": {"enabled": True, "max_rounds": 2}}}
+        signed = cp.stamp_signoff(_plan([_covms("m1", ["s1"], ["REQ-1"])]),
+                                  ch, signed_at="t")
+        self.assertEqual(cp.signoff_status(signed, ch), "signed")   # normal ⇒ no re-sign
+        raised = json.loads(json.dumps(ch))
+        raised["autonomy"]["e2e_remediation"]["max_rounds"] = 3
+        self.assertEqual(cp.signoff_status(signed, raised), "stale")  # budget raise ⇒ re-sign
+
     def test_empty_covers_array_opts_into_f1(self):
         # Codex R-P2a NB-1: an explicit covers_req_ids:[] is PRESENCE ⇒ F1 active (a
         # non-empty/truthiness test would silently downgrade it to legacy byte-identical).

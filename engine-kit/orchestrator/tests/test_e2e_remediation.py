@@ -377,6 +377,21 @@ class LaneControlFlowTests(unittest.TestCase):
             self.assertEqual(dev, 1)                       # fix ran, then the diff check halted
             self.assertEqual(drv.state.state, D.STATE_HALTED)
 
+    def test_resume_midlane_is_idempotent_no_spurious_halt(self):
+        # §5.4 crash-resume (point 4): a resume that re-enters the lane with round 1 ALREADY
+        # recorded re-reads the same committed evidence ({C2}) and must NOT spuriously fire a
+        # no-progress HALT — the index-based failing-set recording is idempotent; it continues
+        # to a clean pass.
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter(max_rounds=3))
+            drv.state.e2e_remediation_round = 1
+            drv.state.failing_criteria_by_round = [["C2", "C3"], ["C2"]]
+            proceed, dev = _script_lane(drv, [["C2"], []])
+            self.assertTrue(proceed)
+            self.assertNotEqual(drv.state.state, D.STATE_HALTED)
+            self.assertEqual(drv.state.e2e_remediation_round, 2)
+            self.assertEqual(dev, 1)                       # only the ONE remaining fix dispatched
+
 
 if __name__ == "__main__":
     unittest.main()
