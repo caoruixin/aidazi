@@ -4,11 +4,14 @@
   "title": "Browser-E2E executor contract (P-C — executor MECHANICS)",
   "description": "The HOW of a browser-E2E evidence run: app start / readiness / shutdown, base URL, allowed LOCAL origins, and the declared user journeys. Owned by Deliver/adopter, MUTABLE — these MECHANICS PRODUCE evidence; they NEVER define pass/fail (the signed functional-checklist criteria do, and Acceptance judges). v1 is local/demo oriented: no auth, no remote deploy, no cloud browser. The DRIVER injects per-run values at the e2e gate: it substitutes the literal tokens {port}/{store}/{mode} in app_start_cmd, sets the concrete base_url (host from the static base_url + the allocated port), and provides PORT/STORE/MODE to the child env — so the static charter form stays portless/templated and the runtime form is concrete. This contract is the shape of charter.tooling.e2e (the charter validator cross-checks it; the driver re-validates the runtime form).",
   "type": "object",
-  "required": ["executor_kind", "readiness", "base_url", "allowed_origins", "journeys"],
+  "required": ["executor_kind", "readiness", "base_url", "allowed_origins"],
   "additionalProperties": false,
   "properties": {
     "executor_contract_id": {"type": "string", "description": "Stable id; part of the M3 calibration identity (a change invalidates the M3 record)."},
-    "executor_kind": {"type": "string", "enum": ["local_http", "playwright"], "description": "local_http = deterministic offline stdlib executor (CI). playwright = real browser, opt-in + env-gated (AIDAZI_E2E_PLAYWRIGHT=1); never run in offline CI."},
+    "executor_kind": {"type": "string", "enum": ["local_http", "playwright", "external_test_runner"], "description": "local_http = deterministic offline stdlib executor (CI, DRY-RUN class — never acceptance-eligible for a browser_e2e milestone). playwright = real in-process browser driving the declarative journeys, opt-in + env-gated (AIDAZI_E2E_PLAYWRIGHT=1). external_test_runner = managed adopter spec-runner (e.g. `npx playwright test`), env-gated (AIDAZI_E2E_EXTERNAL_RUNNER=1); the REAL-EXECUTION class that carries framework-generated provenance. journeys are required for local_http/playwright; external_test_runner requires spec_path or runner_argv instead."},
+    "runner_argv": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "external_test_runner: the managed runner command (default `npx playwright test <spec_path> --reporter=json`). shell=False, fixed argv."},
+    "spec_path": {"type": "string", "description": "external_test_runner: path (relative to cwd) of the adopter spec/suite to run; also sha256'd into run-provenance."},
+    "criterion_map": {"type": "object", "additionalProperties": {"type": "string"}, "description": "external_test_runner: optional {test-title-substring: criterion_id} bindings (the @crit:<id> title tag is the other channel). A signed criterion with no bound test is 'unmapped' → a pre-publication contract HALT."},
     "target_environment": {
       "type": "string",
       "enum": ["local", "staging", "production"],
@@ -92,6 +95,16 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"executor_kind": {"enum": ["local_http", "playwright"]}}},
+      "then": {"required": ["journeys"]}
+    },
+    {
+      "if": {"properties": {"executor_kind": {"const": "external_test_runner"}}},
+      "then": {"anyOf": [{"required": ["spec_path"]}, {"required": ["runner_argv"]}]}
+    }
+  ],
   "$defs": {
     "step": {
       "type": "object", "additionalProperties": false, "required": ["action"],

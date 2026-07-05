@@ -46,9 +46,13 @@ ARTIFACT OWNERSHIP (the driver, NOT the executor, writes the verdict-adjacent fi
 from __future__ import annotations
 
 import abc
+import datetime
+import hashlib
 import http.client
 import json
 import os
+import platform
+import re
 import subprocess
 import sys
 import time
@@ -84,6 +88,14 @@ class CriterionResult:
     observed_result: str
     evidence_refs: list = field(default_factory=list)
     executor_status: str = "skipped"
+    #: A2/§5.1 router disambiguation. ``"mapped"`` — a runner test is bound to this
+    #: signed criterion (``executor_status`` is then authoritative). ``"unmapped"`` — NO
+    #: test is bound (a runner-CONTRACT completeness fault): the driver refuses to publish
+    #: an acceptance-eligible manifest for a browser_e2e milestone with any unmapped signed
+    #: criterion (pre-publication HALT for a contract change), so ``unmapped`` is NEVER
+    #: emitted as ``skipped`` and never routes as a code-fix. The declarative executors
+    #: (local_http/playwright, which drive the checklist directly) always leave the default.
+    mapping_state: str = "mapped"
 
 
 # Observation severity (Codex impl r2 BLOCKING-1): a criterion record is folded
@@ -1201,6 +1213,390 @@ class PlaywrightExecutor(BrowserExecutor):
 
 
 # ===========================================================================
+# ExternalTestRunnerExecutor — A1: MANAGED adopter spec-runner (real-execution class)
+# ===========================================================================
+_CRIT_TAG = re.compile(r"@crit:([A-Za-z0-9][A-Za-z0-9._\-]*)")
+
+
+class ExternalTestRunnerExecutor(BrowserExecutor):
+    """Run the ADOPTER's OWN Node/Playwright ``.spec.ts`` suite as a MANAGED subprocess
+    and MAP its JSON reporter output back onto the signed checklist criteria.
+
+    This is the capability ``PlaywrightExecutor`` structurally lacks: that executor drives
+    the framework's declarative step-DSL (``contract.journeys``) in an in-process Python
+    browser; it CANNOT invoke a Node ``@playwright/test`` ``.spec.ts`` (multi-user,
+    negative/absent assertions, 403/404 — things a spec expresses but the step-DSL cannot).
+    This runner shells out to the adopter's spec and normalizes the result.
+
+    REAL-EXECUTION CLASS (A2): unlike the deterministic ``local_http`` dry-run tier, this
+    runner emits framework-generated PROVENANCE — a ``run-provenance.json`` stamped from the
+    REAL subprocess (argv, pid, real wall-clock, exit code, tool version, spec sha256, and
+    the driver's ``invocation_nonce`` handed in via ``env``) plus the real trace/screenshot
+    artifacts the runner produced. The driver's pre-spawn provenance gate validates these
+    before Acceptance; a hand-authored or stale directory cannot satisfy them.
+
+    FAIL-CLOSED CORE (restated for this runner):
+      - a test that FAILED / timed-out → ``CriterionResult(executor_status=fail|error)``,
+        ``exit_code`` stays 0 (the runner RAN even though tests failed);
+      - the runner itself could not run (binary missing / no report produced / bad config)
+        → ``ExecutorUnavailable`` / ``ExecutorRuntimeError`` (fail-closed, never a fake pass);
+      - a signed criterion with NO mapped test → ``CriterionResult(mapping_state="unmapped")``
+        (a runner-CONTRACT completeness fault the driver turns into a pre-publication HALT).
+
+    Criterion mapping: each runner test → a signed ``criterion_id`` via (1) an explicit
+    ``contract["criterion_map"]`` ``{title_substring: criterion_id}``, or (2) a
+    ``@crit:<id>`` tag in the test's title path / tags. A criterion with ≥1 mapped test folds
+    its tests' statuses worst-wins (error > fail > pass); a criterion with none is
+    ``unmapped``.
+
+    Self-gate: enabled only when ``AIDAZI_E2E_EXTERNAL_RUNNER=1`` → else
+    ``ExecutorUnavailable`` (never a silent skip), mirroring the Playwright gate.
+    """
+
+    kind = "external_test_runner"
+
+    #: Playwright JSON test-result status → executor_status observation.
+    _REPORTER_STATUS = {
+        "passed": "pass",
+        "expected": "pass",
+        "failed": "fail",
+        "unexpected": "fail",
+        "timedout": "error",
+        "interrupted": "error",
+        "skipped": "skipped",
+    }
+
+    def __init__(self):
+        self._enabled = os.environ.get("AIDAZI_E2E_EXTERNAL_RUNNER") == "1"
+
+    def run(self, contract: dict, checklist: dict, evidence_dir: str,
+            env: dict) -> ExecutorResult:
+        if not self._enabled:
+            raise ExecutorUnavailable(
+                "ExternalTestRunnerExecutor is gated off (set "
+                "AIDAZI_E2E_EXTERNAL_RUNNER=1 to enable the managed spec-runner path; "
+                "it is never run in offline CI)")
+        os.makedirs(evidence_dir, exist_ok=True)
+        output_dir = os.path.join(evidence_dir, "test-results")
+        os.makedirs(output_dir, exist_ok=True)
+        helper = LocalHttpExecutor()
+        written: list[str] = []
+        helper._write_json(evidence_dir, "executor-config.json", contract, written)
+
+        proc = None
+        start_log_rel = "app-start.log"
+        stop_log_rel = "app-stop.log"
+        cleanup_failures: list[dict] = []
+        # Seed every signed criterion as UNMAPPED; a mapped test flips it to mapped.
+        criteria = self._seed_unmapped(checklist)
+        report_path = os.path.join(evidence_dir, "playwright-report.json")
+
+        try:
+            if contract.get("app_start_cmd"):
+                proc, start_log_rel, host, port = helper._start_app(
+                    contract, evidence_dir, env, written)
+                helper._await_readiness(
+                    contract, host, port, proc, evidence_dir, start_log_rel)
+            else:
+                with open(os.path.join(evidence_dir, start_log_rel),
+                          "w", encoding="utf-8") as fh:
+                    fh.write("external environment; no app_start_cmd\n")
+                written.append(start_log_rel)
+                self_ro = PlaywrightExecutor  # reuse the remote-readiness helper
+                self_ro._await_remote_readiness(contract)
+
+            _run_lifecycle(contract, "setup", evidence_dir, env, written)
+
+            argv = self._runner_argv(contract)
+            spec_sha256 = self._spec_sha256(contract)
+            wall_start = _utc_now_iso()
+            monotonic_start = time.monotonic()
+            result = self._exec_runner(
+                argv, contract, output_dir, report_path, env)
+            duration = time.monotonic() - monotonic_start
+            wall_end = _utc_now_iso()
+            report = self._load_report(report_path, result.stdout)
+            if report is None:
+                raise ExecutorRuntimeError(
+                    "external test runner produced no parseable JSON report "
+                    f"(argv={argv!r}, exit={result.returncode})")
+            if os.path.isfile(report_path) and "playwright-report.json" not in written:
+                written.append("playwright-report.json")
+            self._apply_report(report, criteria, contract)
+            # capture EVERY real artifact the runner wrote (traces/screenshots/video)
+            self._collect_output_artifacts(evidence_dir, output_dir, written)
+            self._write_provenance(
+                helper, evidence_dir, written,
+                argv=argv, cwd=contract.get("cwd") or os.getcwd(),
+                pid=result.pid, exit_code=result.returncode,
+                wall_start=wall_start, wall_end=wall_end, duration_s=duration,
+                spec_sha256=spec_sha256, env=env)
+        except (ExecutorRuntimeError, ExecutorUnavailable):
+            raise
+        except Exception as exc:  # pragma: no cover - real-runner fault
+            raise ExecutorRuntimeError(
+                f"external test runner execution failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        finally:
+            cleanup_failures = _run_lifecycle(
+                contract, "cleanup", evidence_dir, env, written)
+            helper._write_json(
+                evidence_dir, "cleanup-status.json",
+                {"failures": cleanup_failures,
+                 "status": "failed" if cleanup_failures else "clean"},
+                written)
+            if proc is not None:
+                helper._stop_app(proc, evidence_dir, stop_log_rel, written)
+            else:
+                with open(os.path.join(evidence_dir, stop_log_rel),
+                          "w", encoding="utf-8") as fh:
+                    fh.write("external environment; no process stopped\n")
+                if stop_log_rel not in written:
+                    written.append(stop_log_rel)
+
+        return ExecutorResult(
+            exit_code=0,
+            criteria=list(criteria.values()),
+            artifacts=sorted(set(written)),
+            app_start_log=start_log_rel,
+            app_stop_log=stop_log_rel,
+            notes=f"external_test_runner over {contract.get('runner_argv') or 'npx playwright test'}",
+        )
+
+    # --- seams (mockable / pure) -------------------------------------------- #
+    @staticmethod
+    def _runner_argv(contract: dict) -> list:
+        """The managed runner command. Adopter-configurable; the default runs the
+        adopter's spec with the JSON reporter."""
+        argv = contract.get("runner_argv")
+        if isinstance(argv, list) and argv:
+            return [str(a) for a in argv]
+        spec = str(contract.get("spec_path") or "")
+        base = ["npx", "playwright", "test"]
+        if spec:
+            base.append(spec)
+        base += ["--reporter=json"]
+        return base
+
+    def _exec_runner(self, argv: list, contract: dict, output_dir: str,
+                     report_path: str, env: dict):
+        """Spawn the managed runner (structured argv, shell=False). MOCKABLE seam.
+
+        Directs Playwright's JSON report to ``report_path`` and its artifacts to
+        ``output_dir`` via env (``PLAYWRIGHT_JSON_OUTPUT_NAME`` / ``--output``), so the
+        real trace/screenshot files land under ``evidence_dir`` and are hashed. A capture
+        failure of the RUNNER ITSELF is a runtime fault (fail-closed)."""
+        child_env = dict(os.environ)
+        child_env.update(env or {})
+        child_env["PLAYWRIGHT_JSON_OUTPUT_NAME"] = report_path
+        run_argv = list(argv)
+        # ensure artifacts land under our evidence dir (idempotent if already set)
+        if "--output" not in " ".join(run_argv):
+            run_argv += ["--output", output_dir]
+        timeout = float(((contract.get("timeouts") or {}).get("total_seconds")) or 900)
+        try:
+            return subprocess.run(  # noqa: S603 - argv is a fixed list from the contract
+                run_argv,
+                cwd=contract.get("cwd") or None,
+                env=child_env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except FileNotFoundError as exc:
+            raise ExecutorUnavailable(
+                f"external test runner binary not found ({run_argv[:1]!r}): {exc}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ExecutorRuntimeError(
+                f"external test runner timed out after {timeout}s") from exc
+
+    @staticmethod
+    def _load_report(report_path: str, stdout: str):
+        """Load the Playwright JSON report from the output file, falling back to stdout."""
+        try:
+            with open(report_path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            pass
+        try:
+            return json.loads(stdout)
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _seed_unmapped(checklist: dict) -> dict:
+        return {
+            str(row["criterion_id"]): CriterionResult(
+                criterion_id=str(row["criterion_id"]),
+                criterion=str(row.get("criterion") or ""),
+                action_performed="",
+                observed_result="no mapped test",
+                executor_status="skipped",
+                mapping_state="unmapped",
+            )
+            for row in checklist.get("criteria", [])
+        }
+
+    @classmethod
+    def _apply_report(cls, report: dict, criteria: dict, contract: dict) -> None:
+        """Fold the parsed report into ``criteria`` (mutating). PURE given inputs."""
+        crit_map = contract.get("criterion_map") or {}
+        for spec in cls._iter_specs(report):
+            title_path = spec["title_path"]
+            status = spec["status"]
+            attachments = spec["attachments"]
+            cid = cls._match_criterion(title_path, spec["tags"], crit_map, criteria)
+            if cid is None or cid not in criteria:
+                continue
+            cr = criteria[cid]
+            cr.mapping_state = "mapped"
+            cr.action_performed = f"external test: {title_path}"
+            # always bind the (real, hashed) report; add per-test attachments best-effort
+            cr.evidence_refs = sorted(set(
+                list(cr.evidence_refs) + ["playwright-report.json"] + attachments))
+            # worst-wins fold (error > fail > pass); 'skipped' only if never observed
+            new = cls._REPORTER_STATUS.get(str(status).lower(), "error")
+            if _STATUS_SEVERITY.get(new, 3) >= _STATUS_SEVERITY.get(cr.executor_status, 0):
+                cr.executor_status = new
+                cr.observed_result = f"runner status={status}"
+
+    @staticmethod
+    def _match_criterion(title_path: str, tags, crit_map: dict, criteria: dict):
+        """Resolve a test → a signed criterion_id. Explicit map wins, then @crit tag."""
+        for needle, cid in crit_map.items():
+            if needle and str(needle) in title_path and str(cid) in criteria:
+                return str(cid)
+        hay = title_path + " " + " ".join(str(t) for t in (tags or []))
+        m = _CRIT_TAG.search(hay)
+        if m and m.group(1) in criteria:
+            return m.group(1)
+        return None
+
+    @classmethod
+    def _iter_specs(cls, report: dict):
+        """Yield normalized spec records {title_path, status, tags, attachments} from a
+        Playwright JSON report (recursively through nested suites). Tolerant of shape skew."""
+        out = []
+
+        def walk(suites, ancestors):
+            for suite in suites or []:
+                if not isinstance(suite, dict):
+                    continue
+                stitle = str(suite.get("title") or "")
+                path = ancestors + ([stitle] if stitle else [])
+                for spec in suite.get("specs") or []:
+                    if not isinstance(spec, dict):
+                        continue
+                    sptitle = str(spec.get("title") or "")
+                    tpath = " ".join(path + ([sptitle] if sptitle else []))
+                    status, atts = cls._spec_outcome(spec)
+                    out.append({
+                        "title_path": tpath,
+                        "status": status,
+                        "tags": spec.get("tags") or [],
+                        "attachments": atts,
+                    })
+                walk(suite.get("suites"), path)
+
+        walk(report.get("suites"), [])
+        return out
+
+    @staticmethod
+    def _spec_outcome(spec: dict):
+        """A spec's worst test-result status + its attachment relpaths (basename-scoped
+        to test-results/ so they resolve under evidence_dir)."""
+        worst = "skipped"
+        atts: list[str] = []
+        for test in spec.get("tests") or []:
+            if not isinstance(test, dict):
+                continue
+            for res in test.get("results") or []:
+                if not isinstance(res, dict):
+                    continue
+                st = str(res.get("status") or "")
+                order = {"passed": 1, "skipped": 0, "failed": 2, "timedOut": 3,
+                         "interrupted": 3}
+                if order.get(st, 2) >= order.get(worst, 0):
+                    worst = st
+                for a in res.get("attachments") or []:
+                    p = a.get("path") if isinstance(a, dict) else None
+                    if isinstance(p, str) and p:
+                        atts.append("test-results/" + os.path.basename(p))
+        # normalize timeout spelling for the reporter-status map
+        if worst == "timedOut":
+            worst = "timedout"
+        return worst, sorted(set(atts))
+
+    @staticmethod
+    def _spec_sha256(contract: dict) -> str:
+        spec = contract.get("spec_path")
+        cwd = contract.get("cwd") or os.getcwd()
+        if not spec:
+            return ""
+        path = spec if os.path.isabs(spec) else os.path.join(cwd, spec)
+        try:
+            with open(path, "rb") as fh:
+                return hashlib.sha256(fh.read()).hexdigest()
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _collect_output_artifacts(evidence_dir: str, output_dir: str,
+                                  written: list) -> None:
+        """Record EVERY file under ``output_dir`` (traces/screenshots/video) as an
+        artifact relpath so the driver hashes it (real, non-deterministic provenance)."""
+        for root, _dirs, files in os.walk(output_dir):
+            for name in files:
+                rel = os.path.relpath(os.path.join(root, name), evidence_dir)
+                rel = rel.replace(os.sep, "/")
+                if rel not in written:
+                    written.append(rel)
+
+    def _write_provenance(self, helper, evidence_dir: str, written: list, *,
+                          argv, cwd, pid, exit_code, wall_start, wall_end,
+                          duration_s, spec_sha256, env) -> None:
+        """Framework-generated run-provenance.json — stamped from the REAL subprocess.
+        Humans/adopters cannot author it (§4.2). Carries the driver's invocation nonce."""
+        provenance = {
+            "executor_kind": self.kind,
+            "argv": [str(a) for a in argv],
+            "cwd": str(cwd),
+            "pid": int(pid) if pid is not None else None,
+            "exit_code": int(exit_code) if exit_code is not None else None,
+            "wall_clock_start": wall_start,
+            "wall_clock_end": wall_end,
+            "duration_seconds": round(float(duration_s), 3),
+            "tool_version": self._tool_version(argv, cwd),
+            "host": platform.node(),
+            "spec_sha256": spec_sha256,
+            "invocation_nonce": str((env or {}).get("AIDAZI_E2E_INVOCATION_NONCE") or ""),
+        }
+        # NOT via helper._write_json: provenance intentionally carries real timestamps
+        # (this is the real-execution class; determinism is neither possible nor wanted).
+        path = os.path.join(evidence_dir, "run-provenance.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(provenance, fh, sort_keys=True, indent=2)
+        if "run-provenance.json" not in written:
+            written.append("run-provenance.json")
+
+    @staticmethod
+    def _tool_version(argv, cwd) -> str:
+        try:
+            r = subprocess.run(  # noqa: S603 - fixed npx/playwright version probe
+                [str(argv[0]), "playwright", "--version"] if str(argv[0]) == "npx"
+                else [str(argv[0]), "--version"],
+                cwd=cwd or None, capture_output=True, text=True, timeout=30)
+            return (r.stdout or r.stderr or "").strip()[:120]
+        except Exception:
+            return ""
+
+
+def _utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+# ===========================================================================
 # Factory
 # ===========================================================================
 def make_executor(kind: str) -> BrowserExecutor:
@@ -1208,11 +1604,16 @@ def make_executor(kind: str) -> BrowserExecutor:
 
     ``"local_http"`` → :class:`LocalHttpExecutor` (deterministic offline);
     ``"playwright"`` → :class:`PlaywrightExecutor` (env+import gated);
+    ``"external_test_runner"`` → :class:`ExternalTestRunnerExecutor` (managed adopter
+    spec-runner, env-gated; the real-execution class that carries A2 provenance);
     anything else → ``ValueError`` (fail closed on an unknown runner — the driver must
     not silently pick a default capture tier)."""
     if kind == "local_http":
         return LocalHttpExecutor()
     if kind == "playwright":
         return PlaywrightExecutor()
-    raise ValueError(f"unknown executor kind {kind!r} "
-                     f"(expected 'local_http' or 'playwright')")
+    if kind == "external_test_runner":
+        return ExternalTestRunnerExecutor()
+    raise ValueError(
+        f"unknown executor kind {kind!r} (expected 'local_http', 'playwright', "
+        f"or 'external_test_runner')")
