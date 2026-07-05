@@ -1320,6 +1320,8 @@ class ExternalTestRunnerExecutor(BrowserExecutor):
                 argv, contract, output_dir, report_path, env)
             duration = time.monotonic() - monotonic_start
             wall_end = _utc_now_iso()
+            # capture the real runner stdout/stderr as hashed evidence artifacts (§3)
+            self._write_runner_logs(evidence_dir, result, written)
             report = self._load_report(report_path, result.stdout)
             if report is None:
                 raise ExecutorRuntimeError(
@@ -1425,6 +1427,16 @@ class ExternalTestRunnerExecutor(BrowserExecutor):
                 f"external test runner timed out after {timeout}s") from exc
         return _RunnerResult(returncode=proc.returncode, stdout=stdout,
                              stderr=stderr, pid=pid)
+
+    @staticmethod
+    def _write_runner_logs(evidence_dir: str, result, written: list) -> None:
+        """Persist the managed runner's real stdout/stderr as hashed evidence artifacts."""
+        for name, content in (("runner-stdout.log", getattr(result, "stdout", "")),
+                              ("runner-stderr.log", getattr(result, "stderr", ""))):
+            with open(os.path.join(evidence_dir, name), "w", encoding="utf-8") as fh:
+                fh.write(content or "")
+            if name not in written:
+                written.append(name)
 
     @staticmethod
     def _load_report(report_path: str, stdout: str):

@@ -284,35 +284,39 @@ def verify_execution_provenance(*, manifest, provenance, provenance_schema,
     mprov = (manifest or {}).get("provenance") or {}
     if mprov.get("invocation_nonce") != expected_nonce:
         return "manifest.provenance.invocation_nonce != driver nonce"
-    # 4. Paired e2e_start/e2e_end events matching THIS nonce AND run_id must exist on the
-    #    Spine — the DRIVER-owned events (not the manifest) are the authority for the window.
-    def _match(ev_type):
+    # 4. The manifest window MUST be ANCHORED to a matching e2e_start/e2e_end event on the
+    #    Spine (same nonce + run_id + timestamp). Binding to a REAL driver event forge-proofs
+    #    the window (a fabricated window has no matching event) AND tolerates duplicate
+    #    start/end events from a crash-RESUMED re-run — which appends a fresh pair for the same
+    #    nonce+run_id; the committed manifest carries the latest pair, and we match on it.
+    mstart = mprov.get("e2e_start_ts")
+    mend = mprov.get("e2e_end_ts")
+
+    def _event_ts_present(ev_type, ts_key, ts_val):
+        if not ts_val:
+            return False
         for e in (events or []):
             if e.get("type") != ev_type:
                 continue
             p = e.get("payload") or {}
             if (p.get("invocation_nonce") == expected_nonce
-                    and p.get("run_id") == expected_run_id):
-                return p
-        return None
-    start_ev = _match(E2E_START_EVENT_TYPE)
-    end_ev = _match(E2E_END_EVENT_TYPE)
-    if not (start_ev and end_ev):
-        return ("missing paired e2e_start/e2e_end Audit-Spine events for this "
-                "nonce+run_id")
+                    and p.get("run_id") == expected_run_id
+                    and p.get(ts_key) == ts_val):
+                return True
+        return False
+
+    if not (_event_ts_present(E2E_START_EVENT_TYPE, "e2e_start_ts", mstart)
+            and _event_ts_present(E2E_END_EVENT_TYPE, "e2e_end_ts", mend)):
+        return ("manifest.provenance window not anchored to matching e2e_start/e2e_end "
+                "Audit-Spine events (nonce+run_id+timestamp)")
     # 5. The Audit Spine must verify (tamper-evidence over the whole chain).
     if not audit_chain_ok:
         return "Audit-Spine chain verification failed"
-    # 6. The manifest window MUST equal the driver-owned event timestamps (the manifest
-    #    cannot define its own freshness window), and the wall-clock must fall inside it.
-    ev_start = start_ev.get("e2e_start_ts")
-    ev_end = end_ev.get("e2e_end_ts")
-    if mprov.get("e2e_start_ts") != ev_start or mprov.get("e2e_end_ts") != ev_end:
-        return "manifest.provenance window != Audit-Spine e2e_start/e2e_end events"
+    # 6. The real wall-clock must fall inside the (Spine-anchored) execution window.
     ws = _parse_iso(provenance.get("wall_clock_start"))
     we = _parse_iso(provenance.get("wall_clock_end"))
-    w0 = _parse_iso(ev_start)
-    w1 = _parse_iso(ev_end)
+    w0 = _parse_iso(mstart)
+    w1 = _parse_iso(mend)
     if not (ws and we and w0 and w1):
         return "provenance freshness window incomplete (unparseable timestamps)"
     if not (w0 <= ws <= we <= w1):

@@ -93,13 +93,17 @@ class VerifyExecutionProvenanceTests(unittest.TestCase):
         self.assertIn("manifest.provenance", _verify(manifest=m) or "")
 
     def test_missing_paired_events_fails(self):
-        only_start = [{"type": "browser_e2e_start",
-                       "payload": {"invocation_nonce": _NONCE}}]
-        self.assertIn("paired", _verify(events=only_start) or "")
-        # a start event carrying a DIFFERENT nonce must not satisfy the pairing
-        wrong = [{"type": "browser_e2e_start", "payload": {"invocation_nonce": "other-nonce-xx"}},
-                 {"type": "browser_e2e_end", "payload": {"invocation_nonce": "other-nonce-xx"}}]
-        self.assertIn("paired", _verify(events=wrong) or "")
+        only_start = [{"type": "browser_e2e_start", "payload": {
+            "invocation_nonce": _NONCE, "run_id": _RUN_ID, "e2e_start_ts": _W0}}]
+        self.assertIn("not anchored", _verify(events=only_start) or "")
+        # events carrying a DIFFERENT nonce must not anchor the window
+        wrong = [{"type": "browser_e2e_start", "payload": {
+                    "invocation_nonce": "other-nonce-xx", "run_id": _RUN_ID,
+                    "e2e_start_ts": _W0}},
+                 {"type": "browser_e2e_end", "payload": {
+                    "invocation_nonce": "other-nonce-xx", "run_id": _RUN_ID,
+                    "e2e_end_ts": _W1}}]
+        self.assertIn("not anchored", _verify(events=wrong) or "")
 
     def test_broken_audit_chain_fails(self):
         self.assertIn("chain", _verify(audit_chain_ok=False) or "")
@@ -119,13 +123,29 @@ class VerifyExecutionProvenanceTests(unittest.TestCase):
 
     def test_run_id_mismatch_fails(self):
         # events carry a different run_id than the driver-owned expected run_id
-        self.assertIn("paired", _verify(expected_run_id="r-different") or "")
+        self.assertIn("not anchored", _verify(expected_run_id="r-different") or "")
 
-    def test_manifest_window_must_equal_spine_events(self):
-        # manifest defines its OWN window (not matching the Audit-Spine events) → rejected
+    def test_manifest_window_must_be_spine_anchored(self):
+        # manifest defines its OWN window with no matching Audit-Spine event → rejected
         m = copy.deepcopy(_good()["manifest"])
         m["provenance"]["e2e_end_ts"] = "2026-07-05T09:00:00+00:00"
-        self.assertIn("!= Audit-Spine", _verify(manifest=m) or "")
+        self.assertIn("not anchored", _verify(manifest=m) or "")
+
+    def test_crash_resume_duplicate_events_ok(self):
+        # a resumed re-run appends a SECOND start/end pair (same nonce+run_id); the committed
+        # manifest carries the LATEST window — verify must still pass (anchor on the latest,
+        # not the first/old event).
+        kw = _good()
+        old = [
+            {"type": "browser_e2e_start", "payload": {
+                "invocation_nonce": _NONCE, "run_id": _RUN_ID,
+                "e2e_start_ts": "2026-07-05T06:00:00+00:00"}},
+            {"type": "browser_e2e_end", "payload": {
+                "invocation_nonce": _NONCE, "run_id": _RUN_ID,
+                "e2e_end_ts": "2026-07-05T06:30:00+00:00"}},
+        ]
+        kw["events"] = old + kw["events"]     # old (crashed) pair BEFORE the latest pair
+        self.assertIsNone(e2e_stage.verify_execution_provenance(**kw))
 
     def test_null_exit_code_fails(self):
         # a null exit code is incomplete real-subprocess provenance — fails closed (caught
