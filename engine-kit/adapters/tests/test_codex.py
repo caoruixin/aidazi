@@ -12,6 +12,7 @@ or, from this dir's sys.path shim, simply:
     python /Users/.../engine-kit/adapters/tests/test_codex.py
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from adapters import (  # noqa: E402
     ADAPTER_REGISTRY,
     resolve_adapter_class,
 )
+from adapters.codex import CodexStreamProbe  # noqa: E402
 
 _ALLOW_ENV = "AIDAZI_ALLOW_REAL_ADAPTER"
 _SCHEMA = {"type": "object"}
@@ -539,6 +541,127 @@ class CodexFailClosedTests(unittest.TestCase):
         with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
             with self.assertRaises(AdapterError):
                 a.spawn("review", "Review it.", [], self._STRICT)
+
+
+class CodexStreamProbeTests(unittest.TestCase):
+    """A3: the codex active-work lease opens/closes strictly on JSONL events,
+    modelled on the REAL codex-cli 0.134.0 stream (thread.started / turn.started
+    / item.started+item.completed keyed by item.id / turn.completed)."""
+
+    @staticmethod
+    def _item_started(iid="item_1", itype="command_execution"):
+        return json.dumps({"type": "item.started", "item": {
+            "id": iid, "type": itype, "status": "in_progress"}})
+
+    @staticmethod
+    def _item_completed(iid="item_1", itype="command_execution", status="completed"):
+        return json.dumps({"type": "item.completed", "item": {
+            "id": iid, "type": itype, "status": status}})
+
+    def test_item_open_then_close(self):
+        p = CodexStreamProbe()
+        self.assertFalse(p.active())
+        p.observe(self._item_started("item_1"))
+        self.assertTrue(p.active())            # silent reasoning/command window
+        p.observe(self._item_completed("item_1"))
+        self.assertFalse(p.active())
+
+    def test_item_failed_still_closes(self):
+        p = CodexStreamProbe()
+        p.observe(self._item_started("item_1"))
+        p.observe(json.dumps({"type": "item.failed", "item": {"id": "item_1"}}))
+        self.assertFalse(p.active())
+
+    def test_turn_session_lease_covers_initial_latency(self):
+        # turn.started opens a session lease even BEFORE the first item — the
+        # dangerous "waiting on first model token" silent window.
+        p = CodexStreamProbe()
+        p.observe(json.dumps({"type": "thread.started", "thread_id": "t"}))
+        p.observe(json.dumps({"type": "turn.started"}))
+        self.assertTrue(p.active())
+        p.observe(self._item_started("item_1"))
+        p.observe(self._item_completed("item_1"))
+        self.assertTrue(p.active())            # session lease still held mid-turn
+        p.observe(json.dumps({"type": "turn.completed", "usage": {"input": 1}}))
+        self.assertFalse(p.active())           # terminal clears all
+
+    def test_parallel_items_close_independently(self):
+        p = CodexStreamProbe()
+        p.observe(self._item_started("item_1"))
+        p.observe(self._item_started("item_2"))
+        p.observe(self._item_completed("item_1"))
+        self.assertTrue(p.active())            # item_2 still open
+        p.observe(self._item_completed("item_2"))
+        self.assertFalse(p.active())
+
+    def test_terminal_turn_clears_all(self):
+        p = CodexStreamProbe()
+        p.observe(json.dumps({"type": "turn.started"}))
+        p.observe(self._item_started("item_1"))
+        p.observe(self._item_started("item_2"))
+        self.assertTrue(p.active())
+        p.observe(json.dumps({"type": "turn.completed"}))
+        self.assertFalse(p.active())           # session + both items cleared
+
+    def test_unknown_item_completed_is_noop(self):
+        p = CodexStreamProbe()
+        p.observe(self._item_started("item_1"))
+        p.observe(self._item_completed("SOMETHING_ELSE"))
+        self.assertTrue(p.active())            # item_1 still open
+
+    def test_malformed_line_never_opens(self):
+        p = CodexStreamProbe()
+        p.observe("not json")
+        p.observe("{ broken")
+        p.observe("")
+        self.assertFalse(p.active())
+        p.observe(self._item_started("item_1"))
+        p.observe("garbage")                   # does not close/extend
+        self.assertTrue(p.active())
+
+    def test_non_dict_and_non_string_type_ignored(self):
+        p = CodexStreamProbe()
+        p.observe(json.dumps([1, 2, 3]))       # JSON array, not a dict
+        p.observe(json.dumps({"type": 123}))   # non-string type
+        p.observe(json.dumps({"no_type": "x"}))
+        self.assertFalse(p.active())
+
+    def test_start_without_id_falls_back_to_session(self):
+        # Defensive: an item.started with no id (unobserved in 0.134.0) opens the
+        # session lease, which the terminal turn event clears.
+        p = CodexStreamProbe()
+        p.observe(json.dumps({"type": "item.started", "item": {"type": "reasoning"}}))
+        self.assertTrue(p.active())
+        p.observe(json.dumps({"type": "turn.completed"}))
+        self.assertFalse(p.active())
+
+    def test_reasoning_item_holds_lease(self):
+        # The canonical false-kill case: a long, silent `reasoning` item.
+        p = CodexStreamProbe()
+        p.observe(self._item_started("item_9", itype="reasoning"))
+        self.assertTrue(p.active())
+        p.observe(self._item_completed("item_9", itype="reasoning"))
+        self.assertFalse(p.active())
+
+
+class CodexProbeWiringTests(unittest.TestCase):
+    """A3: the adapter actually passes the probe factory into the monitor."""
+
+    def setUp(self):
+        os.environ.pop(_ALLOW_ENV, None)
+
+    def test_spawn_wires_liveness_probe_factory(self):
+        a = CodexAdapter(model="m", allow_subprocess=True)
+        captured = {}
+        verdict = '{"type":"agent_message","message":"{\\"ok\\": true}"}'
+
+        def _fake_run(argv, **kw):
+            captured.update(kw)
+            return subprocess.CompletedProcess(argv, 0, stdout=verdict, stderr="")
+
+        with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
+            a.spawn("review", "Review it.", [], {"type": "object"})
+        self.assertIs(captured.get("liveness_probe_factory"), CodexStreamProbe)
 
 
 if __name__ == "__main__":
