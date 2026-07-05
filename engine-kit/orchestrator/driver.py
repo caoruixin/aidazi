@@ -3550,13 +3550,13 @@ class Driver:
     def _e2e_signed_covers(self) -> Optional[set]:
         """§5.2b: the SIGNED req_id envelope — the union of the campaign plan's signed
         covers_req_ids (from the requirement-context sidecar, the same signed source the gap-report
-        binds). None when no signed covers set is derivable (no campaign requirement-context) — then
-        the req_id check falls back to signed-checklist-scope (a failing criterion is itself a signed
-        checklist item, so a PRESENT req_id binding is signed scope by construction)."""
-        try:
-            ctx = self._load_requirement_context()
-        except GateHardFail:
-            return None
+        binds). None when no signed covers set is DERIVABLE (no campaign requirement-context, or a
+        present sidecar carries no covers) — containment then treats the req_id envelope as
+        UNVERIFIABLE and the lane FAILS CLOSED to §3.5 (a PRESENT req_id binding on a signed
+        checklist criterion is NOT a substitute for the signed covers_req_ids proof — Codex P3-R1).
+        A PRESENT-but-corrupt sidecar raises GateHardFail (propagated → fail-closed integrity HALT,
+        never silently swallowed)."""
+        ctx = self._load_requirement_context()   # None (absent) | dict | raises (corrupt)
         if not isinstance(ctx, dict):
             return None
         plan = ctx.get("plan") or {}
@@ -3570,18 +3570,22 @@ class Driver:
         """§5.2 pre-dispatch containment. Returns (ok, reason). Proves the fix is IN-ENVELOPE
         BEFORE any Dev dispatch and that the observed-diff gate is mechanically present:
           1. HARD GATE (§5.2c) — the observed-diff scope check is AVAILABLE (git work dir +
-             modules_in_scope). Unavailable ⇒ (False, "observed_diff_gate_unavailable") ⇒ the caller
-             FAILS CLOSED to §3.5 (never dispatch an uncontained fix).
-          2. Every failing criterion carries a SIGNED {req_id, module} binding, module ∈
-             modules_in_scope (and layer ∈ layers_allowed when bound). A missing binding or an
-             out-of-envelope module/layer ⇒ (False, reason) ⇒ scope re-auth HALT.
-          3. When a signed covers set is derivable (campaign), every criterion's req_id ∈ the signed
-             covers envelope; out-of-envelope ⇒ (False, reason) ⇒ scope re-auth HALT."""
+             modules_in_scope). Unavailable ⇒ (False, "observed_diff_gate_unavailable").
+          2. HARD GATE (§5.2b) — a SIGNED covers_req_ids envelope is derivable. Unverifiable ⇒
+             (False, "signed_covers_unverifiable").
+          Both "*_unavailable/unverifiable" reasons ⇒ the caller FAILS CLOSED to §3.5 (never
+          dispatch an uncontained fix — the containment guarantee must be mechanically present).
+          3. Every failing criterion carries a SIGNED {req_id, module} binding, module ∈
+             modules_in_scope, req_id ∈ the signed covers envelope (and layer ∈ layers_allowed when
+             bound). A missing binding or an out-of-envelope module/layer/req_id ⇒ (False, reason) ⇒
+             scope re-auth HALT."""
         if not self._e2e_observed_diff_available():
             return False, "observed_diff_gate_unavailable"
+        covers = self._e2e_signed_covers()
+        if covers is None:
+            return False, "signed_covers_unverifiable"
         modules = set(self._modules_in_scope())
         layers = set(self._layers_allowed())
-        covers = self._e2e_signed_covers()
         for b in briefs:
             cid = b.get("criterion_id")
             if not b.get("req_id"):
@@ -3594,7 +3598,7 @@ class Driver:
             if b.get("layer") and layers and b["layer"] not in layers:
                 return False, (f"criterion {cid!r} layer {b['layer']!r} is out of "
                                f"approved_scope.layers_allowed")
-            if covers is not None and b["req_id"] not in covers:
+            if b["req_id"] not in covers:
                 return False, (f"criterion {cid!r} req_id {b['req_id']!r} is out of the signed "
                                f"covers_req_ids envelope")
         return True, "in_envelope"
@@ -3729,12 +3733,14 @@ class Driver:
                     "budget_exhausted", failing,
                     f"e2e_remediation rounds exhausted (max_rounds={max_rounds})")
 
-            # Containment BEFORE dispatch (§5.2). Gate unavailable ⇒ fail-closed to §3.5 via
-            # Acceptance; out-of-envelope ⇒ scope re-auth HALT.
+            # Containment BEFORE dispatch (§5.2). A containment gate that is mechanically
+            # UNAVAILABLE (no git work dir / empty modules_in_scope / no signed covers envelope) ⇒
+            # fail-closed to §3.5 via Acceptance (never dispatch an uncontained fix); an
+            # out-of-envelope binding ⇒ scope re-auth HALT.
             briefs = self._build_e2e_failure_briefs(failing, run_id, manifest)
             ok, reason = self._e2e_remediation_containment(briefs)
             if not ok:
-                if reason == "observed_diff_gate_unavailable":
+                if reason in ("observed_diff_gate_unavailable", "signed_covers_unverifiable"):
                     self._audit("e2e_remediation_containment_unavailable",
                                 {"subsprint_id": self.state.subsprint_id,
                                  "failing_criteria": failing, "reason": reason})
@@ -3742,7 +3748,12 @@ class Driver:
                 return self._e2e_remediation_halt("out_of_envelope", failing, reason)
 
             # Dispatch a bounded, in-envelope Dev fix scoped to the failing criteria (§5.2 step 3).
-            pre = self._e2e_changed_files() or set()
+            # The persisted state stays STATE_E2E_PENDING THROUGHOUT the fix (NOT flipped to
+            # DEV/GATE_PENDING) so a crash mid-fix resumes back INTO this lane via _drive's
+            # STATE_E2E_PENDING re-entry — never into the ordinary linear Dev→Gate→Review→Close
+            # path (which would lose the transient fix brief + the round/cache control). The lane
+            # is idempotent: resume re-reads the same failing set + reconstructs the brief and
+            # re-dispatches this round's fix (Codex P3-R1 blocker 3).
             self._audit("e2e_remediation_round_dispatch",
                         {"subsprint_id": self.state.subsprint_id,
                          "round": self.state.e2e_remediation_round + 1,
@@ -3752,20 +3763,23 @@ class Driver:
                                               "module": b.get("module")} for b in briefs]})
             self._e2e_fix_brief = self._render_e2e_fix_brief(briefs)
             try:
-                self.state.state = STATE_DEV_PENDING
-                self._save_state()
-                self._step_dev()
+                self._step_dev()           # state stays STATE_E2E_PENDING (resume re-enters lane)
                 if self.state.state == STATE_HALTED:
                     return False  # dev-spec refine halt mid-remediation (checkpoint written)
-                self.state.state = STATE_GATE_PENDING
-                self._save_state()
                 self._step_gate()          # deterministic gates; gate_hard_fail raises (resumable)
             finally:
                 self._e2e_fix_brief = None
 
-            # Observed-diff scope re-check AFTER the fix, BEFORE rerun (§5.2c).
-            post = self._e2e_changed_files() or set()
-            oos = self._e2e_diff_out_of_envelope(post - pre)
+            # Observed-diff scope re-check AFTER the fix, BEFORE rerun (§5.2c). Check the FULL
+            # working-tree diff (vs HEAD) against the envelope — stateless (resume-safe, no pre/post
+            # delta) and fail-closed: if the gate became UNAVAILABLE after the fix (git failure),
+            # HALT rather than treat it as an empty in-envelope diff (Codex P3-R1 blocker 1).
+            changed = self._e2e_changed_files()
+            if changed is None:
+                return self._e2e_remediation_halt(
+                    "observed_diff_unavailable", failing,
+                    "the observed-diff scope gate became unavailable after the Dev fix")
+            oos = self._e2e_diff_out_of_envelope(changed)
             if oos:
                 return self._e2e_remediation_halt(
                     "observed_diff_out_of_envelope", failing,

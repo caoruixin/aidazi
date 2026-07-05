@@ -218,10 +218,21 @@ class ContainmentTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertEqual(reason, "observed_diff_gate_unavailable")
 
+    def test_signed_covers_unverifiable_when_no_context(self):
+        # Codex P3-R1 blocker 2: without a derivable signed covers envelope the lane cannot
+        # PROVE req_id containment ⇒ fail-closed (NOT a checklist-scope fallback).
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter())
+            drv._e2e_changed_files = lambda: set()   # observed-diff gate available
+            ok, reason = drv._e2e_remediation_containment(self._briefs())
+            self.assertFalse(ok)
+            self.assertEqual(reason, "signed_covers_unverifiable")
+
     def test_in_envelope_passes(self):
         with tempfile.TemporaryDirectory() as d:
             drv = _drv(d, _ext_rem_charter())
             drv._e2e_changed_files = lambda: set()
+            drv._e2e_signed_covers = lambda: {"REQ-A"}
             ok, reason = drv._e2e_remediation_containment(self._briefs())
             self.assertTrue(ok, reason)
 
@@ -229,14 +240,25 @@ class ContainmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             drv = _drv(d, _ext_rem_charter())
             drv._e2e_changed_files = lambda: set()
+            drv._e2e_signed_covers = lambda: {"REQ-A"}
             ok, reason = drv._e2e_remediation_containment(self._briefs(req_id=None))
             self.assertFalse(ok)
             self.assertIn("req_id", reason)
+
+    def test_req_id_out_of_covers_envelope(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter())
+            drv._e2e_changed_files = lambda: set()
+            drv._e2e_signed_covers = lambda: {"REQ-OTHER"}
+            ok, reason = drv._e2e_remediation_containment(self._briefs(req_id="REQ-A"))
+            self.assertFalse(ok)
+            self.assertIn("covers_req_ids", reason)
 
     def test_module_out_of_envelope(self):
         with tempfile.TemporaryDirectory() as d:
             drv = _drv(d, _ext_rem_charter())
             drv._e2e_changed_files = lambda: set()
+            drv._e2e_signed_covers = lambda: {"REQ-A"}
             ok, reason = drv._e2e_remediation_containment(self._briefs(module="other"))
             self.assertFalse(ok)
             self.assertIn("out of", reason)
@@ -271,9 +293,11 @@ class ChangedFilesGitTests(unittest.TestCase):
 # §5.2/§5.3 — the bounded remediation loop control flow.
 # --------------------------------------------------------------------------- #
 def _script_lane(drv, seq, *, containment=(True, "in_envelope"),
-                 changed_post=None):
+                 changed=None, dev_hook=None):
     """Scripted drive of _run_e2e_remediation_lane. seq[i] = failing list at round i;
-    a rerun (_commit_e2e) advances the index. Returns (proceed, dev_calls)."""
+    a rerun (_commit_e2e) advances the index. `changed` is the FULL working-tree diff the
+    post-fix observed-diff check sees (None ⇒ gate unavailable → HALT). `dev_hook` runs at
+    each Dev dispatch (to observe live state). Returns (proceed, dev_calls)."""
     idx = {"i": 0}
     dev = {"n": 0}
     drv._e2e_failing_criteria = lambda run_id: list(seq[min(idx["i"], len(seq) - 1)])
@@ -282,18 +306,19 @@ def _script_lane(drv, seq, *, containment=(True, "in_envelope"),
         idx["i"] = min(idx["i"] + 1, len(seq) - 1)
         return {"artifacts": []}
     drv._commit_e2e = _commit
-    drv._step_dev = lambda: dev.__setitem__("n", dev["n"] + 1)
+
+    def _dev():
+        dev["n"] += 1
+        if dev_hook:
+            dev_hook()
+    drv._step_dev = _dev
     drv._step_gate = lambda: None
     drv._build_e2e_failure_briefs = lambda f, r, m: [
         {"criterion_id": c, "req_id": "REQ-A", "module": "app"} for c in f]
     drv._e2e_remediation_containment = lambda briefs: containment
-    cc = {"n": 0}
-
-    def _changed():
-        cc["n"] += 1
-        return (changed_post if changed_post is not None else set()) \
-            if cc["n"] % 2 == 0 else set()
-    drv._e2e_changed_files = _changed
+    # The post-fix observed-diff check calls _e2e_changed_files() ONCE per round (full diff).
+    drv._e2e_changed_files = lambda: (set() if changed is None else changed) \
+        if changed != "unavailable" else None
     proceed = drv._run_e2e_remediation_lane({"artifacts": []}, drv._e2e_run_id())
     return proceed, dev["n"]
 
@@ -358,6 +383,15 @@ class LaneControlFlowTests(unittest.TestCase):
             self.assertEqual(dev, 0)                       # never dispatched an uncontained fix
             self.assertNotEqual(drv.state.state, D.STATE_HALTED)
 
+    def test_signed_covers_unverifiable_fails_closed_to_human(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter())
+            proceed, dev = _script_lane(
+                drv, [["C2"]], containment=(False, "signed_covers_unverifiable"))
+            self.assertTrue(proceed)                       # → §3.5 via Acceptance
+            self.assertEqual(dev, 0)
+            self.assertNotEqual(drv.state.state, D.STATE_HALTED)
+
     def test_out_of_envelope_containment_halts(self):
         with tempfile.TemporaryDirectory() as d:
             drv = _drv(d, _ext_rem_charter())
@@ -372,10 +406,33 @@ class LaneControlFlowTests(unittest.TestCase):
             drv = _drv(d, _ext_rem_charter(modules=("app",)))
             # containment passes, but the Dev fix touched an out-of-envelope file.
             proceed, dev = _script_lane(
-                drv, [["C2"], []], changed_post={"other/leak.py"})
+                drv, [["C2"], []], changed={"other/leak.py"})
             self.assertFalse(proceed)
             self.assertEqual(dev, 1)                       # fix ran, then the diff check halted
             self.assertEqual(drv.state.state, D.STATE_HALTED)
+
+    def test_observed_diff_unavailable_after_fix_halts(self):
+        # Codex P3-R1 blocker 1: git becoming unavailable AFTER the fix must HALT (fail-closed),
+        # NOT be treated as an empty in-envelope diff.
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter(modules=("app",)))
+            proceed, dev = _script_lane(drv, [["C2"], []], changed="unavailable")
+            self.assertFalse(proceed)
+            self.assertEqual(dev, 1)
+            self.assertEqual(drv.state.state, D.STATE_HALTED)
+
+    def test_state_stays_e2e_pending_during_fix_for_resume_safety(self):
+        # Codex P3-R1 blocker 3: the persisted state stays STATE_E2E_PENDING throughout the fix,
+        # so a crash resumes back INTO the lane (via _drive's STATE_E2E_PENDING re-entry) — never
+        # into the ordinary linear Dev→Gate→Review→Close path that would lose the fix brief.
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter(max_rounds=3))
+            drv.state.state = D.STATE_E2E_PENDING
+            seen = []
+            _script_lane(drv, [["C2"], []],
+                         dev_hook=lambda: seen.append(drv.state.state))
+            self.assertTrue(seen)
+            self.assertTrue(all(s == D.STATE_E2E_PENDING for s in seen), seen)
 
     def test_resume_midlane_is_idempotent_no_spurious_halt(self):
         # §5.4 crash-resume (point 4): a resume that re-enters the lane with round 1 ALREADY
