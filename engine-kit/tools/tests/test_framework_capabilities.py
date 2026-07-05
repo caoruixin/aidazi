@@ -122,6 +122,17 @@ class FailClosedTests(unittest.TestCase):
             with self.assertRaises(fc.CapabilityContractError):
                 fc.required_capability_violations(ch, root=d)
 
+    def test_explicit_malformed_contract_cannot_bypass(self):
+        # Codex P4 R2: an EXPLICIT (not-loaded) malformed contract must NOT be treated as provided
+        # — a presence-only requirement cannot pass on it; provided_capabilities also refuses.
+        bad = {"framework_version": "1.0",
+               "capabilities": [{"id": "native_managed_external_e2e"}]}  # no version/code_anchor
+        ch = {"required_framework_capabilities": [{"id": "native_managed_external_e2e"}]}
+        with self.assertRaises(fc.CapabilityContractError):
+            fc.required_capability_violations(ch, bad)
+        with self.assertRaises(fc.CapabilityContractError):
+            fc.provided_capabilities(bad)
+
     def _write_contract(self, d, contract):
         os.makedirs(os.path.join(d, "governance"), exist_ok=True)
         with open(os.path.join(d, "governance", "framework-capabilities.json"), "w") as fh:

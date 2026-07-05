@@ -109,10 +109,25 @@ def _validate_contract(data: dict) -> None:
         seen.add(cid)
 
 
+def _resolve_contract(contract: Optional[dict], root: Optional[str]) -> dict:
+    """Return a VALIDATED contract: load+validate when none is supplied, else validate the SUPPLIED
+    one too (Codex P4 R2 — an explicit malformed contract must NOT bypass the fail-closed structural
+    check and be treated as provided). Raises CapabilityContractError on any malformation."""
+    if contract is None:
+        return load_contract(root)
+    if not isinstance(contract, dict) or not isinstance(contract.get("capabilities"), list):
+        raise CapabilityContractError(
+            "supplied framework capability contract is malformed "
+            "(object with a capabilities[] array required)")
+    _validate_contract(contract)
+    return contract
+
+
 def provided_capabilities(contract: Optional[dict] = None,
                           root: Optional[str] = None) -> dict:
-    """``{capability_id: version_string}`` the deployed framework PROVIDES (deterministic)."""
-    contract = contract if contract is not None else load_contract(root)
+    """``{capability_id: version_string}`` the deployed framework PROVIDES (deterministic). Any
+    supplied contract is VALIDATED first (fail-closed; no explicit-contract bypass)."""
+    contract = _resolve_contract(contract, root)
     out = {}
     for c in contract.get("capabilities") or []:
         if isinstance(c, dict) and c.get("id"):
@@ -148,7 +163,7 @@ def required_capability_violations(charter: Optional[dict],
     required = (charter or {}).get("required_framework_capabilities")
     if not required:
         return []
-    contract = contract if contract is not None else load_contract(root)  # raises → fail-closed
+    contract = _resolve_contract(contract, root)  # validates supplied OR loaded → fail-closed
     provided = provided_capabilities(contract)
     fw = str(contract.get("framework_version") or "unknown")
     out = []
