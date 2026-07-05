@@ -3682,10 +3682,18 @@ class Driver:
                 and e2e_stage.dir_complete_and_hashes_ok(final, m_schema, cr_item)):
             manifest = e2e_stage.load_manifest(final)
             mh = manifest.get("artifact_manifest_hash")
-            if not e2e_stage.evidence_event_present(events, run_id, mh):
-                self._emit_e2e_event(run_id, final, manifest)   # B
-            self._cache_e2e_commit(run_id, final, mh)           # A / B
-            return manifest
+            # A2: for the real-execution class, only anchor/reuse a committed dir whose
+            # FRAMEWORK-OWNED provenance verifies. An unverifiable (hand-authored/stale)
+            # complete dir is NEVER anchored via the B-path — fall through to a fresh run (C).
+            prov_reason = (self._execution_provenance_reason(run_id, final, events)
+                           if prov_required else None)
+            if prov_reason is None:
+                if not e2e_stage.evidence_event_present(events, run_id, mh):
+                    self._emit_e2e_event(run_id, final, manifest)   # B
+                self._cache_e2e_commit(run_id, final, mh)           # A / B
+                return manifest
+            self._audit("e2e_reconcile_provenance_reject",
+                        {"run_id": run_id, "reason": prov_reason})
 
         # C — (re)run into a fresh staging dir; publish atomically.
         staging = final + ".staging"
@@ -4275,18 +4283,18 @@ class Driver:
                               self.run_dir).replace(os.sep, "/")
         return manifest, rel, run_id
 
-    def _verify_execution_provenance(self, run_id: str, final_dir: str,
-                                     events: list) -> None:
-        """A2 pre-spawn provenance gate for the real-execution (external_test_runner) class.
-        Loads run-provenance.json + manifest + checklist-results + the Audit-Spine chain
-        state and delegates to :func:`e2e_stage.verify_execution_provenance` with the
-        FRAMEWORK-OWNED nonce from RunState (never read from the evidence dir). Any failure
-        → gate_hard_fail BEFORE Acceptance spawns (fail-closed on missing/inconsistent/
-        stale/dry-run/unmapped/chain-broken evidence). A no-op for non-provenance kinds."""
+    def _execution_provenance_reason(self, run_id: str, final_dir: str,
+                                     events: list) -> Optional[str]:
+        """A2: return a fail REASON for the real-execution (external_test_runner) provenance
+        gate, or None. SOFT (never raises) so callers choose the consequence — acceptance
+        gate_hard_fails, reconcile re-runs. Loads run-provenance.json + manifest +
+        checklist-results + the Audit-Spine chain state and delegates to
+        :func:`e2e_stage.verify_execution_provenance` with the FRAMEWORK-OWNED nonce + run_id
+        from RunState (never read from the evidence dir). None for non-provenance kinds."""
         assert self.state is not None
         if (self._e2e_config().get("executor_kind", "")
                 not in e2e_stage.PROVENANCE_REQUIRED_KINDS):
-            return
+            return None
         prov_schema = self._pc_schema("run-provenance.schema.json")
         try:
             with open(os.path.join(final_dir, "run-provenance.json"),
@@ -4302,11 +4310,18 @@ class Driver:
             checklist_results = []
         chain_ok = (audit.verify_chain(self.audit_ledger).ok
                     if os.path.isfile(self.audit_ledger) else False)
-        reason = e2e_stage.verify_execution_provenance(
+        return e2e_stage.verify_execution_provenance(
             manifest=e2e_stage.load_manifest(final_dir),
             provenance=provenance, provenance_schema=prov_schema,
             checklist_results=checklist_results, events=events,
-            expected_nonce=self.state.e2e_invocation_nonce, audit_chain_ok=chain_ok)
+            expected_nonce=self.state.e2e_invocation_nonce,
+            expected_run_id=run_id, audit_chain_ok=chain_ok)
+
+    def _verify_execution_provenance(self, run_id: str, final_dir: str,
+                                     events: list) -> None:
+        """Pre-spawn provenance gate: gate_hard_fail BEFORE Acceptance on any reason
+        (fail-closed on missing/inconsistent/stale/dry-run/unmapped/chain-broken evidence)."""
+        reason = self._execution_provenance_reason(run_id, final_dir, events)
         if reason:
             raise self._gate_hard_fail(
                 f"browser evidence failed the real-execution provenance gate: {reason}; "

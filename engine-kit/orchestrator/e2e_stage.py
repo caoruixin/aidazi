@@ -42,9 +42,16 @@ EVIDENCE_EVENT_TYPE = "browser_e2e_evidence"
 E2E_START_EVENT_TYPE = "browser_e2e_start"
 E2E_END_EVENT_TYPE = "browser_e2e_end"
 # Real-execution executor kinds: the ONLY classes that may route to a browser_e2e
-# Acceptance verdict (they carry framework-generated provenance). local_http is a
-# deterministic DRY-RUN class — the driver refuses it for a real browser_e2e acceptance.
+# Acceptance verdict in a REAL run (they run a real browser / managed spec-runner).
+# local_http is a deterministic DRY-RUN class — the driver refuses it for a real
+# browser_e2e acceptance.
 REAL_EXECUTION_KINDS = frozenset({"playwright", "external_test_runner"})
+# Kinds that MUST pass the A2 managed-subprocess provenance gate (nonce + in-flight
+# marker + paired e2e_start/e2e_end window + run-provenance.json). The in-process
+# PlaywrightExecutor is a real browser but a distinct attestation model (env-gated,
+# not a managed subprocess) — this phase scopes the provenance gate to the new
+# external_test_runner; playwright provenance hardening is a tracked follow-up.
+PROVENANCE_REQUIRED_KINDS = frozenset({"external_test_runner"})
 
 
 # =========================================================================== #
@@ -250,7 +257,7 @@ def _parse_iso(ts) -> Optional[datetime.datetime]:
 
 def verify_execution_provenance(*, manifest, provenance, provenance_schema,
                                 checklist_results, events, expected_nonce,
-                                audit_chain_ok) -> Optional[str]:
+                                expected_run_id, audit_chain_ok) -> Optional[str]:
     """A2 fail-closed provenance gate for the REAL-execution class. Returns a REASON string
     on ANY failure (the driver gate_hard_fails BEFORE Acceptance) or None when the evidence
     is a validated, framework-owned, LIVE execution.
@@ -277,40 +284,56 @@ def verify_execution_provenance(*, manifest, provenance, provenance_schema,
     mprov = (manifest or {}).get("provenance") or {}
     if mprov.get("invocation_nonce") != expected_nonce:
         return "manifest.provenance.invocation_nonce != driver nonce"
-    # 4. Paired e2e_start/e2e_end events for THIS nonce must exist on the Spine.
-    def _has(ev_type):
-        return any(e.get("type") == ev_type
-                   and (e.get("payload") or {}).get("invocation_nonce") == expected_nonce
-                   for e in (events or []))
-    if not (_has(E2E_START_EVENT_TYPE) and _has(E2E_END_EVENT_TYPE)):
-        return "missing paired e2e_start/e2e_end Audit-Spine events for this nonce"
+    # 4. Paired e2e_start/e2e_end events matching THIS nonce AND run_id must exist on the
+    #    Spine — the DRIVER-owned events (not the manifest) are the authority for the window.
+    def _match(ev_type):
+        for e in (events or []):
+            if e.get("type") != ev_type:
+                continue
+            p = e.get("payload") or {}
+            if (p.get("invocation_nonce") == expected_nonce
+                    and p.get("run_id") == expected_run_id):
+                return p
+        return None
+    start_ev = _match(E2E_START_EVENT_TYPE)
+    end_ev = _match(E2E_END_EVENT_TYPE)
+    if not (start_ev and end_ev):
+        return ("missing paired e2e_start/e2e_end Audit-Spine events for this "
+                "nonce+run_id")
     # 5. The Audit Spine must verify (tamper-evidence over the whole chain).
     if not audit_chain_ok:
         return "Audit-Spine chain verification failed"
-    # 6. Freshness: the real wall-clock must fall inside the driver's execution window.
+    # 6. The manifest window MUST equal the driver-owned event timestamps (the manifest
+    #    cannot define its own freshness window), and the wall-clock must fall inside it.
+    ev_start = start_ev.get("e2e_start_ts")
+    ev_end = end_ev.get("e2e_end_ts")
+    if mprov.get("e2e_start_ts") != ev_start or mprov.get("e2e_end_ts") != ev_end:
+        return "manifest.provenance window != Audit-Spine e2e_start/e2e_end events"
     ws = _parse_iso(provenance.get("wall_clock_start"))
     we = _parse_iso(provenance.get("wall_clock_end"))
-    w0 = _parse_iso(mprov.get("e2e_start_ts"))
-    w1 = _parse_iso(mprov.get("e2e_end_ts"))
+    w0 = _parse_iso(ev_start)
+    w1 = _parse_iso(ev_end)
     if not (ws and we and w0 and w1):
         return "provenance freshness window incomplete (unparseable timestamps)"
     if not (w0 <= ws <= we <= w1):
         return "provenance wall-clock outside the driver execution window (stale/replayed)"
-    # 7. At least one NON-deterministic real artifact (trace/screenshot/video) — defeats a
-    #    byte-identical hand-authored replay.
+    # 7. At least one CONCRETE real-browser artifact (trace .zip / screenshot .png|.jpg /
+    #    video .webm). A deterministic or hand-authored text file cannot satisfy this.
     names = [str(a.get("name", "")) for a in (manifest.get("artifacts") or [])]
-    if not any(n.startswith("test-results/")
-               or n.endswith((".zip", ".png", ".webm", ".jpg", ".jpeg"))
-               for n in names):
-        return "no non-deterministic real artifact (trace/screenshot/video) in the manifest"
-    # 8. Exit / report agreement (all-pass ⇔ clean exit).
+    if not any(n.endswith((".zip", ".png", ".jpg", ".jpeg", ".webm")) for n in names):
+        return ("no concrete real-browser artifact (trace .zip / screenshot / video) "
+                "in the manifest")
+    # 8. Exit / report agreement — a CONCRETE integer exit code (null is incomplete).
+    exit_code = provenance.get("exit_code")
+    if not isinstance(exit_code, int):
+        return ("run-provenance exit_code missing/non-integer (incomplete "
+                "real-subprocess provenance)")
     rows = checklist_results if isinstance(checklist_results, list) else []
     statuses = [str(r.get("executor_status")) for r in rows]
     has_failure = any(s in ("fail", "error") for s in statuses)
-    exit_code = provenance.get("exit_code")
     if has_failure and exit_code == 0:
         return "exit/report disagreement: criteria fail/error but runner exit_code=0"
-    if (not has_failure) and exit_code not in (0, None):
+    if (not has_failure) and exit_code != 0:
         return (f"exit/report disagreement: no failing criteria but runner "
                 f"exit_code={exit_code}")
     # 9. Mapping completeness: no unmapped signed criterion may reach Acceptance.

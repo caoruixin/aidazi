@@ -464,6 +464,20 @@ class ExternalTestRunnerTests(unittest.TestCase):
         self.assertEqual(status, "passed")
         self.assertIn("test-results/trace.zip", atts)
 
+    def test_exec_runner_captures_real_pid(self):
+        # Regression for the CompletedProcess-has-no-pid bug: _exec_runner uses Popen and
+        # returns a real pid + stdout + returncode (subprocess.run's CompletedProcess had
+        # no .pid, which run() dereferences for provenance).
+        r = ex.ExternalTestRunnerExecutor()
+        with tempfile.TemporaryDirectory() as d:
+            res = r._exec_runner(
+                [sys.executable, "-c", "print('ok')"],
+                {"cwd": d}, os.path.join(d, "out"), os.path.join(d, "report.json"), {})
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("ok", res.stdout)
+            self.assertIsInstance(res.pid, int)
+            self.assertGreater(res.pid, 0)
+
     # --- gating + factory --------------------------------------------------- #
     def test_gated_off_raises_unavailable(self):
         old = os.environ.pop("AIDAZI_E2E_EXTERNAL_RUNNER", None)

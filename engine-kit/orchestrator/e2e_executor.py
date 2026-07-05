@@ -46,6 +46,7 @@ ARTIFACT OWNERSHIP (the driver, NOT the executor, writes the verdict-adjacent fi
 from __future__ import annotations
 
 import abc
+import collections
 import datetime
 import hashlib
 import http.client
@@ -1217,6 +1218,10 @@ class PlaywrightExecutor(BrowserExecutor):
 # ===========================================================================
 _CRIT_TAG = re.compile(r"@crit:([A-Za-z0-9][A-Za-z0-9._\-]*)")
 
+#: Managed-runner subprocess result — carries the REAL pid (CompletedProcess does not).
+_RunnerResult = collections.namedtuple(
+    "_RunnerResult", ["returncode", "stdout", "stderr", "pid"])
+
 
 class ExternalTestRunnerExecutor(BrowserExecutor):
     """Run the ADOPTER's OWN Node/Playwright ``.spec.ts`` suite as a MANAGED subprocess
@@ -1379,13 +1384,16 @@ class ExternalTestRunnerExecutor(BrowserExecutor):
         return base
 
     def _exec_runner(self, argv: list, contract: dict, output_dir: str,
-                     report_path: str, env: dict):
+                     report_path: str, env: dict) -> "_RunnerResult":
         """Spawn the managed runner (structured argv, shell=False). MOCKABLE seam.
 
-        Directs Playwright's JSON report to ``report_path`` and its artifacts to
-        ``output_dir`` via env (``PLAYWRIGHT_JSON_OUTPUT_NAME`` / ``--output``), so the
-        real trace/screenshot files land under ``evidence_dir`` and are hashed. A capture
-        failure of the RUNNER ITSELF is a runtime fault (fail-closed)."""
+        Uses ``Popen`` so the REAL pid is captured for provenance (``subprocess.run`` /
+        ``CompletedProcess`` has no ``pid``). Directs Playwright's JSON report to
+        ``report_path`` and its artifacts to ``output_dir`` via env
+        (``PLAYWRIGHT_JSON_OUTPUT_NAME`` / ``--output``), so the real trace/screenshot files
+        land under ``evidence_dir`` and are hashed. A capture failure of the RUNNER ITSELF
+        is a runtime fault (fail-closed). Returns a ``_RunnerResult(returncode, stdout,
+        stderr, pid)``."""
         child_env = dict(os.environ)
         child_env.update(env or {})
         child_env["PLAYWRIGHT_JSON_OUTPUT_NAME"] = report_path
@@ -1395,21 +1403,28 @@ class ExternalTestRunnerExecutor(BrowserExecutor):
             run_argv += ["--output", output_dir]
         timeout = float(((contract.get("timeouts") or {}).get("total_seconds")) or 900)
         try:
-            return subprocess.run(  # noqa: S603 - argv is a fixed list from the contract
+            proc = subprocess.Popen(  # noqa: S603 - argv is a fixed list from the contract
                 run_argv,
                 cwd=contract.get("cwd") or None,
                 env=child_env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
             )
         except FileNotFoundError as exc:
             raise ExecutorUnavailable(
                 f"external test runner binary not found ({run_argv[:1]!r}): {exc}"
             ) from exc
+        pid = proc.pid
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            proc.communicate()
             raise ExecutorRuntimeError(
                 f"external test runner timed out after {timeout}s") from exc
+        return _RunnerResult(returncode=proc.returncode, stdout=stdout,
+                             stderr=stderr, pid=pid)
 
     @staticmethod
     def _load_report(report_path: str, stdout: str):

@@ -27,8 +27,14 @@ _PROV_SCHEMA = json.load(
 _NONCE = "nonce-abcdefgh1234"
 
 
+_RUN_ID = "r0"
+_W0 = "2026-07-05T07:59:00+00:00"   # driver e2e_start_ts (Audit-Spine event authority)
+_W1 = "2026-07-05T08:06:00+00:00"   # driver e2e_end_ts
+
+
 def _good():
-    """A fully-valid real-execution evidence set (verify → None)."""
+    """A fully-valid real-execution evidence set (verify → None). The manifest window
+    EQUALS the Audit-Spine event timestamps, and the real wall-clock falls inside it."""
     prov = {
         "executor_kind": "external_test_runner",
         "argv": ["npx", "playwright", "test", "e2e/x.spec.ts", "--reporter=json"],
@@ -39,22 +45,22 @@ def _good():
         "spec_sha256": "a" * 64, "invocation_nonce": _NONCE,
     }
     manifest = {
-        "run_id": "r0", "app_start_cmd": "", "base_url": "", "exit_code": 0,
-        "artifacts": [{"name": "test-results/a/trace.zip", "path": "test-results/a/trace.zip",
-                       "sha256": "b" * 64}],
+        "run_id": _RUN_ID, "app_start_cmd": "", "base_url": "", "exit_code": 0,
+        "artifacts": [{"name": "test-results/a/trace.zip",
+                       "path": "test-results/a/trace.zip", "sha256": "b" * 64}],
         "artifact_manifest_hash": "c" * 64,
-        "provenance": {"invocation_nonce": _NONCE,
-                       "e2e_start_ts": "2026-07-05T07:59:00+00:00",
-                       "e2e_end_ts": "2026-07-05T08:06:00+00:00"},
+        "provenance": {"invocation_nonce": _NONCE, "e2e_start_ts": _W0, "e2e_end_ts": _W1},
     }
     events = [
-        {"type": "browser_e2e_start", "payload": {"invocation_nonce": _NONCE}},
-        {"type": "browser_e2e_end", "payload": {"invocation_nonce": _NONCE}},
+        {"type": "browser_e2e_start", "payload": {
+            "invocation_nonce": _NONCE, "run_id": _RUN_ID, "e2e_start_ts": _W0}},
+        {"type": "browser_e2e_end", "payload": {
+            "invocation_nonce": _NONCE, "run_id": _RUN_ID, "e2e_end_ts": _W1}},
     ]
     checklist = [{"criterion_id": "A", "executor_status": "pass", "mapping_state": "mapped"}]
     return dict(manifest=manifest, provenance=prov, checklist_results=checklist,
-                events=events, expected_nonce=_NONCE, audit_chain_ok=True,
-                provenance_schema=_PROV_SCHEMA)
+                events=events, expected_nonce=_NONCE, expected_run_id=_RUN_ID,
+                audit_chain_ok=True, provenance_schema=_PROV_SCHEMA)
 
 
 def _verify(**over):
@@ -103,11 +109,31 @@ class VerifyExecutionProvenanceTests(unittest.TestCase):
         p["wall_clock_start"] = "2026-07-05T07:00:00+00:00"  # before e2e_start_ts
         self.assertIn("window", _verify(provenance=p) or "")
 
-    def test_no_nondeterministic_artifact_fails(self):
+    def test_no_concrete_artifact_fails(self):
+        # a plain text file under test-results/ (or the checklist) is NOT a real-browser
+        # artifact — only trace .zip / screenshot / video count.
         m = copy.deepcopy(_good()["manifest"])
-        m["artifacts"] = [{"name": "checklist-results.json",
-                           "path": "checklist-results.json", "sha256": "d" * 64}]
-        self.assertIn("non-deterministic", _verify(manifest=m) or "")
+        m["artifacts"] = [{"name": "test-results/log.txt",
+                           "path": "test-results/log.txt", "sha256": "d" * 64}]
+        self.assertIn("concrete real-browser artifact", _verify(manifest=m) or "")
+
+    def test_run_id_mismatch_fails(self):
+        # events carry a different run_id than the driver-owned expected run_id
+        self.assertIn("paired", _verify(expected_run_id="r-different") or "")
+
+    def test_manifest_window_must_equal_spine_events(self):
+        # manifest defines its OWN window (not matching the Audit-Spine events) → rejected
+        m = copy.deepcopy(_good()["manifest"])
+        m["provenance"]["e2e_end_ts"] = "2026-07-05T09:00:00+00:00"
+        self.assertIn("!= Audit-Spine", _verify(manifest=m) or "")
+
+    def test_null_exit_code_fails(self):
+        # a null exit code is incomplete real-subprocess provenance — fails closed (caught
+        # at schema validation now that the schema requires a concrete integer).
+        p = _good()["provenance"]; p["exit_code"] = None
+        reason = _verify(provenance=p)
+        self.assertTrue(reason)
+        self.assertIn("integer", reason)
 
     def test_exit_report_disagreement_fails(self):
         # tests failed but runner exited 0
