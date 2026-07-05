@@ -38,6 +38,26 @@
         }
       }
     },
+    "required_framework_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "min_version": {
+            "type": "string",
+            "pattern": "^[0-9]+(\\.[0-9]+)*$"
+          }
+        }
+      }
+    },
     "autonomy": {
       "type": "object",
       "required": [
@@ -997,5 +1017,5 @@
     }
   },
   "x-canonical-source": "mission-charter.schema.json",
-  "x-canonical-sha256": "45403ecca12695c4a27dff46a19651307b3b8b1ea057c3e15578a4c4114e7600"
+  "x-canonical-sha256": "6d79f3421de2cc217ac193816c18cc4c6f669544a5688ca95b6b7c3838692530"
 }

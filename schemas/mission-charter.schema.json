@@ -24,6 +24,19 @@
         "ledger_path": {"type": "string", "default": "docs/requirements-ledger.json", "description": "Path to the project requirement ledger (requirement-ledger.schema.json)."}
       }
     },
+    "required_framework_capabilities": {
+      "type": "array",
+      "description": "Phase-4 native-E2E capability contract (design §2/§13). OPTIONAL, ADDITIVE. The machine-readable framework capabilities this charter REQUIRES the deployed/pinned aidazi to PROVIDE — checked DETERMINISTICALLY + FAIL-CLOSED at plan sign-off (--sign-plan) and at the real-run preflight against the framework-owned governance/framework-capabilities.json contract. A missing/under-versioned capability REFUSES the sign/run and names the missing capability, the deployed framework capability/version, and the upgrade action. Absent ⇒ no pinned requirement (legacy-safe, byte-identical to pre-Phase-4). Lives in the charter, so it is bound into charter_hash ⊂ the signed campaign hash H — a post-sign change is an authority change → re-sign.",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "description": "Capability id declared by governance/framework-capabilities.json, e.g. native_managed_external_e2e | framework_owned_e2e_provenance | autonomous_e2e_remediation | codex_adapter_liveness."},
+          "min_version": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$", "description": "Minimum required capability version (dotted integers, compared component-wise). Absent ⇒ presence of the capability suffices."}
+        }
+      }
+    },
     "autonomy": {
       "type": "object",
       "required": ["level", "approved_scope", "auto_pass_rules"],
