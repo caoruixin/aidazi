@@ -205,18 +205,42 @@ record).
 
 ## §6 Dev self-smoke definition of done
 
-For a `browser_e2e` milestone, the Dev self-smoke is a **MANDATORY structural gate**: Dev
-must launch the running app and exercise the changed happy path once, recording the result
-at `docs/self-smoke.json` as `{command, result}`. The orchestrator checks **presence**
-(structural — not correctness) at the `e2e_evidence_pending` entry; absence or a malformed
-file → a **resumable** `gate_hard_fail`.
+For a `browser_e2e` milestone, the Dev self-smoke attests that the running app was exercised
+once on the changed happy path, recorded at `docs/self-smoke.json` as `{command, result}`.
+The orchestrator checks **presence** (structural — not correctness) at the
+`e2e_evidence_pending` entry.
 
 It is **necessary, not authoritative**, and **distinct** from the independent browser
 evidence gate (§3): a Dev attesting "I ran it and it worked" does not substitute for the
-orchestrator's own captured, hash-anchored evidence — both must hold. The self-smoke
-catches the obvious "the app doesn't even start on the happy path" failure cheaply, at the
-Dev seam, before the heavier executor run. It is scoped to `browser_e2e` milestones
-(general-mandatory self-smoke is a deliberate non-goal / follow-up).
+orchestrator's own captured, hash-anchored evidence — both must hold.
+
+### §6b — self-smoke autonomy (Phase-4, design §6b): NEVER a routine human halt
+
+The self-smoke must never make the loop depend on a human to run the app. Two mechanisms make
+the absence path autonomous, keyed on the executor class:
+
+- **PRIMARY — subsumed for `external_test_runner`.** The managed run already starts the app
+  (readiness poll), runs the real spec-runner, and produces framework-owned provenance (§3/§4);
+  that IS the self-smoke evidence (app-start + a real journey with captured provenance, strictly
+  stronger than a hand-written `{command, result}`). So for `external_test_runner` the separate
+  `docs/self-smoke.json` structural gate is **SUBSUMED** (skipped) — no separate artifact, no
+  separate hard-fail. The independent browser-evidence gate is NOT weakened: the managed run's
+  provenance verification (`verify_execution_provenance`, fail-closed) is the substitute
+  attestation, nothing less.
+- **FALLBACK — bounded autonomous Dev re-dispatch for the in-process `playwright` class.** When a
+  SIGNED `charter.autonomy.e2e_remediation` budget is present (HOTL+), a missing/malformed
+  self-smoke is treated like a deterministic fault: the driver dispatches ONE bounded in-envelope
+  Dev round (author `docs/self-smoke.json`) under the signed `max_rounds`, contained by the
+  observed-diff envelope (approved_scope modules + the self-smoke artifact), then retries. The
+  containment gate unavailable, an out-of-envelope diff, or the budget exhausted → a **resumable
+  `gate_hard_fail`** (an authority pause, R4-a/b — not routine).
+- **OTHERWISE — the structural presence gate stands** (`local_http`, or `playwright` without a
+  signed budget): absence/malformed → a **resumable** `gate_hard_fail` exactly as before
+  (legacy-safe, byte-identical). The Dev role card + prompt still mandate authoring it
+  (belt-and-suspenders).
+
+The self-smoke catches the obvious "the app doesn't even start on the happy path" failure at the
+Dev seam. It is scoped to `browser_e2e` milestones (general-mandatory self-smoke is a follow-up).
 
 ## §7 Fail-closed matrix
 
@@ -226,7 +250,7 @@ No listed failure can become a silent milestone PASS.
 |---|---|
 | App start / readiness timeout / executor runtime error or unavailable | `gate_hard_fail` (resumable: re-run / accept / abort) |
 | Invalid executor-contract / invalid functional-checklist | `gate_hard_fail` (validated on-load) |
-| Missing Dev `docs/self-smoke.json` (browser_e2e) | `gate_hard_fail` (resumable halt) |
+| Missing Dev `docs/self-smoke.json` (browser_e2e) | subsumed for `external_test_runner` (§6b); bounded autonomous Dev re-dispatch for `playwright` under a signed budget; else a resumable `gate_hard_fail` (structural) — never a routine human halt |
 | Missing / incomplete / stray / unanchored / hash-mismatched evidence | `gate_hard_fail` (reconcile/verify pre-acceptance) |
 | Interrupted run (crash mid-capture) | reconcile keyed on `run_id` → re-run partial, or finish a crashed publish (no duplicate run) |
 | Verdict wrong/absent `acceptance_class`, malformed/unbound evidence ref, missing `criterion_id` | `gate_hard_fail` (consistency gate, integrity) |
@@ -246,11 +270,45 @@ never a verdict):
   LLM, no internet.
 - **`playwright`** — real browser, opt-in + env-gated (`AIDAZI_E2E_PLAYWRIGHT=1`, else
   unavailable); real pixels/console; never run in offline CI.
+- **`external_test_runner`** — the managed adopter spec-runner (e.g. `npx playwright test`),
+  env-gated (`AIDAZI_E2E_EXTERNAL_RUNNER=1`); the **REAL-EXECUTION** class that carries
+  framework-generated provenance (`run-provenance.json` + the in-flight nonce / audit-spine
+  window, §4). `{playwright, external_test_runner}` are the only classes that may route to a
+  browser_e2e Acceptance verdict; `local_http` is the DRY-RUN class and is refused at the
+  acceptance-routing seam.
 
 The driver injects per-run values at the gate: it substitutes `{port}`/`{store}`/`{mode}`
 in `app_start_cmd`, sets a concrete `base_url` (the static host + an allocated free port),
 and provides PORT/STORE/MODE to the child env. The static charter form stays
 portless/templated; the runtime form is concrete and re-validated (fail-closed).
+
+## §8b Phase-4 native-E2E adoption surface (capability contract · onboarding · migration)
+
+- **Framework capability contract** — `governance/framework-capabilities.json` (machine-readable,
+  schema `schemas/framework-capabilities.schema.json`) declares the capabilities THIS aidazi build
+  provides (`native_managed_external_e2e`, `framework_owned_e2e_provenance`,
+  `autonomous_e2e_remediation`, `codex_adapter_liveness`), each anchored to a real code symbol
+  (`code_anchor`) so identity does not depend on mutable doc text. An adopter DECLARES what it
+  needs in `charter.required_framework_capabilities` (bound into `charter_hash ⊂ H`). Preflight
+  (`run_loop --sign-plan`) and the real-run gate refuse **deterministically, fail-closed** when a
+  required capability is missing/under-versioned or the contract is unreadable, naming the missing
+  capability, the deployed framework version, and the upgrade action
+  (`engine-kit/framework_capabilities.py`).
+- **Onboarding proposal generator** — `engine-kit/tools/e2e_config_proposal.py` drafts a COMPLETE,
+  runnable `tooling.e2e` + `tooling.acceptance.functional` proposal for an eligible user-facing
+  requirement (all elements: executor/runner, spec, app-start/readiness, criterion map, evidence
+  path, timeouts/retry/remediation budgets, cleanup, NAMED secret refs, ledger/`covers_req_ids`/
+  `surface` linkage, functional checklist, autonomy + §1.7-G eligibility, capability pins).
+  Advisory (`proposal_status`/`proposal_confidence`), no new runtime gate, binds only on
+  whole-proposal human authorization. Two fail-closed guardrails: `proposal_completeness_violations`
+  (never emit a skeleton) and `secret_leak_violations` (NAMED refs only — no materialized secret).
+  Worked example: `examples/native-e2e-adopter/`.
+- **Existing-adopter migration audit** — `engine-kit/tools/e2e_migration_audit.py` is READ-ONLY:
+  it detects native-E2E gaps for a deployed adopter and emits an advisory migration proposal,
+  requiring explicit human authorization before any authoritative artifact changes. An aidazi
+  upgrade alone NEVER mutates campaign plans, signed charters, requirement ledgers, Acceptance
+  reports, E2E configuration, or aidazi pins; legacy non-user-facing milestones stay valid and are
+  never forced into browser E2E.
 
 ## §9 Editing this doc
 Process-tier; edits at fold-back cadence (Constitution §8). The implementation is the

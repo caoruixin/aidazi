@@ -440,6 +440,29 @@ The same refusal fires for an **unclassified** covered requirement (absent from 
 missing/invalid `surface`, or duplicated): add exactly one ledger entry with a valid
 `surface`, then re-sign.
 
+### OW-4 — the runnable native-E2E config proposal (Phase-4; default-on for eligible reqs)
+
+Resolution #1 above is not "hand-write a browser-E2E config from scratch." For each eligible
+**user-facing** requirement, the agent **default-drafts a COMPLETE, runnable native-E2E
+proposal** (`engine-kit/tools/e2e_config_proposal.py`) by inspecting the repo (Step-4a
+impl-stack snapshot, `frontend/e2e/*.spec.ts`, package scripts, dev-server cmd) — never an empty
+skeleton the Customer must fill in. The proposal carries every element: `executor_kind:
+external_test_runner` + `runner_argv`, `spec_path`, `app_start_cmd`/`readiness`/`base_url`/
+`allowed_origins`, the signed `criterion_map`, `evidence_retention_path`, `timeouts` + retry +
+the `e2e_remediation` (max_rounds / no-progress) budget, cleanup `lifecycle_operations`, **NAMED
+`secret_refs` only** (`env:NAME` — never a literal secret), the `covers_req_ids` / `surface`
+linkage, the browser-E2E functional checklist, and the autonomy level + §1.7-G eligibility.
+
+It is **advisory** exactly like the `surface` proposal (`proposal_status ∈ proposed|confirmed`,
+`proposal_confidence ∈ high|low`; escalate only `low`): no new runtime gate, binds no hash, and
+binds only on **whole-proposal human authorization** (paste into the charter, then sign). Two
+fail-closed guardrails run before it is presented: **completeness** (`proposal_completeness_violations`
+— reject a skeleton) and **no-leak** (`secret_leak_violations` — reject any materialized secret).
+The proposal also pins `required_framework_capabilities`, so a future aidazi that lacks a
+native-E2E capability **fails closed at preflight** (naming the missing capability + upgrade
+action). Worked example: `examples/native-e2e-adopter/`. Existing adopters get a READ-ONLY
+migration audit (`engine-kit/tools/e2e_migration_audit.py`) instead of an automatic rewrite.
+
 **Authority + integrity.** An agent MAY *propose* a `surface`; it binds only when the
 Customer **signs** the covering scope. The covered-requirement surface basis is snapshotted
 into the signed scope hash, so a **post-sign surface flip ⇒ `stale` ⇒ re-sign** (Customer
