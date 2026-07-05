@@ -18,7 +18,10 @@
         "properties": {
           "criterion_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "description": "Stable, UNIQUE id; the verdict's browser cases must cover this set exactly (driver set-equality check)."},
           "criterion": {"type": "string", "minLength": 1, "description": "The user-visible observable outcome (NOT a selector or mechanic)."},
-          "critical": {"type": "boolean", "default": false, "description": "true ⇒ a captured executor failure on this criterion vetoes a milestone pass (→ needs_human, §3.2)."}
+          "critical": {"type": "boolean", "default": false, "description": "true ⇒ a captured executor failure on this criterion vetoes a milestone pass (→ needs_human, §3.2)."},
+          "req_id": {"type": "string", "pattern": "^REQ-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", "description": "P3 §1.7-G containment binding. OPTIONAL signed requirement id this criterion traces to. When present, the framework-generated deterministic failure brief (design §5.2a) carries it, and the §1.7-G req_id-envelope check proves it ⊆ (signed covers_req_ids ∩ F1 envelope) BEFORE dispatching a bounded Dev fix; a criterion whose executor_status ∈ {fail,error} but with NO req_id binding fails the containment guarantee and routes to the §3.5 human gate (fail-closed). Additive: absent ⇒ pre-P3-identical."},
+          "module": {"type": "string", "description": "P3 §1.7-G containment binding. OPTIONAL in-scope module this criterion's fix must stay within (checked against autonomy.approved_scope.modules_in_scope by the containment gate). Additive."},
+          "layer": {"type": "string", "description": "P3 §1.7-G containment binding. OPTIONAL in-scope layer this criterion's fix must stay within (checked against autonomy.approved_scope.layers_allowed). Additive."}
         }
       }
     }

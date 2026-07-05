@@ -136,6 +136,23 @@
               }
             }
           }
+        },
+        "e2e_remediation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "max_rounds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_no_progress_rounds": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
         }
       }
     },
@@ -980,5 +997,5 @@
     }
   },
   "x-canonical-source": "mission-charter.schema.json",
-  "x-canonical-sha256": "f492e8d96c3f6096a992044a9330aa9a506f08689b2b6c39464e17943576979f"
+  "x-canonical-sha256": "45403ecca12695c4a27dff46a19651307b3b8b1ea057c3e15578a4c4114e7600"
 }

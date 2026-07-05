@@ -539,6 +539,76 @@ def _check_adaptive_insert_bound(charter: dict, report: Report) -> None:
 # campaign-plan.schema.json gap_followup.max_no_progress_rounds default/description).
 GAP_FOLLOWUP_PINNED_MAX_NO_PROGRESS = 1
 
+# §1.7-G clause 2/3 (design §5.3): the failing-criterion set MUST strictly shrink each round
+# and a non-shrinking round HALTs on the FIRST occurrence — the E2E-remediation sibling of the
+# gap-followup pin. Kept in lockstep with driver's remediation no-progress default.
+E2E_REMEDIATION_PINNED_MAX_NO_PROGRESS = 1
+# The autonomy levels at which §1.7-G may auto-dispatch (human_on_the_loop or higher) — an
+# enabled block at human_in_the_loop is inert and a §1.7-D footgun, rejected below.
+_E2E_REMEDIATION_ENABLED_LEVELS = frozenset(
+    {"human_on_the_loop", "fully_autonomous_within_budget"})
+
+
+def _check_e2e_remediation_bound(charter: dict, report: Report) -> None:
+    """§1.7-G STATIC enforcement — the build-time sibling of the driver's runtime
+    remediation-budget cap (driver._check_budget on state.e2e_remediation_round). Reads the
+    charter's OPTIONAL ``autonomy.e2e_remediation`` block (schemas/mission-charter.schema.json —
+    design §5.3) and mirrors the same §1.7-D evasion shapes the other charter bounds checks
+    cover:
+
+      * BOUNDED — an ENABLED block MUST name ``max_rounds`` explicitly; an unbounded enable is
+        rejected exactly like an unbounded ``adaptive_insert`` (an enabled autonomous fix loop
+        with no round cap can never fail-closed).
+      * PROPER-SUBSET / HALT-ON-FIRST-NON-SHRINK — ``max_no_progress_rounds``, when present, is
+        PINNED to E2E_REMEDIATION_PINNED_MAX_NO_PROGRESS (1); a value > 1 tolerates non-progress
+        and is a §1.7-D evasion (§1.7-G requires each round's failing-criterion set to strictly
+        shrink and HALTs on the FIRST non-shrinking round).
+      * HOTL+ ENABLEMENT — §1.7-G may auto-dispatch ONLY at ``human_on_the_loop`` or higher; an
+        ``enabled: true`` block under ``human_in_the_loop`` is inert and a footgun (the human
+        expects autonomous remediation that never runs), so it is rejected.
+
+    NO-OP when the block is absent or ``enabled`` is not true (default-OFF, legacy-safe —
+    byte-identical to a pre-P3 charter)."""
+    er = (charter.get("autonomy") or {}).get("e2e_remediation")
+    if not isinstance(er, dict):
+        return
+    if er.get("enabled") is not True:
+        return  # default-OFF ⇒ deterministic criterion failures route to §3.5 (legacy-safe)
+    base = "autonomy.e2e_remediation"
+    if "max_rounds" not in er:
+        report.error(
+            "e2e_remediation_bound",
+            "autonomy.e2e_remediation.enabled is true but max_rounds is absent; an opted-in "
+            "autonomous E2E-remediation lane MUST bound its fix→rerun rounds explicitly so the "
+            "orchestrator can fail-closed past it (Constitution §1.7-G / §1.7-D — an unbounded "
+            "enable is an evasion, rejected exactly like an unbounded adaptive_insert)",
+            f"{base}.max_rounds",
+        )
+    pin = E2E_REMEDIATION_PINNED_MAX_NO_PROGRESS
+    if "max_no_progress_rounds" in er:
+        mnp = er.get("max_no_progress_rounds")
+        # STRICT int so a bool (True == 1) cannot masquerade as the pinned value on a bare call;
+        # the schema layer is the primary type authority (defense-in-depth here).
+        if type(mnp) is not int or mnp != pin:
+            report.error(
+                "e2e_remediation_no_progress_pin",
+                f"autonomy.e2e_remediation.max_no_progress_rounds MUST be the integer {pin} "
+                f"(got {mnp!r}); §1.7-G requires each round's failing-criterion set to strictly "
+                "shrink and HALTs on the FIRST non-shrinking round — a value > 1 tolerates "
+                "non-progress and is a §1.7-D evasion",
+                f"{base}.max_no_progress_rounds",
+            )
+    level = (charter.get("autonomy") or {}).get("level")
+    if level not in _E2E_REMEDIATION_ENABLED_LEVELS:
+        report.error(
+            "e2e_remediation_autonomy_level",
+            f"autonomy.e2e_remediation.enabled is true but autonomy.level={level!r}; §1.7-G "
+            "auto-dispatch is permitted ONLY at human_on_the_loop or higher — an enabled block "
+            "at human_in_the_loop is inert (the deterministic criterion failure would route to "
+            "the §3.5 human gate regardless), a §1.7-D footgun",
+            f"{base}.enabled",
+        )
+
 
 def _check_gap_followup_bounds(campaign_plan: Any, report: Report) -> None:
     """§A.3 STATIC enforcement — the build-time sibling of the §1.7-F clause-2 RUNTIME
@@ -1442,6 +1512,7 @@ def validate_semantics(charter: Any, report: Report, overrides: Optional[Overrid
     _check_acceptance_on_fix_required(charter, report)
     _check_calibration_corollary(charter, report)
     _check_adaptive_insert_bound(charter, report)
+    _check_e2e_remediation_bound(charter, report)
     # P-0a checks (fire ONLY when the relevant new charter fields are present):
     _check_connector_grants(
         charter,
