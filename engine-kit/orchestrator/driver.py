@@ -484,6 +484,13 @@ class RunState:
     #:                          non-default, like task_signals_digest).
     e2e_remediation_round: int = 0
     failing_criteria_by_round: list = field(default_factory=list)
+    #: e2e_selfsmoke_round — count of COMPLETED bounded autonomous Dev self-smoke re-dispatch
+    #:                       rounds this milestone (§6b.2, in-process playwright class only). A
+    #:                       DISTINCT counter from e2e_remediation_round (a pre-commit self-smoke
+    #:                       concern vs the post-commit criterion-remediation loop). Bounded by the
+    #:                       SAME SIGNED e2e_remediation.max_rounds cap; exhaustion → HALT (authority
+    #:                       pause). Default 0, emitted only when non-zero (byte-identical round-trip).
+    e2e_selfsmoke_round: int = 0
     #: Track 1 1-c — integrity digest over the per-sub-sprint task_signals AUTHORED by Deliver at
     #: decompose (set only when at least one sub-sprint carries task_signals). Bound here so a
     #: post-decompose change to any task_signal is detected: the driver recomputes it before
@@ -527,6 +534,8 @@ class RunState:
                if self.e2e_remediation_round else {}),
             **({"failing_criteria_by_round": [list(s) for s in self.failing_criteria_by_round]}
                if self.failing_criteria_by_round else {}),
+            **({"e2e_selfsmoke_round": self.e2e_selfsmoke_round}
+               if self.e2e_selfsmoke_round else {}),
         }
 
     @classmethod
@@ -560,6 +569,7 @@ class RunState:
             e2e_remediation_round=int(d.get("e2e_remediation_round", 0)),
             failing_criteria_by_round=[list(s) for s in
                                        d.get("failing_criteria_by_round", [])],
+            e2e_selfsmoke_round=int(d.get("e2e_selfsmoke_round", 0)),
         )
 
 
@@ -4257,6 +4267,26 @@ class Driver:
                 pass
         return manifest
 
+    def _dev_self_smoke_reason(self) -> Optional[str]:
+        """PURE check (NO checkpoint/audit side effects): None when a valid docs/self-smoke.json
+        {command, result} is present, else a human-readable reason. Shared by the §6a structural
+        gate (_check_dev_self_smoke) AND the §6b bounded re-dispatch (_ensure_dev_self_smoke), so
+        the RECOVERABLE re-dispatch path never emits a spurious gate_hard_fail checkpoint each round
+        (which would make autonomous recovery look like a routine human halt)."""
+        path = os.path.join(self.run_dir, "docs", "self-smoke.json")
+        if not os.path.isfile(path):
+            return ("browser_e2e milestone requires a Dev self-smoke attestation at "
+                    "docs/self-smoke.json ({command, result} — run the app + exercise the "
+                    "changed happy path once); none found")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                ss = json.load(fh)
+        except (OSError, ValueError) as exc:
+            return f"Dev self-smoke attestation is not valid JSON: {exc}"
+        if not (isinstance(ss, dict) and ss.get("command") and ss.get("result")):
+            return "Dev self-smoke attestation must contain non-empty {command, result}"
+        return None
+
     def _check_dev_self_smoke(self) -> None:
         """§6a (Codex MAJOR-2) — a browser_e2e milestone REQUIRES a Dev self-smoke
         attestation: the running app exercised once on the changed happy path, recorded
@@ -4264,26 +4294,127 @@ class Driver:
         (NOT a judgment of correctness — necessary, not authoritative; distinct from the
         independent browser evidence gate). Absent/malformed → resumable gate_hard_fail."""
         assert self.state is not None
-        path = os.path.join(self.run_dir, "docs", "self-smoke.json")
-        if not os.path.isfile(path):
-            raise self._gate_hard_fail(
-                "browser_e2e milestone requires a Dev self-smoke attestation at "
-                "docs/self-smoke.json ({command, result} — run the app + exercise the "
-                "changed happy path once); none found", STATE_E2E_PENDING)
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                ss = json.load(fh)
-        except (OSError, ValueError) as exc:
-            raise self._gate_hard_fail(
-                f"Dev self-smoke attestation is not valid JSON: {exc}",
-                STATE_E2E_PENDING)
-        if not (isinstance(ss, dict) and ss.get("command") and ss.get("result")):
-            raise self._gate_hard_fail(
-                "Dev self-smoke attestation must contain non-empty {command, result}",
-                STATE_E2E_PENDING)
-        self._audit("dev_self_smoke_present",
-                    {"subsprint_id": self.state.subsprint_id,
-                     "command": str(ss.get("command"))[:200]})
+        reason = self._dev_self_smoke_reason()
+        if reason is not None:
+            raise self._gate_hard_fail(reason, STATE_E2E_PENDING)
+        self._audit("dev_self_smoke_present", {"subsprint_id": self.state.subsprint_id})
+
+    # ----- §6b: Dev self-smoke autonomy (subsume | bounded re-dispatch) ------ #
+    def _e2e_executor_kind(self) -> str:
+        """charter.tooling.e2e.executor_kind ('' when unset). Selects the §6b self-smoke path:
+        external_test_runner SUBSUMES the gate; the in-process playwright class gets a bounded
+        autonomous re-dispatch; everything else keeps the §6a structural presence gate."""
+        return str(self._e2e_config().get("executor_kind", "") or "")
+
+    def _e2e_selfsmoke_rel_path(self) -> Optional[str]:
+        """docs/self-smoke.json RELATIVE to the Dev git work dir (the space the observed-diff gate
+        reports in), so the §6b.2 re-dispatch may author it without tripping the out-of-envelope
+        guard. None when there is no work dir or the artifact is OUTSIDE it (then no whitelist is
+        needed — an out-of-work-dir artifact never appears in the changed set)."""
+        handle = self.context_handle
+        wd = getattr(handle, "work_dir", None) if handle is not None else None
+        if not wd:
+            return None
+        rel = os.path.relpath(os.path.join(self.run_dir, "docs", "self-smoke.json"),
+                              wd).replace(os.sep, "/")
+        return rel if not rel.startswith("..") else None
+
+    def _e2e_selfsmoke_out_of_envelope(self, changed: set) -> list:
+        """§6b.2 containment: the self-smoke re-dispatch may touch ONLY in-scope modules
+        (approved_scope.modules_in_scope) PLUS the mandated docs/self-smoke.json artifact. Reuses
+        the lane's observed-diff envelope, whitelisting only the self-smoke artifact path."""
+        allowed = self._e2e_selfsmoke_rel_path()
+        return [f for f in self._e2e_diff_out_of_envelope(changed) if f != allowed]
+
+    def _render_e2e_selfsmoke_brief(self) -> str:
+        """§6b.2 bounded in-envelope Dev brief: author docs/self-smoke.json only, stay in-envelope."""
+        return (
+            f"## §6b Dev self-smoke re-dispatch round {self.state.e2e_selfsmoke_round + 1} — "
+            f"author the browser_e2e self-smoke attestation\n"
+            "A browser_e2e milestone REQUIRES a Dev self-smoke attestation at docs/self-smoke.json "
+            "= {command, result}: RUN the app, exercise the changed happy path ONCE, and record the "
+            "command you ran plus the observed result. Author ONLY docs/self-smoke.json (plus, if "
+            "strictly necessary, MINIMAL in-envelope fixes so the happy path runs); do NOT widen "
+            "scope or touch modules outside approved_scope.modules_in_scope. This is a bounded "
+            "autonomous round under the signed e2e_remediation budget.\n")
+
+    def _ensure_dev_self_smoke(self) -> None:
+        """§6b — the Dev self-smoke is NEVER a routine human halt.
+        PRIMARY (external_test_runner): the managed run's app-start + first-criterion pass with
+          framework-owned provenance IS the attestation; the separate structural gate is SUBSUMED.
+        FALLBACK (in-process playwright + a SIGNED e2e_remediation budget): a missing/malformed
+          self-smoke is a bounded AUTONOMOUS Dev re-dispatch (author docs/self-smoke.json), contained
+          by the observed-diff envelope (+ the self-smoke artifact) and bounded by max_rounds; the
+          containment gate unavailable, an out-of-envelope diff, or the budget exhausted → HALT (an
+          authority pause, R4-a/b — not routine).
+        OTHERWISE (local_http, or playwright without a signed budget): the §6a structural presence
+          gate stands (legacy-safe; byte-identical). A mid-round _step_dev dev-spec-refine pause
+          leaves STATE_HALTED (the caller must not commit)."""
+        assert self.state is not None
+        kind = self._e2e_executor_kind()
+        if kind == "external_test_runner":
+            self._audit("dev_self_smoke_subsumed",
+                        {"subsprint_id": self.state.subsprint_id, "executor_kind": kind})
+            return
+        # Legacy / non-recoverable classes (local_http, or playwright without a signed budget): the
+        # §6a structural gate stands (writes the gate_hard_fail checkpoint on a genuine terminal halt).
+        if kind != "playwright" or not self._e2e_remediation_enabled():
+            self._check_dev_self_smoke()
+            return
+        # FALLBACK — playwright + signed budget: a bounded autonomous re-dispatch. Uses the PURE
+        # predicate (no per-round gate_hard_fail checkpoint on the recoverable path); a checkpoint is
+        # written ONLY at a genuine terminal HALT (containment unavailable / budget exhausted /
+        # out-of-envelope), which is an R4-a/b authority pause — never a routine one.
+        while True:
+            reason = self._dev_self_smoke_reason()
+            if reason is None:
+                self._audit("dev_self_smoke_present", {"subsprint_id": self.state.subsprint_id})
+                return
+            # Containment must be MECHANICALLY present (the design's fail-closed rule) — else HALT
+            # for the human rather than dispatch an uncontained fix.
+            if not self._e2e_observed_diff_available():
+                raise self._gate_hard_fail(
+                    "browser_e2e self-smoke is missing/malformed and the observed-diff containment "
+                    "gate is unavailable (no git work dir / empty modules_in_scope) — cannot "
+                    "autonomously re-dispatch; human authority required", STATE_E2E_PENDING)
+            max_rounds = self._e2e_remediation_cfg().get("max_rounds")
+            if isinstance(max_rounds, int) and self.state.e2e_selfsmoke_round >= max_rounds:
+                raise self._gate_hard_fail(
+                    f"Dev self-smoke re-dispatch budget exhausted "
+                    f"(e2e_remediation.max_rounds={max_rounds}); self-smoke still missing/malformed "
+                    f"— human authority required", STATE_E2E_PENDING)
+            self._audit("dev_self_smoke_redispatch",
+                        {"subsprint_id": self.state.subsprint_id,
+                         "round": self.state.e2e_selfsmoke_round + 1, "reason": reason})
+            # Dispatch a bounded, in-envelope Dev round to author the attestation. State stays
+            # STATE_E2E_PENDING THROUGHOUT so a crash mid-round resumes back into this pre-commit path
+            # (idempotent: the persisted counter honors the budget across resume).
+            self._e2e_fix_brief = self._render_e2e_selfsmoke_brief()
+            try:
+                self._step_dev()
+                if self.state.state == STATE_HALTED:
+                    return   # dev-spec refine paused mid re-dispatch (checkpoint already written)
+                self._step_gate()          # deterministic gates; gate_hard_fail raises (resumable)
+            finally:
+                self._e2e_fix_brief = None
+            # Observed-diff containment AFTER the fix (fail-closed): the gate must still be available,
+            # and the fix must touch only in-envelope modules + the self-smoke artifact.
+            changed = self._e2e_changed_files()
+            if changed is None:
+                raise self._gate_hard_fail(
+                    "the observed-diff scope gate became unavailable during the Dev self-smoke "
+                    "re-dispatch", STATE_E2E_PENDING)
+            oos = self._e2e_selfsmoke_out_of_envelope(changed)
+            if oos:
+                raise self._gate_hard_fail(
+                    f"the Dev self-smoke re-dispatch touched out-of-envelope files: {oos} "
+                    f"(allowed: approved_scope.modules_in_scope + docs/self-smoke.json)",
+                    STATE_E2E_PENDING)
+            self.state.e2e_selfsmoke_round += 1
+            self.state.state = STATE_E2E_PENDING
+            self._save_state()
+            # loop: re-check the (now authored) attestation — success returns; a still-missing
+            # artifact dispatches the next bounded round until the signed budget cap.
 
     def _run_e2e_evidence(self) -> None:
         """Drive STATE_E2E_PENDING (§2): verify the Dev self-smoke attestation (§6a),
@@ -4296,7 +4427,14 @@ class Driver:
             self.state.history.append(STATE_E2E_PENDING)
         self._milestone_closed = True
         self._save_state()
-        self._check_dev_self_smoke()       # §6a structural gate (resumable halt if absent)
+        # §6b: the managed run SUBSUMES self-smoke for external_test_runner (its app-start +
+        # first-criterion pass with framework provenance IS the attestation); the in-process
+        # playwright class gets a bounded AUTONOMOUS Dev re-dispatch under the signed §5.3 budget
+        # instead of a routine human halt; local_http / disabled-budget keep the §6a structural
+        # presence gate. A mid-dispatch dev-spec-refine HALT leaves STATE_HALTED — do NOT commit.
+        self._ensure_dev_self_smoke()
+        if self.state.state == STATE_HALTED:
+            return
         manifest = self._commit_e2e()      # reconcile-or-run; gate_hard_fail on runtime fail
         # §1.7-G (Phase 3): on a DETERMINISTIC, criterion-bound executor failure with a SIGNED
         # remediation budget at HOTL+, autonomously remediate (framework failure brief → in-envelope
