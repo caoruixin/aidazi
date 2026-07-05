@@ -472,6 +472,18 @@ class RunState:
     e2e_invocation_nonce: Optional[str] = None
     acceptance_evidence_hash: Optional[str] = None
     acceptance_snapshot: Optional[dict] = None
+    #: P3 §1.7-G autonomous browser_e2e remediation lane (persisted for resume; §5.3/§5.4).
+    #: e2e_remediation_round  — count of COMPLETED fix→rerun cycles this milestone (0 on the
+    #:                          initial run). Bounded by the SIGNED authority.e2e_remediation.
+    #:                          max_rounds via _check_budget; a DISTINCT counter from fix_round
+    #:                          (the review loop) — the two caps compose, they never double-count.
+    #: failing_criteria_by_round — the FULL managed-run failing criterion_id set observed each
+    #:                          round (index 0 = the initial run), driving the strict-proper-subset
+    #:                          progress + regression guard (§5.3). Both default so a non-remediated
+    #:                          browser_e2e RunState round-trips byte-identically (emitted only when
+    #:                          non-default, like task_signals_digest).
+    e2e_remediation_round: int = 0
+    failing_criteria_by_round: list = field(default_factory=list)
     #: Track 1 1-c — integrity digest over the per-sub-sprint task_signals AUTHORED by Deliver at
     #: decompose (set only when at least one sub-sprint carries task_signals). Bound here so a
     #: post-decompose change to any task_signal is detected: the driver recomputes it before
@@ -509,6 +521,12 @@ class RunState:
             # byte-identically to a pre-1-c state.json (additive; from_dict tolerates absence).
             **({"task_signals_digest": self.task_signals_digest}
                if self.task_signals_digest is not None else {}),
+            # P3 §1.7-G: emit ONLY when the lane has run (round > 0 or a set was recorded), so a
+            # non-remediated browser_e2e RunState round-trips byte-identically to a pre-P3 one.
+            **({"e2e_remediation_round": self.e2e_remediation_round}
+               if self.e2e_remediation_round else {}),
+            **({"failing_criteria_by_round": [list(s) for s in self.failing_criteria_by_round]}
+               if self.failing_criteria_by_round else {}),
         }
 
     @classmethod
@@ -539,6 +557,9 @@ class RunState:
             acceptance_evidence_hash=d.get("acceptance_evidence_hash"),
             acceptance_snapshot=d.get("acceptance_snapshot"),
             task_signals_digest=d.get("task_signals_digest"),
+            e2e_remediation_round=int(d.get("e2e_remediation_round", 0)),
+            failing_criteria_by_round=[list(s) for s in
+                                       d.get("failing_criteria_by_round", [])],
         )
 
 
@@ -873,6 +894,17 @@ class Driver:
             raise BudgetExceeded(
                 f"fix_round {self.state.fix_round} exceeds "
                 f"budget.max_fix_rounds_total {max_fix}",
+            )
+        # §1.7-G (design §5.3): the autonomous E2E-remediation loop is bounded by its OWN signed
+        # cap on a DISTINCT counter (state.e2e_remediation_round — NOT max_fix_rounds_total, which
+        # bounds the review dev↔review loop; the two caps compose, they never double-count). Same
+        # fail-closed shape. NO-OP for a non-remediated run (round 0 ≤ any cap ≥ 0) and when no
+        # e2e_remediation budget is configured (max_rounds None ⇒ skip).
+        max_rounds = self._e2e_remediation_cfg().get("max_rounds")
+        if isinstance(max_rounds, int) and self.state.e2e_remediation_round > max_rounds:
+            raise BudgetExceeded(
+                f"e2e_remediation_round {self.state.e2e_remediation_round} exceeds "
+                f"authority.e2e_remediation.max_rounds {max_rounds}",
             )
 
     # ----- the spawn boundary (driver → adapter → schema-valid verdict) ----- #
@@ -3323,14 +3355,19 @@ class Driver:
 
     # ----- P-C: browser-E2E evidence stage (STATE_E2E_PENDING; §2/§3.5a) ------ #
     def _e2e_run_id(self) -> str:
-        """Deterministic, PERSISTED per-(loop, subsprint) run id (§3.5a). Generated once
-        on first entry and reused on resume, so recovery keys on it + the ledger event —
-        never on the unsaved cache fields."""
+        """Deterministic, PERSISTED per-(loop, subsprint[, remediation round]) run id (§3.5a/§5.4).
+        Generated once on first entry and reused on resume, so recovery keys on it + the ledger
+        event — never on the unsaved cache fields. §1.7-G: the persisted e2e_remediation_round is
+        folded in, PRESERVING the "r" prefix — round 0 is BYTE-IDENTICAL to the pre-P3 code (a
+        non-remediated milestone is unchanged); round N>0 appends NUL+str(N) for a distinct dir +
+        fresh provenance. The FULL per-round cache invalidation (_invalidate_e2e_round_cache)
+        clears e2e_run_id, so a bumped round regenerates a NEW id here."""
         assert self.state is not None
         if not self.state.e2e_run_id:
-            digest = hashlib.sha256(
-                (self.loop_id + "\x00" + self.state.subsprint_id).encode()).hexdigest()
-            self.state.e2e_run_id = "r" + digest[:16]
+            seed = self.loop_id + "\x00" + self.state.subsprint_id
+            if self.state.e2e_remediation_round:
+                seed += "\x00" + str(self.state.e2e_remediation_round)
+            self.state.e2e_run_id = "r" + hashlib.sha256(seed.encode()).hexdigest()[:16]
             self._save_state()
         return self.state.e2e_run_id
 
@@ -3367,6 +3404,52 @@ class Driver:
             return True
         acc = self.adapters.get("acceptance")
         return acc is not None and not isinstance(acc, MockAdapter)
+
+    # ----- §1.7-G: autonomous browser_e2e remediation lane (config + state) --- #
+    def _e2e_remediation_cfg(self) -> dict:
+        """The §1.7-G budget block (charter.autonomy.e2e_remediation) — the SIGNED authority the
+        driver enforces (charter_hash ⊂ the campaign H, so a post-sign raise flips H → stale →
+        re-sign). Absent ⇒ {} (default-OFF: deterministic criterion failures route to the §3.5
+        human gate exactly as today — legacy-safe, no silent behavior change)."""
+        er = (self.charter.get("autonomy") or {}).get("e2e_remediation")
+        return er if isinstance(er, dict) else {}
+
+    def _e2e_remediation_enabled(self) -> bool:
+        """§1.7-G is default-on ONLY when the milestone carries an explicit SIGNED e2e_remediation
+        budget (enabled + an integer max_rounds cap) at autonomy human_on_the_loop or higher
+        (§5/§14). Absent / OFF / HITL ⇒ False (the deterministic criterion failure routes to §3.5
+        exactly as today). Reads the LIVE autonomy level (post any §3.6 calibration degrade), so an
+        uncalibrated-autonomous run that auto-degraded to human_on_the_loop still qualifies — HOTL
+        is the floor."""
+        cfg = self._e2e_remediation_cfg()
+        if cfg.get("enabled") is not True or not isinstance(cfg.get("max_rounds"), int):
+            return False
+        return self.autonomy.get("level", "human_in_the_loop") in (
+            "human_on_the_loop", "fully_autonomous_within_budget")
+
+    def _e2e_remediation_max_no_progress(self) -> int:
+        """§1.7-G no-progress bound; default 1 (HALT on the FIRST non-shrinking round, mirroring
+        gap_followup) when unset. charter_validator pins any explicit value to 1."""
+        v = self._e2e_remediation_cfg().get("max_no_progress_rounds")
+        return v if isinstance(v, int) and v >= 1 else 1
+
+    def _invalidate_e2e_round_cache(self) -> None:
+        """§5.4 FULL per-round cache invalidation on a §1.7-G remediation-round increment: clear
+        ALL persisted E2E + acceptance cache + provenance-nonce fields so the NEXT round writes a
+        NEW evidence dir with a FRESH provenance nonce and CANNOT re-bind prior-round evidence or
+        reuse a prior verdict. _e2e_run_id + _e2e_invocation_nonce regenerate from the cleared
+        fields (round-suffixed seed). Prior-round dirs are retained on disk for audit but never
+        reused (the new run_id points elsewhere). Clearing e2e_invocation_nonce is CRITICAL — else
+        the new round reuses the stale nonce and the A2 provenance window-anchor mismatches (§4.1)."""
+        assert self.state is not None
+        self.state.e2e_run_id = None
+        self.state.e2e_evidence_ref = None
+        self.state.e2e_manifest_hash = None
+        self.state.e2e_invocation_nonce = None
+        self.state.acceptance_evidence_hash = None
+        self.state.acceptance_snapshot = None
+        self.state.last_verdict = None
+        self._save_state()
 
     def _e2e_rel_prefix(self, run_id: str) -> str:
         """The committed run dir RELATIVE to run_dir — the prefix a verdict's
