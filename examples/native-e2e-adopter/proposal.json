@@ -1,0 +1,159 @@
+{
+  "autonomy": {
+    "e2e_remediation": {
+      "enabled": true,
+      "max_no_progress_rounds": 1,
+      "max_rounds": 3
+    },
+    "level": "human_on_the_loop"
+  },
+  "functional_checklist": {
+    "browser_e2e_checks": [
+      "app_starts_and_reaches_readiness",
+      "happy_path_journey_passes",
+      "each_signed_criterion_has_a_bound_test",
+      "captured_console_and_network_errors_are_assertable",
+      "evidence_trace_and_screenshots_captured",
+      "cleanup_restores_environment"
+    ],
+    "checklist_id": "M1-functional-checklist",
+    "checklist_path": "docs/research-briefs/M1-functional-checklist.json",
+    "criteria": [
+      {
+        "criterion": "After login the dashboard greets the user by name",
+        "criterion_id": "shows_welcome",
+        "critical": true
+      },
+      {
+        "criterion": "A keyword search returns at least one matching job card",
+        "criterion_id": "job_search_returns_results",
+        "critical": true
+      }
+    ]
+  },
+  "generated_from": {
+    "app_start_cmd_discovered": true,
+    "impl_stack_snapshot": true,
+    "package_json": "frontend/package.json",
+    "spec_path_discovered": true
+  },
+  "milestone_binding": {
+    "covers_req_ids": [
+      "REQ-001"
+    ],
+    "criterion_ids": [
+      "shows_welcome",
+      "job_search_returns_results"
+    ],
+    "milestone_id": "M1",
+    "surface": "user_facing"
+  },
+  "proposal_confidence": "high",
+  "proposal_kind": "native_e2e_config",
+  "proposal_status": "proposed",
+  "required_framework_capabilities": [
+    {
+      "id": "native_managed_external_e2e",
+      "min_version": "1.0"
+    },
+    {
+      "id": "framework_owned_e2e_provenance",
+      "min_version": "1.0"
+    },
+    {
+      "id": "autonomous_e2e_remediation",
+      "min_version": "1.0"
+    },
+    {
+      "id": "codex_adapter_liveness",
+      "min_version": "1.0"
+    }
+  ],
+  "retry_policy": {
+    "managed_test_retries": 0
+  },
+  "secret_refs": [
+    {
+      "name": "AIJP_TEST_USER",
+      "purpose": "seeded test login user",
+      "ref": "env:AIJP_TEST_USER"
+    },
+    {
+      "name": "AIJP_TEST_PASS",
+      "purpose": "seeded test login password",
+      "ref": "env:AIJP_TEST_PASS"
+    }
+  ],
+  "tooling": {
+    "acceptance": {
+      "functional": {
+        "checklist_path": "docs/research-briefs/M1-functional-checklist.json",
+        "interaction_mode": "hybrid",
+        "mode": "browser_e2e",
+        "target_environment": "local"
+      }
+    },
+    "e2e": {
+      "allowed_origins": [
+        "http://127.0.0.1"
+      ],
+      "app_start_cmd": [
+        "npm",
+        "run",
+        "dev"
+      ],
+      "base_url": "http://127.0.0.1",
+      "criterion_map": {
+        "@crit:job_search_returns_results": "job_search_returns_results",
+        "@crit:shows_welcome": "shows_welcome"
+      },
+      "env": {
+        "AIJP_TEST_PASS": "env:AIJP_TEST_PASS",
+        "AIJP_TEST_USER": "env:AIJP_TEST_USER"
+      },
+      "evidence_retention_path": ".orchestrator/audit/browser",
+      "executor_kind": "external_test_runner",
+      "lifecycle_operations": [
+        {
+          "environments": [
+            "local"
+          ],
+          "id": "seed_test_data",
+          "phase": "setup",
+          "side_effect": "create_test_fixtures"
+        },
+        {
+          "environments": [
+            "local"
+          ],
+          "failure_policy": "record",
+          "id": "purge_test_data",
+          "phase": "cleanup",
+          "side_effect": "delete_test_fixtures"
+        }
+      ],
+      "readiness": {
+        "interval_seconds": 1,
+        "timeout_seconds": 30,
+        "url": "/__health"
+      },
+      "runner_argv": [
+        "npx",
+        "playwright",
+        "test",
+        "frontend/e2e/acceptance.spec.ts",
+        "--reporter=json"
+      ],
+      "shutdown": {
+        "process_owned": true
+      },
+      "spec_path": "frontend/e2e/acceptance.spec.ts",
+      "target_environment": "local",
+      "timeouts": {
+        "lifecycle_seconds": 120,
+        "step_seconds": 60,
+        "total_seconds": 900
+      }
+    }
+  }
+}

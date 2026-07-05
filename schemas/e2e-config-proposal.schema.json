@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/e2e-config-proposal.schema.json",
+  "title": "Native-E2E onboarding config proposal (Phase-4, design §7 / R5)",
+  "description": "The COMPLETE, runnable native-E2E config proposal an agent drafts during onboarding for an eligible user-facing requirement (engine-kit/tools/e2e_config_proposal.py). ADVISORY: proposal_status/proposal_confidence bind no verdict-affecting hash and add no runtime gate; the proposal binds only on whole-proposal human authorization when it lands in the signed charter/plan. tooling.e2e conforms to executor-contract.schema.json (the runnable MECHANICS); secret_refs are NAMED references only (no materialized secret). This schema validates SHAPE; engine-kit/tools/e2e_config_proposal.proposal_completeness_violations + secret_leak_violations enforce the R5 completeness + no-leak guardrails.",
+  "type": "object",
+  "required": [
+    "proposal_kind", "proposal_status", "proposal_confidence",
+    "tooling", "autonomy", "retry_policy", "milestone_binding",
+    "secret_refs", "functional_checklist", "required_framework_capabilities"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "proposal_kind": {"const": "native_e2e_config"},
+    "proposal_status": {"type": "string", "enum": ["proposed", "confirmed"], "description": "Advisory authoring signal (like requirement-ledger surface_status): proposed = agent-proposed; confirmed = human batch-accepted at authoring. Binds no hash."},
+    "proposal_confidence": {"type": "string", "enum": ["high", "low"], "description": "Advisory: high when spec_path + app_start_cmd were DISCOVERED in the repo; low when concrete defaults were used. The wizard escalates only low for a lightweight human confirm."},
+    "generated_from": {"type": "object", "additionalProperties": true, "description": "Provenance of the inspection (advisory)."},
+    "tooling": {
+      "type": "object",
+      "required": ["e2e", "acceptance"],
+      "additionalProperties": false,
+      "properties": {
+        "e2e": {"type": "object", "description": "Executor MECHANICS — conforms to schemas/executor-contract.schema.json (the charter validator + driver re-validate)."},
+        "acceptance": {
+          "type": "object",
+          "required": ["functional"],
+          "additionalProperties": true,
+          "properties": {
+            "functional": {
+              "type": "object",
+              "required": ["mode", "checklist_path"],
+              "additionalProperties": true,
+              "properties": {
+                "mode": {"const": "browser_e2e"},
+                "interaction_mode": {"type": "string", "enum": ["deterministic", "agentic", "hybrid"]},
+                "target_environment": {"type": "string", "enum": ["local", "staging", "production"]},
+                "checklist_path": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      }
+    },
+    "autonomy": {
+      "type": "object",
+      "required": ["level", "e2e_remediation"],
+      "additionalProperties": false,
+      "properties": {
+        "level": {"type": "string", "enum": ["human_in_the_loop", "human_on_the_loop", "fully_autonomous_within_budget"]},
+        "e2e_remediation": {
+          "type": "object",
+          "required": ["enabled", "max_rounds", "max_no_progress_rounds"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "max_rounds": {"type": "integer", "minimum": 0},
+            "max_no_progress_rounds": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "retry_policy": {"type": "object", "additionalProperties": true, "description": "Test-level retry posture (default 0 — deterministic evidence). The AUTHORITATIVE re-run is the §1.7-G FULL managed rerun, not flaky-test retries."},
+    "milestone_binding": {
+      "type": "object",
+      "required": ["covers_req_ids", "surface", "criterion_ids"],
+      "additionalProperties": true,
+      "properties": {
+        "milestone_id": {"type": ["string", "null"]},
+        "covers_req_ids": {"type": "array", "items": {"type": "string"}},
+        "surface": {"type": "string", "enum": ["user_facing", "non_user_facing"]},
+        "criterion_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "secret_refs": {
+      "type": "array",
+      "description": "NAMED secret references only — never a materialized secret. Each ref MUST be env:/file:/vault:<NAME>.",
+      "items": {
+        "type": "object",
+        "required": ["name", "ref"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "ref": {"type": "string", "pattern": "^(env|file|vault):[A-Za-z0-9_./\\-]+$"},
+          "purpose": {"type": "string"}
+        }
+      }
+    },
+    "functional_checklist": {
+      "type": "object",
+      "required": ["checklist_path", "browser_e2e_checks"],
+      "additionalProperties": true,
+      "properties": {
+        "checklist_id": {"type": "string"},
+        "checklist_path": {"type": "string", "minLength": 1},
+        "browser_e2e_checks": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "criteria": {"type": "array"}
+      }
+    },
+    "required_framework_capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "min_version": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$"}
+        }
+      }
+    }
+  }
+}
