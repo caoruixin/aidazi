@@ -316,11 +316,17 @@ class ChangedFilesGitTests(unittest.TestCase):
 
 
 class SignedCoversResolutionTests(unittest.TestCase):
-    """Codex P3-R2: the req_id envelope is THIS milestone's signed covers (∩ F1), not the union."""
+    """Codex P3-R2/R3: the req_id envelope is THIS milestone's signed covers (∩ F1), resolved by
+    the UNIQUE signed milestone_id (derived-context.json), not the union and not by ambiguous
+    subsprint_sequence membership."""
 
-    def _ctx(self, run_dir, plan):
+    def _ctx(self, run_dir, plan, milestone_id):
         with open(os.path.join(run_dir, "requirement-context.json"), "w") as fh:
             json.dump({"plan": plan}, fh)
+        # The per-unit provenance sidecar carries the unambiguous signed milestone_id.
+        with open(os.path.join(run_dir, "derived-context.json"), "w") as fh:
+            json.dump({"kind": "per_milestone_execution_context",
+                       "milestone_id": milestone_id}, fh)
 
     def _plan(self):
         return {"signoff": {"scope_envelope": {"milestones": [
@@ -332,24 +338,42 @@ class SignedCoversResolutionTests(unittest.TestCase):
     def test_current_milestone_covers_only(self):
         with tempfile.TemporaryDirectory() as d:
             drv = _drv(d, _ext_rem_charter())
-            drv.state.subsprint_id = "sprint-001"
-            self._ctx(d, self._plan())
+            self._ctx(d, self._plan(), "m1")
             with mock.patch.object(cp, "signoff_snapshot_authentic", return_value=True):
                 self.assertEqual(drv._e2e_signed_covers(), {"REQ-A", "REQ-B"})  # NOT REQ-C
+
+    def test_shared_subsprint_id_resolved_by_milestone_id(self):
+        # Codex P3-R3: two signed milestones share the SAME subsprint id — membership is ambiguous,
+        # so resolution MUST key on the unique milestone_id from derived-context.json.
+        plan = {"signoff": {"scope_envelope": {"milestones": [
+            {"id": "m1", "subsprint_sequence": ["sprint-001"], "covers_req_ids": ["REQ-A"]},
+            {"id": "m2", "subsprint_sequence": ["sprint-001"], "covers_req_ids": ["REQ-B"]}]}}}
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter())
+            self._ctx(d, plan, "m2")             # the SECOND milestone is the current one
+            with mock.patch.object(cp, "signoff_snapshot_authentic", return_value=True):
+                self.assertEqual(drv._e2e_signed_covers(), {"REQ-B"})  # m2, not the first match m1
+
+    def test_no_derived_context_milestone_id_is_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv = _drv(d, _ext_rem_charter())
+            # requirement-context present but NO derived-context.json ⇒ no signed milestone id.
+            with open(os.path.join(d, "requirement-context.json"), "w") as fh:
+                json.dump({"plan": self._plan()}, fh)
+            with mock.patch.object(cp, "signoff_snapshot_authentic", return_value=True):
+                self.assertIsNone(drv._e2e_signed_covers())
 
     def test_unverifiable_snapshot_is_none(self):
         with tempfile.TemporaryDirectory() as d:
             drv = _drv(d, _ext_rem_charter())
-            drv.state.subsprint_id = "sprint-001"
-            self._ctx(d, self._plan())
+            self._ctx(d, self._plan(), "m1")
             with mock.patch.object(cp, "signoff_snapshot_authentic", return_value=False):
                 self.assertIsNone(drv._e2e_signed_covers())
 
-    def test_subsprint_not_in_any_signed_milestone_is_none(self):
+    def test_milestone_id_not_in_snapshot_is_none(self):
         with tempfile.TemporaryDirectory() as d:
             drv = _drv(d, _ext_rem_charter())
-            drv.state.subsprint_id = "sprint-999"
-            self._ctx(d, self._plan())
+            self._ctx(d, self._plan(), "m-nonexistent")
             with mock.patch.object(cp, "signoff_snapshot_authentic", return_value=True):
                 self.assertIsNone(drv._e2e_signed_covers())
 

@@ -3553,15 +3553,35 @@ class Driver:
         return sorted(f for f in changed
                       if not any(f == m or f.startswith(m + "/") for m in modules))
 
+    def _current_milestone_id(self) -> Optional[str]:
+        """THIS unit's signed milestone id, from the per-unit derived-context.json provenance
+        sidecar (campaign.derive_milestone_context writes an unambiguous ``milestone_id``). None
+        when absent (a non-campaign / standalone run) or unreadable — then the req_id envelope is
+        UNVERIFIABLE (fail-closed). Resolving by the unique milestone_id — NOT by subsprint_sequence
+        membership — is what makes containment sound when a sub-sprint id repeats across milestones,
+        a shape the campaign layer permits (Codex P3-R3)."""
+        path = os.path.join(self.run_dir, "derived-context.json")
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                dc = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        mid = dc.get("milestone_id") if isinstance(dc, dict) else None
+        return str(mid) if mid else None
+
     def _e2e_signed_covers(self) -> Optional[set]:
         """§5.2b: THIS milestone's SIGNED req_id envelope = (F1 signed snapshot ∩ this milestone's
         signed covers_req_ids), from the requirement-context sidecar — the SAME authentic-snapshot
         basis campaign._req_id_envelope_check / _f1_envelope use (Codex P3-R2: NOT the union of
-        every milestone's covers). Returns that set, or None when it is not DERIVABLE — no campaign
-        requirement-context, an UNVERIFIABLE F1 snapshot (fails against its own signed_scope_hash),
-        THIS milestone not resolvable in the signed snapshot, or an empty envelope. None ⇒
-        containment treats the req_id envelope as UNVERIFIABLE and the lane FAILS CLOSED to §3.5 (a
-        PRESENT req_id binding on a signed checklist criterion is NOT a substitute for the signed
+        every milestone's covers). THIS milestone is resolved by the UNIQUE signed milestone_id
+        (derived-context.json), never by ambiguous subsprint_sequence membership (Codex P3-R3).
+        Returns that set, or None when it is not DERIVABLE — no campaign requirement-context, no
+        signed milestone_id, an UNVERIFIABLE F1 snapshot (fails against its own signed_scope_hash),
+        THIS milestone_id not in the signed snapshot, or an empty envelope. None ⇒ containment
+        treats the req_id envelope as UNVERIFIABLE and the lane FAILS CLOSED to §3.5 (a PRESENT
+        req_id binding on a signed checklist criterion is NOT a substitute for the signed
         covers_req_ids proof — Codex P3-R1). A PRESENT-but-corrupt sidecar raises GateHardFail
         (propagated → fail-closed integrity HALT, never silently swallowed)."""
         ctx = self._load_requirement_context()   # None (absent) | dict | raises (corrupt)
@@ -3570,6 +3590,9 @@ class Driver:
         plan = ctx.get("plan")
         if not isinstance(plan, dict):
             return None
+        mid = self._current_milestone_id()
+        if not mid:
+            return None   # no unambiguous signed milestone id ⇒ unverifiable ⇒ fail-closed
         import campaign as _cp  # lazy: campaign imports driver lazily too, so no import cycle
         # Authentic F1 snapshot ONLY (fail-closed on an unverifiable snapshot — Codex R-P2a #2):
         # the snapshot must verify against its own signed_scope_hash before it can PROVE anything.
@@ -3577,11 +3600,9 @@ class Driver:
             return None
         snapshot = (plan.get("signoff") or {}).get("scope_envelope") or {}
         ms = [m for m in (snapshot.get("milestones") or []) if isinstance(m, dict)]
-        # Resolve THIS milestone by the signed subsprint_sequence that contains our sub-sprint id.
-        this = next((m for m in ms
-                     if self.state.subsprint_id in (m.get("subsprint_sequence") or [])), None)
+        this = next((m for m in ms if m.get("id") == mid), None)
         if this is None:
-            return None   # cannot resolve THIS milestone's signed covers ⇒ unverifiable
+            return None   # signed milestone_id not in the snapshot ⇒ unverifiable
         this_covers = {str(r) for r in (this.get("covers_req_ids") or []) if r}
         envelope = {str(r) for m in ms for r in (m.get("covers_req_ids") or []) if r}
         return (this_covers & envelope) or None
