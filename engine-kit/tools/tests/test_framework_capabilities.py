@@ -122,6 +122,61 @@ class FailClosedTests(unittest.TestCase):
             with self.assertRaises(fc.CapabilityContractError):
                 fc.required_capability_violations(ch, root=d)
 
+    def _write_contract(self, d, contract):
+        os.makedirs(os.path.join(d, "governance"), exist_ok=True)
+        with open(os.path.join(d, "governance", "framework-capabilities.json"), "w") as fh:
+            json.dump(contract, fh)
+
+    def test_malformed_entry_missing_version_rejected(self):
+        # Codex P4 R1 blocker 1: a presence-only entry (no version/code_anchor) MUST NOT load.
+        with tempfile.TemporaryDirectory() as d:
+            self._write_contract(d, {"framework_version": "1.0", "capabilities": [
+                {"id": "native_managed_external_e2e"}]})
+            with self.assertRaises(fc.CapabilityContractError):
+                fc.load_contract(root=d)
+
+    def test_malformed_entry_missing_code_anchor_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write_contract(d, {"framework_version": "1.0", "capabilities": [
+                {"id": "x", "version": "1.0"}]})
+            with self.assertRaises(fc.CapabilityContractError):
+                fc.load_contract(root=d)
+
+    def test_bad_version_syntax_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write_contract(d, {"framework_version": "1.0", "capabilities": [
+                {"id": "x", "version": "v1", "code_anchor": "a:b"}]})
+            with self.assertRaises(fc.CapabilityContractError):
+                fc.load_contract(root=d)
+
+    def test_duplicate_ids_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write_contract(d, {"framework_version": "1.0", "capabilities": [
+                {"id": "x", "version": "1.0", "code_anchor": "a:b"},
+                {"id": "x", "version": "2.0", "code_anchor": "c:d"}]})
+            with self.assertRaises(fc.CapabilityContractError):
+                fc.load_contract(root=d)
+
+    def test_missing_framework_version_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write_contract(d, {"capabilities": [
+                {"id": "x", "version": "1.0", "code_anchor": "a:b"}]})
+            with self.assertRaises(fc.CapabilityContractError):
+                fc.load_contract(root=d)
+
+    def test_presence_only_requirement_cannot_pass_on_malformed_contract(self):
+        # the end-to-end fail-closed: a charter requiring presence + a malformed contract ⇒ raise.
+        with tempfile.TemporaryDirectory() as d:
+            self._write_contract(d, {"framework_version": "1.0", "capabilities": [
+                {"id": "native_managed_external_e2e"}]})   # missing version + code_anchor
+            ch = {"required_framework_capabilities": [{"id": "native_managed_external_e2e"}]}
+            with self.assertRaises(fc.CapabilityContractError):
+                fc.required_capability_violations(ch, root=d)
+
+    def test_real_shipped_contract_still_loads(self):
+        # the strict validation must NOT reject the real governance/framework-capabilities.json.
+        fc.load_contract()   # no raise
+
 
 if __name__ == "__main__":
     unittest.main()

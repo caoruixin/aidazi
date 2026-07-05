@@ -202,13 +202,12 @@ def generate_proposal(*, criteria: list,
     }
     # NAMED env-var references only (never inline secret values); each becomes an env NAME the
     # adopter sets out-of-band. secret_refs carry the human-only-credential contract (an unresolved
-    # one is an R4-d pause), not the material.
-    refs = list(secret_refs or [])
+    # one is an R4-d pause), not the material. NORMALIZE to the allowlisted {name, ref, purpose}
+    # shape (Codex P4 R1 blocker 2): any extra/value-bearing field a caller passes is DROPPED at
+    # emission, so a literal secret under a non-hinted field can never be emitted.
+    refs = _normalize_secret_refs(secret_refs)
     if refs:
-        executor_contract["env"] = {
-            r["name"]: r.get("ref") for r in refs
-            if isinstance(r, dict) and r.get("name") and r.get("ref")
-        }
+        executor_contract["env"] = {r["name"]: r["ref"] for r in refs}
 
     proposal = {
         "proposal_kind": "native_e2e_config",
@@ -263,6 +262,26 @@ def generate_proposal(*, criteria: list,
 
 
 # --------------------------------------------------------------------------- #
+# secret_refs normalization — allowlisted {name, ref, purpose}; drop leak vectors.
+# --------------------------------------------------------------------------- #
+_SECRET_REF_ALLOWED_FIELDS = ("name", "ref", "purpose")
+
+
+def _normalize_secret_refs(secret_refs: Optional[list]) -> list:
+    """Coerce caller-provided secret_refs to the allowlisted {name, ref, purpose} shape, DROPPING
+    any extra or value-bearing field (a literal-secret leak vector) and any entry that lacks a
+    non-empty name + ref. Deterministic; order-preserving."""
+    out = []
+    for r in secret_refs or []:
+        if not isinstance(r, dict):
+            continue
+        entry = {k: r[k] for k in _SECRET_REF_ALLOWED_FIELDS if k in r}
+        if entry.get("name") and entry.get("ref"):
+            out.append(entry)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Guardrail 1 — secret-leak guard (NAMED refs only; no materialized secret).
 # --------------------------------------------------------------------------- #
 def is_named_secret_ref(v) -> bool:
@@ -275,35 +294,25 @@ def secret_leak_violations(obj, _path: str = "") -> list:
     not a NAMED reference; (2) any dict key hinting a secret (SECRET_KEY_HINTS) whose value is a
     bare string that is not a NAMED reference. Recurses dicts + lists."""
     out = []
+    in_secret_refs = "secret_refs" in (_path or "")
     if isinstance(obj, dict):
-        # secret_refs entries: named ref required, no inline material.
-        if _path.endswith("secret_refs[]") or _path.endswith("secret_refs"):
-            pass  # handled by list recursion / entry checks below
         for k, v in obj.items():
             child = f"{_path}.{k}" if _path else str(k)
             kl = str(k).lower()
-            if kl in SECRET_VALUE_FIELDS and _looks_like_secret_ref_context(_path):
+            if in_secret_refs and kl in SECRET_VALUE_FIELDS:
                 out.append({"path": child, "reason": "secret_refs entry carries a materialized "
-                            "secret value field", "value_field": kl})
-            if kl == "ref" and _looks_like_secret_ref_context(_path):
-                if not is_named_secret_ref(v):
-                    out.append({"path": child, "reason": "secret ref is not a NAMED reference "
-                                "(env:/file:/vault:)", "value": _redact(v)})
+                            "secret value field (use a NAMED ref)", "value_field": kl})
+            elif in_secret_refs and kl == "ref" and not is_named_secret_ref(v):
+                out.append({"path": child, "reason": "secret ref is not a NAMED reference "
+                            "(env:/file:/vault:)", "value": _redact(v)})
             elif kl in SECRET_KEY_HINTS and isinstance(v, str) and not is_named_secret_ref(v):
                 out.append({"path": child, "reason": "secret-bearing key has a literal value, "
                             "not a NAMED reference", "value": _redact(v)})
             out.extend(secret_leak_violations(v, child))
     elif isinstance(obj, list):
-        # tag list context so entry-level checks know they're inside secret_refs.
-        tag = _path + "[]" if _path else "[]"
         for i, item in enumerate(obj):
             out.extend(secret_leak_violations(item, f"{_path}[{i}]" if _path else f"[{i}]"))
-        _ = tag
     return out
-
-
-def _looks_like_secret_ref_context(path: str) -> bool:
-    return "secret_refs" in (path or "")
 
 
 def _redact(v) -> str:
@@ -419,7 +428,37 @@ def render_leak_refusal(violations: list) -> str:
     return "\n".join(lines)
 
 
+def _proposal_schema_path() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))     # engine-kit/tools
+    repo = os.path.dirname(os.path.dirname(here))         # repo root
+    return os.path.join(repo, "schemas", "e2e-config-proposal.schema.json")
+
+
+def schema_violations(proposal: dict) -> list:
+    """Validate the proposal against schemas/e2e-config-proposal.schema.json — so schema-only
+    requirements (top-level secret_refs presence, secret_refs additionalProperties:false, enum
+    shapes) are part of the advertised guardrail (Codex P4 R1 blocker 2). FAIL-CLOSED: an
+    unavailable jsonschema or unreadable schema is itself a violation (the guardrail cannot certify
+    the shape), never a silent pass."""
+    try:
+        from jsonschema.validators import Draft202012Validator
+    except Exception as exc:  # noqa: BLE001 — cannot certify ⇒ fail-closed
+        return [{"path": "<schema>", "reason": f"jsonschema unavailable — cannot certify the "
+                 f"proposal shape (fail-closed): {exc}"}]
+    try:
+        with open(_proposal_schema_path(), "r", encoding="utf-8") as fh:
+            schema = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return [{"path": "<schema>", "reason": f"proposal schema unreadable (fail-closed): {exc}"}]
+    return [{"path": "/".join(str(p) for p in e.path) or "<root>", "reason": e.message}
+            for e in Draft202012Validator(schema).iter_errors(proposal)]
+
+
 def validate_proposal(proposal: dict) -> list:
-    """The combined onboarding gate: completeness + no-leak. Empty ⇒ the proposal is complete,
-    runnable, and leak-free (ready to present for whole-proposal human authorization)."""
-    return proposal_completeness_violations(proposal) + secret_leak_violations(proposal)
+    """The combined onboarding gate: completeness + no-leak + SCHEMA. Empty ⇒ the proposal is
+    complete, runnable, leak-free, and shape-valid (ready to present for whole-proposal human
+    authorization). Fail-closed: schema validation is part of the gate, so a hand-authored/tampered
+    proposal with an extra secret_refs field or a missing required block is REJECTED here."""
+    return (proposal_completeness_violations(proposal)
+            + secret_leak_violations(proposal)
+            + schema_violations(proposal))

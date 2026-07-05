@@ -84,6 +84,33 @@ class CompletenessTests(unittest.TestCase):
         self.assertIn("skeleton", msg)
 
 
+class SchemaGuardrailTests(unittest.TestCase):
+    """Codex P4 R1 blocker 2: validate_proposal SCHEMA-validates, so a hand-authored/tampered
+    proposal is rejected even where the completeness/leak heuristics don't fire."""
+
+    @unittest.skipUnless(_HAVE_JSONSCHEMA, "jsonschema not installed")
+    def test_validate_rejects_extra_secret_ref_field(self):
+        prop = _proposal()
+        prop["secret_refs"] = [{"name": "T", "ref": "env:T", "leaked": "abc123"}]  # extra field
+        self.assertTrue(p.validate_proposal(prop))          # rejected (additionalProperties:false)
+
+    @unittest.skipUnless(_HAVE_JSONSCHEMA, "jsonschema not installed")
+    def test_validate_rejects_missing_secret_refs_block(self):
+        prop = _proposal()
+        del prop["secret_refs"]
+        self.assertTrue(p.validate_proposal(prop))          # rejected (required top-level block)
+
+    @unittest.skipUnless(_HAVE_JSONSCHEMA, "jsonschema not installed")
+    def test_validate_rejects_non_env_secret_ref(self):
+        prop = _proposal()
+        prop["secret_refs"] = [{"name": "T", "ref": "literalvalue"}]
+        self.assertTrue(p.validate_proposal(prop))          # rejected (ref pattern + leak guard)
+
+    def test_schema_violations_fail_closed_shape(self):
+        # schema_violations returns a list (never raises); a valid proposal ⇒ [].
+        self.assertEqual(p.schema_violations(_proposal()), [])
+
+
 class SecretLeakTests(unittest.TestCase):
     def test_named_env_ref_is_clean(self):
         prop = _proposal(secret_refs=[{"name": "PW", "ref": "env:PW"}])
@@ -104,6 +131,20 @@ class SecretLeakTests(unittest.TestCase):
         self.assertTrue(p.is_named_secret_ref("env:FOO"))
         self.assertTrue(p.is_named_secret_ref("file:/run/secrets/x"))
         self.assertFalse(p.is_named_secret_ref("plainvalue"))
+
+    def test_generate_drops_literal_under_non_hinted_field(self):
+        # Codex P4 R1 blocker 2: a literal under a NON-hinted secret_refs field is NOT emitted.
+        prop = _proposal(secret_refs=[
+            {"name": "T", "ref": "env:T", "note": "the real password is abc123", "value": "abc"}])
+        emitted = prop["secret_refs"][0]
+        self.assertEqual(set(emitted), {"name", "ref"})       # note/value stripped at emission
+        self.assertEqual(p.secret_leak_violations(prop), [])
+        self.assertEqual(p.validate_proposal(prop), [])
+
+    def test_normalize_drops_entries_without_name_or_ref(self):
+        self.assertEqual(p._normalize_secret_refs([{"ref": "env:X"}, {"name": "Y"}]), [])
+        self.assertEqual(p._normalize_secret_refs([{"name": "Z", "ref": "env:Z", "x": 1}]),
+                         [{"name": "Z", "ref": "env:Z"}])
 
 
 class AdvisoryAndRunnableTests(unittest.TestCase):

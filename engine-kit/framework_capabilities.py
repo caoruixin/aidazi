@@ -18,10 +18,19 @@ module is PURE (no network, no mutation) so both ``campaign`` and ``run_loop`` c
 """
 import json
 import os
+import re
 from typing import Optional
 
 #: The framework-owned contract, repo-relative.
 CONTRACT_REL = os.path.join("governance", "framework-capabilities.json")
+
+#: Structural validity (mirrors schemas/framework-capabilities.schema.json) — enforced in-code so a
+#: malformed contract is FAIL-CLOSED at load, WITHOUT a jsonschema runtime dependency at the preflight
+#: seam. A capability id/version/code_anchor that would let a presence-only requirement pass despite a
+#: malformed entry is rejected here (Codex P4 R1 blocker 1).
+_CAP_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)*$")
+_ANCHOR_RE = re.compile(r"^[^:]+:[^:]+$")
 
 
 class CapabilityContractError(ValueError):
@@ -60,7 +69,44 @@ def load_contract(root: Optional[str] = None) -> dict:
         raise CapabilityContractError(
             f"framework capability contract at {CONTRACT_REL} is malformed "
             f"(object with a capabilities[] array required)")
+    _validate_contract(data)
     return data
+
+
+def _validate_contract(data: dict) -> None:
+    """FAIL-CLOSED structural validation (Codex P4 R1): a malformed contract must NOT let a
+    presence-only requirement pass. Every capability MUST carry a well-formed id (snake_case),
+    version (dotted integers), and code_anchor (<path>:<symbol>); ids MUST be unique; the top-level
+    framework_version MUST be a non-empty string. Any violation raises CapabilityContractError
+    BEFORE any capability is treated as provided."""
+    if not str(data.get("framework_version") or "").strip():
+        raise CapabilityContractError(
+            f"framework capability contract at {CONTRACT_REL} is malformed "
+            f"(missing/empty framework_version)")
+    seen = set()
+    for i, c in enumerate(data.get("capabilities") or []):
+        where = f"capabilities[{i}]"
+        if not isinstance(c, dict):
+            raise CapabilityContractError(
+                f"framework capability contract {where} is not an object")
+        cid, version, anchor = c.get("id"), c.get("version"), c.get("code_anchor")
+        if not (isinstance(cid, str) and _CAP_ID_RE.match(cid)):
+            raise CapabilityContractError(
+                f"framework capability contract {where} has an invalid/missing id {cid!r}")
+        if not (isinstance(version, str) and _VERSION_RE.match(version)):
+            raise CapabilityContractError(
+                f"framework capability contract {where} ({cid}) has an invalid/missing "
+                f"version {version!r} (dotted integers required)")
+        if not (isinstance(anchor, str) and _ANCHOR_RE.match(anchor)):
+            raise CapabilityContractError(
+                f"framework capability contract {where} ({cid}) has an invalid/missing "
+                f"code_anchor {anchor!r} (<path>:<symbol> required) — capability identity must be "
+                f"code-anchored, not doc text")
+        if cid in seen:
+            raise CapabilityContractError(
+                f"framework capability contract has a DUPLICATE capability id {cid!r} "
+                f"(ambiguous — refusing)")
+        seen.add(cid)
 
 
 def provided_capabilities(contract: Optional[dict] = None,
