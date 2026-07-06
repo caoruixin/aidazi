@@ -1,0 +1,10 @@
+{
+  "mode": "alpha",
+  "gate_hard_fail": "adapter for role 'deliver' failed: claude_code result field was not a JSON verdict: \"I'm using the writing-plans skill to create the implementation plan.\\n\\n---\\n\\n## Deliver-Plan-Verdict \u2014 `csv-export-cli` (sprint-001)\\n\\nScope authority: human-signed brief `docs/briefs/sprint-001__brief.m\"",
+  "adapter_error": true,
+  "planned_subsprints": [],
+  "task_signals_digest": null,
+  "subsprint_id": "sprint-001",
+  "audit_ledger": ".orchestrator/audit/nonui-milestone-rep1.jsonl",
+  "transcripts_dir": ".orchestrator/audit/transcripts/nonui-milestone-rep1"
+}

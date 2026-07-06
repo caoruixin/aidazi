@@ -233,6 +233,25 @@ class OfflineHarnessDryRunTests(unittest.TestCase):
             if env_backup is not None:
                 os.environ["AIDAZI_SKILL_CANARY"] = env_backup
 
+    def test_scratch_adopter_is_wired(self):
+        # The 2026-07-07 live-run incident class: a vendored-but-UNWIRED scratch
+        # adopter starves the spawned agent's cold-start chain. Every workspace
+        # must carry the documented root-file wiring.
+        with tempfile.TemporaryDirectory() as d:
+            h = run_canary.Harness(d, live=False)
+            ws = h._build_ws("dev")
+            try:
+                with open(os.path.join(ws, "CLAUDE.md"), encoding="utf-8") as fh:
+                    self.assertEqual(fh.read().strip(), "@AGENTS.md")
+                with open(os.path.join(ws, "AGENTS.md"), encoding="utf-8") as fh:
+                    agents = fh.read()
+                self.assertIn("p5-canary-scratch", agents)
+                self.assertNotIn("<adopter-name>", agents)
+                self.assertTrue(os.path.isfile(
+                    os.path.join(ws, "aidazi", "AGENTS.md")))
+            finally:
+                shutil.rmtree(ws, ignore_errors=True)
+
     def test_full_offline_dry_run_passes_all_probes(self):
         with tempfile.TemporaryDirectory() as d:
             buf = io.StringIO()

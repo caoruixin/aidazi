@@ -1,0 +1,32 @@
+{
+  "acceptance_evidence_hash": null,
+  "acceptance_snapshot": null,
+  "brief_draft_ref": "docs/briefs/sprint-001__brief.md",
+  "brief_signed": true,
+  "budget_spent": 0.0,
+  "e2e_evidence_ref": null,
+  "e2e_invocation_nonce": null,
+  "e2e_manifest_hash": null,
+  "e2e_run_id": null,
+  "fix_round": 0,
+  "halt_resume_state": null,
+  "history": [
+    "research_pending",
+    "gate1_pending",
+    "decompose_pending"
+  ],
+  "last_dev_output_ref": null,
+  "last_verdict": {
+    "artifact": "frozen fixture brief pre-seeded at docs/briefs/ (see harness)"
+  },
+  "loop_id": "nonui-milestone-rep1",
+  "loop_mode": "full_chain_guided",
+  "milestone_planned": false,
+  "planned_sequence": [],
+  "planned_subsprints": [],
+  "rounds_since_new_finding": 0,
+  "seen_finding_keys": [],
+  "spawn_count": 2,
+  "state": "decompose_pending",
+  "subsprint_id": "sprint-001"
+}

@@ -177,6 +177,23 @@ class Harness:
         if proc.returncode != 0:
             raise RuntimeError(f"vendor-framework.sh failed: {proc.stderr}")
         shutil.copy2(_RUNNER_SRC, os.path.join(ws, "ws_runner.py"))
+        # Complete the DOCUMENTED vendor onboarding (root-file wiring, §1.1 /
+        # adopter_wiring_validator): a scratch adopter is only a REAL adopter
+        # deployment shape once the root AGENTS.md (placeholders filled) +
+        # CLAUDE.md→@AGENTS.md are present — without them the spawned agent's
+        # cold-start chain (incl. the role/verdict-schema discipline the real
+        # decompose contract relies on) never loads. This omission caused the
+        # live-run α adapter errors on 2026-07-07 (markdown plans instead of
+        # JSON verdicts); see the evidence run's INCIDENT.md.
+        with open(os.path.join(ws, "aidazi", "AGENTS.md"),
+                  encoding="utf-8") as fh:
+            agents = fh.read()
+        agents = agents.replace("<adopter-name>", "p5-canary-scratch")
+        agents = agents.replace("<adopter>/charter.yaml", "charter.yaml")
+        with open(os.path.join(ws, "AGENTS.md"), "w", encoding="utf-8") as fh:
+            fh.write(agents)
+        with open(os.path.join(ws, "CLAUDE.md"), "w", encoding="utf-8") as fh:
+            fh.write("@AGENTS.md\n")
         if mode == "alpha":
             os.makedirs(os.path.join(ws, "docs", "briefs"), exist_ok=True)
         else:  # dev workspace: strict compact prompt + a git repo (loop ingress)
@@ -366,9 +383,11 @@ class Harness:
                     if result.get("gate_hard_fail") and not plan["sub_sprints"]:
                         score["alpha"] = {
                             "pass": False,
-                            "reason": "schema-invalid plan (frozen rule: any "
-                                      "out-of-vocab signal / invalid verdict "
-                                      "fails the repetition): "
+                            "reason": "no schema-valid plan was produced within "
+                                      "this repetition's budget (frozen α rule: "
+                                      "the produced plan must validate; an "
+                                      "adapter/protocol failure or operator "
+                                      "truncation yields no plan): "
                                       + result["gate_hard_fail"][:300]}
                     else:
                         score["alpha"] = scorers.alpha_score_rep(

@@ -1,0 +1,34 @@
+{
+  "attempts": [
+    {
+      "probe": "alpha",
+      "rep_id": "nonui-milestone-rep1",
+      "live": true,
+      "status": "adapter_error"
+    },
+    {
+      "probe": "alpha",
+      "rep_id": "nonui-milestone-rep1-r2",
+      "live": true,
+      "status": "adapter_error"
+    },
+    {
+      "probe": "alpha",
+      "rep_id": "nonui-milestone-rep1-r3",
+      "live": true,
+      "status": "launched"
+    }
+  ],
+  "adapter_errors": {
+    "alpha": [
+      "nonui-milestone-rep1",
+      "nonui-milestone-rep1-r2"
+    ]
+  },
+  "planned": {
+    "alpha": 6,
+    "beta": 3,
+    "gamma": 6
+  },
+  "max_replacements_per_probe": 2
+}
