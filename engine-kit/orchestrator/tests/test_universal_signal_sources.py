@@ -250,5 +250,110 @@ class DeriveMilestoneContextProjectionTests(unittest.TestCase):
         self.assertNotIn("task_signals", prov)
 
 
+class ResolverCompatFilterTests(unittest.TestCase):
+    """Universal-skill-mounting §2 — the runtime role/harness compatibility filter for
+    SIGNAL-SELECTED candidates (defense-in-depth; the static validator stays the
+    fail-closed authority)."""
+
+    def setUp(self):
+        import effective_role_config as erc
+        self.erc = erc
+        # A minimal catalog: one signal-tagged skill resolvable from a temp dir.
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        skill_dir = os.path.join(self.tmp.name, "skills", "sig-skill")
+        os.makedirs(skill_dir)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\nname: sig-skill\ndescription: d\n---\nbody\n")
+        self.catalog = {
+            "role_defaults": {},
+            "skills": {},
+            "authored": {"sig-skill": {
+                "source": {"repo": "local", "path": "skills/sig-skill"},
+                "signals": ["ui"],
+                "harness_compat": ["claude_code"],
+                "tool_requirements": ["Read"],
+            }},
+        }
+
+    def _resolve(self, charter_tooling):
+        return self.erc.resolve_role_config(
+            {"tooling": charter_tooling}, "dev", task_signals=("ui",),
+            framework_root=self.tmp.name, adopter_root=self.tmp.name,
+            catalog=self.catalog)
+
+    def test_compatible_role_mounts_the_signal_skill(self):
+        cfg = self._resolve({"dev": {"agent_kind": "claude_code",
+                                     "tools": ["Read", "Edit"]}})
+        self.assertEqual([s.id for s in cfg.skills], ["sig-skill"])
+        self.assertEqual(list(cfg.selected_skills), ["sig-skill"])
+        self.assertEqual(list(cfg.skipped_skills), [])
+
+    def test_harness_incompatible_candidate_is_recorded_skip(self):
+        cfg = self._resolve({"dev": {"agent_kind": "codex",
+                                     "tools": ["Read", "Edit"]}})
+        self.assertEqual(cfg.skills, ())
+        self.assertEqual(cfg.selected_skills, ())
+        self.assertEqual(len(cfg.skipped_skills), 1)
+        skip = cfg.skipped_skills[0]
+        self.assertEqual(skip["id"], "sig-skill")
+        self.assertEqual(skip["kind"], "incompatible")
+        self.assertIn("harness", skip["reason"])
+        # non-silent: the footer names it
+        self.assertIn("sig-skill", self.erc.skill_skip_footer(cfg))
+        self.assertIn("incompatible", self.erc.skill_skip_footer(cfg))
+
+    def test_tool_requirements_exceeding_whitelist_is_recorded_skip(self):
+        cfg = self._resolve({"dev": {"agent_kind": "claude_code",
+                                     "tools": ["Edit"]}})
+        self.assertEqual(cfg.skills, ())
+        self.assertEqual(cfg.skipped_skills[0]["kind"], "incompatible")
+        self.assertIn("tool_requirements", cfg.skipped_skills[0]["reason"])
+
+    def test_undeclared_whitelist_or_harness_does_not_block(self):
+        # Defense-in-depth only: an omitted charter declaration defers to the static
+        # validator — the runtime filter never manufactures a skip from absence.
+        cfg = self._resolve({"dev": {}})
+        self.assertEqual([s.id for s in cfg.skills], ["sig-skill"])
+
+    def test_skill_set_hash_unaffected_by_a_skip(self):
+        mounted = self._resolve({"dev": {"agent_kind": "claude_code"}})
+        skipped = self._resolve({"dev": {"agent_kind": "codex"}})
+        empty = self.erc.resolve_role_config(
+            {"tooling": {"dev": {"agent_kind": "codex"}}}, "dev",
+            framework_root=self.tmp.name, catalog=self.catalog)
+        self.assertNotEqual(mounted.skill_set_hash, skipped.skill_set_hash)
+        self.assertEqual(skipped.skill_set_hash, empty.skill_set_hash)
+
+
+class MissionSignalProfileValidatorTests(unittest.TestCase):
+
+    def _validate(self, charter):
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(_HERE)), "validators"))
+        import charter_validator as cv
+        report = cv.Report()
+        cv._check_mission_signal_profile(charter, report)
+        return report
+
+    def test_absent_field_is_noop(self):
+        report = self._validate({"autonomy": {"approved_scope": {}}})
+        self.assertEqual(report.errors, [])
+        self.assertEqual(report.warnings, [])
+
+    def test_out_of_vocab_signal_errors(self):
+        report = self._validate({"autonomy": {"approved_scope": {
+            "task_signals": ["ui", "banana"]}}})
+        self.assertFalse(report.ok)
+        self.assertIn("banana", report.errors[0].message)
+
+    def test_valid_but_catalog_inert_signal_warns(self):
+        # every vocab word is valid; whether it matches a catalog skill depends on the
+        # live registry — 'ui' matches today, so a clean profile yields no findings.
+        report = self._validate({"autonomy": {"approved_scope": {
+            "task_signals": ["ui"]}}})
+        self.assertTrue(report.ok)
+
+
 if __name__ == "__main__":
     unittest.main()

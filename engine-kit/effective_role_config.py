@@ -374,13 +374,45 @@ def resolve_role_config(charter: dict, role: str, *,
     # `skill_set_hash` — are byte-identical to the pre-Track-1 result.
     selected_ids: list[str] = []
     unmatched: list[str] = []
+    skipped: list[dict[str, Any]] = []
     if task_signals and canonical != "acceptance":
         already = {_binding_id(b) for b in bindings}
+        # Universal-skill-mounting §2 — runtime role/harness compatibility filter for
+        # SIGNAL-SELECTED candidates ONLY (defaults/charter-explicit bindings are the
+        # static charter_validator's fail-closed territory). DEFENSE-IN-DEPTH ONLY: the
+        # validator remains the authority; reaching a skip here indicates
+        # validation-time ↔ spawn-time drift (e.g. a catalog edit mid-run), and the
+        # driver surfaces it as a WARN audit event. A signal must never mount a skill
+        # whose declared harness_compat / tool_requirements the role cannot carry.
+        agent_kind = str(role_cfg.get("harness") or role_cfg.get("agent_kind") or "")
+        raw_tools = role_cfg.get("tools")
+        if isinstance(raw_tools, dict):
+            allow = {str(t) for t in (raw_tools.get("allow") or [])}
+        elif isinstance(raw_tools, list):
+            allow = {str(t) for t in raw_tools}
+        else:
+            allow = set()
         for sid in select_skills_for_task(canonical, task_signals, catalog):
-            if sid not in already:
-                bindings.append({"id": sid, "optional": True})
-                already.add(sid)
-                selected_ids.append(sid)
+            if sid in already:
+                continue
+            cat_entry, _src = _catalog_entry(catalog, sid)
+            hc = [str(x) for x in (cat_entry.get("harness_compat") or [])]
+            reqs = {str(x) for x in (cat_entry.get("tool_requirements") or [])}
+            if hc and agent_kind and agent_kind not in hc:
+                skipped.append({
+                    "id": sid, "optional": True, "kind": "incompatible",
+                    "reason": (f"role harness {agent_kind!r} not in the skill's "
+                               f"harness_compat {hc}")})
+                continue
+            if reqs and allow and not reqs <= allow:
+                skipped.append({
+                    "id": sid, "optional": True, "kind": "incompatible",
+                    "reason": (f"tool_requirements {sorted(reqs - allow)} exceed the "
+                               "role's declared tool whitelist")})
+                continue
+            bindings.append({"id": sid, "optional": True})
+            already.add(sid)
+            selected_ids.append(sid)
         # 1-c — surface signals that matched NO catalog skill (a no-match must be visible, never
         # a silent fall-back). Deterministic + order-preserving + de-duplicated.
         covered = _catalog_signal_universe(catalog)
@@ -393,9 +425,9 @@ def resolve_role_config(charter: dict, role: str, *,
 
     # Resolve every binding. §2.2 skip-if-absent: an OPTIONAL binding that does not resolve is
     # recorded in `skipped_skills` (audit + footer) instead of raising; a REQUIRED binding that
-    # fails still hard-fails (current-adopter misconfig is never masked).
+    # fails still hard-fails (current-adopter misconfig is never masked). `skipped` already
+    # carries any §2.3 compatibility skips from the selection stage above.
     resolved: list[EffectiveSkill] = []
-    skipped: list[dict[str, Any]] = []
     for entry in bindings:
         optional = isinstance(entry, dict) and bool(entry.get("optional"))
         try:
@@ -465,10 +497,12 @@ def skill_skip_footer(config: EffectiveRoleConfig) -> str:
     parts = ["\n\n## Skipped / unmatched skills (not mounted)\n"]
     if config.skipped_skills:
         parts.append(
-            "These OPTIONAL skill bindings did not resolve and were SKIPPED (skip-if-absent); "
-            "proceed without them — they are not required for this role's work.\n")
+            "These OPTIONAL skill bindings did not resolve (skip-if-absent) or were "
+            "incompatible with this role's declared harness/whitelist (defense-in-depth) "
+            "and were SKIPPED; proceed without them — they are not required for this "
+            "role's work.\n")
         parts.append("\n".join(
-            f"- `{s.get('id')}`: skipped (optional, unresolved) — {s.get('reason')}"
+            f"- `{s.get('id')}`: skipped ({'incompatible' if s.get('kind') == 'incompatible' else 'optional, unresolved'}) — {s.get('reason')}"
             for s in config.skipped_skills) + "\n")
     if config.unmatched_signals:
         parts.append(

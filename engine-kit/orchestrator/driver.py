@@ -1067,7 +1067,21 @@ class Driver:
             "skipped_skills": [dict(s) for s in effective.skipped_skills],
             # 1-c — signals that matched NO registered skill (visible, never a silent fall-back).
             "unmatched_signals": list(effective.unmatched_signals),
+            # Universal-skill-mounting §2 — WHICH signed tier governed this spawn's signals:
+            # a sub-sprint plan entry ("subsprint"), the effective charter's approved_scope
+            # profile ("charter_scope"), or neither ("none"; incl. acceptance, always excluded).
+            "signal_source": ("subsprint" if _task_unit_id is not None
+                              else ("charter_scope" if _task_signals else "none")),
         })
+        # Universal-skill-mounting §2 (defense-in-depth surfacing): a signal-selected
+        # candidate skipped as role/harness-INCOMPATIBLE means validation-time and
+        # spawn-time disagreed (the static charter_validator remains the fail-closed
+        # authority) — surface it as a dedicated WARN event, never a silent drop.
+        _compat_skips = [dict(s) for s in effective.skipped_skills
+                         if s.get("kind") == "incompatible"]
+        if _compat_skips:
+            self._audit("skill_compat_skip", {
+                "role": role, "severity": "warn", "skips": _compat_skips})
 
         self.state.spawn_count += 1
         # PERSIST the bumped spawn_count NOW (before any transcript is keyed on it):
@@ -1224,8 +1238,20 @@ class Driver:
         self._assert_task_signals_unmutated()
         plan = self._current_subsprint_plan()
         if not isinstance(plan, dict):
-            # Pre-decompose / delivery-only / no plan entry for this sub-sprint → task-UNAWARE.
+            # Universal-skill-mounting §2 — MOST-SPECIFIC-WINS, lower tier: no sub-sprint
+            # plan entry (research, deliver-decompose, ALL delivery_only spawns) ⇒ the
+            # effective charter's signed approved_scope.task_signals govern (the mission
+            # profile, ∪ milestone_signals when campaign-derived — both human-signed
+            # upstream: charter_hash ⊂ signed_scope_H / the signoff digest). Absent ⇒
+            # (None, ()) — byte-identical to the pre-feature task-UNAWARE result.
+            scope = (self.autonomy.get("approved_scope") or {})
+            raw = scope.get("task_signals")
+            if isinstance(raw, list) and raw:
+                return None, tuple(str(s) for s in raw)
             return None, ()
+        # MOST-SPECIFIC-WINS, upper tier: a plan entry GOVERNS EXCLUSIVELY — including a
+        # signed empty omission (Deliver deliberately left this sub-sprint unsignaled), so
+        # a coarse mission profile never bloats a non-UI sub-sprint.
         signals: tuple = ()
         raw = plan.get("task_signals")
         if isinstance(raw, list):
@@ -2437,6 +2463,17 @@ class Driver:
                     "the signed plan — they are frozen at sign-off and MUST NOT be inferred later "
                     "from prose, filenames, or changed files. An out-of-vocabulary signal is "
                     "rejected (schema-invalid).")
+        # Universal-skill-mounting §2 — CONDITIONAL one-liner when the effective charter
+        # carries a signed signal profile (mission ∪ milestone). Absent ⇒ the prompt is
+        # BYTE-IDENTICAL to the pre-feature decompose prompt.
+        _mission_signals = sorted({str(s) for s in (
+            (self.autonomy.get("approved_scope") or {}).get("task_signals") or [])})
+        if _mission_signals:
+            prompt += (
+                "\nThis milestone's DECLARED signal profile (signed mission/milestone "
+                f"scope) is [{', '.join(_mission_signals)}]; author per-sub-sprint "
+                "task_signals accordingly — and still OMIT task_signals on sub-sprints "
+                "where they genuinely don't apply.")
         verdict = self._spawn("deliver", prompt, schema_key="deliver_plan",
                               lessons_block=lessons)
         sub_sprints = list(verdict.get("sub_sprints") or [])

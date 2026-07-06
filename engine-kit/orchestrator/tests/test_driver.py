@@ -243,6 +243,98 @@ class Track1SkillMountingDriverTests(unittest.TestCase):
                 drv_._effective_role("dev")
 
 
+class UniversalSignalSourceDriverTests(unittest.TestCase):
+    """Universal-skill-mounting §2 (archive/2026-07-06) — driver-tier consumption:
+    MOST-SPECIFIC-WINS signal resolution (plan entry ≻ charter approved_scope ≻ none),
+    the `signal_source` audit field, and the CONDITIONAL decompose profile line
+    (byte-identical when the charter carries no profile)."""
+
+    def test_charter_scope_governs_when_no_plan_entry(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            st = drv_.state
+            st.subsprint_id = "sprint-001"
+            st.planned_subsprints = []
+            drv_.autonomy.setdefault("approved_scope", {})["task_signals"] = ["ui", "a11y"]
+            # pre-plan spawns — research, deliver, dev alike — read the charter tier
+            self.assertEqual(drv_._task_context_for("dev"), (None, ("ui", "a11y")))
+            self.assertEqual(drv_._task_context_for("research"), (None, ("ui", "a11y")))
+            self.assertEqual(drv_._task_context_for("deliver"), (None, ("ui", "a11y")))
+            # Acceptance stays hard-excluded (§2.5 / §3.6 calibration)
+            self.assertEqual(drv_._task_context_for("acceptance"), (None, ()))
+
+    def test_plan_entry_governs_exclusively_including_signed_omission(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            st = drv_.state
+            st.subsprint_id = "sp-1"
+            drv_.autonomy.setdefault("approved_scope", {})["task_signals"] = ["ui"]
+            # A plan entry WITHOUT task_signals = Deliver's signed omission — the coarse
+            # charter profile must NOT leak into this sub-sprint's spawns.
+            st.planned_subsprints = [{"id": "sp-1", "objective": "o"}]
+            st.task_signals_digest = drv_._task_signals_digest(st.planned_subsprints)
+            self.assertEqual(drv_._task_context_for("dev"), ("sp-1", ()))
+            # A plan entry WITH signals governs with exactly those signals.
+            st.planned_subsprints = [{"id": "sp-1", "objective": "o",
+                                      "task_signals": ["interaction"]}]
+            st.task_signals_digest = drv_._task_signals_digest(st.planned_subsprints)
+            drv_._effective_role_cache.clear()
+            self.assertEqual(drv_._task_context_for("dev"), ("sp-1", ("interaction",)))
+
+    def test_charter_profile_absent_is_byte_identical_task_unaware(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            st = drv_.state
+            st.subsprint_id = "sprint-001"
+            st.planned_subsprints = []
+            self.assertEqual(drv_._task_context_for("dev"), (None, ()))
+
+    def test_signal_source_audit_field(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            payloads = [e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                        if e["type"] == "effective_role_config"]
+            self.assertTrue(payloads)
+            # this minimal flow has neither plan entries nor a charter profile
+            for p in payloads:
+                self.assertEqual(p["signal_source"], "none")
+
+    def test_decompose_prompt_conditional_profile_line(self):
+        class _Captured(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            captured = {}
+
+            def fake_spawn(role, prompt, schema_key=None, lessons_block=None):
+                captured["prompt"] = prompt
+                raise _Captured()
+
+            drv_._spawn = fake_spawn
+            drv_._supplied_sequence = lambda: []
+            drv_.state.brief_draft_ref = "docs/brief.md"
+            # no profile ⇒ byte-identical pre-feature prompt (no DECLARED line)
+            with self.assertRaises(_Captured):
+                drv_._step_decompose()
+            self.assertNotIn("DECLARED signal profile", captured["prompt"])
+            baseline = captured["prompt"]
+            # profile present ⇒ exactly one appended line naming the sorted signals
+            drv_.autonomy.setdefault("approved_scope", {})["task_signals"] = \
+                ["ui", "interaction"]
+            with self.assertRaises(_Captured):
+                drv_._step_decompose()
+            self.assertIn(
+                "DECLARED signal profile (signed mission/milestone scope) is "
+                "[interaction, ui]", captured["prompt"])
+            self.assertTrue(captured["prompt"].startswith(baseline))
+
+
 class Track1xTrack2GapRemediationIntegrationTests(unittest.TestCase):
     """Cross-Track integration (§4 scenario 5): a Track 2 §1.7-F gap-followup
     remediation dispatches a Driver with a SUPPLIED `subsprint_sequence` (the milestone's
