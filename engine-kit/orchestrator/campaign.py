@@ -584,6 +584,19 @@ class Campaign:
         # cannot express. A KeyError on plan["campaign_id"] below is now unreachable —
         # the schema's required:["campaign_id",…] rejects it first with a clear message.
         _validate_or_raise(plan, "campaign-plan.schema.json", "plan")
+        # Universal-skill-mounting §2 defense-in-depth (CENTRAL enforcement lives in
+        # signoff_status via f1_required): a SIGNED plan whose live milestone_signals do
+        # not match the stamped digest fails at ingress rather than dispatching stale
+        # authority. UNSIGNED plans pass here (the sign flow must stay usable); their
+        # signal-bearing runs are blocked by the freshness gates ('unsigned').
+        _so = plan.get("signoff")
+        if isinstance(_so, dict) and _so.get("signed_by_human") is True:
+            if milestone_signals_digest(plan) != _so.get("milestone_signals_digest"):
+                raise ValueError(
+                    "campaign plan milestone_signals do not match the signed "
+                    "milestone_signals_digest (post-signoff mutation, or signals added "
+                    "without re-signing) — re-run the explicit signoff to authorize the "
+                    "current signals (fail-closed)")
         self.campaign_id = plan["campaign_id"]
         if not _SAFE_CAMPAIGN_ID_RE.match(self.campaign_id or ""):
             raise ValueError(
@@ -1684,7 +1697,12 @@ class Campaign:
             remediation_id, milestone_id=mid, subsprint_sequence=grown_seq,
             resume=resume, functional_acceptance=milestone.get("functional_acceptance"),
             repo_dir=self._milestone_work_dir(),
-            covered_req_ids=list(covered_req_ids), gap_followup_spec=spec)
+            covered_req_ids=list(covered_req_ids), gap_followup_spec=spec,
+            # Universal-skill-mounting §2: CONDITIONAL kwarg — a plan with no
+            # milestone_signals field makes a byte-identical call, so legacy RunUnit
+            # callables (and fakes) never see the new parameter.
+            **({"milestone_signals": milestone["milestone_signals"]}
+               if "milestone_signals" in milestone else {}))
         self.state.subsprints_run += 1
         self.state.total_spawns += int(summary.get("spawn_count") or 0)
         self.state.wall_clock_minutes = (
@@ -2353,7 +2371,11 @@ class Campaign:
                         subsprint_id, milestone_id=milestone["id"],
                         subsprint_sequence=seq, resume=resume_this,
                         functional_acceptance=milestone.get("functional_acceptance"),
-                        repo_dir=self._milestone_work_dir())
+                        repo_dir=self._milestone_work_dir(),
+                        # Universal-skill-mounting §2: CONDITIONAL kwarg — signal-free
+                        # plans make a byte-identical call (legacy RunUnits unaffected).
+                        **({"milestone_signals": milestone["milestone_signals"]}
+                           if "milestone_signals" in milestone else {}))
                     final_state = summary.get("final_state")
                     self.state.subsprints_run += 1
                     self.state.total_spawns += int(summary.get("spawn_count") or 0)
@@ -2870,6 +2892,26 @@ def compute_signed_scope_hash(plan: dict, charter: Optional[dict], *,
     return hashlib.sha256(_canonical_json(H).encode("utf-8")).hexdigest()
 
 
+def milestone_signals_digest(plan: Optional[dict]) -> Optional[str]:
+    """Universal-skill-mounting §2 (archive/2026-07-06) — the canonical digest over
+    per-milestone ``milestone_signals``. Returns None when NO milestone carries a
+    ``milestone_signals`` FIELD (presence-keyed, so legacy/signal-free plans stay
+    byte-identical: ``stamp_signoff`` then OMITS the digest key entirely). Otherwise
+    sha256 over canonical ``[[id, sorted(signals or [])], …]`` for EVERY milestone —
+    absent normalizes to [] so adding OR removing signals on any milestone (including
+    clearing them while any field remains) changes the digest. Deliberately OUTSIDE
+    ``_signed_scope_H`` (H byte-stability); authority comes from ``signoff_status``
+    recomputing this live + the snapshot copy check (process-level immutability under
+    the existing non-cryptographic signoff trust model)."""
+    ms = (plan or {}).get("milestones") or []
+    if not any(isinstance(m, dict) and "milestone_signals" in m for m in ms):
+        return None
+    payload = [[str(m.get("id")),
+                sorted(str(s) for s in (m.get("milestone_signals") or []))]
+               for m in ms if isinstance(m, dict)]
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
 def stamp_signoff(plan: dict, charter: Optional[dict], *, signer: str = "human",
                   signed_at: str = "", charter_ref: str = "",
                   ledger: Optional[dict] = None) -> dict:
@@ -2891,6 +2933,17 @@ def stamp_signoff(plan: dict, charter: Optional[dict], *, signer: str = "human",
         "signed_scope_hash": compute_signed_scope_hash(
             out, ch, charter_ref=charter_ref, charter_hash=charter_hash, ledger=ledger),
     }
+    # Universal-skill-mounting §2: bind milestone_signals into the signoff — the digest
+    # goes BOTH top-level AND inside the authenticated snapshot (the scope_envelope copy is
+    # INERT to the H recompute — signoff_snapshot_authentic reads specific keys — but its
+    # both-or-neither/equality check makes a strip of {signals + top-level digest} still
+    # read stale via this surviving copy). KEY OMITTED entirely when no milestone carries
+    # signals (legacy/signal-free signoff byte-identical). Updating signals = re-running
+    # THIS explicit sign operation; there is NO side-channel stamp.
+    _msd = milestone_signals_digest(out)
+    if _msd is not None:
+        out["signoff"]["milestone_signals_digest"] = _msd
+        out["signoff"]["scope_envelope"]["milestone_signals_digest"] = _msd
     return out
 
 
@@ -2973,15 +3026,20 @@ def render_mandatory_e2e_refusal(violations: list, *, action: str) -> str:
 
 def f1_required(plan: Optional[dict]) -> bool:
     """Whether the F1 integrity check is ACTIVE for this plan. F1 is OPT-IN — triggered
-    by a `signoff` block OR any milestone DECLARING a covers_req_ids field. Both are NEW
-    fields, so a legacy plan never triggers it (additivity: byte-identical to today).
-    Keyed on field PRESENCE (not truthiness) so an explicit covers_req_ids:[] — a
-    deliberate "this milestone covers nothing" — still opts the plan into integrity
-    (Codex R-P2a NB-1: a non-empty test would silently downgrade an empty-array plan)."""
+    by a `signoff` block OR any milestone DECLARING a covers_req_ids field OR any
+    milestone DECLARING a milestone_signals field (universal-skill-mounting §2: signals
+    affect effective skills/prompts, so a signal-bearing plan is ALWAYS F1-active —
+    closing the _authority_fresh short-circuit: unsigned signal-bearing ⇒ 'unsigned' ⇒
+    blocked; signed ⇒ the digest is verified in signoff_status). All are NEW fields, so
+    a legacy plan never triggers it (additivity: byte-identical to today). Keyed on
+    field PRESENCE (not truthiness) so an explicit empty array — a deliberate "covers
+    nothing" / "no signals" declaration — still opts the plan into integrity (Codex
+    R-P2a NB-1: a non-empty test would silently downgrade an empty-array plan)."""
     plan = plan or {}
     if isinstance(plan.get("signoff"), dict):
         return True
-    return any(isinstance(m, dict) and "covers_req_ids" in m
+    return any(isinstance(m, dict)
+               and ("covers_req_ids" in m or "milestone_signals" in m)
                for m in (plan.get("milestones") or []))
 
 
@@ -3020,7 +3078,18 @@ def signoff_snapshot_authentic(plan: Optional[dict]) -> bool:
            if isinstance(snapshot.get("authority"), dict) else {}),
     }
     recomputed = hashlib.sha256(_canonical_json(H).encode("utf-8")).hexdigest()
-    return recomputed == stored
+    if recomputed != stored:
+        return False
+    # Universal-skill-mounting §2: the milestone_signals digest is snapshot-bound —
+    # top-level signoff copy and scope_envelope copy must be BOTH-OR-NEITHER present and
+    # equal. An extra envelope key is inert to the H recompute above (H reads specific
+    # keys), so this is the check that makes a tampered/one-sided digest read
+    # NOT-authentic. Pre-feature snapshots carry neither copy ⇒ unchanged (True).
+    top_digest = signoff.get("milestone_signals_digest")
+    snap_digest = snapshot.get("milestone_signals_digest")
+    if (top_digest is None) != (snap_digest is None):
+        return False
+    return top_digest == snap_digest
 
 
 def signoff_status(plan: Optional[dict], charter: Optional[dict] = None,
@@ -3042,7 +3111,25 @@ def signoff_status(plan: Optional[dict], charter: Optional[dict] = None,
     if isinstance(signoff, dict) and signoff.get("signed_by_human") is True:
         live = compute_signed_scope_hash(
             plan, charter or {}, charter_ref=signoff.get("charter_ref"), ledger=ledger)
-        return "signed" if signoff.get("signed_scope_hash") == live else "stale"
+        if signoff.get("signed_scope_hash") != live:
+            return "stale"
+        # Universal-skill-mounting §2 — CENTRAL milestone_signals freshness (every
+        # consumer, incl. _authority_fresh, enforces it through here; f1_required makes
+        # any signal-bearing plan F1-active so this branch is never bypassed):
+        #  • live-recompute mismatch (edit/add/strip of any milestone's signals after
+        #    sign, incl. one-sided absence) ⇒ 'stale';
+        #  • top-level digest vs the authenticated-snapshot copy mismatch ⇒ 'stale' —
+        #    this is what catches stripping BOTH the signals and the top-level digest
+        #    (the scope_envelope copy survives a naive strip).
+        # Legacy signal-free plans: all three are None ⇒ unchanged 'signed'.
+        live_digest = milestone_signals_digest(plan)
+        stored_digest = signoff.get("milestone_signals_digest")
+        envelope = signoff.get("scope_envelope")
+        snap_digest = (envelope.get("milestone_signals_digest")
+                       if isinstance(envelope, dict) else None)
+        if stored_digest != live_digest or snap_digest != stored_digest:
+            return "stale"
+        return "signed"
     if plan.get("signed_by_human") is True:
         return "pre_f1"
     return "unsigned"
@@ -3134,7 +3221,8 @@ def derive_milestone_context(charter: dict, milestone_id: str,
                              subsprint_sequence: List[str], *,
                              campaign_id: Optional[str],
                              plan_fingerprint: Optional[str],
-                             functional_acceptance: Optional[str] = None):
+                             functional_acceptance: Optional[str] = None,
+                             milestone_signals: Optional[List[str]] = None):
     """Project `charter` onto ONE milestone. Returns (derived_charter, provenance).
 
     `derived_charter` is a DEEP COPY whose autonomy.approved_scope.subsprint_sequence
@@ -3155,6 +3243,17 @@ def derive_milestone_context(charter: dict, milestone_id: str,
     derived = copy.deepcopy(charter)
     scope = derived.setdefault("autonomy", {}).setdefault("approved_scope", {})
     scope["subsprint_sequence"] = list(subsprint_sequence)
+
+    # Universal-skill-mounting §2 projection: mission profile ∪ THIS milestone's signed
+    # milestone_signals → the ONE ingestion surface the Driver reads
+    # (approved_scope.task_signals; driver._task_context_for governs spawns with no
+    # sub-sprint plan entry — incl. ALL delivery_only spawns). Both-absent ⇒ the key is
+    # untouched (byte-identical derived charter). Callers pass milestone_signals only
+    # AFTER the signoff digest verified (Campaign ingress + signoff_status freshness).
+    _profile = sorted({str(s) for s in (scope.get("task_signals") or [])})
+    _merged = sorted(set(_profile) | {str(s) for s in (milestone_signals or [])})
+    if _merged:
+        scope["task_signals"] = _merged
 
     # Same resolution the F1 signed envelope records (design §3.3.1 / §3.7).
     fmode, fsource = resolve_functional_acceptance(charter, functional_acceptance)
@@ -3177,6 +3276,13 @@ def derive_milestone_context(charter: dict, milestone_id: str,
         "milestone_id": milestone_id,
         "subsprint_sequence": list(subsprint_sequence),
         "functional_acceptance": {"mode": fmode, "source": fsource},
+        # Universal-skill-mounting §2: the signal-source breakdown, recorded ONLY when
+        # signals are effective (absent ⇒ sidecar byte-identical to pre-feature).
+        **({"task_signals": {
+                "effective": _merged,
+                "charter_scope": _profile,
+                "milestone_signals": sorted({str(s) for s in (milestone_signals or [])}),
+            }} if _merged else {}),
         "derived_from": {
             "charter_sha256": _canonical_sha256(charter),
             "campaign_plan_sha256": plan_fingerprint,
@@ -3261,7 +3367,8 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
 
     def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
                  resume=False, functional_acceptance=None, repo_dir=None,
-                 covered_req_ids=None, gap_followup_spec=None):
+                 covered_req_ids=None, gap_followup_spec=None,
+                 milestone_signals=None):
         # Validate id components BEFORE building any path (fail-closed; never makedirs
         # an unsafe path), then build a COLLISION-FREE, bounded loop_id by hashing the
         # (campaign, milestone, subsprint) tuple — a raw '-' join is ambiguous when ids
@@ -3293,7 +3400,8 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
             unit_charter, provenance = derive_milestone_context(
                 charter, milestone_id, seq,
                 campaign_id=campaign_id, plan_fingerprint=plan_fingerprint,
-                functional_acceptance=functional_acceptance)
+                functional_acceptance=functional_acceptance,
+                milestone_signals=milestone_signals)
             with open(os.path.join(unit_run_dir, "derived-context.json"),
                       "w", encoding="utf-8") as fh:
                 json.dump(provenance, fh, indent=2, sort_keys=True)
