@@ -316,6 +316,59 @@ def enforce_required_capabilities_for_real_run(charter: dict) -> None:
             _fc.render_capability_refusal(violations, action="refusing the real run"))
 
 
+def enforce_skills_preflight_for_real_run(
+        charter: dict, *,
+        repo_dir: Optional[str] = None,
+        audit_loop_id: Optional[str] = None,
+        audit_ledger_path: Optional[str] = None,
+        clock: Optional[Callable[[], str]] = None,
+        allow_gitlink_drift: bool = False) -> None:
+    """ENFORCE the universal-skill-mounting integrity/drift preflight (design §4/D3)
+    for a REAL (``--allow-real``) run: raise ``CharterValidationError`` BEFORE any
+    adapter is built when (row 1) the vendored skill tree fails ``skill_vendor``
+    lock/provenance verification, (row 2) a REQUIRED skill binding (role default /
+    charter-bound) does not resolve, or (row 3) the framework submodule's working
+    tree drifted from the recorded superproject gitlink — the row-3 HALT is
+    overridable ONLY by the explicit audited override (``allow_gitlink_drift`` /
+    ``AIDAZI_SKILLS_ALLOW_GITLINK_DRIFT=1``), and the override is RECORDED as a
+    ``skills_preflight_gitlink_override`` audit event carrying both commits on the
+    run's own ledger (``audit_loop_id`` + ``audit_ledger_path`` + ``clock``); with
+    no ledger destination the override is refused (an un-audited override is not an
+    audited override). Row-4 pin-freshness WARNs print non-silently and never block;
+    row-5 telemetry findings are informational. UNLIKE the capability gate this is
+    NEVER dormant (role-default skills mount unconditionally), so an unavailable
+    preflight module is itself a fail-closed refusal — every real deployment ships
+    the checker; the driver's resolve-time fail-closed remains the defense-in-depth.
+    The raised ValueError maps to the INVALID exit, mirroring the other enforce_*."""
+    try:
+        import skills_preflight as _sp  # engine-kit/validators on sys.path
+    except Exception as exc:  # noqa: BLE001 — checker unavailable ⇒ cannot verify
+        raise CharterValidationError(
+            "skills preflight module is unavailable — the deployed skill surface "
+            f"cannot be verified; refusing the real run (fail-closed): {exc}"
+        ) from exc
+    allow = allow_gitlink_drift or (
+        os.environ.get(_sp.GITLINK_OVERRIDE_ENV) == "1")
+    audit_emit = None
+    if audit_loop_id and audit_ledger_path and clock is not None:
+        def audit_emit(finding):  # noqa: ANN001 — _sp.Finding
+            audit.append_event(
+                audit_loop_id, _sp.GITLINK_OVERRIDE_EVENT,
+                {**finding.detail, "message": finding.message,
+                 "override": "allow_gitlink_drift"},
+                ts=clock(), path=audit_ledger_path)
+            print(f"skills preflight: gitlink drift OVERRIDDEN (audited) — "
+                  f"{finding.message}")
+    try:
+        report = _sp.enforce_for_real_run(
+            charter, adopter_root=repo_dir,
+            allow_gitlink_drift=allow, audit_emit=audit_emit)
+    except _sp.SkillsPreflightError as exc:
+        raise CharterValidationError(str(exc)) from exc
+    for f in report.warnings:
+        print(f"skills preflight {f.render()}")
+
+
 def advisory_validate_charter(charter: dict) -> Optional[str]:
     """Non-raising one-shot schema SUMMARY string (for visibility without
     enforcement). Real-run ENFORCEMENT lives in ``enforce_charter_for_real_run``
@@ -636,7 +689,8 @@ def run_campaign_entry(plan: dict, charter: dict, *,
                        allow_real: bool = False,
                        adapters: Optional[Dict[str, object]] = None,
                        repo_dir: Optional[str] = None,
-                       memory_root: Optional[str] = None) -> dict:
+                       memory_root: Optional[str] = None,
+                       allow_gitlink_drift: bool = False) -> dict:
     """Drive a CAMPAIGN (ordered milestone backlog) to completion or the next
     human-authority gate, via make_run_unit -> run_loop -> the REAL Driver. Returns
     a structured, machine-readable result dict carrying a STABLE ``exit_code``.
@@ -687,6 +741,21 @@ def run_campaign_entry(plan: dict, charter: dict, *,
             # mandate. An absent ledger stays dormant (additive).
             enforce_mandatory_e2e_for_real_run(
                 plan, charter, load_requirement_ledger_strict(ledger_path))
+            # Universal-skill-mounting §4/D3: skills integrity/drift preflight — the
+            # last real-run preflight before any adapter build. A row-3 gitlink-drift
+            # override is audited onto the CAMPAIGN's own ledger (same path the
+            # campaign runner appends to, so the event sits on the campaign's chain).
+            enforce_skills_preflight_for_real_run(
+                charter, repo_dir=repo_dir,
+                audit_loop_id=campaign_id or "unidentified",
+                audit_ledger_path=audit.audit_path(
+                    campaign_id or "unidentified", os.path.join(home, "audit")),
+                clock=clock, allow_gitlink_drift=allow_gitlink_drift)
+            # Per-unit defense-in-depth: propagate the override so each unit's own
+            # preflight (run_loop below) honors it too — conditional kwarg so an
+            # injected test run_loop_fn without the param never breaks.
+            if allow_gitlink_drift:
+                run_loop_kwargs["allow_gitlink_drift"] = True
         run_unit = _cp.make_run_unit(charter, units_dir, campaign_id,
                                      clock=clock, plan=plan,
                                      ledger_path=ledger_path, **run_loop_kwargs)
@@ -904,6 +973,7 @@ def run_loop(
     loop_mode: str = LOOP_MODE_DELIVERY_ONLY,
     gate_resolver: Optional[Callable] = None,
     resume: bool = False,
+    allow_gitlink_drift: bool = False,
 ) -> dict:
     """Run ONE loop end-to-end and return a summary dict.
 
@@ -916,6 +986,8 @@ def run_loop(
     identical; full_chain_guided adds the research → gate1 → decompose pre-states).
     ``gate_resolver`` is the injected human-voice for guided gates (tests pass a
     canned one; main() wires the interactive CLI resolver at a TTY).
+    ``allow_gitlink_drift`` is the skills-preflight row-3 explicit audited override
+    (only consulted on a real run; the override is audit-recorded, never silent).
     """
     if mode not in MODES:
         raise ValueError(f"mode {mode!r} not one of {MODES}")
@@ -925,6 +997,17 @@ def run_loop(
         # skip this — example charters are intentionally schema-lenient.
         if allow_real:
             enforce_charter_for_real_run(charter)
+            # Universal-skill-mounting §4/D3: skills integrity/drift preflight,
+            # BEFORE any adapter build. Fires per unit under a campaign too
+            # (defense-in-depth: mid-campaign framework drift is caught at the next
+            # unit). A row-3 override is audited onto THIS loop's own ledger — the
+            # same file the Driver appends to, so the chain carries the event.
+            enforce_skills_preflight_for_real_run(
+                charter, repo_dir=repo_dir,
+                audit_loop_id=loop_id,
+                audit_ledger_path=audit.audit_path(
+                    loop_id, os.path.join(run_dir, ".orchestrator", "audit")),
+                clock=clock, allow_gitlink_drift=allow_gitlink_drift)
         adapters = build_adapters(charter, allow_real=allow_real,
                                   loop_mode=loop_mode)
 
@@ -1047,6 +1130,13 @@ def main(argv=None) -> int:
                              "(adds research → gate1 → decompose pre-states)")
     parser.add_argument("--allow-real", action="store_true",
                         help="build REAL adapters (still gated by AIDAZI_ALLOW_REAL_ADAPTER)")
+    parser.add_argument("--allow-gitlink-drift", action="store_true",
+                        help="EXPLICIT AUDITED OVERRIDE (skills preflight §4 row 3): "
+                             "let a real run proceed although the framework "
+                             "submodule's working tree differs from the recorded "
+                             "superproject gitlink; the override is recorded as a "
+                             "skills_preflight_gitlink_override audit event carrying "
+                             "both commits (env: AIDAZI_SKILLS_ALLOW_GITLINK_DRIFT=1)")
     parser.add_argument("--campaign", default=None,
                         help="path to a campaign-plan.json — drive the WHOLE milestone "
                              "backlog (continuous multi-milestone delivery), not one sub-sprint")
@@ -1152,7 +1242,8 @@ def main(argv=None) -> int:
             plan, charter, clock=_production_clock(),
             campaign_run_dir=args.campaign_run_dir, resume=args.resume,
             decision_path=args.decision, allow_real=args.allow_real,
-            repo_dir=args.repo_dir, memory_root=effective_memory_root)
+            repo_dir=args.repo_dir, memory_root=effective_memory_root,
+            allow_gitlink_drift=args.allow_gitlink_drift)
         print_campaign_result(result)
         return result["exit_code"]
     loop_id = args.loop_id or f"{args.mode}-{args.subsprint_id}"
@@ -1210,14 +1301,21 @@ def main(argv=None) -> int:
             and sys.stdin is not None and sys.stdin.isatty()):
         gate_resolver = make_interactive_gate_resolver()
 
-    info = run_loop(
-        charter, run_dir=run_dir, loop_id=loop_id,
-        subsprint_id=args.subsprint_id, clock=_production_clock(),
-        allow_real=args.allow_real, mode=args.mode,
-        repo_dir=args.repo_dir, memory_root=effective_memory_root,
-        loop_mode=args.loop_mode, gate_resolver=gate_resolver,
-        resume=args.resume,
-    )
+    try:
+        info = run_loop(
+            charter, run_dir=run_dir, loop_id=loop_id,
+            subsprint_id=args.subsprint_id, clock=_production_clock(),
+            allow_real=args.allow_real, mode=args.mode,
+            repo_dir=args.repo_dir, memory_root=effective_memory_root,
+            loop_mode=args.loop_mode, gate_resolver=gate_resolver,
+            resume=args.resume, allow_gitlink_drift=args.allow_gitlink_drift,
+        )
+    except CharterValidationError as exc:
+        # A real-run preflight refusal (charter schema / skills integrity/drift) —
+        # a clean, actionable abort (exit 2, matching the charter-error code), never
+        # a raw traceback. No adapter was built or invoked.
+        print(f"REAL RUN ABORTED before any adapter was invoked: {exc}")
+        return 2
 
     print(f"=== aidazi schedule run ({info['mode']}) ===")
     print(f"run dir        : {info['run_dir']}")

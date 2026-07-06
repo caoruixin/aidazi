@@ -105,6 +105,15 @@ class Adapter(abc.ABC):
     #: stable harness id, e.g. "mock", "claude_code", "headless".
     harness: str = "abstract"
 
+    #: Does this harness expose per-invocation file-READ telemetry (universal-skill-
+    #: mounting §3/D2 — the stream-parsed ``read_paths`` evidence)? STATIC declaration
+    #: consumed by the skills preflight (design §4 row 5: an unobservable harness is
+    #: an INFORMATIONAL finding, never a block or a human manual-check). The runtime
+    #: truth remains each invocation's ``InvocationTelemetry.observability`` — this
+    #: attribute only predicts it. Default False (honest: agent self-report is never
+    #: accepted as read evidence); claude_code is the only observing harness today.
+    provides_read_telemetry: bool = False
+
     def __init__(self, *, provider: str = "", model: str = "", **kwargs: Any):
         self.provider = provider
         self.model = model

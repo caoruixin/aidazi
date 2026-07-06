@@ -137,6 +137,10 @@ class ClaudeCodeAdapter(Adapter):
 
     harness = "claude_code"
 
+    #: §3/D2 — this harness's stream-json exposes per-invocation Read tool_use
+    #: events (parse_read_paths above), so skill-consumption telemetry is observable.
+    provides_read_telemetry = True
+
     #: Deterministic sandbox → Claude CLI ``--permission-mode``. workspace_write
     #: auto-accepts file edits (so a headless Dev can actually write); read_only
     #: uses the default mode (writes denied). Anything else fails closed.
