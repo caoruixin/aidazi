@@ -13,8 +13,10 @@ gate_history: >
   4 implementation guardrails (§8) → committed Phase-0 contract → P0 gate R1 REVISE
   (3 blocking on §7 pre-registration: one-skill signal ambiguity → unique `interaction`
   signal + runtime one-skill assertion; α-fixture determinism → prescribed sub-sprint ids +
-  frozen manifests; γ-scorer gaming → Check-0 completeness precondition) → THIS amended
-  contract (subject to P0 gate R2).
+  frozen manifests; γ-scorer gaming → Check-0 completeness precondition) → P0 gate R2 REVISE
+  (1 blocking: fixture/manifest bytes must be COMMITTED, not prose → exact briefs + α manifest
+  + γ task prompt + γ scoring contract committed under
+  archive/wp-skill-canary/preregistration/) → THIS amended contract (subject to P0 gate R3).
 branch: feat/universal-skill-mounting (base origin/main @ 9f392e4)
 related:
   - archive/2026-07-06-skill-integration-investigation.md   # motivating investigation (on branch docs/skill-integration-investigation, unmerged)
@@ -247,6 +249,15 @@ run per phase. Manual edit approval throughout; no permission bypass.
 lockstep set.
 
 ## §7 Phase-5 pre-registration (FROZEN — changes return to Phase 0 + new design gate)
+
+**Committed pre-registration artifacts (P0-gate R2 fix — the exact bytes are frozen in-repo;
+§7 prose is a summary of, never a substitute for, these files; any edit to them returns to
+Phase 0 + new gate):**
+- `archive/wp-skill-canary/preregistration/fixture-ui-milestone-brief.md` (α fixture i — exact brief bytes incl. prescribed sub-sprint ids/objectives/scope)
+- `archive/wp-skill-canary/preregistration/fixture-nonui-milestone-brief.md` (α fixture ii)
+- `archive/wp-skill-canary/preregistration/alpha-manifest.json` (machine-readable α manifest: prescribed ids → ui/non_ui rules, vocab, rep counts, thresholds)
+- `archive/wp-skill-canary/preregistration/gamma-task-prompt.md` (exact β/γ task bytes, identical across arms)
+- `archive/wp-skill-canary/preregistration/gamma-checklist.json` (machine-readable Check-0 + 10-check scoring contract, ordering, thresholds, one-skill assertion; the Phase-5 scorer must implement EXACTLY this file — the Phase-5 gate verifies scorer ≡ contract)
 
 ### §7.0 Common frozen configuration
 - **Env gates (corrected per guardrail G3):** the canary harness is gated by a NEW dedicated
