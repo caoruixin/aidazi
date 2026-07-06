@@ -101,6 +101,19 @@ SPAWN_PAYLOAD_FIELDS: tuple[str, ...] = (
     "lesson_selection",       # object: full selection audit (selected, suppressed[{id,reason,
                               # tier}], tiers, bytes/tokens before&after, version). None when
                               # no lessons block was injected (e.g. Acceptance).
+    # Universal-skill-mounting §3/D2 — invocation-scoped consumption telemetry. Same
+    # APPEND-ONLY / nullable / deprecate-don't-delete rule as the WP-0/WP-6/WP-7 fields.
+    "skill_reads",            # list[{skill_id,path,match_kind}]: adapter-OBSERVED SKILL.md
+                              # reads matched against the spawn's effective skill set;
+                              # [] = parsed stream, zero matches; None = nothing to record.
+    "skill_consumption",      # observed | none_observed | unobservable — MANDATORY (non-null)
+                              # whenever the spawn's effective skill set is non-empty.
+    "skill_consumption_reason",  # harness_unsupported | parse_error | adapter_error —
+                              # MANDATORY whenever consumption is 'unobservable'.
+    "spawn_attempt",          # the run_with_monitor attempt index that produced the
+                              # terminal result (earlier stuck attempts are discarded).
+    "telemetry_source",       # adapter | legacy_normalized (the plain-dict deprecation
+                              # signal, paired with a WARN adapter_legacy_return event).
 )
 
 

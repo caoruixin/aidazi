@@ -3411,6 +3411,26 @@ class TestAcceptanceTranscripts(unittest.TestCase):
             with open(out_path, encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh), ACC_PASS)
 
+    def test_acceptance_spawn_carries_consumption_telemetry_fields(self):
+        # §3/D2 (Codex P2-gate NB1): Acceptance goes through the SAME envelope
+        # boundary — excluded from task-signal SELECTION, not from telemetry. The
+        # mock harness exposes no reads, and the acceptance skill set is non-empty
+        # (advanced-evaluation default) ⇒ consumption is MANDATORY unobservable/
+        # harness_unsupported, sourced from a real adapter envelope.
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=_acceptance_charter(),
+                           adapters=_acceptance_adapters(ACC_PASS))
+            drv_.run(subsprint_id="sprint-001")
+            spawns = [e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                      if e["type"] == "acceptance_spawn"]
+            self.assertEqual(len(spawns), 1)
+            p = spawns[0]
+            self.assertEqual(p["skill_consumption"], "unobservable")
+            self.assertEqual(p["skill_consumption_reason"], "harness_unsupported")
+            self.assertIsNone(p["skill_reads"])
+            self.assertEqual(p["telemetry_source"], "adapter")
+            self.assertEqual(p["spawn_attempt"], 1)
+
     def test_wp7_load_graph_hash_recorded_on_acceptance_spawn(self):
         # WP-7 (observation-only): the heaviest role records the cold-start fingerprint too,
         # on the same acceptance_spawn event as the WP-0 prompt_bytes/fix_round fields. This

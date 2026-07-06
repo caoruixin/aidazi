@@ -141,6 +141,21 @@ class ClaudeCodeTelemetryTests(unittest.TestCase):
         self.assertEqual(ra2.telemetry.read_paths, ["/a/SKILL.md"])
 
 
+class MonitorAttemptStampTests(unittest.TestCase):
+
+    def test_run_with_monitor_stamps_terminal_attempt_index(self):
+        # §3/D2 (Codex P2-gate NB2): assert the REAL monitor sets aidazi_attempt
+        # (not a faked attribute) on a clean offline run.
+        from adapters.monitor import MonitorConfig, run_with_monitor
+        proc = run_with_monitor(
+            [sys.executable, "-c", "print('ok')"],
+            capture_output=True, text=True, timeout=10,
+            role="dev", harness="test",
+            monitor_config=MonitorConfig(poll_interval=0.05))
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.aidazi_attempt, 1)
+
+
 class EnvelopeBoundaryTests(unittest.TestCase):
 
     def test_mock_adapter_returns_unobservable_envelope(self):
