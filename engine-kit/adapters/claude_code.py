@@ -37,8 +37,39 @@ import subprocess
 import tempfile
 from typing import Any, Optional, Sequence
 
-from .base import Adapter, AdapterError
+from .base import Adapter, AdapterError, InvocationTelemetry, SpawnResult
 from .monitor import run_with_monitor
+
+
+def parse_read_paths(stream_text: str) -> list:
+    """Extract every ``Read`` tool_use ``file_path`` from a claude ``-p
+    --output-format stream-json`` capture (universal-skill-mounting §3/D2; the
+    proven WP-3 read-trace parse). LENIENT per line — a non-JSON line or an
+    unexpected shape is skipped, because read evidence rides ASSISTANT events and
+    junk elsewhere in the stream must not erase it. Raises only on a
+    catastrophically un-scannable input (caller maps that to ``parse_error`` —
+    never silently zero reads)."""
+    reads: list = []
+    for raw in (stream_text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "assistant":
+            continue
+        content = ((obj.get("message") or {}).get("content") or [])
+        if not isinstance(content, list):
+            continue
+        for blk in content:
+            if (isinstance(blk, dict) and blk.get("type") == "tool_use"
+                    and blk.get("name") == "Read"):
+                fp = (blk.get("input") or {}).get("file_path")
+                if fp:
+                    reads.append(str(fp))
+    return reads
 
 _ALLOW_ENV = "AIDAZI_ALLOW_REAL_ADAPTER"
 
@@ -191,7 +222,7 @@ class ClaudeCodeAdapter(Adapter):
             argv += ["--mcp-config", mcp_config_path]
         return argv
 
-    def spawn(
+    def _spawn_impl(
         self,
         role: str,
         prompt: str,
@@ -201,7 +232,7 @@ class ClaudeCodeAdapter(Adapter):
         connectors: Optional[Sequence[Any]] = None,
         sandbox: str = "workspace_write",
         network_access: bool = False,  # accepted for uniformity; see note below
-    ) -> dict:
+    ) -> "SpawnResult":
         if not self._enabled():
             raise AdapterError(
                 f"claude_code adapter is gated off (set allow_subprocess=True or "
@@ -258,16 +289,42 @@ class ClaudeCodeAdapter(Adapter):
                     f"{proc.stderr.strip()[:500]}",
                     role=role,
                 )
+            # Universal-skill-mounting §3/D2 — invocation-scoped consumption
+            # telemetry, built from THIS invocation's terminal-attempt capture
+            # (a local value; never instance state).
+            telemetry = self._telemetry_from_stream(proc)
             # ARTIFACT spawn (no verdict schema — e.g. dev / research): the model's
             # final message IS the artifact (code + handoff prose), NOT a JSON
             # verdict, so return it raw. VERDICT spawn (schema present — review /
             # close): parse the final message as the JSON verdict.
             if not schema:
-                return self._extract_artifact(proc.stdout, role)
-            return self._extract_verdict(proc.stdout, role)
+                return SpawnResult(self._extract_artifact(proc.stdout, role),
+                                   telemetry)
+            return SpawnResult(self._extract_verdict(proc.stdout, role), telemetry)
         finally:
             if mcp_path and os.path.exists(mcp_path):
                 os.unlink(mcp_path)
+
+    @staticmethod
+    def _telemetry_from_stream(proc) -> InvocationTelemetry:
+        """Build the invocation-scoped telemetry from the TERMINAL attempt's
+        capture (universal-skill-mounting §3/D2). Pure over ``proc`` — never
+        touches adapter instance state, so reuse/retries/concurrency cannot
+        cross-contaminate. A parse failure is reported as ``parse_error`` (mapped
+        by the driver to ``unobservable``/``parse_error``), NEVER as an empty
+        read list. ``raw_stream`` is kept only under AIDAZI_KEEP_RAW_STREAM=1."""
+        attempt = int(getattr(proc, "aidazi_attempt", 1) or 1)
+        keep_raw = os.environ.get("AIDAZI_KEEP_RAW_STREAM") == "1"
+        raw = proc.stdout if keep_raw else None
+        try:
+            reads = parse_read_paths(proc.stdout)
+        except Exception:
+            return InvocationTelemetry(
+                terminal_attempt=attempt, terminal_status="ok",
+                read_paths=None, observability="parse_error", raw_stream=raw)
+        return InvocationTelemetry(
+            terminal_attempt=attempt, terminal_status="ok",
+            read_paths=reads, observability="observed", raw_stream=raw)
 
     @staticmethod
     def _final_result_from_stream(stdout: str, role: str):

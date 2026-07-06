@@ -68,7 +68,7 @@ class MockAdapter(Adapter):
         #: append-only trace of every spawn (for test assertions).
         self.history: list[dict] = []
 
-    def spawn(
+    def _spawn_impl(
         self,
         role: str,
         prompt: str,

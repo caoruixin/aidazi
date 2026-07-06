@@ -102,7 +102,8 @@ for _p in (_THIS_DIR, _ENGINE_KIT_DIR, _AUDIT_DIR):
         sys.path.insert(0, _p)
 
 import audit_log as audit  # noqa: E402  (engine-kit/audit/audit_log.py)
-from adapters import ADAPTER_REGISTRY, Adapter, AdapterError, MockAdapter  # noqa: E402
+from adapters import (ADAPTER_REGISTRY, Adapter, AdapterError,  # noqa: E402
+                      InvocationTelemetry, MockAdapter, SpawnResult)
 
 # P3 INTEGRATION 1 — the standalone Loop Controller (engine-kit/orchestrator/
 # loop_controller.py) is the fix-loop termination AUTHORITY. The driver builds a
@@ -820,6 +821,12 @@ class Driver:
         if kind == "prompt":
             text = content if isinstance(content, str) else str(content)
             ext = "md"
+        elif kind == "stream":
+            # Universal-skill-mounting §3/D2 — the terminal attempt's RAW stream-json
+            # capture, persisted VERBATIM and only under AIDAZI_KEEP_RAW_STREAM=1
+            # (authorized canary evidence; default off — size/secrets).
+            text = content if isinstance(content, str) else str(content)
+            ext = "jsonl"
         else:  # "output"
             if (isinstance(content, dict) and set(content) == {"artifact"}
                     and isinstance(content.get("artifact"), str)):
@@ -982,6 +989,68 @@ class Driver:
                      "per their existing triggers.)")
         return "\n".join(lines) + "\n\n"
 
+    def _unpack_spawn_result(self, res, role: str, harness: str):
+        """Universal-skill-mounting §3/D2 — envelope unpack + the legacy-dict
+        normalization shim: an out-of-tree adapter that overrides ``spawn`` itself
+        and returns a plain result is normalized to UNOBSERVABLE telemetry with a
+        recorded deprecation signal (WARN audit event) — never silent breakage,
+        never fabricated read evidence."""
+        if isinstance(res, SpawnResult):
+            return res.result, res.telemetry, "adapter"
+        self._audit("adapter_legacy_return", {
+            "role": role, "harness": harness, "severity": "warn",
+            "note": ("Adapter.spawn returned a plain result; SpawnResult is the "
+                     "current contract — telemetry recorded as unobservable "
+                     "(deprecation signal)")})
+        return res, InvocationTelemetry(), "legacy_normalized"
+
+    @staticmethod
+    def _skill_consumption_fields(effective, telemetry, *,
+                                  adapter_error: bool = False) -> dict:
+        """Universal-skill-mounting §3/D2 — the SINGLE deterministic telemetry→audit
+        mapping (one test per row):
+          * effective skills EMPTY            → all fields None (nothing to consume);
+          * adapter_error (no envelope)       → unobservable / adapter_error;
+          * observed + ≥1 matching SKILL.md   → observed (+ match records);
+          * observed + zero matching reads    → none_observed (the ONLY source of it);
+          * parse_error                       → unobservable / parse_error;
+          * unobservable (default/legacy)     → unobservable / harness_unsupported.
+        Matching is realpath-normalized; ``EffectiveSkill.path`` is already realpath'd
+        so exact equality is primary; the ``<skill_id>/SKILL.md`` suffix fallback is
+        recorded as ``match_kind: suffix`` (never silently conflated)."""
+        if effective is None or not effective.skills:
+            return {"skill_reads": None, "skill_consumption": None,
+                    "skill_consumption_reason": None}
+        if adapter_error or telemetry is None:
+            return {"skill_reads": None, "skill_consumption": "unobservable",
+                    "skill_consumption_reason": ("adapter_error" if adapter_error
+                                                 else "harness_unsupported")}
+        obs = telemetry.observability
+        if obs == "observed":
+            matches, seen = [], set()
+            for rp in telemetry.read_paths or []:
+                real = os.path.realpath(str(rp))
+                for s in effective.skills:
+                    smd = os.path.join(s.path, "SKILL.md")
+                    kind = ("exact" if real == smd
+                            else "suffix" if real.endswith(
+                                os.sep + os.path.join(s.id, "SKILL.md"))
+                            else None)
+                    if kind and (s.id, real) not in seen:
+                        seen.add((s.id, real))
+                        matches.append({"skill_id": s.id, "path": real,
+                                        "match_kind": kind})
+            if matches:
+                return {"skill_reads": matches, "skill_consumption": "observed",
+                        "skill_consumption_reason": None}
+            return {"skill_reads": [], "skill_consumption": "none_observed",
+                    "skill_consumption_reason": None}
+        if obs == "parse_error":
+            return {"skill_reads": None, "skill_consumption": "unobservable",
+                    "skill_consumption_reason": "parse_error"}
+        return {"skill_reads": None, "skill_consumption": "unobservable",
+                "skill_consumption_reason": "harness_unsupported"}
+
     def _spawn(self, role: str, prompt: str, schema_key: Optional[str],
                *, lessons_block: Optional[str] = None) -> dict:
         """Select the role's adapter, spawn, and (if a verdict schema applies)
@@ -1102,7 +1171,7 @@ class Driver:
             # network_access is the per-role network grant. Only the codex adapter
             # has a concrete OS-sandbox network toggle; other adapters accept it
             # for the uniform spawn boundary.
-            verdict = adapter.spawn(
+            spawn_res = adapter.spawn(
                 role, prompt, routing.tools,
                 self.schemas.get(schema_key, {}) if schema_key else {},
                 connectors=routing.connectors, sandbox=routing.sandbox,
@@ -1118,9 +1187,23 @@ class Driver:
                 prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
                 fix_round=fix_round, load_graph_hash=load_graph_hash,
                 verdict_ref="adapter_error", prompt_ref=prompt_ref,
-                output_ref=None))  # no output produced — the adapter raised
+                output_ref=None,  # no output produced — the adapter raised
+                # §3/D2: no envelope returns on an AdapterError — NEVER
+                # none_observed (that would assert a successful zero-read
+                # observation); unobservable/adapter_error when skills applied.
+                **self._skill_consumption_fields(effective, None,
+                                                 adapter_error=True)))
             raise self._gate_hard_fail(
                 f"adapter for role {role!r} failed: {exc}", self.state.state)
+        verdict, telemetry, telemetry_source = self._unpack_spawn_result(
+            spawn_res, role, adapter.harness)
+        consumption = self._skill_consumption_fields(effective, telemetry)
+        spawn_attempt = telemetry.terminal_attempt if telemetry else None
+        # AIDAZI_KEEP_RAW_STREAM=1 canary evidence: persist the terminal attempt's
+        # raw stream verbatim next to the prompt/output transcripts.
+        if telemetry is not None and telemetry.raw_stream:
+            self._write_transcript(self.state.spawn_count, role, "stream",
+                                   telemetry.raw_stream)
 
         # Materialize the EXACT model output (verdict JSON / artifact prose) to a
         # paired transcript NOW — BEFORE validation — so a schema-invalid verdict is
@@ -1142,7 +1225,9 @@ class Driver:
                 prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
                 fix_round=fix_round, load_graph_hash=load_graph_hash,
                 verdict_ref="invalid" if err else "valid",
-                prompt_ref=prompt_ref, output_ref=output_ref))
+                prompt_ref=prompt_ref, output_ref=output_ref,
+                spawn_attempt=spawn_attempt, telemetry_source=telemetry_source,
+                **consumption))
             if err is not None:
                 raise self._gate_hard_fail(
                     f"{role} verdict failed schema validation "
@@ -1159,7 +1244,9 @@ class Driver:
                 prompt_bytes=prompt_bytes, memory_bytes=memory_bytes,
                 fix_round=fix_round, load_graph_hash=load_graph_hash,
                 verdict_ref="artifact",
-                prompt_ref=prompt_ref, output_ref=output_ref))
+                prompt_ref=prompt_ref, output_ref=output_ref,
+                spawn_attempt=spawn_attempt, telemetry_source=telemetry_source,
+                **consumption))
         self.state.last_verdict = verdict
         return verdict
 
@@ -4841,14 +4928,27 @@ class Driver:
         # prompt_ref and output_ref (or None on an adapter error) plus a verdict_ref.
         # The acceptance-specific provenance (evidence_path, §1.7-C spawn_surface,
         # calibration) rides on the same event.
+        # §3/D2: the acceptance spawn goes through the SAME envelope boundary —
+        # Acceptance is excluded from task-signal SELECTION, not from telemetry;
+        # consumption observability over the calibration-coupled acceptance skill
+        # set rides this box (filled on success; adapter_error marks it).
+        _telemetry_box: dict = {"telemetry": None, "source": None, "error": False}
+
         def _acceptance_spawn_audit(verdict_ref: str,
                                     output_ref: Optional[str]) -> None:
+            _cons = self._skill_consumption_fields(
+                self._effective_role("acceptance"), _telemetry_box["telemetry"],
+                adapter_error=_telemetry_box["error"])
+            _tel = _telemetry_box["telemetry"]
             self._audit("acceptance_spawn", {
                 "role": "acceptance", "harness": adapter.harness,
                 "provider": adapter.provider, "model": adapter.model,
                 "evidence_path": evidence_path,
                 "calibration_status": calibration_status,
                 "run_mode": self.autonomy.get("level", "human_in_the_loop"),
+                **_cons,
+                "spawn_attempt": (_tel.terminal_attempt if _tel else None),
+                "telemetry_source": _telemetry_box["source"],
                 # WP-0 measurement (observation-only): the as-dispatched Acceptance
                 # prompt size + fix-round index, parallel to the uniform _spawn fields
                 # so the heaviest role is not blind to the baseline. Acceptance injects
@@ -4876,14 +4976,21 @@ class Driver:
             # only (judgment is never delegated); threaded through uniformly.
             # network_access follows the same explicit role routing as other
             # roles; read_only sandboxes remain read_only regardless of this flag.
-            verdict = adapter.spawn(
+            _acc_res = adapter.spawn(
                 "acceptance", prompt, routing.tools, self.schemas["acceptance"],
                 connectors=routing.connectors, sandbox=routing.sandbox,
                 network_access=routing.network_access)
         except AdapterError as exc:
+            _telemetry_box["error"] = True
             _acceptance_spawn_audit("adapter_error", None)  # prompt-only; no output
             raise self._gate_hard_fail(
                 f"acceptance adapter failed: {exc}", STATE_ACCEPTANCE_PENDING)
+        verdict, _telemetry_box["telemetry"], _telemetry_box["source"] = \
+            self._unpack_spawn_result(_acc_res, "acceptance", adapter.harness)
+        if _telemetry_box["telemetry"] is not None \
+                and _telemetry_box["telemetry"].raw_stream:
+            self._write_transcript(self.state.spawn_count, "acceptance", "stream",
+                                   _telemetry_box["telemetry"].raw_stream)
         # Capture the Acceptance verdict to a transcript + reference it on the Audit
         # Spine BEFORE validation, so an invalid verdict is still auditable.
         output_ref = self._write_transcript(

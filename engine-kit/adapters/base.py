@@ -39,7 +39,45 @@ and are NEVER run in tests (same discipline as skill-vendor's ``vendor`` path).
 from __future__ import annotations
 
 import abc
+import dataclasses
 from typing import Any, Optional, Sequence
+
+
+@dataclasses.dataclass(frozen=True)
+class InvocationTelemetry:
+    """Per-INVOCATION consumption telemetry (universal-skill-mounting design §3/D2).
+
+    Constructed EXCLUSIVELY from that invocation's local capture — never adapter
+    instance state — so retries, adapter reuse, concurrency, and crash-resume can
+    never cross-contaminate read evidence. Fields:
+      * ``terminal_attempt`` — the run_with_monitor attempt index that produced the
+        terminal result (earlier stuck attempts' streams are discarded, never merged);
+      * ``terminal_status`` — the invocation's terminal status ("ok" on a returned
+        result; an AdapterError path returns NO envelope at all);
+      * ``read_paths`` — raw file-read evidence (``Read`` tool_use targets) parsed
+        from the terminal attempt's stream; ``None`` when the harness exposes no
+        read events (the honest default — agent self-report is NEVER accepted);
+      * ``observability`` — ``observed`` (stream parsed) | ``unobservable`` (harness
+        exposes no reads) | ``parse_error`` (a captured stream failed to parse —
+        never silently reported as zero reads);
+      * ``raw_stream`` — the terminal attempt's raw stream text, populated ONLY
+        under ``AIDAZI_KEEP_RAW_STREAM=1`` (authorized canary evidence capture).
+    """
+    terminal_attempt: int = 1
+    terminal_status: str = "ok"
+    read_paths: Optional[list] = None
+    observability: str = "unobservable"
+    raw_stream: Optional[str] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class SpawnResult:
+    """The ``Adapter.spawn`` return envelope: the candidate result (verdict dict /
+    artifact wrapper — validated by the DRIVER, exactly as before) plus the
+    invocation-scoped telemetry. The driver binds its own ``spawn_ref`` (seq +
+    input_hash) at audit-write time; adapters never know driver identifiers."""
+    result: Any
+    telemetry: InvocationTelemetry
 
 
 class AdapterError(Exception):
@@ -73,7 +111,6 @@ class Adapter(abc.ABC):
         # Concrete adapters may stash endpoint / api-key-env-name / flags here.
         self.config: dict[str, Any] = dict(kwargs)
 
-    @abc.abstractmethod
     def spawn(
         self,
         role: str,
@@ -84,7 +121,33 @@ class Adapter(abc.ABC):
         connectors: Optional[Sequence[Any]] = None,
         sandbox: str = "workspace_write",
         network_access: bool = False,
-    ) -> dict:
+    ) -> "SpawnResult":
+        """Uniform envelope boundary (universal-skill-mounting §3/D2): run this
+        harness's ``_spawn_impl`` and ALWAYS return a ``SpawnResult``. An
+        ``_spawn_impl`` that returns a plain result (every adapter except
+        claude_code today) is normalized here with default UNOBSERVABLE
+        telemetry. An out-of-tree adapter that still overrides ``spawn`` itself
+        and returns a plain dict is normalized at the DRIVER boundary instead,
+        with a recorded deprecation signal — never silent breakage."""
+        res = self._spawn_impl(
+            role, prompt, tools, schema, connectors=connectors,
+            sandbox=sandbox, network_access=network_access)
+        if isinstance(res, SpawnResult):
+            return res
+        return SpawnResult(result=res, telemetry=InvocationTelemetry())
+
+    @abc.abstractmethod
+    def _spawn_impl(
+        self,
+        role: str,
+        prompt: str,
+        tools: Sequence[str],
+        schema: dict,
+        *,
+        connectors: Optional[Sequence[Any]] = None,
+        sandbox: str = "workspace_write",
+        network_access: bool = False,
+    ) -> Any:
         """Run one role session and return a CANDIDATE verdict dict.
 
         The returned dict is validated by the DRIVER against ``schema``; an

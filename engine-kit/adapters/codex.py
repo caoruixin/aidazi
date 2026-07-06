@@ -262,7 +262,7 @@ class CodexAdapter(Adapter):
             argv.append("--skip-git-repo-check")
         return argv
 
-    def spawn(
+    def _spawn_impl(
         self,
         role: str,
         prompt: str,

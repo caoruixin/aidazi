@@ -80,6 +80,11 @@ def run_with_monitor(
             if notes:
                 prefix = "\n".join(notes) + "\n"
                 proc.stderr = prefix + (proc.stderr or "")
+            # Universal-skill-mounting §3/D2 — ADDITIVE attempt metadata: the index
+            # of the attempt that produced THIS terminal result (earlier stuck
+            # attempts' streams were discarded, never merged). Callers that don't
+            # read it are unaffected.
+            proc.aidazi_attempt = attempt
             return proc
         except _StuckOnce as exc:
             last_reason = exc.reason

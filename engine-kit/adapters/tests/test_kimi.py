@@ -96,7 +96,12 @@ class KimiSpawnTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
         with mock.patch("adapters.kimi.run_with_monitor", side_effect=_fake_run):
-            return a.spawn(role, "p", [], schema)
+            res = a.spawn(role, "p", [], schema)
+        # §3/D2 envelope: kimi exposes no structured read events → honest
+        # unobservable default; callers assert on the unwrapped result.
+        self.assertEqual(res.telemetry.observability, "unobservable")
+        self.assertIsNone(res.telemetry.read_paths)
+        return res.result
 
     def test_artifact_spawn_returns_cleaned_text(self):
         out = self._run_with("• wrote src/foo.py and tests; see docs/handoff.md",

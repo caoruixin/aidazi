@@ -87,7 +87,7 @@ class KimiAdapter(Adapter):
             argv += ["-m", self.model]
         return argv
 
-    def spawn(
+    def _spawn_impl(
         self,
         role: str,
         prompt: str,

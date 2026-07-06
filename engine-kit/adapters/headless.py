@@ -94,7 +94,7 @@ class HeadlessAdapter(Adapter):
             payload["tools"] = list(functions)
         return payload
 
-    def spawn(
+    def _spawn_impl(
         self,
         role: str,
         prompt: str,
