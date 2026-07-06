@@ -250,6 +250,48 @@ class DeriveMilestoneContextProjectionTests(unittest.TestCase):
         self.assertNotIn("task_signals", prov)
 
 
+class EngineRestampSignalInterplayTests(unittest.TestCase):
+    """Track-2 TD6 × universal-skill-mounting: a legitimate ENGINE-AUTHORED
+    deliver_followup insertion on a SIGNAL-BEARING plan must still rescue to 'signed'
+    (the Track-2 invariant — normal autonomous runtime evolution never requires a
+    re-sign), with BOTH digest copies surviving the envelope reconstruction."""
+
+    def test_td6_rescue_preserves_signal_digest_and_reads_signed(self):
+        plan = _signed(_plan([_milestone("m1", ["s1"], milestone_signals=["ui"])]))
+        grown = copy.deepcopy(plan)
+        grown["milestones"][0]["subsprint_sequence"] = ["s1", "s1b"]
+        # raw drift: the insertion alone reads 'stale' (hash mismatch), NOT digest-stale
+        self.assertEqual(cp.signoff_status(grown, _CHARTER), "stale")
+        pinned = cp.compute_signed_scope_hash(grown, _CHARTER,
+                                              charter_ref="charter.yaml")
+        restamp = {"signed_scope_hash": pinned,
+                   "deltas": [{"milestone_id": "m1", "subsprint_id": "s1b",
+                               "at_index": 1}]}
+        rescued = cp.apply_engine_restamp_to_plan(grown, _CHARTER, restamp)
+        self.assertEqual(cp.signoff_status(rescued, _CHARTER), "signed")
+        so = rescued["signoff"]
+        self.assertEqual(so["milestone_signals_digest"],
+                         cp.milestone_signals_digest(rescued))
+        self.assertEqual(so["scope_envelope"]["milestone_signals_digest"],
+                         so["milestone_signals_digest"])
+        self.assertTrue(cp.signoff_snapshot_authentic(rescued))
+
+    def test_td6_rescue_still_refuses_a_signal_edit(self):
+        # growth + a signal mutation is NOT a pure authorized insertion: the digest check
+        # keeps the rescued plan 'stale' (the rescue never launders a signal change).
+        plan = _signed(_plan([_milestone("m1", ["s1"], milestone_signals=["ui"])]))
+        grown = copy.deepcopy(plan)
+        grown["milestones"][0]["subsprint_sequence"] = ["s1", "s1b"]
+        grown["milestones"][0]["milestone_signals"] = ["a11y"]     # tamper
+        pinned = cp.compute_signed_scope_hash(grown, _CHARTER,
+                                              charter_ref="charter.yaml")
+        restamp = {"signed_scope_hash": pinned,
+                   "deltas": [{"milestone_id": "m1", "subsprint_id": "s1b",
+                               "at_index": 1}]}
+        rescued = cp.apply_engine_restamp_to_plan(grown, _CHARTER, restamp)
+        self.assertEqual(cp.signoff_status(rescued, _CHARTER), "stale")
+
+
 class ResolverCompatFilterTests(unittest.TestCase):
     """Universal-skill-mounting §2 — the runtime role/harness compatibility filter for
     SIGNAL-SELECTED candidates (defense-in-depth; the static validator stays the
