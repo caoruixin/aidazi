@@ -10,7 +10,11 @@ gate_history: >
   Human plan review (7 blocking corrections, 2026-07-06) → Codex gpt-5.5 xhigh design gate
   R1 REVISE (6 blocking, all verified+fixed) → R2 REVISE (3 blocking, all verified+fixed) →
   R3 APPROVE (0 blocking; NB1/NB2 folded in as test items) → human execution approval with
-  4 implementation guardrails (§8) → THIS committed Phase-0 contract (subject to its own gate).
+  4 implementation guardrails (§8) → committed Phase-0 contract → P0 gate R1 REVISE
+  (3 blocking on §7 pre-registration: one-skill signal ambiguity → unique `interaction`
+  signal + runtime one-skill assertion; α-fixture determinism → prescribed sub-sprint ids +
+  frozen manifests; γ-scorer gaming → Check-0 completeness precondition) → THIS amended
+  contract (subject to P0 gate R2).
 branch: feat/universal-skill-mounting (base origin/main @ 9f392e4)
 related:
   - archive/2026-07-06-skill-integration-investigation.md   # motivating investigation (on branch docs/skill-integration-investigation, unmerged)
@@ -264,23 +268,35 @@ lockstep set.
   fail). No LLM judging anywhere in scoring.
 
 ### §7.1 Probe-α — authoring correctness (state-2 authoring half)
-- **Fixtures (2):** (i) UI milestone — brief "add a user-facing settings page with accessible
-  profile + notification forms" decomposing naturally into 3 sub-sprints, of which 2 are
-  pre-designated UI (settings form UI; notification preferences UI) and 1 pre-designated non-UI
-  (persistence API endpoint); (ii) non-UI milestone — brief "add a CSV export command-line tool
-  with unit tests", 3 sub-sprints, all pre-designated non-UI. Fixture briefs are written and
-  committed BEFORE any run.
+- **Fixtures (2), each with a FROZEN MANIFEST (P0-gate F2 fix):** the fixture briefs PRESCRIBE
+  the exact decomposition — sub-sprint ids, objectives, and scope are given in the brief ("use
+  exactly these sub-sprints"), so the spawn's authoring decision under test is ONLY the
+  task_signals. The committed manifest freezes, per prescribed id, the expected signal behavior:
+  - Fixture (i) UI milestone ("user-facing settings page with accessible profile + notification
+    forms"): `s1-settings-form-ui` → UI (expected: ≥1 signal, ⊆ TASK_SIGNAL_VOCAB);
+    `s2-notification-prefs-ui` → UI (same rule); `s3-persistence-api` → non-UI (expected:
+    zero signals / field absent).
+  - Fixture (ii) non-UI milestone ("CSV export command-line tool with unit tests"):
+    `s1-csv-serializer`, `s2-cli-entrypoint`, `s3-unit-tests` → all non-UI (zero signals).
+  Fixture briefs + manifests are committed BEFORE any run; the α-scorer is a pure function of
+  (produced plan JSON, manifest) — no post-hoc judgment.
 - **Procedure:** 3 repetitions per fixture (6 decompose spawns) of the real decompose contract
   (`_step_decompose` prompt, driver.py:2425-2439) against the fixture brief.
-- **Per-repetition PASS:** fixture (i): every pre-designated UI sub-sprint carries ≥1 correct
-  in-vocab signal AND every pre-designated non-UI sub-sprint carries zero signals AND the plan
-  validates against deliver-plan-verdict (any out-of-vocab signal ⇒ schema-invalid ⇒ rep FAIL).
-  Fixture (ii): zero signals on every sub-sprint.
+- **Per-repetition PASS (deterministic):** the produced plan validates against
+  deliver-plan-verdict (any out-of-vocab signal ⇒ schema-invalid ⇒ rep FAIL); the produced
+  sub-sprint id set EQUALS the prescribed id set (any missing/renamed/extra id ⇒ rep FAIL,
+  recorded as fixture-noncompliance); every manifest-UI id carries ≥1 in-vocab signal; every
+  manifest-non-UI id carries zero.
 - **Probe PASS:** ≥2/3 repetitions pass for EACH fixture independently.
 
 ### §7.2 Probe-β — consumption (state 4)
-- **Fixture:** one dev sub-sprint task carrying signed `task_signals: ["frontend"]` (mounting
-  `web-interface-guidelines`) in a scratch adopter; the §7.3 fixture task prompt.
+- **Fixture:** one dev sub-sprint task carrying signed `task_signals: ["interaction"]` in a
+  scratch adopter; the §7.3 fixture task prompt. **Signal choice (P0-gate F1 fix):**
+  `interaction` maps to EXACTLY ONE catalog skill — `web-interface-guidelines`
+  (skills/registry.yaml:159; no other entry carries it) — so exactly one skill is
+  signal-mounted. **Frozen runtime assertion:** the spawn's `effective_role_config` audit must
+  list `web-interface-guidelines` as the ONLY signal-selected skill; any other signal-selected
+  set ⇒ the repetition is INVALID (fixture violation), not scored.
 - **Procedure:** 3 repetitions (3 real Dev spawns).
 - **Per-repetition PASS:** the spawn's stream-json contains ≥1 `Read` tool_use whose
   realpath equals the mounted `web-interface-guidelines/SKILL.md` AND the spawn audit records
@@ -293,12 +309,21 @@ lockstep set.
   framework, no build step): email + password fields, a submit button that simulates an async
   request and shows a status message, an icon-only password-visibility toggle button, a
   decorative logo image, and a short features section with headings."
-  Arm A: sub-sprint carries `task_signals: ["frontend"]` (mounts web-interface-guidelines).
+  Arm A: sub-sprint carries `task_signals: ["interaction"]` — mounting EXACTLY ONE skill,
+  `web-interface-guidelines` (P0-gate F1 fix; registry-unique signal, skills/registry.yaml:159),
+  with the same frozen runtime assertion as §7.2 (any other signal-selected set ⇒ pair INVALID).
   Arm B: no task_signals (role default TDD skill only). Everything else identical (§7.0).
 - **Paired repetitions with counterbalanced ordering (guardrail G4):** 3 pairs; execution order
   pair 1 = A→B, pair 2 = B→A, pair 3 = A→B. Fresh scratch adopter per arm-run.
+- **Check 0 — completeness precondition (P0-gate F3 fix; evaluated per arm BEFORE the
+  checklist):** the produced artifact must contain ALL required task elements: (a) ≥1 `<img>`
+  (the logo); (b) an email input AND a password input; (c) an icon-only visibility-toggle
+  `<button>`; (d) a submit control wired to an async-simulated request; (e) a status-message
+  region; (f) ≥1 `<h1>` AND a features section with ≥1 additional heading. **Any missing
+  element ⇒ that arm's score = 0** — an incomplete artifact can never pass vacuously.
 - **Deterministic checklist (M = 10; each check is binary per arm, evaluated over the produced
-  artifact files by the frozen scorer):**
+  artifact files by the frozen scorer; checks 1/2/3/7/10 have their subjects guaranteed to
+  exist by Check 0):**
   1. Every `<img>` has explicit `width` and `height` attributes.
   2. The icon-only toggle `<button>` has a non-empty `aria-label`.
   3. Every form input has an associated `<label for=…>` (or `aria-label`) AND an `autocomplete`
@@ -306,7 +331,9 @@ lockstep set.
   4. At least one `:focus-visible` (or `focus-visible:`) style exists AND no `outline: none` /
      `outline-none` appears without an accompanying `:focus-visible` replacement.
   5. If any CSS `transition`/`animation` is declared: a `prefers-reduced-motion` media query is
-     present AND no `transition: all` appears. (Vacuously true if no animation is declared.)
+     present AND no `transition: all` appears. (Vacuously true if no animation is declared —
+     the task does not require animation; this condition is symmetric across arms and cannot be
+     gamed to advantage since Check 0 forbids empty artifacts.)
   6. No `<div onclick` / `<span onclick` (or JSX equivalent) click-handler interaction; actions
      use `<button>`, navigation uses `<a>`.
   7. The async status region carries `aria-live="polite"`.
@@ -314,7 +341,7 @@ lockstep set.
   9. `touch-action: manipulation` is present (on interactive controls or globally).
   10. Exactly one `<h1>` and no skipped heading levels in the produced markup.
 - **Per-pair success:** arm A's stream shows a Read of the mounted SKILL.md (as §7.2) AND
-  `score_A ≥ score_B + 2` (scores = count of passed checks, 0–10).
+  `score_A ≥ score_B + 2` (scores = count of passed checks, 0–10, with Check-0 failure ⇒ 0).
 - **Probe PASS:** ≥2/3 pairs succeed. A single pair is NEVER sufficient.
 - **Claim on PASS:** "for this fixture, skill mounting produced a measurable artifact-quality
   effect" — nothing broader.
