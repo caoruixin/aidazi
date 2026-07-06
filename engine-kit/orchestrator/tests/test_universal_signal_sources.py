@@ -14,6 +14,7 @@ Phase-1 test matrix (design §5 / Codex R3 NB1):
   * derive_milestone_context union projection + provenance (absent ⇒ byte-identical).
 """
 import copy
+import json
 import os
 import sys
 import tempfile
@@ -290,6 +291,91 @@ class EngineRestampSignalInterplayTests(unittest.TestCase):
                                "at_index": 1}]}
         rescued = cp.apply_engine_restamp_to_plan(grown, _CHARTER, restamp)
         self.assertEqual(cp.signoff_status(rescued, _CHARTER), "stale")
+
+
+class LiveCampaignSignalFollowupTests(unittest.TestCase):
+    """Codex P1-gate B1 regression — the LIVE TD6 path (`_restamp_followup_epoch`, not
+    the pure helper) on a SIGNAL-BEARING campaign: dispatch → acceptance_fix_required →
+    deliver_followup insertion → resume must stay fully autonomous ('signed' via the
+    engine re-stamp; ZERO campaign_plan_signoff pause), with the digest surviving the
+    envelope rebuild."""
+
+    def test_signal_bearing_followup_restamp_is_transparent(self):
+        plan = _signed(_plan([_milestone("m1", ["s1", "s2"],
+                                         milestone_signals=["ui"])]))
+        script = {"s1": {"final_state": "advance", "spawn_count": 1},
+                  "s2": {"final_state": "halted", "spawn_count": 1,
+                         "pause_reason": "acceptance_fix_required"},
+                  "s_fix": {"final_state": "done", "spawn_count": 1}}
+
+        def fresh(p):
+            return json.loads(json.dumps(p))
+
+        def run_unit(subsprint_id, **_kw):
+            return dict(script[subsprint_id])
+
+        def fix_route(reason, cpt):
+            return ({"confirm": "yes", "route": "deliver_fix_iteration"}
+                    if reason == "acceptance_fix_required" else None)
+
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "camp")
+            states = [cp.run_campaign(fresh(plan), home, run_unit,
+                                      clock=_clock(), charter=_CHARTER)]
+            self.assertEqual(states[-1].pause_reason, "acceptance_fix_required")
+            states.append(cp.run_campaign(fresh(plan), home, run_unit,
+                                          clock=_clock(), charter=_CHARTER,
+                                          resume=True, decision_resolver=fix_route))
+            self.assertEqual(states[-1].pause_reason, "deliver_followup_required")
+            # Deliver inserts the follow-up in the PLAN FILE (signoff untouched).
+            plan["milestones"][0]["subsprint_sequence"] = ["s1", "s2", "s_fix"]
+            states.append(cp.run_campaign(fresh(plan), home, run_unit,
+                                          clock=_clock(), charter=_CHARTER,
+                                          resume=True))
+            self.assertEqual(states[-1].status, cp.STATUS_DONE)
+            for i, st in enumerate(states):
+                self.assertIsNone(getattr(st, "freshness_block", None),
+                                  f"state[{i}] raised a freshness_block")
+                self.assertNotEqual(st.pause_reason, "campaign_plan_signoff",
+                                    f"state[{i}] paused for re-sign")
+            self.assertIsNotNone(states[-1].engine_restamp,
+                                 "the follow-up delta was not engine-re-stamped")
+
+    def test_followup_paired_with_signal_edit_is_refused(self):
+        # The engine re-stamp NEVER launders a signal change: growth + a milestone_signals
+        # edit blocks for the human re-sign instead of advancing the epoch.
+        plan = _signed(_plan([_milestone("m1", ["s1", "s2"],
+                                         milestone_signals=["ui"])]))
+        script = {"s1": {"final_state": "advance", "spawn_count": 1},
+                  "s2": {"final_state": "halted", "spawn_count": 1,
+                         "pause_reason": "acceptance_fix_required"},
+                  "s_fix": {"final_state": "done", "spawn_count": 1}}
+
+        def fresh(p):
+            return json.loads(json.dumps(p))
+
+        def run_unit(subsprint_id, **_kw):
+            return dict(script[subsprint_id])
+
+        def fix_route(reason, cpt):
+            return ({"confirm": "yes", "route": "deliver_fix_iteration"}
+                    if reason == "acceptance_fix_required" else None)
+
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "camp")
+            cp.run_campaign(fresh(plan), home, run_unit, clock=_clock(),
+                            charter=_CHARTER)
+            cp.run_campaign(fresh(plan), home, run_unit, clock=_clock(),
+                            charter=_CHARTER, resume=True,
+                            decision_resolver=fix_route)
+            plan["milestones"][0]["subsprint_sequence"] = ["s1", "s2", "s_fix"]
+            plan["milestones"][0]["milestone_signals"] = ["a11y"]   # paired tamper
+            # the ingress defense-in-depth fails closed BEFORE any restamp logic runs
+            # (and the restamp itself refuses a signal edit — covered at unit level by
+            # EngineRestampSignalInterplayTests.test_td6_rescue_still_refuses_a_signal_edit)
+            with self.assertRaisesRegex(ValueError, "milestone_signals"):
+                cp.run_campaign(fresh(plan), home, run_unit, clock=_clock(),
+                                charter=_CHARTER, resume=True)
 
 
 class ResolverCompatFilterTests(unittest.TestCase):

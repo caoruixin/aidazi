@@ -1244,6 +1244,18 @@ class Campaign:
             return False
         stored_env = signoff.get("scope_envelope")
         live_env = compute_scope_envelope(self.plan, self.charter, self.ledger)
+        # Universal-skill-mounting §2 × TD6 (Codex P1-gate B1): compute_scope_envelope
+        # knows nothing of the milestone_signals digest, so the rebuilt envelope would
+        # DROP the snapshot copy and flip signoff_status to 'stale' for every legitimate
+        # signal-bearing follow-up. Carry the SIGNED digest forward — and refuse when the
+        # live plan's signals no longer match it (either direction): a signal change is
+        # NEVER an engine delta; it requires the explicit human re-sign.
+        live_digest = milestone_signals_digest(self.plan)
+        stored_digest = signoff.get("milestone_signals_digest")
+        if live_digest != stored_digest:
+            return False
+        if stored_digest is not None:
+            live_env["milestone_signals_digest"] = stored_digest
         if not self._is_authorized_followup_insertion(
                 stored_env, live_env, inserted_index):
             return False

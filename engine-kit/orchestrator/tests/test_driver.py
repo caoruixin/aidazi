@@ -303,6 +303,126 @@ class UniversalSignalSourceDriverTests(unittest.TestCase):
             for p in payloads:
                 self.assertEqual(p["signal_source"], "none")
 
+    def test_signal_source_charter_scope_event_and_real_mounting(self):
+        # A charter mission profile drives REAL end-to-end mounting on pre-plan spawns:
+        # every effective_role_config event reads charter_scope and web-interface-guidelines
+        # (the `interaction`-unique skill) is selected + resolved for each chain role.
+        with tempfile.TemporaryDirectory() as d:
+            charter = load_charter(CHARTER_PATH)
+            charter.setdefault("autonomy", {}).setdefault(
+                "approved_scope", {})["task_signals"] = ["interaction"]
+            drv_ = _driver(d, charter=charter)
+            drv_.run(subsprint_id="sprint-001")
+            payloads = [e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                        if e["type"] == "effective_role_config"]
+            self.assertTrue(payloads)
+            for p in payloads:
+                self.assertEqual(p["signal_source"], "charter_scope")
+                self.assertEqual(p["task_signals"], ["interaction"])
+                self.assertEqual(p["selected_skills"], ["web-interface-guidelines"])
+                self.assertIn("web-interface-guidelines",
+                              [s["id"] for s in p["skills"]])
+                self.assertEqual(p["skipped_skills"], [])
+
+    def test_signal_source_subsprint_event(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            st = drv_.state
+            st.subsprint_id = "sp-1"
+            st.planned_subsprints = [{"id": "sp-1", "objective": "o",
+                                      "task_signals": ["interaction"]}]
+            st.task_signals_digest = drv_._task_signals_digest(st.planned_subsprints)
+            drv_._effective_role_cache.clear()
+            drv_._spawn("dev", "probe prompt", None)
+            last = [e["payload"] for e in audit.read_events(drv_.audit_ledger)
+                    if e["type"] == "effective_role_config"][-1]
+            self.assertEqual(last["signal_source"], "subsprint")
+            self.assertEqual(last["task_unit_id"], "sp-1")
+            self.assertEqual(last["selected_skills"], ["web-interface-guidelines"])
+
+    def test_incompatible_signal_skill_emits_warn_compat_skip_event(self):
+        # Defense-in-depth surfacing: a role whose declared harness cannot carry the
+        # signal-selected skill records the skip AND emits the WARN skill_compat_skip
+        # event (validator/runtime drift is never silent).
+        with tempfile.TemporaryDirectory() as d:
+            charter = load_charter(CHARTER_PATH)
+            charter.setdefault("autonomy", {}).setdefault(
+                "approved_scope", {})["task_signals"] = ["interaction"]
+            charter["tooling"]["dev"]["harness"] = "mock"   # ∉ the skill's harness_compat
+            drv_ = _driver(d, charter=charter)
+            drv_.run(subsprint_id="sprint-001")
+            events = audit.read_events(drv_.audit_ledger)
+            dev_cfgs = [e["payload"] for e in events
+                        if e["type"] == "effective_role_config"
+                        and e["payload"]["role"] == "dev"]
+            self.assertTrue(dev_cfgs)
+            for p in dev_cfgs:
+                self.assertEqual(p["selected_skills"], [])
+                self.assertEqual([s["id"] for s in p["skipped_skills"]],
+                                 ["web-interface-guidelines"])
+                self.assertEqual(p["skipped_skills"][0]["kind"], "incompatible")
+            warns = [e["payload"] for e in events if e["type"] == "skill_compat_skip"]
+            self.assertTrue(warns)
+            self.assertEqual(warns[0]["severity"], "warn")
+            self.assertEqual(warns[0]["skips"][0]["id"], "web-interface-guidelines")
+            # the dispatched dev prompt names the skip non-silently (footer)
+            for e in events:
+                if e["type"] == "spawn" and e["payload"]["role"] == "dev":
+                    prompt = open(os.path.join(d, e["payload"]["prompt_ref"]),
+                                  encoding="utf-8").read()
+                    self.assertIn("web-interface-guidelines", prompt)
+                    self.assertIn("incompatible", prompt)
+
+    def test_golden_signal_free_prompts_byte_identical(self):
+        # Codex P1-gate NB2 — the TRUE byte-identical negative arm: every dispatched
+        # prompt (dev/review/deliver) + the decompose prompt for the SIGNAL-FREE fixture
+        # flow must match the committed golden, which was PROVEN byte-identical to the
+        # pre-Phase-1 tree (4fa39af) via worktree A/B. Prompts embed the framework root
+        # in skill citations, so hashes are computed over ROOT-NORMALIZED bytes.
+        import hashlib
+        import json as _json
+        golden = _json.load(open(os.path.join(
+            os.path.dirname(__file__), "fixtures",
+            "golden-signal-free-prompts.json"), encoding="utf-8"))["prompts"]
+        root = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+        got = {}
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            for e in audit.read_events(drv_.audit_ledger):
+                if e["type"] == "spawn":
+                    raw = open(os.path.join(d, e["payload"]["prompt_ref"]),
+                               encoding="utf-8").read()
+                    norm = raw.replace(root, "<ROOT>")
+                    got[os.path.basename(e["payload"]["prompt_ref"])] = \
+                        hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+        class _Captured(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as d2:
+            drv2 = _driver(d2)
+            drv2.run(subsprint_id="sprint-001")
+            cap = {}
+
+            def fake(role, prompt, schema_key=None, lessons_block=None):
+                cap["p"] = prompt
+                raise _Captured()
+
+            drv2._spawn = fake
+            drv2._supplied_sequence = lambda: []
+            drv2.state.brief_draft_ref = "docs/brief.md"
+            with self.assertRaises(_Captured):
+                drv2._step_decompose()
+            got["decompose_prompt"] = hashlib.sha256(
+                cap["p"].encode("utf-8")).hexdigest()
+        self.assertEqual(got, golden,
+                         "signal-free dispatched-prompt bytes drifted from the golden "
+                         "(pre-Phase-1-proven); a drift here means signal-free adopters "
+                         "are no longer byte-identical — regenerate only with a reviewed "
+                         "rationale")
+
     def test_decompose_prompt_conditional_profile_line(self):
         class _Captured(Exception):
             pass
