@@ -28,6 +28,7 @@
           "description": "The RESOLVED scope at sign time (G4: stored, not just hashed, so prior signed coverage is reconstructable for stale-signoff rendering).",
           "properties": {
             "goal": {"type": "string"},
+            "milestone_signals_digest": {"type": "string", "description": "SNAPSHOT COPY of signoff.milestone_signals_digest (universal-skill-mounting design). Stored inside the authenticated snapshot; INERT to the H recompute (signoff_snapshot_authentic reads specific keys) but bound by its both-or-neither + equality check, so stripping the plan's milestone_signals together with the top-level digest still reads NOT-authentic/'stale' via this surviving copy. Present ⟺ the top-level digest is present."},
             "milestones": {
               "type": "array",
               "items": {
@@ -95,7 +96,8 @@
             }
           }
         },
-        "signed_scope_hash": {"type": "string", "description": "sha256(canonical_json(H)) per the exact hash spec in design §3.3.1 (H = {version:'v1', campaign_id, goal, charter_ref, charter_hash, milestones:[{id,objective,covers_req_ids,subsprint_sequence,depends_on,resolved_functional_acceptance:{mode,source},acceptance_bar,isolation_strategy,covered_req_surfaces?},…], authority:{budget,gap_followup,trunk_branch,milestone_isolation}}; per-milestone isolation_strategy + the top-level authority block are Track-2 T2-B; covered_req_surfaces (the {req_id:surface} basis, present only when a ledger is wired + the milestone covers reqs) is OW-M3 B1; canonical JSON = UTF-8, sorted keys, no insignificant whitespace, absent arrays normalized to [])."}
+        "signed_scope_hash": {"type": "string", "description": "sha256(canonical_json(H)) per the exact hash spec in design §3.3.1 (H = {version:'v1', campaign_id, goal, charter_ref, charter_hash, milestones:[{id,objective,covers_req_ids,subsprint_sequence,depends_on,resolved_functional_acceptance:{mode,source},acceptance_bar,isolation_strategy,covered_req_surfaces?},…], authority:{budget,gap_followup,trunk_branch,milestone_isolation}}; per-milestone isolation_strategy + the top-level authority block are Track-2 T2-B; covered_req_surfaces (the {req_id:surface} basis, present only when a ledger is wired + the milestone covers reqs) is OW-M3 B1; canonical JSON = UTF-8, sorted keys, no insignificant whitespace, absent arrays normalized to [])."},
+        "milestone_signals_digest": {"type": "string", "description": "Universal-skill-mounting design (archive/2026-07-06 §2): sha256(canonical_json([[milestone_id, sorted(milestone_signals or [])], …] over ALL milestones)) stamped by stamp_signoff — KEY OMITTED ENTIRELY when no milestone carries a milestone_signals field (legacy/signal-free plans byte-identical). Deliberately OUTSIDE signed_scope_H (H byte-stability preserved); authority comes from signoff_status recomputing the live digest ('stale' on mismatch/one-sided absence) + the snapshot copy in scope_envelope (signoff_snapshot_authentic requires both-or-neither and equality). Process-level immutability under the existing non-cryptographic signoff trust model."}
       },
       "if": {"required": ["signed_by_human"], "properties": {"signed_by_human": {"const": true}}},
       "then": {"required": ["signed_by_human", "signer", "signed_at", "charter_ref", "charter_hash", "scope_envelope", "signed_scope_hash"]}
@@ -174,6 +176,12 @@
             "enum": ["inherit", "current_branch", "new_branch", "new_worktree"],
             "default": "inherit",
             "description": "Override milestone_isolation.default_strategy for THIS milestone only. inherit = use the plan default."
+          },
+          "milestone_signals": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "enum": ["a11y", "design", "frontend", "interaction", "performance", "ui"]},
+            "description": "OPTIONAL per-milestone task-signal declaration from the CLOSED vocabulary (single source of truth: effective_role_config.TASK_SIGNAL_VOCAB; drift-guarded). Universal-skill-mounting design (archive/2026-07-06): derive_milestone_context projects sorted(charter approved_scope.task_signals UNION milestone_signals) into the derived charter, governing skill selection for every spawn of this milestone's units that has no sub-sprint plan entry (incl. ALL delivery_only spawns). AUTHORITY: field presence makes the plan F1-active (f1_required) and stamp_signoff binds a milestone_signals_digest into the signoff block + snapshot — any post-sign change reads 'stale' (fail closed); updating signals requires a new explicit sign operation. Absent everywhere ⇒ byte-identical behavior."
           }
         }
       }

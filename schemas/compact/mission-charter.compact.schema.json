@@ -111,6 +111,21 @@
                 "type": "string"
               },
               "default": []
+            },
+            "task_signals": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "a11y",
+                  "design",
+                  "frontend",
+                  "interaction",
+                  "performance",
+                  "ui"
+                ]
+              }
             }
           }
         },
@@ -1017,5 +1032,5 @@
     }
   },
   "x-canonical-source": "mission-charter.schema.json",
-  "x-canonical-sha256": "6d79f3421de2cc217ac193816c18cc4c6f669544a5688ca95b6b7c3838692530"
+  "x-canonical-sha256": "4c4aa235e991507949460aaa9e07cbdcc7aaf1c4c4ee4744c2e2542bd13c49fe"
 }

@@ -351,8 +351,11 @@ class Track1cActivationTests(unittest.TestCase):
 
 class SignalVocabularyTests(unittest.TestCase):
     """Track 1 1-c — the CLOSED controlled vocabulary is a single source of truth
-    (effective_role_config.TASK_SIGNAL_VOCAB); all three schema signal enums equal it, and every
-    registered skill's `signals` tags are a subset of it (drift guard — unknown signal fails)."""
+    (effective_role_config.TASK_SIGNAL_VOCAB); all FIVE schema signal enums equal it (the three
+    Track-1 schemas + the two SIGNED signal-source schemas from the universal-skill-mounting
+    design, archive/2026-07-06: charter mission profile + campaign-plan milestone_signals), and
+    every registered skill's `signals` tags are a subset of it (drift guard — unknown signal
+    fails)."""
 
     def _enum(self, schema_path, *path):
         node = _load_schema(schema_path)
@@ -369,6 +372,12 @@ class SignalVocabularyTests(unittest.TestCase):
             "properties", "task_signals")), vocab)
         self.assertEqual(sorted(self._enum(
             "sprint_stanza.schema.json", "properties", "task_signals")), vocab)
+        self.assertEqual(sorted(self._enum(
+            "mission-charter.schema.json", "properties", "autonomy", "properties",
+            "approved_scope", "properties", "task_signals")), vocab)
+        self.assertEqual(sorted(self._enum(
+            "campaign-plan.schema.json", "properties", "milestones", "items",
+            "properties", "milestone_signals")), vocab)
 
     def test_registry_signal_tags_are_subset_of_vocab(self):
         import yaml
