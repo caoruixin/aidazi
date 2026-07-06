@@ -127,13 +127,24 @@ class Budget:
     def adapter_errors(self, probe: str) -> int:
         return len(self.data["adapter_errors"].get(probe, []))
 
+    def authorized_extra(self, probe: str) -> int:
+        """HUMAN-authorized launch top-up beyond the frozen planned+replacement
+        cap — e.g. a re-run of a spawn whose outcome a harness fault destroyed.
+        NEVER self-granted: the operator writes ``authorized_extra`` into
+        budget.json only against an explicit human authorization (recorded with
+        reason + authorization reference); default 0."""
+        entry = (self.data.get("authorized_extra") or {}).get(probe) or {}
+        return int(entry.get("count") or 0)
+
     def pre_spawn(self, probe: str, rep_id: str, *, live: bool):
-        cap = PLANNED[probe] + MAX_REPLACEMENTS_PER_PROBE
+        cap = (PLANNED[probe] + MAX_REPLACEMENTS_PER_PROBE
+               + self.authorized_extra(probe))
         if live and self.real_attempts(probe) >= cap:
             raise RuntimeError(
                 f"BUDGET REFUSAL: probe {probe} would exceed its authorized cap "
                 f"({PLANNED[probe]} planned + {MAX_REPLACEMENTS_PER_PROBE} "
-                f"replacements)")
+                f"replacements + {self.authorized_extra(probe)} human-authorized "
+                f"extra)")
         self.data["attempts"].append(
             {"probe": probe, "rep_id": rep_id, "live": live, "status": "launched"})
         self._save()
@@ -315,6 +326,19 @@ class Harness:
                 result = self._run_ws(ws, cfg)
             except Exception:
                 self.budget.post_spawn(rep_id, "harness_error")
+                # A billed spawn's evidence must NEVER be destroyed by a harness
+                # fault (2026-07-07 incident #2): salvage the run's on-disk
+                # record into the evidence tree before the ws is removed.
+                salvage = os.path.join(self.evidence, probe,
+                                       f"{rep_id}-crashed-ws")
+                for rel in (".orchestrator", "docs", "p5-result.json"):
+                    src = os.path.join(ws, rel)
+                    if os.path.isdir(src):
+                        shutil.copytree(src, os.path.join(salvage, rel),
+                                        dirs_exist_ok=True)
+                    elif os.path.isfile(src):
+                        os.makedirs(salvage, exist_ok=True)
+                        shutil.copy2(src, os.path.join(salvage, rel))
                 raise
             status = ("adapter_error" if result.get("adapter_error")
                       else "completed")

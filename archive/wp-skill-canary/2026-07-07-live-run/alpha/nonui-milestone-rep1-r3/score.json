@@ -6,5 +6,9 @@
   "runner": {
     "gate_hard_fail": "TRUNCATED BY OPERATOR (2026-07-07): replacement spawn #2 was killed mid-flight after the harness defect was diagnosed (scratch adopter lacked the documented root AGENTS.md + CLAUDE.md wiring, so the deliver agent's cold-start verdict discipline never loaded \u2014 reps rep1 and rep1-r2 both returned markdown plans instead of JSON verdicts). The launch was SPENT (recorded in budget.json) and is not re-run: the frozen budget allows at most 2 replacement spawns per probe, both already launched for this slot. The slot therefore resolves as a FAILED repetition (conservative: counts against the fixture's >=2/3 threshold).",
     "adapter_error": false
+  },
+  "alpha": {
+    "pass": false,
+    "reason": "no schema-valid plan was produced within this repetition's budget (frozen \u03b1 rule: the produced plan must validate; an adapter/protocol failure or operator truncation yields no plan): TRUNCATED BY OPERATOR (2026-07-07): replacement spawn #2 was killed mid-flight after the harness defect was diagnosed (scratch adopter lacked the documented root AGENTS.md + CLAUDE.md wiring, so the deliver agent's cold-start verdict discipline never loaded \u2014 reps rep1 and rep1-r2 both returned mark"
   }
 }

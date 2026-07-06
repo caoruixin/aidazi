@@ -77,11 +77,14 @@ class SplitDeliverAdapter(MockAdapter):
         super().__init__({("deliver",): CLOSE}, harness=real.harness,
                          provider=real.provider, model=real.model)
         self._real = real
-        self._calls = 0
+        # NB: named to NEVER shadow MockAdapter's own `_calls` dict — shadowing
+        # it crashed the 2026-07-07 live run at the close step AFTER a billed,
+        # successful real decompose (see the evidence run's INCIDENT.md #2).
+        self._decompose_calls = 0
 
     def _spawn_impl(self, role, prompt, tools, schema, **kw):
-        self._calls += 1
-        if self._calls == 1:
+        self._decompose_calls += 1
+        if self._decompose_calls == 1:
             return self._real.spawn(role, prompt, tools, schema, **kw)
         return super()._spawn_impl(role, prompt, tools, schema, **kw)
 
@@ -187,11 +190,13 @@ def main():
                          for p in offline_reads]
 
     if mode in ("alpha", "offline_alpha"):
-        real = (_real_claude(None, WS) if live else None)
         offline_plan = CFG.get("offline_plan") or MOCK_PLAN
-        deliver = (SplitDeliverAdapter(real) if live
-                   else _mock({("deliver", 0): offline_plan,
-                               ("deliver",): CLOSE}))
+        # BOTH arms route through SplitDeliverAdapter so the offline dry-run
+        # exercises the exact live adapter path (decompose→inner, close→canned)
+        # — the 2026-07-07 _calls-shadowing crash lived only on the live branch.
+        inner = (_real_claude(None, WS) if live
+                 else _mock({("deliver",): offline_plan}))
+        deliver = SplitDeliverAdapter(inner)
         adapters = {
             "research": _mock({("research",): RESEARCH}),
             "dev": _mock({("dev",): MOCK_DEV}),

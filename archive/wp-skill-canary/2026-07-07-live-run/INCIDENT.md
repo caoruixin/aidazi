@@ -42,3 +42,49 @@ intervention points … fix them, rerun and continue").**
 - β/γ budgets untouched.
 - NO frozen pre-registration file, fixture, threshold, repetition count,
   ordering, or scoring rule was changed. No criteria were adjusted post-hoc.
+
+---
+
+# Incident #2 — α rep2 harness crash AFTER a billed, successful decompose
+
+**What happened.** On the resumed run (wired adopters), `nonui-milestone-rep2`'s
+REAL decompose spawn SUCCEEDED — the model emitted a fenced JSON deliver-plan
+verdict which passed the driver's schema validation, and the guided loop
+proceeded through the mock dev/review steps — but the runner then CRASHED at the
+very last step (the canned close): the harness's `SplitDeliverAdapter` shadowed
+`MockAdapter`'s internal `_calls` dict with an int counter
+(`AttributeError: 'int' object has no attribute 'get'`). The workspace-cleanup
+`finally` then DELETED the workspace, destroying the billed spawn's evidence
+(ledger, transcripts, state) before it could be collected.
+
+**Why the offline dry-run missed it.** `SplitDeliverAdapter` was exercised only
+on the live branch; the offline α path used a plain mock deliver adapter.
+
+**Diagnostic recovery (NOT formal evidence).** The claude CLI's own session log
+for the crashed workspace was preserved and is committed as
+`alpha/nonui-milestone-rep2-crashed-ws/DIAGNOSTIC-claude-session-log.jsonl`
+(clearly labeled — a side-channel diagnostic, not the harness evidence path).
+Its final assistant message is a fenced JSON deliver-plan verdict carrying the
+exact prescribed sub-sprint ids (`s1-csv-serializer`, …) — i.e. the incident-#1
+wiring fix WORKED and the spawn appears fixture-conformant. It is NOT scored:
+the frozen α procedure scores the harness-collected, driver-validated plan.
+
+**Fixes (committed before any further spend).**
+1. `ws_runner.SplitDeliverAdapter`: the counter no longer shadows MockAdapter
+   state; the offline α dry-run now routes BOTH arms through SplitDeliverAdapter
+   (decompose→inner, close→canned) so this whole path is offline-covered.
+2. `run_canary._rep`: on ANY harness exception the workspace's `.orchestrator/`
+   + `docs/` + runner result are SALVAGED into the evidence tree before removal
+   — a billed spawn's evidence can never be destroyed again.
+3. `Budget.authorized_extra`: an explicit, HUMAN-authorized launch top-up field
+   (reason + authorization reference recorded in budget.json). Default 0; never
+   self-granted.
+
+**Budget position ⇒ HUMAN HALT (authorization condition #2).** α launches
+spent: 4 of the frozen 8 (6 planned + 2 replacements). Completing α requires
+5 more (rep2 re-run + rep3 + the 3 ui reps) = 9 total — ONE launch beyond the
+frozen cap, because rep2's spent launch produced no collectible outcome through
+harness fault (neither a frozen "replacement" ground nor a scoreable rep). Per
+the standing authorization ("the authorized real-agent spawn or replacement
+budget would be exceeded" ⇒ stop and surface), the run is HALTED pending an
+explicit human top-up decision; nothing was silently extended.

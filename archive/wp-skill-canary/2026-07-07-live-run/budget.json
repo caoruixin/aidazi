@@ -17,6 +17,12 @@
       "rep_id": "nonui-milestone-rep1-r3",
       "live": true,
       "status": "launched"
+    },
+    {
+      "probe": "alpha",
+      "rep_id": "nonui-milestone-rep2",
+      "live": true,
+      "status": "harness_error"
     }
   ],
   "adapter_errors": {
