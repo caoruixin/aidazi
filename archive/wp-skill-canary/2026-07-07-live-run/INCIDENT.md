@@ -88,3 +88,43 @@ harness fault (neither a frozen "replacement" ground nor a scoreable rep). Per
 the standing authorization ("the authorized real-agent spawn or replacement
 budget would be exceeded" ⇒ stop and surface), the run is HALTED pending an
 explicit human top-up decision; nothing was silently extended.
+
+*(Resolution: the human authorized +2 α launch slots (Option A, recorded in
+budget.json `authorized_extra`); the run resumed consuming slot 1 for the rep2
+rerun.)*
+
+---
+
+# Incident #3 / FROZEN OUTCOME — probe α INCONCLUSIVE (>2 adapter errors)
+
+**What happened.** The authorized rep2 rerun (launch #5, extra slot 1) failed
+with the probe's THIRD adapter-level error: the (correctly wired) deliver agent
+announced it would save the verdict to `docs/plans/sprint-001__deliver-plan-
+verdict.md`, was blocked by the deliver role's read-only permission mode, and
+emitted a markdown-formatted plan as its final message — unparseable as the
+JSON verdict. The frozen §7.4 rule fired exactly as pre-registered:
+**>2 adapter-level errors in one probe ⇒ probe INCONCLUSIVE ⇒ HALT and
+surface.** The harness halted before any further spend.
+
+**Classification (why the contingency slot was NOT used).** The committed
+diagnostic (`alpha/nonui-milestone-rep2-crashed-ws/DIAGNOSTIC-claude-session-
+log.jsonl`) shows the IDENTICAL setup once producing a parseable fenced-JSON
+verdict — so the post-fix failure is model OUTPUT-CHANNEL VARIANCE, squarely in
+the authorization's prohibited list ("ordinary model variance"). Extra slot 2
+(harness-fault-class only) was not consumed. No prompt was tuned, no criterion
+adjusted, no unapproved run added.
+
+**The real finding the canary surfaced (a FRAMEWORK gap, recorded as a
+follow-up — NOT fixed mid-canary, which would be prompt-tuning).** The guided
+decompose contract's inline prompt (driver.py `_step_decompose`) lacks the
+explicit "return ONE JSON object as your final message, no prose" emission line
+that the PROJECTED review/close prompt contracts carry; under the deliver
+role's least-privilege read-only sandbox a cold-started agent tries to
+MATERIALIZE the plan as a doc (its authoring discipline) and the inline
+fallback is nondeterministically parseable (1 parseable / 3 markdown across
+the four wired+unwired real decompose spawns).
+
+**Final probe accounting.** α: INCONCLUSIVE — 5 launches spent of 10
+authorized (2 harness-defect errors [fixed], 1 truncated launch, 1 evidence-
+lost successful launch [harness fault, fixed], 1 model-variance error);
+0 scoreable repetitions. β: NOT RUN (0 of 3+2). γ: NOT RUN (0 of 6+2).

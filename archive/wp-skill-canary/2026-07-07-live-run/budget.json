@@ -23,12 +23,19 @@
       "rep_id": "nonui-milestone-rep2",
       "live": true,
       "status": "harness_error"
+    },
+    {
+      "probe": "alpha",
+      "rep_id": "nonui-milestone-rep2",
+      "live": true,
+      "status": "adapter_error"
     }
   ],
   "adapter_errors": {
     "alpha": [
       "nonui-milestone-rep1",
-      "nonui-milestone-rep1-r2"
+      "nonui-milestone-rep1-r2",
+      "nonui-milestone-rep2"
     ]
   },
   "planned": {
@@ -82,7 +89,44 @@
         }
       },
       "beta_gamma_budgets": "UNCHANGED; unused capacity is never reassigned",
-      "usage": []
+      "usage": [
+        {
+          "slot": 1,
+          "launch_id": "nonui-milestone-rep2 (rerun, launch #5)",
+          "harness_fault_rerun_for": "the 5c32735 adapter-shim crash that destroyed the prior successful launch's evidence",
+          "outcome": "adapter_error \u2014 the deliver agent attempted to WRITE the verdict to docs/plans/ (blocked by the role's read-only permission mode) and emitted an unparseable markdown fallback; classified as model output-channel variance on a real framework gap (the inline decompose contract lacks the explicit 'return ONE JSON object as the final message' line the projected review/close prompts carry), NOT a harness fault \u2014 contingency slot 2 therefore NOT consumed",
+          "fix_commit": "5c32735 (the harness fix that motivated this rerun)",
+          "contingency_slot_consumed": false
+        }
+      ]
+    }
+  },
+  "probe_outcomes": {
+    "alpha": {
+      "status": "INCONCLUSIVE",
+      "rule": ">2 adapter-level errors in one probe => probe INCONCLUSIVE => HALT and surface (frozen section 7.4; never silently extended)",
+      "adapter_errors": 3,
+      "error_breakdown": {
+        "harness_defect_unwired_adopter_fixed": [
+          "nonui-milestone-rep1",
+          "nonui-milestone-rep1-r2"
+        ],
+        "post_fix_model_output_channel_variance": [
+          "nonui-milestone-rep2"
+        ]
+      },
+      "launches_spent": 5,
+      "authorized_cap": 10,
+      "scoreable_repetitions": 0,
+      "recorded_by": "operator, per the frozen abort rules \u2014 no criteria adjusted"
+    },
+    "beta": {
+      "status": "NOT_RUN",
+      "launches_spent": 0
+    },
+    "gamma": {
+      "status": "NOT_RUN",
+      "launches_spent": 0
     }
   }
 }

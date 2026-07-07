@@ -1,0 +1,10 @@
+{
+  "mode": "alpha",
+  "gate_hard_fail": "adapter for role 'deliver' failed: claude_code result field was not a JSON verdict: 'Here is the deliver-plan-verdict. Once you approve the write, it will be saved to `docs/plans/sprint-001__deliver-plan-verdict.md`.\\n\\n---\\n\\n## Deliver-Plan-Verdict \u2014 `csv-export-cli` (sprint-001)\\n\\n**ver'",
+  "adapter_error": true,
+  "planned_subsprints": [],
+  "task_signals_digest": null,
+  "subsprint_id": "sprint-001",
+  "audit_ledger": ".orchestrator/audit/nonui-milestone-rep2.jsonl",
+  "transcripts_dir": ".orchestrator/audit/transcripts/nonui-milestone-rep2"
+}
