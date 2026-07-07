@@ -10,9 +10,9 @@ false-fail valid trees) and ``effective_role_config.resolve_role_config`` (the e
 resolve-time fail-closed path the driver runs at spawn), so preflight verdicts and runtime
 behaviour can never disagree about WHAT a skill hashes to or WHETHER a binding resolves.
 
-THE SEVERITY TABLE (the read-telemetry row of the original design was withdrawn in the
-2026-07-07 rescope — archive/2026-07-07-universal-skill-mounting-rescope.md; the delivery
-guarantee is deployed → selected → injected):
+THE SEVERITY TABLE (four rows; the original design's fifth, informational row was
+withdrawn in the 2026-07-07 rescope — archive/2026-07-07-universal-skill-mounting-
+rescope.md; the delivery guarantee is deployed → selected → injected):
 
   row 1  skills.lock vs vendored tree mismatch (skill_vendor.verify() fails)
              → HARD FAIL (real runs).  The verify universe is the UNION of the lock's ids

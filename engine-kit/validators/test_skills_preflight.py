@@ -2,7 +2,7 @@
 
 Row 1 (lock integrity → HARD FAIL), row 2 (required skill unresolvable → HARD FAIL),
 row 3 (submodule gitlink drift → HALT unless the audited override), row 4 (pin behind
-upstream → advisory WARN only). The read-telemetry row of the original design was
+upstream → advisory WARN only). The original design's fifth, informational row was
 withdrawn in the 2026-07-07 rescope (deployed → selected → injected only).
 All fixtures are LOCAL temp trees; git fixtures use only local plumbing (no network).
 
