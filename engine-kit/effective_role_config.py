@@ -39,6 +39,14 @@ SKILL_MODES = frozenset({"inherit", "extend", "replace", "disable"})
 #: equal this tuple. Extend deliberately (with a new skill that carries the tag) — never silently.
 #: Sorted for determinism.
 TASK_SIGNAL_VOCAB = ("a11y", "design", "frontend", "interaction", "performance", "ui")
+
+#: 2026-07-07 rescope (deterministic BEST-EFFORT selection): signal-selected skills are
+#: appended in the selector's sorted order up to this FIXED cap; candidates beyond it are
+#: recorded as ``skipped_skills`` entries (kind ``selection_cap``) and surfaced in the
+#: prompt footer — a bounded, conservative superset that can never grow without limit as
+#: the catalog grows, and never a HALT. Role DEFAULTS are exempt (they are the baseline,
+#: not signal growth). Raise deliberately alongside catalog expansion, never silently.
+MAX_SIGNAL_SELECTED_SKILLS = 4
 INTERACTION_MODES = frozenset({"deterministic", "agentic", "hybrid"})
 TARGET_ENVIRONMENTS = frozenset({"local", "staging", "production"})
 
@@ -410,6 +418,18 @@ def resolve_role_config(charter: dict, role: str, *,
                     "reason": (f"tool_requirements {sorted(reqs - allow)} exceed the "
                                "role's declared tool whitelist")})
                 continue
+            # 2026-07-07 rescope — the FIXED signal-selection cap: a bounded
+            # best-effort superset, never unbounded growth, never a HALT. The
+            # drop is deterministic (sorted candidate order) and NON-SILENT
+            # (a skipped_skills entry → audit event + prompt footer).
+            if len(selected_ids) >= MAX_SIGNAL_SELECTED_SKILLS:
+                skipped.append({
+                    "id": sid, "optional": True, "kind": "selection_cap",
+                    "reason": (f"over the fixed signal-selection cap "
+                               f"({MAX_SIGNAL_SELECTED_SKILLS}); the mounted set "
+                               "is a bounded best-effort superset — this skill "
+                               "was not mounted")})
+                continue
             bindings.append({"id": sid, "optional": True})
             already.add(sid)
             selected_ids.append(sid)
@@ -497,12 +517,14 @@ def skill_skip_footer(config: EffectiveRoleConfig) -> str:
     parts = ["\n\n## Skipped / unmatched skills (not mounted)\n"]
     if config.skipped_skills:
         parts.append(
-            "These OPTIONAL skill bindings did not resolve (skip-if-absent) or were "
-            "incompatible with this role's declared harness/whitelist (defense-in-depth) "
-            "and were SKIPPED; proceed without them — they are not required for this "
-            "role's work.\n")
+            "These OPTIONAL skill bindings did not resolve (skip-if-absent), were "
+            "incompatible with this role's declared harness/whitelist (defense-in-depth), "
+            "or fell over the fixed signal-selection cap, and were SKIPPED; proceed "
+            "without them — they are not required for this role's work.\n")
+        _kind_label = {"incompatible": "incompatible",
+                       "selection_cap": "over the selection cap"}
         parts.append("\n".join(
-            f"- `{s.get('id')}`: skipped ({'incompatible' if s.get('kind') == 'incompatible' else 'optional, unresolved'}) — {s.get('reason')}"
+            f"- `{s.get('id')}`: skipped ({_kind_label.get(s.get('kind'), 'optional, unresolved')}) — {s.get('reason')}"
             for s in config.skipped_skills) + "\n")
     if config.unmatched_signals:
         parts.append(

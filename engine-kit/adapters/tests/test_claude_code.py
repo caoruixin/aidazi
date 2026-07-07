@@ -237,11 +237,7 @@ class ClaudeArtifactSpawnTests(unittest.TestCase):
         with mock.patch("adapters.claude_code.run_with_monitor",
                         side_effect=_fake_run):
             out = a.spawn("dev", "p", [], {}, sandbox="workspace_write")  # {} schema
-        self.assertEqual(out.result, {"artifact": prose})
-        # §3/D2 envelope: the stream parsed cleanly (zero Read events) → observed + [].
-        self.assertEqual(out.telemetry.observability, "observed")
-        self.assertEqual(out.telemetry.read_paths, [])
-        self.assertIsNone(out.telemetry.raw_stream)   # AIDAZI_KEEP_RAW_STREAM unset
+        self.assertEqual(out, {"artifact": prose})
 
 
 class RegistryTests(unittest.TestCase):

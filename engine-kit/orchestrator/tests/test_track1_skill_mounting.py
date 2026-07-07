@@ -164,6 +164,46 @@ class TaskExtensionResolveTests(unittest.TestCase):
             self.assertEqual(base.skill_set_hash, ext.skill_set_hash)   # §2.5 byte-identical
             self.assertEqual(ext.selected_skills, ())
 
+    def test_signal_selection_is_capped_deterministically(self):
+        # 2026-07-07 rescope — the FIXED cap: many matching candidates mount a
+        # BOUNDED best-effort superset (the first MAX_SIGNAL_SELECTED_SKILLS in the
+        # selector's sorted order); the overflow is a NON-SILENT skipped_skills
+        # entry (kind selection_cap) named in the prompt footer — never a HALT.
+        import yaml
+        cap = erc.MAX_SIGNAL_SELECTED_SKILLS
+        n = cap + 2
+        cat = {"catalog_version": 1, "role_defaults": {"dev": ["base-skill"]},
+               "skills": {"base-skill": {"title": "t", "license": "aidazi",
+                                          "status": "active", "signals": []}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(tmp, os.path.join("skills", "vendored", "base-skill",
+                                     "SKILL.md"), "base")
+            for i in range(n):
+                sid = f"cap-skill-{i:02d}"
+                cat["skills"][sid] = {"title": "t", "license": "aidazi",
+                                      "status": "active", "signals": ["ui"]}
+                _write(tmp, os.path.join("skills", "vendored", sid, "SKILL.md"),
+                       f"body {i}")
+            _write(tmp, os.path.join("skills", "registry.yaml"),
+                   yaml.safe_dump(cat))
+            cfg = erc.resolve_role_config({}, "dev", task_signals=["ui"],
+                                          framework_root=tmp)
+            expected = [f"cap-skill-{i:02d}" for i in range(cap)]
+            self.assertEqual(list(cfg.selected_skills), expected)
+            self.assertEqual([s.id for s in cfg.skills],
+                             ["base-skill"] + expected)
+            capped = [s for s in cfg.skipped_skills
+                      if s.get("kind") == "selection_cap"]
+            self.assertEqual([s["id"] for s in capped],
+                             [f"cap-skill-{i:02d}" for i in range(cap, n)])
+            footer = erc.skill_skip_footer(cfg)
+            self.assertIn("over the selection cap", footer)
+            self.assertIn(f"cap-skill-{cap:02d}", footer)
+            # determinism: same inputs ⇒ same bounded set
+            again = erc.resolve_role_config({}, "dev", task_signals=["ui"],
+                                            framework_root=tmp)
+            self.assertEqual(cfg.skill_set_hash, again.skill_set_hash)
+
 
 # --------------------------------------------------------------------------- #
 # §2.4 budget — load_sizer sizes the RESOLVED selected SKILL.md bodies (Codex R-T1 B1)

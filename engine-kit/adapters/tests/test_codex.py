@@ -369,11 +369,8 @@ class CodexOutputFilePrimaryTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
         with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
-            res = a.spawn("dev", "p", [], _SCHEMA)
-        self.assertEqual(res.result, {"status": "draft"})
-        # §3/D2 envelope: codex exposes no structured read events → unobservable.
-        self.assertEqual(res.telemetry.observability, "unobservable")
-        self.assertIsNone(res.telemetry.read_paths)
+            verdict = a.spawn("dev", "p", [], _SCHEMA)
+        self.assertEqual(verdict, {"status": "draft"})
 
     def test_spawn_falls_back_to_jsonl_when_output_file_empty(self):
         a = CodexAdapter(model="m", allow_subprocess=True, binary="codex")
@@ -384,7 +381,7 @@ class CodexOutputFilePrimaryTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, stdout=jsonl, stderr="")
 
         with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
-            verdict = a.spawn("dev", "p", [], _SCHEMA).result
+            verdict = a.spawn("dev", "p", [], _SCHEMA)
         self.assertEqual(verdict, {"ok": True})
 
     def test_spawn_nonzero_exit_raises_before_reading_file(self):
@@ -487,7 +484,7 @@ class CodexVerdictRobustnessTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
         with mock.patch("adapters.codex.run_with_monitor", side_effect=_fake_run):
-            out = a.spawn("dev", "Do it.", [], {}).result  # empty schema → artifact
+            out = a.spawn("dev", "Do it.", [], {})  # empty schema → artifact
         self.assertEqual(
             out, {"artifact": "Implemented the module; handoff written to docs/handoff.md."})
 

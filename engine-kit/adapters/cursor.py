@@ -138,7 +138,7 @@ class CursorAdapter(Adapter):
         argv += list(sandbox_flags)
         return argv
 
-    def _spawn_impl(
+    def spawn(
         self,
         role: str,
         prompt: str,

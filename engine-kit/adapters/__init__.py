@@ -6,7 +6,7 @@ schema-valid JSON verdicts. Real I/O in claude_code / headless is gated off and
 never exercised in offline tests; the mock adapter drives tests + the demo.
 """
 
-from .base import Adapter, AdapterError, InvocationTelemetry, SpawnResult
+from .base import Adapter, AdapterError
 from .mock import MockAdapter
 from .claude_code import ClaudeCodeAdapter
 from .headless import HeadlessAdapter
@@ -48,8 +48,6 @@ def resolve_adapter_class(harness: str, *, role: str = ""):
 __all__ = [
     "Adapter",
     "AdapterError",
-    "InvocationTelemetry",
-    "SpawnResult",
     "MockAdapter",
     "ClaudeCodeAdapter",
     "HeadlessAdapter",

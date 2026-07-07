@@ -1,9 +1,9 @@
-"""skills_preflight — the frozen §4/D3 severity table, row by row (design
-archive/2026-07-06-universal-skill-mounting-design.md).
+"""skills_preflight — the severity table, row by row.
 
 Row 1 (lock integrity → HARD FAIL), row 2 (required skill unresolvable → HARD FAIL),
 row 3 (submodule gitlink drift → HALT unless the audited override), row 4 (pin behind
-upstream → advisory WARN only), row 5 (read telemetry → informational unobservable).
+upstream → advisory WARN only). The read-telemetry row of the original design was
+withdrawn in the 2026-07-07 rescope (deployed → selected → injected only).
 All fixtures are LOCAL temp trees; git fixtures use only local plumbing (no network).
 
 Run: cd engine-kit && python3.12 -m pytest validators/test_skills_preflight.py -q
@@ -317,40 +317,6 @@ class Row4PinFreshnessTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# Row 5 — read-telemetry observability (informational only).
-# --------------------------------------------------------------------------- #
-class Row5ReadTelemetryTests(unittest.TestCase):
-    def test_adapter_attribute_is_the_source_of_truth(self):
-        from adapters import ADAPTER_REGISTRY, Adapter
-        self.assertFalse(Adapter.provides_read_telemetry)
-        self.assertTrue(ADAPTER_REGISTRY["claude_code"].provides_read_telemetry)
-        for harness in ("mock", "codex", "headless", "kimi", "cursor"):
-            self.assertFalse(ADAPTER_REGISTRY[harness].provides_read_telemetry,
-                             harness)
-
-    def test_unobservable_harness_yields_info_finding(self):
-        charter = {"tooling": {"dev": {"harness": "codex"},
-                               "review": {"harness": "claude_code"}}}
-        findings = sp.check_read_telemetry(charter)
-        self.assertEqual(_codes(findings), ["read_telemetry_unobservable"])
-        f = findings[0]
-        self.assertEqual(f.severity, sp.SEVERITY_INFO)
-        self.assertEqual(f.detail, {"role": "dev", "harness": "codex"})
-        self.assertNotIn("manual", f.message.split("never a manual-check")[0])
-
-    def test_unknown_harness_is_informational_here(self):
-        charter = {"tooling": {"dev": {"harness": "ghost-harness"}}}
-        findings = sp.check_read_telemetry(charter)
-        self.assertEqual(_codes(findings), ["read_telemetry_unknown_harness"])
-        self.assertEqual(findings[0].severity, sp.SEVERITY_INFO)
-
-    def test_never_blocking(self):
-        charter = {"tooling": {"dev": {"harness": "codex"}}}
-        report = sp.PreflightReport(findings=sp.check_read_telemetry(charter))
-        self.assertFalse(report.blocking)
-
-
-# --------------------------------------------------------------------------- #
 # The full checker + enforcement policy.
 # --------------------------------------------------------------------------- #
 class RunPreflightTests(_FixtureCase):
@@ -410,14 +376,6 @@ class CliTests(_FixtureCase):
         data = json.loads(out)
         self.assertFalse(data["blocking"])
         self.assertTrue(any(f["code"] == "lock_ok" for f in data["findings"]))
-
-    def test_charter_row5_included(self):
-        charter_path = os.path.join(self._tmp.name, "charter.json")
-        with open(charter_path, "w", encoding="utf-8") as fh:
-            json.dump({"tooling": {"dev": {"harness": "codex"}}}, fh)
-        rc, out = self._run(["--root", self.root, "--charter", charter_path])
-        self.assertEqual(rc, 0)
-        self.assertIn("read_telemetry_unobservable", out)
 
     def test_unreadable_charter_exit_2(self):
         buf = io.StringIO()

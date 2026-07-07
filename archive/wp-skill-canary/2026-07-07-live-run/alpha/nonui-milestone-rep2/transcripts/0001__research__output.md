@@ -1,1 +1,0 @@
-frozen fixture brief pre-seeded at docs/briefs/ (see harness)

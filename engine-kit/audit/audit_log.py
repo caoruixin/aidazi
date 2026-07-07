@@ -101,19 +101,6 @@ SPAWN_PAYLOAD_FIELDS: tuple[str, ...] = (
     "lesson_selection",       # object: full selection audit (selected, suppressed[{id,reason,
                               # tier}], tiers, bytes/tokens before&after, version). None when
                               # no lessons block was injected (e.g. Acceptance).
-    # Universal-skill-mounting §3/D2 — invocation-scoped consumption telemetry. Same
-    # APPEND-ONLY / nullable / deprecate-don't-delete rule as the WP-0/WP-6/WP-7 fields.
-    "skill_reads",            # list[{skill_id,path,match_kind}]: adapter-OBSERVED SKILL.md
-                              # reads matched against the spawn's effective skill set;
-                              # [] = parsed stream, zero matches; None = nothing to record.
-    "skill_consumption",      # observed | none_observed | unobservable — MANDATORY (non-null)
-                              # whenever the spawn's effective skill set is non-empty.
-    "skill_consumption_reason",  # harness_unsupported | parse_error | adapter_error —
-                              # MANDATORY whenever consumption is 'unobservable'.
-    "spawn_attempt",          # the run_with_monitor attempt index that produced the
-                              # terminal result (earlier stuck attempts are discarded).
-    "telemetry_source",       # adapter | legacy_normalized (the plain-dict deprecation
-                              # signal, paired with a WARN adapter_legacy_return event).
 )
 
 
@@ -176,11 +163,6 @@ def make_spawn_payload(
     load_graph_hash: Optional[str] = None,
     suppressed_lesson_ids: Optional[list[str]] = None,
     lesson_selection: Optional[dict] = None,
-    skill_reads: Optional[list] = None,
-    skill_consumption: Optional[str] = None,
-    skill_consumption_reason: Optional[str] = None,
-    spawn_attempt: Optional[int] = None,
-    telemetry_source: Optional[str] = None,
 ) -> dict:
     """Convenience constructor for the per-spawn execution-context payload
     (plan §4.5 G3). Returns a plain dict; the ledger stores it verbatim.
@@ -210,20 +192,7 @@ def make_spawn_payload(
     suppression is never silent — the companion to ``memory_injected`` = the injected
     ids) and the full selection audit (tiers, suppression reasons, bytes/tokens before
     and after, selection version). Both default to None so an older callsite / a spawn
-    that injects no lessons block (e.g. Acceptance) is byte-identical to before.
-
-    ``skill_reads`` / ``skill_consumption`` / ``skill_consumption_reason`` /
-    ``spawn_attempt`` / ``telemetry_source`` (universal-skill-mounting §3/D2) are the
-    same kind of nullable, forward-only fields: the invocation-scoped consumption
-    telemetry, bound to THIS spawn event (whose ``input_hash`` is the spawn_ref).
-    ``skill_consumption`` ∈ {observed, none_observed, unobservable} — MANDATORY at the
-    driver whenever the spawn's effective skill set is non-empty; ``none_observed`` is
-    emitted ONLY from a successfully parsed stream with zero matching SKILL.md reads;
-    ``skill_consumption_reason`` ∈ {harness_unsupported, parse_error, adapter_error} is
-    MANDATORY whenever consumption is ``unobservable`` (never a bare unobservable).
-    ``telemetry_source`` = "adapter" | "legacy_normalized" (the deprecation signal for
-    a plain-dict Adapter.spawn return). All default None so older ledgers verify
-    unchanged."""
+    that injects no lessons block (e.g. Acceptance) is byte-identical to before."""
     return {
         "role": role,
         "harness": harness,
@@ -245,11 +214,6 @@ def make_spawn_payload(
         "suppressed_lesson_ids": (list(suppressed_lesson_ids)
                                   if suppressed_lesson_ids is not None else None),
         "lesson_selection": lesson_selection,
-        "skill_reads": (list(skill_reads) if skill_reads is not None else None),
-        "skill_consumption": skill_consumption,
-        "skill_consumption_reason": skill_consumption_reason,
-        "spawn_attempt": spawn_attempt,
-        "telemetry_source": telemetry_source,
     }
 
 

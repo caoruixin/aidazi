@@ -23,7 +23,7 @@ dev tree. MockAdapter everywhere; fully offline + deterministic.
                override path; post-sign signal mutation ⇒ signoff_status='stale'.
 
 State 1 (deployed) is proven by the VENDORED skills_preflight CLI verifying the
-VENDORED tree. ``skill_consumption='unobservable'`` is asserted for every mock spawn.
+VENDORED tree.
 
 Run: cd engine-kit && python3.12 -m pytest scheduling/tests/test_vendored_adopter_proof.py -q
 """
@@ -413,16 +413,6 @@ class GuidedFixtureTests(unittest.TestCase):
         dev = [p for p in spawns if p["role"] == "dev"][0]
         self.assertNotIn(_SKILL_ID, _prompt(run_dir, dev))
 
-    def test_mock_consumption_is_unobservable(self):
-        res, _ = _guided("a")
-        spawns = [e["payload"] for e in _events(res["audit_ledger"], "spawn")]
-        self.assertTrue(spawns)
-        for p in spawns:
-            self.assertEqual(p["skill_consumption"], "unobservable", p["role"])
-            self.assertEqual(p["skill_consumption_reason"], "harness_unsupported")
-            self.assertEqual(p["telemetry_source"], "adapter")
-
-
 # --------------------------------------------------------------------------- #
 # Negative arm — no signals ⇒ byte-identical modulo EXACTLY the mounting deltas.
 # --------------------------------------------------------------------------- #
@@ -542,8 +532,6 @@ class CampaignFixtureTests(unittest.TestCase):
             self.assertIn("## Effective role skills (framework-resolved)", prompt)
             self.assertIn(skill_md, prompt)
             self.assertEqual(p["input_hash"], _input_hash(p["role"], prompt))
-            self.assertEqual(p["skill_consumption"], "unobservable")
-            self.assertEqual(p["skill_consumption_reason"], "harness_unsupported")
 
 
 # --------------------------------------------------------------------------- #

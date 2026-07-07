@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""skills_preflight — integrity/drift preflight for the deployed skill surface (D3).
+"""skills_preflight — integrity/drift preflight for the deployed skill surface.
 
-Universal-skill-mounting design §4 (archive/2026-07-06-universal-skill-mounting-design.md):
 BEFORE a real run mounts any skill, verify that what is ON DISK is what was signed/locked,
 and that the deployed framework is the framework the adopter's superproject records. The
 checker is OFFLINE and deterministic — no network, no LLM, no clock beyond git's own
@@ -11,7 +10,9 @@ false-fail valid trees) and ``effective_role_config.resolve_role_config`` (the e
 resolve-time fail-closed path the driver runs at spawn), so preflight verdicts and runtime
 behaviour can never disagree about WHAT a skill hashes to or WHETHER a binding resolves.
 
-THE FROZEN SEVERITY TABLE (design §4 — do not extend/reword without a new design gate):
+THE SEVERITY TABLE (the read-telemetry row of the original design was withdrawn in the
+2026-07-07 rescope — archive/2026-07-07-universal-skill-mounting-rescope.md; the delivery
+guarantee is deployed → selected → injected):
 
   row 1  skills.lock vs vendored tree mismatch (skill_vendor.verify() fails)
              → HARD FAIL (real runs).  The verify universe is the UNION of the lock's ids
@@ -34,10 +35,6 @@ THE FROZEN SEVERITY TABLE (design §4 — do not extend/reword without a new des
              → advisory WARN only.  Checked OFFLINE against the local remote-tracking
                ref (as of the adopter's last fetch) — NO network fetch is ever performed
                (locked decision: no network skill fetch). Undeterminable ⇒ informational.
-  row 5  read telemetry unavailable for the harness
-             → informational ``unobservable`` — NEVER a human manual-check requirement.
-               Source of truth: the adapter class's ``provides_read_telemetry`` attribute
-               (adapters/base.py; claude_code is the only observing harness today).
 
 ENFORCEMENT SPLIT: ``run_preflight`` is the pure read-only checker (returns every finding);
 ``enforce_for_real_run`` applies the severity policy for a real (``--allow-real``) run —
@@ -82,7 +79,7 @@ import effective_role_config as effective_roles  # noqa: E402
 SEVERITY_HARD_FAIL = "hard_fail"   # rows 1-2 — refuse the real run
 SEVERITY_HALT = "halt"             # row 3 — fail closed unless audited override
 SEVERITY_WARN = "warn"             # row 4 — advisory only
-SEVERITY_INFO = "info"             # row 5 + not-applicable/undetermined notes
+SEVERITY_INFO = "info"             # not-applicable/undetermined/ok notes
 
 #: The explicit audited-override flag for row-3 gitlink drift (design §4 row 3). Set to
 #: "1" (or pass ``--allow-gitlink-drift`` / ``allow_gitlink_drift=True``) to let a real
@@ -418,49 +415,6 @@ def check_required_skills(charter: Optional[dict], framework_root: str,
     return out
 
 
-def check_read_telemetry(charter: Optional[dict]) -> list:
-    """Row 5 — name the routed roles whose harness exposes NO read telemetry, so a
-    later ``skill_consumption='unobservable'`` audit value is expected up front.
-    INFORMATIONAL ONLY — never a block, never a human manual-check requirement.
-    Source of truth: the adapter class's ``provides_read_telemetry`` attribute. An
-    unknown/unrouted harness is likewise informational (build_adapters is the layer
-    that refuses an unknown harness on a real run)."""
-    out: list = []
-    tooling = (charter or {}).get("tooling") or {}
-    try:
-        from adapters import resolve_adapter_class  # lazy — engine-kit package
-    except Exception as exc:  # noqa: BLE001 — adapters layer absent ⇒ informational
-        return [Finding(
-            row=5, severity=SEVERITY_INFO, code="read_telemetry_undetermined",
-            message="adapter registry unavailable; read-telemetry observability "
-                    f"unknowable (informational only): {exc}",
-            detail={})]
-    for role in _routed_roles(charter):
-        rc = tooling.get(role) or {}
-        harness = str(rc.get("harness") or rc.get("agent_kind") or "")
-        if not harness:
-            continue
-        try:
-            cls = resolve_adapter_class(harness, role=role)
-        except Exception:  # noqa: BLE001 — unknown harness ⇒ informational here
-            out.append(Finding(
-                row=5, severity=SEVERITY_INFO, code="read_telemetry_unknown_harness",
-                message=f"role {role!r} routes to unknown harness {harness!r}; read "
-                        "telemetry unknowable here (a real run refuses at adapter "
-                        "build)",
-                detail={"role": role, "harness": harness}))
-            continue
-        if not getattr(cls, "provides_read_telemetry", False):
-            out.append(Finding(
-                row=5, severity=SEVERITY_INFO, code="read_telemetry_unobservable",
-                message=f"role {role!r} (harness {harness!r}) exposes no read "
-                        "telemetry: skill consumption will be recorded as "
-                        "'unobservable' (informational only — never a manual-check "
-                        "requirement)",
-                detail={"role": role, "harness": harness}))
-    return out
-
-
 # --------------------------------------------------------------------------- #
 # The checker + the real-run enforcement.
 # --------------------------------------------------------------------------- #
@@ -482,7 +436,6 @@ def run_preflight(charter: Optional[dict] = None, *,
                                                  adopter_root))
     report.findings.extend(check_gitlink_drift(framework_root))
     report.findings.extend(check_pin_freshness(framework_root))
-    report.findings.extend(check_read_telemetry(charter))
     return report
 
 
@@ -531,10 +484,9 @@ def enforce_for_real_run(charter: Optional[dict], *,
 # --------------------------------------------------------------------------- #
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Offline skills integrity/drift preflight (design §4/D3): "
-                    "lock integrity, required-skill resolvability, submodule "
-                    "gitlink drift, pin freshness (advisory), read-telemetry "
-                    "observability (informational).")
+        description="Offline skills integrity/drift preflight: lock integrity, "
+                    "required-skill resolvability, submodule gitlink drift, "
+                    "pin freshness (advisory).")
     parser.add_argument("--charter", default=None,
                         help="charter JSON (optional; without it, every catalog "
                              "role_defaults role is checked)")
