@@ -36,5 +36,53 @@
     "beta": 3,
     "gamma": 6
   },
-  "max_replacements_per_probe": 2
+  "max_replacements_per_probe": 2,
+  "authorized_extra": {
+    "alpha": {
+      "count": 2,
+      "original_frozen_cap": 8,
+      "new_cap": 10,
+      "authorized_by": "HUMAN authorization, 2026-07-07 session reply: 'Authorize Option A: add exactly 2 extra alpha launch slots' \u2014 a bounded budget top-up, NOT a change to the frozen preregistration, scoring criteria, repetition targets, or pass thresholds.",
+      "permitted_use": {
+        "slot_1": "the required rerun of the successful-but-uncollectible alpha rep (nonui-milestone-rep2) caused by the confirmed adapter-shim/harness evidence-loss defect (fix commit 5c32735)",
+        "slot_2": "contingency ONLY for another independently evidenced harness-fault-class failure",
+        "never_for": [
+          "an unfavorable but valid model verdict",
+          "a schema-valid negative outcome",
+          "signal over-authoring or under-authoring",
+          "ordinary model variance",
+          "a result that simply causes alpha to fail"
+        ]
+      },
+      "spend_at_authorization": {
+        "alpha_launches": 4,
+        "attempts": [
+          [
+            "nonui-milestone-rep1",
+            "adapter_error"
+          ],
+          [
+            "nonui-milestone-rep1-r2",
+            "adapter_error"
+          ],
+          [
+            "nonui-milestone-rep1-r3",
+            "launched"
+          ],
+          [
+            "nonui-milestone-rep2",
+            "harness_error"
+          ]
+        ],
+        "adapter_errors": {
+          "alpha": [
+            "nonui-milestone-rep1",
+            "nonui-milestone-rep1-r2"
+          ]
+        }
+      },
+      "beta_gamma_budgets": "UNCHANGED; unused capacity is never reassigned",
+      "usage": []
+    }
+  }
 }
