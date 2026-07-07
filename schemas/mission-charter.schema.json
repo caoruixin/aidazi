@@ -70,6 +70,12 @@
               "type": "array",
               "items": {"type": "string"},
               "default": []
+            },
+            "task_signals": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"type": "string", "enum": ["a11y", "design", "frontend", "interaction", "performance", "ui"]},
+              "description": "OPTIONAL mission-level signal profile from the CLOSED task-signal vocabulary (single source of truth: effective_role_config.TASK_SIGNAL_VOCAB; drift-guarded). Universal-skill-mounting design (archive/2026-07-06): governs task-aware skill selection for spawns with NO sub-sprint plan entry (research, deliver-decompose, all delivery_only spawns); a sub-sprint's own signed task_signals govern EXCLUSIVELY when a plan entry exists (most-specific-wins); Acceptance is always excluded (§3.6 calibration). Human-signed by construction: the charter is the adopter trust root, and in campaign mode charter_hash sits inside signed_scope_H. Absent ⇒ byte-identical behavior."
             }
           }
         },

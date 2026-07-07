@@ -1161,6 +1161,48 @@ def _check_capability_gate(charter: dict, report: Report, *, model_registry_path
                 )
 
 
+def _check_mission_signal_profile(
+    charter: dict,
+    report: Report,
+    *,
+    skill_catalog_path: Optional[str] = None,
+) -> None:
+    """Universal-skill-mounting §2 — validate the OPTIONAL charter mission signal
+    profile `autonomy.approved_scope.task_signals`:
+      - out-of-vocabulary signal ⇒ ERROR (the schema enum also rejects it; this keeps
+        the standalone validator fail-closed without a schema pass);
+      - a signal matching NO catalog skill ⇒ WARNING (mirrors the runtime
+        `unmatched_signals` surface — declared-but-inert profiles must be visible,
+        never a silent no-op).
+    Absent field ⇒ NO-OP (byte-identical validation for every existing charter)."""
+    raw = (((charter.get("autonomy") or {}).get("approved_scope") or {})
+           .get("task_signals"))
+    if raw is None:
+        return
+    path = "autonomy.approved_scope.task_signals"
+    if not isinstance(raw, list):
+        report.error("mission_signal_profile",
+                     "task_signals must be an array of vocabulary signals", path)
+        return
+    vocab = set(effective_roles.TASK_SIGNAL_VOCAB)
+    signals = [str(s) for s in raw]
+    bad = sorted(set(signals) - vocab)
+    if bad:
+        report.error(
+            "mission_signal_profile",
+            f"out-of-vocabulary task_signals {bad}; the CLOSED vocabulary is "
+            f"{sorted(vocab)}", path)
+    catalog = load_skill_catalog(skill_catalog_path)
+    catalog = _stringify_dates(catalog) if catalog else {}
+    covered = effective_roles._catalog_signal_universe(catalog) if catalog else set()
+    inert = sorted((set(signals) & vocab) - covered)
+    if inert:
+        report.warn(
+            "mission_signal_profile",
+            f"task_signals {inert} match NO catalog skill (declared but inert — no "
+            "skill will mount for them)", path)
+
+
 def _check_skill_integrity(
     charter: dict,
     report: Report,
@@ -1522,6 +1564,7 @@ def validate_semantics(charter: Any, report: Report, overrides: Optional[Overrid
     )
     _check_capability_gate(charter, report, model_registry_path=ov.model_registry_path)
     _check_skill_integrity(charter, report, skill_catalog_path=ov.skill_catalog_path)
+    _check_mission_signal_profile(charter, report, skill_catalog_path=ov.skill_catalog_path)
     _check_network_access(charter, report)
     _check_functional_e2e(charter, report)  # P-C
     # Δ-19 / §1.7-F §A.3 static guard — cross-check the campaign plan (structural schema +
