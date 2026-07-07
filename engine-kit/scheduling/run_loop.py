@@ -334,8 +334,8 @@ def enforce_skills_preflight_for_real_run(
     ``skills_preflight_gitlink_override`` audit event carrying both commits on the
     run's own ledger (``audit_loop_id`` + ``audit_ledger_path`` + ``clock``); with
     no ledger destination the override is refused (an un-audited override is not an
-    audited override). Row-4 pin-freshness WARNs print non-silently and never block;
-    row-5 telemetry findings are informational. UNLIKE the capability gate this is
+    audited override). Row-4 pin-freshness WARNs print non-silently and never block.
+    UNLIKE the capability gate this is
     NEVER dormant (role-default skills mount unconditionally), so an unavailable
     preflight module is itself a fail-closed refusal — every real deployment ships
     the checker; the driver's resolve-time fail-closed remains the defense-in-depth.

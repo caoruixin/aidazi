@@ -444,6 +444,19 @@ class ResolverCompatFilterTests(unittest.TestCase):
         cfg = self._resolve({"dev": {}})
         self.assertEqual([s.id for s in cfg.skills], ["sig-skill"])
 
+    def test_declared_empty_whitelist_blocks_tool_requiring_skill(self):
+        # Final-gate B1 regression: a DECLARED-but-EMPTY allowlist permits NOTHING
+        # — it must skip a tool-requiring candidate exactly like a too-narrow one
+        # (an empty set is falsy and previously bypassed the check). Both declared
+        # empty shapes are covered; absence (above) stays non-blocking.
+        for tooling in ({"dev": {"agent_kind": "claude_code",
+                                 "tools": {"allow": []}}},
+                        {"dev": {"agent_kind": "claude_code", "tools": []}}):
+            cfg = self._resolve(tooling)
+            self.assertEqual(cfg.skills, (), tooling)
+            self.assertEqual(cfg.skipped_skills[0]["kind"], "incompatible")
+            self.assertIn("tool_requirements", cfg.skipped_skills[0]["reason"])
+
     def test_skill_set_hash_unaffected_by_a_skip(self):
         mounted = self._resolve({"dev": {"agent_kind": "claude_code"}})
         skipped = self._resolve({"dev": {"agent_kind": "codex"}})

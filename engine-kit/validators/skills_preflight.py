@@ -100,7 +100,7 @@ class SkillsPreflightError(ValueError):
 
 @dataclasses.dataclass(frozen=True)
 class Finding:
-    row: int                # the frozen severity-table row (1-5)
+    row: int                # the severity-table row (1-4)
     severity: str           # SEVERITY_*
     code: str               # stable machine-readable id
     message: str            # human-readable one-liner

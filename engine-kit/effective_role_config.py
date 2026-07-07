@@ -393,13 +393,18 @@ def resolve_role_config(charter: dict, role: str, *,
         # driver surfaces it as a WARN audit event. A signal must never mount a skill
         # whose declared harness_compat / tool_requirements the role cannot carry.
         agent_kind = str(role_cfg.get("harness") or role_cfg.get("agent_kind") or "")
+        # UNDECLARED whitelist (no `tools` key) ⇒ None ⇒ the filter does not block
+        # (defense-in-depth only; the static validator owns undeclared shapes). A
+        # DECLARED whitelist — even an EMPTY one — is enforced: `tools: {allow: []}`
+        # / `tools: []` permit NOTHING, so any tool-requiring skill must be skipped
+        # (final-gate B1: an empty set is falsy and previously bypassed the check).
         raw_tools = role_cfg.get("tools")
         if isinstance(raw_tools, dict):
             allow = {str(t) for t in (raw_tools.get("allow") or [])}
         elif isinstance(raw_tools, list):
             allow = {str(t) for t in raw_tools}
         else:
-            allow = set()
+            allow = None
         for sid in select_skills_for_task(canonical, task_signals, catalog):
             if sid in already:
                 continue
@@ -412,7 +417,7 @@ def resolve_role_config(charter: dict, role: str, *,
                     "reason": (f"role harness {agent_kind!r} not in the skill's "
                                f"harness_compat {hc}")})
                 continue
-            if reqs and allow and not reqs <= allow:
+            if reqs and allow is not None and not reqs <= allow:
                 skipped.append({
                     "id": sid, "optional": True, "kind": "incompatible",
                     "reason": (f"tool_requirements {sorted(reqs - allow)} exceed the "
