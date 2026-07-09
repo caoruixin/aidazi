@@ -1005,6 +1005,12 @@ class BackwardCompatTests(unittest.TestCase):
             "structured_output_floor", "skill_unpinned", "skill_integrity",
             "skill_tool_whitelist", "connector_scope_sandbox",
             "connector_grant_insufficient", "connector_binding_invalid",
+            # Phase-3 halt_conditions / notifications — gated on the new fields.
+            "halt_condition_id_collision", "halt_condition_id_override",
+            "halt_condition_duplicate_id", "halt_condition_unknown_metric",
+            "halt_condition_op_mismatch", "halt_condition_value_type",
+            "halt_conditions_shape", "notifications_shape",
+            "notifications_argv0_blank", "notifications_inert",
         }
         for fixture, expected_rule in cases.items():
             with self.subTest(fixture=fixture):
@@ -1016,6 +1022,134 @@ class BackwardCompatTests(unittest.TestCase):
                     msg=f"{fixture} unexpectedly tripped a NEW check: "
                         f"{report.rules_fired & new_rules}",
                 )
+
+
+class HaltConditionsTests(unittest.TestCase):
+    """Phase-3 autonomy.halt_conditions (design §3.6). Default-OFF NO-OP + the
+    tighten-only closed-set / collision ERRORs."""
+
+    def _base(self) -> dict:
+        return SemanticUnitTests._base(self)
+
+    def test_absent_is_noop(self):
+        report = cv.validate_charter(self._base())
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertNotIn("halt_conditions_shape", report.rules_fired)
+
+    def test_empty_list_is_noop(self):
+        c = self._base()
+        c["autonomy"]["halt_conditions"] = []
+        report = cv.validate_charter(c)
+        self.assertTrue(report.ok, msg=report.render())
+
+    def test_valid_conditions_pass(self):
+        c = self._base()
+        c["autonomy"]["halt_conditions"] = [
+            {"id": "hot-milestone",
+             "when": {"metric": "milestone_id", "op": "in", "value": ["M-auth"]}},
+            {"id": "gate_e2e", "note": "personally gate user-facing",
+             "when": {"metric": "milestone_functional_acceptance", "op": "==",
+                      "value": "browser_e2e"}},
+            {"id": "not_s3",
+             "when": {"metric": "subsprint_id", "op": "not_in", "value": ["s3"]}},
+        ]
+        report = cv.validate_charter(c)
+        self.assertTrue(report.ok, msg=report.render())
+
+    def test_id_collision_with_mandatory_checkpoint_fails(self):
+        c = self._base()
+        c["autonomy"]["halt_conditions"] = [
+            {"id": "gate_hard_fail",
+             "when": {"metric": "milestone_id", "op": "==", "value": "x"}}]
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("halt_condition_id_collision", report.rules_fired)
+
+    def test_id_collision_with_new_kind_fails(self):
+        # non-vacuous BECAUSE the id regex allows underscores (R0 N-2).
+        c = self._base()
+        c["autonomy"]["halt_conditions"] = [
+            {"id": "halt_condition_met",
+             "when": {"metric": "milestone_id", "op": "==", "value": "x"}}]
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("halt_condition_id_collision", report.rules_fired)
+
+    def test_id_override_substring_fails(self):
+        c = self._base()
+        c["autonomy"]["halt_conditions"] = [
+            {"id": "bypass-gate",
+             "when": {"metric": "milestone_id", "op": "==", "value": "x"}}]
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("halt_condition_id_override", report.rules_fired)
+
+    def test_duplicate_id_fails(self):
+        c = self._base()
+        c["autonomy"]["halt_conditions"] = [
+            {"id": "dup", "when": {"metric": "milestone_id", "op": "==", "value": "a"}},
+            {"id": "dup", "when": {"metric": "milestone_id", "op": "==", "value": "b"}}]
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("halt_condition_duplicate_id", report.rules_fired)
+
+    def test_unknown_metric_fails(self):
+        c = self._base()
+        # bypass the schema enum by asserting the semantic layer also catches it:
+        # (the schema layer ALSO rejects, defense-in-depth — both fire.)
+        c["autonomy"]["halt_conditions"] = [
+            {"id": "big", "when": {"metric": "files_changed", "op": "==", "value": "x"}}]
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("halt_condition_unknown_metric", report.rules_fired)
+
+    def test_value_type_mismatch_fails(self):
+        c = self._base()
+        c["autonomy"]["halt_conditions"] = [
+            {"id": "e2e", "when": {"metric": "milestone_functional_acceptance",
+                                   "op": "==", "value": "not_a_class"}}]
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("halt_condition_value_type", report.rules_fired)
+
+    def test_in_requires_array_fails(self):
+        c = self._base()
+        c["autonomy"]["halt_conditions"] = [
+            {"id": "hot", "when": {"metric": "milestone_id", "op": "in", "value": "M-auth"}}]
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("halt_condition_value_type", report.rules_fired)
+
+
+class NotificationsTests(unittest.TestCase):
+    """Phase-3 notifications.on_pause (design §4). Default-OFF NO-OP + semantics."""
+
+    def _base(self) -> dict:
+        return SemanticUnitTests._base(self)
+
+    def test_absent_is_noop(self):
+        report = cv.validate_charter(self._base())
+        self.assertTrue(report.ok, msg=report.render())
+
+    def test_valid_notifier_passes(self):
+        c = self._base()
+        c["notifications"] = {"on_pause": ["/bin/notify.sh", "--json"], "timeout_seconds": 10}
+        report = cv.validate_charter(c)
+        self.assertTrue(report.ok, msg=report.render())
+
+    def test_inert_block_warns_only(self):
+        c = self._base()
+        c["notifications"] = {"timeout_seconds": 5}
+        report = cv.validate_charter(c)
+        self.assertTrue(report.ok, msg=report.render())  # WARN, not ERROR
+        self.assertIn("notifications_inert", {i.rule for i in report.warnings})
+
+    def test_blank_argv0_fails(self):
+        c = self._base()
+        c["notifications"] = {"on_pause": ["   "]}
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("notifications_argv0_blank", report.rules_fired)
 
 
 class ModelIsHarnessNameTests(unittest.TestCase):

@@ -40,6 +40,11 @@
       "minLength": 1,
       "description": "The selected option for a dispatch-table gate (campaign.interpret_dispatch), e.g. ship|reject (advisory_acceptance_pass_signoff), raise_cap|abort (campaign_budget_exhausted), accept_and_advance|open_followup_subsprint|abort (review_out_of_scope). Required for every gate EXCEPT acceptance_fix_required; an unrecognized (gate, choice) fail-closes to a Deliver follow-up, never an auto-advance."
     },
+    "condition_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ONLY for the halt_condition_met gate (Phase-3 autonomy.halt_conditions). MUST equal the paused checkpoint's recorded condition id (tamper-evident); a decision for a different condition — even at the same milestone/checkpoint — is refused. Forbidden for every other gate."
+    },
     "confirm": {
       "type": "string",
       "enum": ["yes", "no"],
@@ -126,6 +131,32 @@
         },
         "not": {"required": ["subsprint_id"]}
       }
+    },
+    {
+      "description": "halt_condition_met (Phase-3 autonomy.halt_conditions) — a human resolves a pre-set STRUCTURAL halt. `proceed` acknowledges the named condition for its scope and re-dispatches the same (not-yet-run) unit; `abort` ends the campaign. The decision MUST echo condition_id (tamper-evident) + the per-pause checkpoint NONCE basename + milestone_id; it MUST NOT carry subsprint_id (the checkpoint is campaign-tier). The runner additionally binds condition_id + checkpoint basename + milestone_id to the live halt_condition_pending record (fail-closed if absent).",
+      "if": {
+        "required": ["pause_reason"],
+        "properties": {"pause_reason": {"const": "halt_condition_met"}}
+      },
+      "then": {
+        "required": ["choice", "checkpoint", "milestone_id", "condition_id"],
+        "properties": {
+          "choice": {"enum": ["proceed", "abort"]},
+          "checkpoint": {"type": "string", "minLength": 1},
+          "condition_id": {"type": "string", "minLength": 1}
+        },
+        "not": {"required": ["subsprint_id"]}
+      }
+    },
+    {
+      "description": "condition_id is ONLY for the halt_condition_met gate; every other decision shape forbids it (defense-in-depth at the schema ingress; the runtime ignores it elsewhere).",
+      "if": {
+        "not": {
+          "required": ["pause_reason"],
+          "properties": {"pause_reason": {"const": "halt_condition_met"}}
+        }
+      },
+      "then": {"properties": {"condition_id": false}}
     },
     {
       "description": "The residue-waiver fields (residue/rationale/evidence/waiver/waiver_id) are ONLY for the acceptance_cleanup_required gate's choice:accept_residue_and_ship; EVERY other decision shape forbids them so unrelated gates stay strict (defense-in-depth at the schema ingress; the runtime already ignores them elsewhere). Completeness of the waiver is enforced at dispatch by campaign.residue_waiver, not here — a bare accept_residue_and_ship stays schema-valid but fail-closes to a Deliver follow-up.",

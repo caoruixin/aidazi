@@ -68,6 +68,11 @@ if _ENGINE_KIT_DIR not in sys.path:
 import charter_compat  # noqa: E402  (engine-kit/charter_compat.py — shared normalizer)
 import effective_role_config as effective_roles  # noqa: E402
 
+_ORCH_DIR = os.path.join(_ENGINE_KIT_DIR, "orchestrator")
+if _ORCH_DIR not in sys.path:
+    sys.path.insert(0, _ORCH_DIR)
+import halt_metrics  # noqa: E402  (engine-kit/orchestrator/halt_metrics.py — Phase-3 metric SoT)
+
 
 def _find_schema_path() -> Optional[str]:
     """Walk parent dirs looking for schemas/mission-charter.schema.json."""
@@ -622,6 +627,100 @@ def _check_e2e_remediation_bound(charter: dict, report: Report) -> None:
             "the §3.5 human gate regardless), a §1.7-D footgun",
             f"{base}.enabled",
         )
+
+
+def _reserved_checkpoint_ids() -> frozenset:
+    """The set of engine checkpoint kinds a halt-condition id must NOT collide with:
+    the 9 MANDATORY_CHECKPOINTS ∪ campaign.KNOWN_CHECKPOINTS ∪ {halt_condition_met}.
+    KNOWN_CHECKPOINTS is imported lazily (heavy module) and only when a charter uses
+    halt_conditions; if the import fails, fall back fail-closed to the MANDATORY set +
+    the new kind (never silently weaken the collision guard)."""
+    reserved = set(MANDATORY_CHECKPOINTS) | {"halt_condition_met"}
+    try:
+        import campaign as _cp  # engine-kit/orchestrator/campaign.py (on sys.path via _ORCH_DIR)
+        reserved |= set(_cp.KNOWN_CHECKPOINTS)
+    except Exception:  # pragma: no cover - import guard; degrade to the MANDATORY floor
+        pass
+    return frozenset(reserved)
+
+
+def _check_halt_conditions(charter: dict, report: Report) -> None:
+    """Phase-3 STATIC enforcement of autonomy.halt_conditions (design §3.6). NO-OP when
+    the block is absent/empty (default-OFF, byte-identical to a pre-Phase-3 charter). For
+    a present block it enforces the tighten-only invariants the JSON Schema cannot express:
+
+      * (b) id-collision — a condition id MUST NOT collide with any MANDATORY_CHECKPOINT /
+        engine checkpoint kind (no shadowing a human gate); and MUST NOT contain an
+        override-substring (auto_confirm/bypass/…) that would read as a checkpoint bypass.
+      * (c) metric/op/value — from the CLOSED whitelist (orchestrator.halt_metrics, the
+        single source of truth also feeding the schema enum + the runtime evaluator);
+        unknown metric / disallowed op / wrong value-type ⇒ ERROR.
+      * duplicate ids are rejected (an ambiguous ack key).
+
+    The predicate itself can only ever produce a HALT + checkpoint (the schema has no
+    action/route/outcome field), so nothing here concerns routing/verdicts."""
+    conditions = (charter.get("autonomy") or {}).get("halt_conditions")
+    if not conditions:
+        return  # absent OR empty list ⇒ default-OFF
+    if not isinstance(conditions, list):
+        report.error("halt_conditions_shape",
+                     "autonomy.halt_conditions must be an array", "autonomy.halt_conditions")
+        return
+    reserved = _reserved_checkpoint_ids()
+    seen: dict[str, int] = {}
+    for idx, cond in enumerate(conditions):
+        base = f"autonomy.halt_conditions[{idx}]"
+        if not isinstance(cond, dict):
+            report.error("halt_conditions_shape", f"{base} must be an object", base)
+            continue
+        cid = cond.get("id")
+        if isinstance(cid, str) and cid:
+            if cid in seen:
+                report.error("halt_condition_duplicate_id",
+                             f"{base}.id={cid!r} duplicates the condition at index {seen[cid]}; "
+                             "ids must be unique (they key the acknowledgement)", f"{base}.id")
+            else:
+                seen[cid] = idx
+            if cid in reserved:
+                report.error("halt_condition_id_collision",
+                             f"{base}.id={cid!r} collides with an engine checkpoint kind; a "
+                             "halt-condition id may not shadow a MANDATORY_CHECKPOINT / engine "
+                             "checkpoint (Constitution §1.7-D — no bypass by name-collision)",
+                             f"{base}.id")
+            low = cid.lower()
+            if any(sub in low for sub in _OVERRIDE_KEY_SUBSTRINGS):
+                report.error("halt_condition_id_override",
+                             f"{base}.id={cid!r} contains a checkpoint-bypass substring "
+                             f"({[s for s in _OVERRIDE_KEY_SUBSTRINGS if s in low]}); a halt "
+                             "condition only HALTs, it never bypasses/auto-resolves", f"{base}.id")
+        # metric/op/value closed-set validation (single source of truth: halt_metrics).
+        for rule, msg in halt_metrics.validate_when(cond.get("when")):
+            report.error(rule, f"{base}.when: {msg}", f"{base}.when")
+
+
+def _check_notifications(charter: dict, report: Report) -> None:
+    """Phase-3 STATIC enforcement of the top-level notifications block (design §4). NO-OP
+    when absent (default-OFF). The JSON Schema covers the shape (argv list, timeout bound);
+    this adds the semantic checks it cannot: a present block with no on_pause is inert
+    (WARN — likely a misconfig), and argv[0] (the executable) must be a non-blank token."""
+    notif = charter.get("notifications")
+    if notif is None:
+        return
+    if not isinstance(notif, dict):
+        report.error("notifications_shape", "notifications must be an object", "notifications")
+        return
+    on_pause = notif.get("on_pause")
+    if on_pause is None:
+        report.warn("notifications_inert",
+                    "notifications is present but has no on_pause hook — the block does nothing",
+                    "notifications")
+        return
+    if isinstance(on_pause, list) and on_pause:
+        argv0 = on_pause[0]
+        if not isinstance(argv0, str) or not argv0.strip():
+            report.error("notifications_argv0_blank",
+                         "notifications.on_pause[0] (the executable) must be a non-blank string",
+                         "notifications.on_pause")
 
 
 def _check_gap_followup_bounds(campaign_plan: Any, report: Report) -> None:
@@ -1587,6 +1686,8 @@ def validate_semantics(charter: Any, report: Report, overrides: Optional[Overrid
     _check_calibration_corollary(charter, report)
     _check_adaptive_insert_bound(charter, report)
     _check_e2e_remediation_bound(charter, report)
+    _check_halt_conditions(charter, report)   # Phase-3 (design §3.6) — NO-OP when absent
+    _check_notifications(charter, report)     # Phase-3 (design §4)   — NO-OP when absent
     # P-0a checks (fire ONLY when the relevant new charter fields are present):
     _check_connector_grants(
         charter,
