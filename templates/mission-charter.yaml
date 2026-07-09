@@ -66,6 +66,19 @@ autonomy:
     adaptive_insert:
       enabled: false
       max_inserted_subsprints: 0
+  # OPT-IN (Phase-3 — pre-set STRUCTURAL halt conditions). Declarative, tighten-only, default-OFF
+  # (absent/empty ⇒ byte-identical to no halt conditions). Each condition is a PURE predicate over
+  # already-audited, plan-static facts evaluated BEFORE a unit is dispatched; a match PAUSES the
+  # campaign at a `halt_condition_met` checkpoint carrying the condition id + facts, resolved ONLY
+  # via an identity-bound proceed|abort human decision. A condition can NEVER change a verdict, pick
+  # a route, or auto-resolve anything — it only HALTs (it does NOT relax any gate). Metrics are a
+  # CLOSED whitelist: milestone_id | subsprint_id | milestone_functional_acceptance; ops:
+  # == | != | in | not_in. Full spec: archive/2026-07-09-phase3-halt-conditions-design.md.
+  # halt_conditions:
+  #   - id: hot-milestone         # personally review before this milestone even when it passes clean
+  #     when: { metric: milestone_id, op: in, value: [M-auth] }
+  #   - id: gate-user-facing      # gate any browser_e2e (user-facing) milestone
+  #     when: { metric: milestone_functional_acceptance, op: "==", value: browser_e2e }
 
 budget:
   max_api_usd: 0  # caveat: doesn't track subscription-billed agents (e.g., Codex)
@@ -214,6 +227,19 @@ tooling:
 memory:
   enabled: false
   root: memory   # <adopter>/memory — version-controlled, diffable, adopter-portable
+
+# OPTIONAL — Phase-3 push-not-poll notifier (design §4). DEFAULT OFF (this block absent ⇒ byte-
+# identical to no notifier). `on_pause` is an ARGV LIST (never a shell string ⇒ no injection
+# surface) run on EVERY campaign pause (exit 10) with pause context injected as AIDAZI_PAUSE_* env
+# vars (CAMPAIGN_ID / REASON / CHECKPOINT / MILESTONE_ID / SUBSPRINT_ID). It is a TRUSTED,
+# adopter-owned side-effecting hook (NOT sandboxed): the framework guarantees it is FAIL-SAFE (a
+# failed/timed-out notifier NEVER affects the pause or exit code), BOUNDED (timeout ≤ 60s), fired
+# only AFTER the pause is durably persisted, and AUDITED with REDACTED metadata (argv0/argc/sha256 —
+# never the full argv/env/output). It stops you babysitting the terminal; it CANNOT influence
+# governance (resume re-validates any decision file fail-closed).
+# notifications:
+#   on_pause: ["/usr/local/bin/aidazi-notify.sh"]   # e.g. posts $AIDAZI_PAUSE_REASON to your channel
+#   timeout_seconds: 10
 
 # T1 profile overlay — populate one or more.
 

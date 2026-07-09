@@ -234,6 +234,40 @@ autonomy level**. The generated remediation's in-envelope `covered_req_ids` is r
 Deliver-readable `gap-followup-stanza.json` sidecar and in `campaign-state.gap_followup_state`
 (the per-milestone counter, gap-set history, and stanza audit).
 
+### §4.3 Pre-set structural halt conditions (Phase-3; `autonomy.halt_conditions`)
+
+A DECLARATIVE, default-OFF, tighten-only lever (design
+`archive/2026-07-09-phase3-halt-conditions-design.md` §3). The human pre-declares STRUCTURAL halts
+the engine has no built-in gate for — "*pause before this specific milestone / sub-sprint /
+acceptance-class even when everything passes clean*". Each condition is a PURE predicate over
+already-audited, plan-static facts (a CLOSED whitelist: `milestone_id` | `subsprint_id` |
+`milestone_functional_acceptance`; ops `==`|`!=`|`in`|`not_in`) evaluated at **EP-pre** — before a
+unit is dispatched, after the freshness gate. A match PAUSES the campaign at the campaign-tier
+checkpoint **`halt_condition_met`** (NOT a 10th MANDATORY_CHECKPOINT), carrying the condition id +
+evaluated facts, with a per-pause nonce basename `…__halt_condition_met__r{seq}.md`. It is resolved
+Mechanism-B via an identity-bound decision (campaign_id + pause_reason + the nonce basename +
+`condition_id` + `milestone_id`; no `subsprint_id`):
+- `proceed` — acknowledge this condition (once per its scope — milestone or sub-sprint) and
+  re-dispatch the SAME not-yet-run unit (the cursor never advances).
+- `abort` — end the campaign.
+
+A condition can NEVER change a verdict, pick a route, or auto-resolve anything (the schema has no
+action/route/outcome field) — it only HALTs, so it needs no constitutional amendment. Outcome-based
+halts remain the constitution's own event-triggered gates (`gate_hard_fail`, `close_taxonomy_C_or_D`,
+`advisory_acceptance_pass_signoff`, …); halt_conditions adds only the structural dimension. Absent/
+empty ⇒ byte-identical to a pre-Phase-3 campaign.
+
+### §4.4 Push-not-poll notifier (Phase-3; `notifications.on_pause`)
+
+Optional, default-OFF (design §4). On EVERY campaign pause (exit 10), the runner fires the charter's
+`notifications.on_pause` argv hook — a TRUSTED, adopter-owned side-effecting hook (argv LIST, no
+shell; pause context injected as `AIDAZI_PAUSE_*` env vars) — AFTER the pause is durably persisted.
+It is FAIL-SAFE (a failed/timed-out notifier never affects the pause or exit code), BOUNDED (timeout
+≤ 60s), and AUDITED with REDACTED metadata (`argv0`/`argc`/`sha256` — never the full argv/env/
+output) as a `campaign_pause_notified` event. It cannot influence governance (resume re-validates any
+decision file fail-closed). It fires for the campaign-runner pauses; the `--requirement` bootstrap
+pauses are a separate pre-campaign path (a documented follow-up).
+
 ## §5 Artifacts
 - `schemas/campaign-plan.schema.json` — the ordered milestone backlog (+ `depends_on`
   / `module_locks` / `milestone_isolation` / per-milestone `isolation_strategy` /
