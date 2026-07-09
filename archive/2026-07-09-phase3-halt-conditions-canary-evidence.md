@@ -1,7 +1,7 @@
 ---
 name: 2026-07-09-phase3-halt-conditions-canary-evidence
 doc_category: evidence
-status: canary GREEN (offline, deterministic — no real model spend)
+status: canary GREEN + ALL Codex gates APPROVE (design R0.7, impl R1/R2.3/R3.2)
 created: 2026-07-09
 base_commit: 6a2078a
 design: archive/2026-07-09-phase3-halt-conditions-design.md (Codex R0.7 APPROVE)
@@ -142,7 +142,7 @@ load-closure, and all other gates are green.
   flush + the full §6 canary matrix + resume-hint/schema NBs).
 - Cluster 3 (lever-2 verify + lever-3 doc + teaching docs): committed `aadfdff`.
 - R2.2 re-gate: 1 blocking (base-tree golden byte-diff + 2 missing §6 variants) + 1 NB → fixed (checked-in base golden fixture; inherited-browser_e2e + unit-level restamp-survival variants; pause_subsprint_id no longer surfaced for the campaign-tier gate).
-- R3 whole-scope gate: 1 blocking (real `--campaign --allow-real` did not run the charter validator before EP-pre ⇒ Phase-3 charter invariants unenforced at runtime) + 4 NB → fixed (enforce_charter_for_real_run wired as the last real-run preflight → CAMPAIGN_EXIT_INVALID; + real-run regression tests; resume choice!=proceed re-pauses; judge-calibration doc M3/rates clarified). R3 re-gate pending.
+- R3 whole-scope gate: 1 blocking (real `--campaign --allow-real` did not run the charter validator before EP-pre ⇒ Phase-3 charter invariants unenforced at runtime) + 4 NB → fixed. **R3.2 whole-scope re-gate APPROVE (0 blocking, 1 trivial NB comment-only, 2026-07-09; verdict /tmp/aidazi-phase3-r32/verdict.txt).** Every Codex gate now APPROVE — ready for the human push + PR decision.
 
 Nothing in this phase weakens a MANDATORY_CHECKPOINT, acceptance authority (§1.7-C), signed-scope
 freshness (Δ-19 F1/T2-A), or the OW-M3 E2E mandate.

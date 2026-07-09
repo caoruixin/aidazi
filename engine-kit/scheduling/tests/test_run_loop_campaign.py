@@ -1261,8 +1261,9 @@ class TestRealRunCharterEnforcement(unittest.TestCase):
         mutate(charter)
         plan = _plan("cli-real", [{"id": "m1", "objective": "x",
                                    "subsprint_sequence": ["sprint-001"]}])
-        # allow_real=True (no adapters injected) — the charter preflight is the FIRST gate,
-        # so an invalid charter raises BEFORE any adapter build.
+        # allow_real=True (no adapters injected) — the charter preflight is the LAST real-run
+        # preflight (after plan/capability/OW-M3/skills), but still BEFORE any adapter build,
+        # so an invalid charter raises → CAMPAIGN_EXIT_INVALID before EP-pre.
         return rl.run_campaign_entry(plan, charter, clock=_clock(),
                                      campaign_run_dir=os.path.join(d, "h"), allow_real=True)
 
