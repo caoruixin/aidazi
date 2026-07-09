@@ -42,6 +42,13 @@ def _mk_repo(td, sids=("s1", "s2"), kinds=("dev", "review")):
                                    f"{sid}-{kind}-prompt.md"), "w") as fh:
                 fh.write(f"---\ncontext_budget:\n  self_contained: true\n---\n"
                          f"{kind} prompt for {sid}\n")
+    # A real (tiny) git repo: campaign runs with repo_dir invoke Loop Ingress.
+    import subprocess
+    subprocess.run(["git", "-C", repo, "init", "-q"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", repo, "-c", "user.name=t",
+                    "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+                    "-m", "init"], check=True, capture_output=True)
     return repo
 
 
@@ -191,6 +198,89 @@ class TestRestampCarryForward(unittest.TestCase):
             # never blessed; a human must re-sign over it.
             self.assertEqual(
                 cp.signoff_status(out, CHARTER, None, repo_dir=repo), "stale")
+
+
+def _clock():
+    n = {"i": 0}
+
+    def clock():
+        n["i"] += 1
+        return f"2026-07-09T00:{n['i']:02d}:00Z"
+    return clock
+
+
+class LiveCampaignFollowupDigestTests(unittest.TestCase):
+    """[R2 B-2] the LIVE TD6 path (`Campaign._restamp_followup_epoch`, not the
+    pure helper) on a DIGEST-BEARING campaign: dispatch → acceptance_fix_required
+    → deliver_followup insertion → resume must stay autonomous ('signed' via the
+    engine re-stamp, ZERO campaign_plan_signoff pause) with the prompt-artifact
+    digest surviving the envelope rebuild — and a paired prompt EDIT must be
+    refused (block for the human re-sign), never laundered."""
+
+    LIVE_PLAN = {"campaign_id": "camp-pad", "goal": "deliver the thing",
+                 "signed_by_human": True, "milestones": [
+                     {"id": "m1", "objective": "objective m1",
+                      "subsprint_sequence": ["s1", "s2"]}]}
+    SCRIPT = {"s1": {"final_state": "advance", "spawn_count": 1},
+              "s2": {"final_state": "halted", "spawn_count": 1,
+                     "pause_reason": "acceptance_fix_required"},
+              "s_fix": {"final_state": "done", "spawn_count": 1}}
+
+    @staticmethod
+    def _run_unit(subsprint_id, **_kw):
+        return dict(LiveCampaignFollowupDigestTests.SCRIPT[subsprint_id])
+
+    @staticmethod
+    def _fix_route(reason, cpt):
+        return ({"confirm": "yes", "route": "deliver_fix_iteration"}
+                if reason == "acceptance_fix_required" else None)
+
+    def _drive_to_followup(self, td, repo):
+        plan = cp.stamp_signoff(copy.deepcopy(self.LIVE_PLAN), CHARTER,
+                                signed_at="2026-07-09T00:00:00Z",
+                                charter_ref="charter.yaml", repo_dir=repo)
+        self.assertIn("prompt_artifacts_digest", plan["signoff"])
+        home = os.path.join(td, "camp")
+
+        def fresh(p):
+            import json as _json
+            return _json.loads(_json.dumps(p))
+
+        st = cp.run_campaign(fresh(plan), home, self._run_unit,
+                             clock=_clock(), charter=CHARTER, repo_dir=repo)
+        self.assertEqual(st.pause_reason, "acceptance_fix_required")
+        st = cp.run_campaign(fresh(plan), home, self._run_unit,
+                             clock=_clock(), charter=CHARTER, repo_dir=repo,
+                             resume=True, decision_resolver=self._fix_route)
+        self.assertEqual(st.pause_reason, "deliver_followup_required")
+        # Deliver inserts the follow-up in the PLAN FILE (signoff untouched).
+        plan["milestones"][0]["subsprint_sequence"] = ["s1", "s2", "s_fix"]
+        return plan, home, fresh
+
+    def test_live_followup_restamp_survives_digest_and_stays_signed(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = _mk_repo(td)
+            plan, home, fresh = self._drive_to_followup(td, repo)
+            st = cp.run_campaign(fresh(plan), home, self._run_unit,
+                                 clock=_clock(), charter=CHARTER,
+                                 repo_dir=repo, resume=True)
+            self.assertEqual(st.status, cp.STATUS_DONE)
+            self.assertNotEqual(st.pause_reason, "campaign_plan_signoff")
+            self.assertIsNotNone(st.engine_restamp)
+
+    def test_live_followup_paired_with_prompt_edit_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = _mk_repo(td)
+            plan, home, fresh = self._drive_to_followup(td, repo)
+            with open(os.path.join(repo, "compact", "s1-dev-prompt.md"),
+                      "a") as fh:
+                fh.write("POST-SIGN EDIT\n")
+            st = cp.run_campaign(fresh(plan), home, self._run_unit,
+                                 clock=_clock(), charter=CHARTER,
+                                 repo_dir=repo, resume=True)
+            # The epoch is NOT advanced over an edited prompt — the campaign
+            # blocks for the human re-sign instead of finishing.
+            self.assertNotEqual(st.status, cp.STATUS_DONE)
 
 
 if __name__ == "__main__":

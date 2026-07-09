@@ -1265,6 +1265,20 @@ class Campaign:
             return False
         if stored_digest is not None:
             live_env["milestone_signals_digest"] = stored_digest
+        # Phase-2 §3.5 [R0.4 B-1] × TD6 (R2 B-2): the SAME verify-then-carry-
+        # forward for the prompt-artifact digest — a prompt-byte change (or an
+        # unverifiable repo_dir on a digest-bearing plan) is NEVER an engine
+        # delta ⇒ refuse (block for the human re-sign); otherwise carry the
+        # SIGNED digest into the rebuilt envelope so a legitimate follow-up
+        # restamp does not drop the snapshot copy and read falsely stale.
+        # (The inserted gapfix sub-sprint is fed by a campaign-injected work
+        # contract, not a compact file, so the live recompute is unchanged.)
+        live_pad = prompt_artifacts_digest(self.plan, self.repo_dir)
+        stored_pad = signoff.get("prompt_artifacts_digest")
+        if live_pad != stored_pad:
+            return False
+        if stored_pad is not None:
+            live_env["prompt_artifacts_digest"] = stored_pad
         if not self._is_authorized_followup_insertion(
                 stored_env, live_env, inserted_index):
             return False

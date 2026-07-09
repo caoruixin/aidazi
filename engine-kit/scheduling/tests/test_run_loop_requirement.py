@@ -238,11 +238,19 @@ class TestRequirementChain(unittest.TestCase):
                                  "--campaign", env.out,
                                  "--campaign-run-dir", home,
                                  "--repo-dir", env.repo, "--resume"])
-            self.assertNotIn("milestone_decompose_required", out)
+            # [R2 NB-1] strengthened: a legitimate human gate (rc 10) or done
+            # (rc 0) — and NEVER a decompose/refinement pause.
+            self.assertIn(rc, (0, 10), out)
+            for forbidden in ("milestone_decompose_required",
+                              "dev_spec_refinement",
+                              "acceptance_spec_refinement"):
+                self.assertNotIn(forbidden, out)
             state = json.load(open(os.path.join(home, "campaign-state.json"),
                                    encoding="utf-8"))
-            self.assertNotEqual(state.get("pause_reason"),
-                                "milestone_decompose_required")
+            self.assertNotIn(state.get("pause_reason"),
+                             ("milestone_decompose_required",
+                              "dev_spec_refinement",
+                              "acceptance_spec_refinement"))
 
     def test_compact_collision_refuses_and_emits_nothing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -260,6 +268,49 @@ class TestRequirementChain(unittest.TestCase):
             cp_dir = os.path.join(env.run_dir, "docs", "checkpoints")
             self.assertTrue(any("campaign_decompose_refusal" in f
                                 for f in os.listdir(cp_dir)))
+            # [R2 B-1] the refusal REOPENED the pending state: after the human
+            # fixes the input (removes the stale file), a --resume re-enters
+            # the pre-chain and CONVERGES to an emitted plan.
+            os.remove(pre)
+            rc, out = _run_entry(env, resume=True,
+                                 gate_resolver=_sign_resolver())
+            self.assertEqual(rc, 0, out)
+            self.assertTrue(os.path.exists(env.out))
+
+    def test_refusal_then_envelope_edit_forces_fresh_gate1_on_resume(self):
+        # [R2 B-1] the post-`done` refusal must NOT freeze the drift check: an
+        # envelope edit between the refusal and the resume ⇒ a FRESH gate-1.
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            pre = os.path.join(env.repo, "compact", "m1-s1-dev-prompt.md")
+            with open(pre, "w", encoding="utf-8") as fh:
+                fh.write("collide")
+            rc, _ = _run_entry(env, gate_resolver=_sign_resolver())
+            self.assertEqual(rc, 10)
+            os.remove(pre)
+            charter = _charter_dict()
+            charter["autonomy"]["approved_scope"]["modules_in_scope"].append(
+                "src/new/area.py")
+            with open(env.charter_path, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(charter, fh, allow_unicode=True)
+            rc, out = _run_entry(env, resume=True,
+                                 gate_resolver=_sign_resolver())
+            self.assertEqual(rc, 0, out)
+            import audit_log as audit_mod
+            ledger_path = os.path.join(
+                env.run_dir, ".orchestrator", "audit",
+                "campaign-bootstrap-req-refund.jsonl")
+            types = [e["type"] for e in audit_mod.read_events(ledger_path)]
+            self.assertIn("gate1_envelope_drift", types)
+            self.assertEqual(types.count("customer_gate1_signed"), 2)
+
+    def test_invalid_campaign_id_rc2(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            rc, out = _run_entry(env, campaign_id="_not-schema-safe",
+                                 gate_resolver=_sign_resolver())
+            self.assertEqual(rc, 2)
+            self.assertIn("not schema-safe", out)
 
 
 class TestOneSittingInlineSign(unittest.TestCase):

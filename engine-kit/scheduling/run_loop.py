@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import os
 import sys
 from typing import Callable, Dict, Optional
@@ -1146,7 +1147,7 @@ def _slugify_campaign_id(path: str) -> str:
     §3.3(e)): basename minus extension, non-[A-Za-z0-9._-] → '-', trimmed."""
     base = os.path.splitext(os.path.basename(path))[0]
     slug = "".join(c if c.isalnum() or c in "._-" else "-" for c in base)
-    slug = slug.strip("-.") or "campaign"
+    slug = slug.strip("-.").lstrip("_") or "campaign"
     return slug[:128]
 
 
@@ -1432,6 +1433,14 @@ def run_requirement_entry(charter: dict, *, requirement_path: str,
         return CAMPAIGN_EXIT_INVALID
 
     cid = campaign_id or _slugify_campaign_id(requirement_path)
+    # [R2 B-3] the campaign id feeds the plan schema, the Driver loop id and
+    # checkpoint/audit paths — an unsafe id must die HERE as a clean rc-2 input
+    # refusal, never as a late traceback or a mid-flow rc 10.
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", cid):
+        print(f"--requirement REFUSED: campaign id {cid!r} is not schema-safe "
+              f"(need ^[A-Za-z0-9][A-Za-z0-9._-]{{0,127}}$) — pass a valid "
+              f"--campaign-id.")
+        return CAMPAIGN_EXIT_INVALID
     loop_id = f"campaign-bootstrap-{cid}"
     run_dir = run_dir or os.path.join(repo_dir, ".runs", loop_id)
     requirement_ref = None
@@ -1500,10 +1509,14 @@ def run_requirement_entry(charter: dict, *, requirement_path: str,
     plan_bytes = json.dumps(plan, indent=2, sort_keys=True).encode("utf-8")
     with open(campaign_out, "wb") as fh:
         fh.write(plan_bytes)
+    verdict_sha256 = hashlib.sha256(json.dumps(
+        {"stage1": stage1, "stage2": stage2}, sort_keys=True,
+        ensure_ascii=False).encode("utf-8")).hexdigest()
     sidecar = {
         "stage1": stage1, "stage2": stage2,
         "envelope": backlog.get("envelope"),
         "requirement_ref": final.requirement_ref,
+        "verdict_sha256": verdict_sha256,
         "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
         "compact_files": [
             {"sid": sid, "path": os.path.relpath(path, repo_dir),
@@ -1515,6 +1528,7 @@ def run_requirement_entry(charter: dict, *, requirement_path: str,
     drv._audit("campaign_plan_emitted", {
         "campaign_id": cid, "plan_path": os.path.abspath(campaign_out),
         "plan_sha256": sidecar["plan_sha256"],
+        "verdict_sha256": verdict_sha256,
         "requirement_sha256": (final.requirement_ref or {}).get("sha256"),
         "compact_files": sidecar["compact_files"],
         "ledger_wired": ledger is not None,

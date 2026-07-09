@@ -2874,6 +2874,12 @@ class Driver:
                   "re-run with --resume."),
             options_md="- fix_inputs_and_resume\n- abort")
         self._audit("campaign_decompose_refusal", {"reasons": reasons})
+        # [R2 B-1] The refusal REOPENS the pending state regardless of the
+        # caller's tier: run_loop's post-`done` (e)-(h) refusals must make the
+        # next --resume re-enter the pre-chain (envelope-drift check + full
+        # re-validation) — never early-return on a stale `done`.
+        self.state.state = STATE_CAMPAIGN_DECOMPOSE_PENDING
+        self.state.halt_resume_state = None
         self._save_state()
 
     def _project_campaign_decompose_prompt(self, env: dict) -> str:
@@ -3282,6 +3288,11 @@ class Driver:
                 "requirement_ref": self.state.requirement_ref,
                 "ledger_wired": requirement_ledger is not None,
             })
+            # [R2 NB-2] the DISTINCT ingestion event the design names (§2 step
+            # 1): the requirement snapshot's identity, auditable on its own.
+            if self.state.requirement_ref is not None:
+                self._audit("requirement_ingested",
+                            dict(self.state.requirement_ref))
         self._save_state()
         if self._drive_bootstrap_prestates():
             self.state.state = STATE_DONE
