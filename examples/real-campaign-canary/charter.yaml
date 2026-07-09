@@ -80,7 +80,12 @@ tooling:
   eval:
     # The eval cmd runs in the per-gate ARTIFACTS dir, not the work repo —
     # anchor repo checks on $EVAL_REPO_DIR (set by the driver from --repo-dir).
-    cmd: "grep -q HELLO-CANARY-M1 \"$EVAL_REPO_DIR/notes/hello.md\""
+    # stdout IS the F5 evidence artifact the Acceptance judge reads (R3 B-2):
+    # print the ENTIRE delivered file (numbered) so the artifact carries the
+    # actual observable proof for BOTH milestones' acceptance bars (M1-only
+    # after m1; M1+M2 after m2) — never a silent `grep -q`. The exit gate
+    # stays the M1 sentinel (true at both gates).
+    cmd: "cat -n \"$EVAL_REPO_DIR/notes/hello.md\" && grep -qx HELLO-CANARY-M1 \"$EVAL_REPO_DIR/notes/hello.md\""
     timeout_seconds: 30
   acceptance:
     mode: auto               # + calibrated + human_ON_the_loop ⇒ ADVISORY pass

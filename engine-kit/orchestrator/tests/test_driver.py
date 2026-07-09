@@ -599,6 +599,59 @@ class TestSubSprintGate(unittest.TestCase):
             self.assertFalse(gate["payload"]["ok"])
 
 
+class TestClosePromptSequenceHint(unittest.TestCase):
+    """R3 B-1: the close prompt's next_subsprint hint uses supplied-OR-planned
+    sequence, and NEVER claims 'last' when the sid cannot be anchored (that
+    would steer a live agent into a premature milestone close)."""
+
+    class _Captured(Exception):
+        pass
+
+    def _close_prompt(self, *, supplied, planned, sid):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            cap = {}
+
+            def fake(role, prompt, schema_key=None, lessons_block=None):
+                cap["p"] = prompt
+                raise self._Captured()
+
+            drv_._spawn = fake
+            drv_._supplied_sequence = lambda: list(supplied)
+            drv_.state.planned_sequence = list(planned)
+            drv_.state.subsprint_id = sid
+            with self.assertRaises(self._Captured):
+                drv_._step_close()
+            return cap["p"]
+
+    def test_supplied_sequence_anchors_next(self):
+        p = self._close_prompt(supplied=["sprint-001", "sprint-002"],
+                               planned=[], sid="sprint-001")
+        self.assertIn('set next_subsprint to "sprint-002"', p)
+
+    def test_planned_sequence_is_the_resumed_guided_fallback(self):
+        # A resumed guided run: supplied empty, decompose result persisted in
+        # state.planned_sequence — the hint anchors THERE, not on "last".
+        p = self._close_prompt(supplied=[],
+                               planned=["sprint-001", "sprint-002"],
+                               sid="sprint-001")
+        self.assertIn('set next_subsprint to "sprint-002"', p)
+        p_last = self._close_prompt(supplied=[],
+                                    planned=["sprint-001", "sprint-002"],
+                                    sid="sprint-002")
+        self.assertIn("LAST sub-sprint", p_last)
+
+    def test_unanchored_sid_gets_neutral_instruction_never_last(self):
+        p = self._close_prompt(supplied=["sprint-001"], planned=["sprint-001"],
+                               sid="sprint-999")
+        self.assertIn("could not anchor", p)
+        self.assertNotIn("LAST sub-sprint", p)
+        p2 = self._close_prompt(supplied=[], planned=[], sid="sprint-001")
+        self.assertIn("could not anchor", p2)
+        self.assertNotIn("LAST sub-sprint", p2)
+
+
 class TestInvalidVerdictHardFails(unittest.TestCase):
     def test_malformed_review_verdict_raises_gate_hard_fail(self):
         # decision is not in the enum -> schema-invalid -> gate_hard_fail.

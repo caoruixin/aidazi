@@ -2243,16 +2243,30 @@ class Driver:
         # deliver-close-verdict.schema.json. The engine also states the MECHANICAL
         # next_subsprint fact (it knows the signed sequence; the agent judges the
         # verdict letter, never guesses sequence position).
-        seq = [str(s) for s in self._supplied_sequence()]
+        # Sequence source = supplied-OR-planned (R3 B-1): a resumed guided run
+        # has an empty supplied sequence but a persisted decompose result in
+        # state.planned_sequence (the same fallback _drive_guided_prestates
+        # uses). And when the sid cannot be anchored in EITHER, the engine
+        # must NEVER claim "last" (that would steer the agent into a premature
+        # milestone close / Acceptance) — it emits a NEUTRAL instruction
+        # instead, leaving the judgment honest.
+        seq = ([str(s) for s in self._supplied_sequence()]
+               or [str(s) for s in (self.state.planned_sequence or [])])
         sid = str(self.state.subsprint_id)
-        nxt = None
         if sid in seq:
             i = seq.index(sid)
             nxt = seq[i + 1] if i + 1 < len(seq) else None
-        position = (f'This is the LAST sub-sprint of the sequence {seq} — set '
-                    f'next_subsprint to null.' if nxt is None else
-                    f'The sequence {seq} continues with {nxt!r} — set '
-                    f'next_subsprint to "{nxt}".')
+            position = (f'This is the LAST sub-sprint of the sequence {seq} — '
+                        f'set next_subsprint to null.' if nxt is None else
+                        f'The sequence {seq} continues with {nxt!r} — set '
+                        f'next_subsprint to "{nxt}".')
+        else:
+            position = ("The engine could not anchor this sub-sprint in a "
+                        "signed/planned sequence — derive next_subsprint "
+                        "honestly from the milestone plan (the next planned "
+                        "sub-sprint id, or null ONLY if this is genuinely the "
+                        "milestone's final sub-sprint); if you cannot tell, "
+                        "surface it in `reason` rather than guessing.")
         prompt = (lessons + directive
                   + f"Close sub-sprint {self.state.subsprint_id}. "
                     f"Emit a deliver-close-verdict.\n\n"
