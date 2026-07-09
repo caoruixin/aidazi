@@ -889,17 +889,21 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     # charter's notifications.on_pause hook AFTER the pause is durably persisted (the campaign
     # already _saved it) and the exit-10 result is computed. FAIL-SAFE: the notifier can never
     # affect the pause or exit code. Default-OFF ⇒ a complete no-op (byte-identical).
+    # Phase-3: a halt_condition_met pause is campaign-tier (NOT a unit), so paused_unit is empty
+    # — surface the identity from halt_condition_pending instead (R2 NB-1).
+    _hcp = getattr(st, "halt_condition_pending", None) or {}
+    _pause_milestone_id = paused_unit.get("milestone_id") or _hcp.get("milestone_id")
+    _pause_subsprint_id = paused_unit.get("subsprint_id") or _hcp.get("subsprint_id")
     if exit_code == CAMPAIGN_EXIT_PAUSED:
         try:
             import pause_notifier as _pn
-            _hcp = getattr(st, "halt_condition_pending", None) or {}
             pause_ctx = {
                 "campaign_id": campaign_id,
                 "reason": st.pause_reason,
                 "checkpoint": (os.path.basename(st.pause_checkpoint)
                                if st.pause_checkpoint else None),
-                "milestone_id": paused_unit.get("milestone_id") or _hcp.get("milestone_id"),
-                "subsprint_id": paused_unit.get("subsprint_id") or _hcp.get("subsprint_id"),
+                "milestone_id": _pause_milestone_id,
+                "subsprint_id": _pause_subsprint_id,
             }
             _ledger = audit.audit_path(campaign_id, os.path.join(home, "audit"))
 
@@ -916,8 +920,9 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         "status": st.status,
         "pause_reason": st.pause_reason,
         "pause_checkpoint": st.pause_checkpoint,
-        "pause_milestone_id": paused_unit.get("milestone_id"),
-        "pause_subsprint_id": paused_unit.get("subsprint_id"),
+        "pause_milestone_id": _pause_milestone_id,
+        "pause_subsprint_id": _pause_subsprint_id,
+        "pause_condition_id": _hcp.get("condition_id"),   # Phase-3 halt_condition_met identity
         "pause_loop_id": paused_unit.get("loop_id"),
         "milestone_index": st.milestone_index,
         "milestones_total": len(plan.get("milestones") or []),
@@ -972,6 +977,20 @@ def _campaign_resume_hint(result: dict) -> str:
                 f'"campaign_id": {result.get("campaign_id")!r}, '
                 f'"pause_reason": "completeness_gap_review", "checkpoint": {base!r} '
                 "(NO subsprint_id), then re-run with --resume --decision <file>")
+    if reason == "halt_condition_met":
+        # Phase-3: a PRE-SET structural halt YOU declared. Campaign-tier (NO subsprint_id);
+        # binds to the condition_id + the per-pause nonce basename.
+        cpt = result.get("pause_checkpoint")
+        base = os.path.basename(cpt) if cpt else None
+        return ('  -> your pre-set halt condition '
+                f'{result.get("pause_condition_id")!r} fired. Author a campaign-decision.json '
+                'with "choice": "proceed"|"abort", '
+                f'"campaign_id": {result.get("campaign_id")!r}, '
+                '"pause_reason": "halt_condition_met", '
+                f'"condition_id": {result.get("pause_condition_id")!r}, '
+                f'"milestone_id": {result.get("pause_milestone_id")!r}, '
+                f'"checkpoint": {base!r} (NO subsprint_id), then re-run with '
+                "--resume --decision <file>")
     cpt = result.get("pause_checkpoint")
     base = os.path.basename(cpt) if cpt else None
     ident = (f'"campaign_id": {result.get("campaign_id")!r}, '

@@ -177,7 +177,8 @@
     "halt_condition_pending": {
       "type": ["object", "null"],
       "additionalProperties": false,
-      "description": "Phase-3 (design §3.5). The DURABLE identity of the OUTSTANDING halt_condition_met pause (the file-based decision resolver binds to it). signed_scope_hash is the cascade epoch, captured at HALT time. Additive; absent/null ⇒ no halt_condition_met pause outstanding.",
+      "description": "Phase-3 (design §3.5). The DURABLE identity of the OUTSTANDING halt_condition_met pause (the file-based decision resolver binds to it). signed_scope_hash is the cascade epoch, captured at HALT time. Additive; absent/null ⇒ no halt_condition_met pause outstanding. When present it MUST be complete (the resolver identity-binds against it) — an incomplete record is a fail-closed state error (R2 NB-2).",
+      "required": ["condition_id", "condition_digest", "metric", "ack_scope", "ack_key", "milestone_id", "subsprint_id", "checkpoint_basename", "facts", "signed_scope_hash", "resolved"],
       "properties": {
         "condition_id": {"type": "string"},
         "condition_digest": {"type": "string"},

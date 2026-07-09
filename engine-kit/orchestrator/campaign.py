@@ -918,7 +918,17 @@ class Campaign:
         outstanding and the plan was re-signed to a NEW epoch since the cascade's FIRST halt
         (pending.signed_scope_hash != live), drop the ENTIRE provisional set + discard pending
         so every cascade condition re-arms in the current epoch. Called at the TOP of EP-pre
-        (after _authority_fresh passes, so the live hash is a signed epoch)."""
+        (after _authority_fresh passes, so the live hash is a signed epoch).
+
+        Mutates IN-MEMORY only — it must NOT persist here [R2 B-1]. At this point run() has
+        already flipped status to STATUS_RUNNING in-memory for the redispatch, and the cursor
+        unit has NOT started; a _save now would persist STATUS_RUNNING for a never-started unit,
+        so a crash before dispatch would drive crash-recovery to run_unit(resume=True) and the
+        Driver would raise on the missing unit state.json (the exact hazard the barrier-free
+        ACT_REDISPATCH_FRESH path avoids). The flush is instead persisted by the NEXT durable
+        save — the re-fire _pause (if a condition re-matches) or the unit-outcome save (if none
+        does). A crash before that save replays from the last PAUSED state (proceed's save) and
+        re-does this deterministic flush; no STATUS_RUNNING-before-dispatch window exists."""
         pending = self.state.halt_condition_pending
         if not pending:
             return
@@ -928,7 +938,6 @@ class Campaign:
             self._audit("campaign_halt_condition_epoch_rearm",
                         {"milestone_id": pending.get("milestone_id"),
                          "condition_id": pending.get("condition_id")})
-            self._save()
 
     def _halt_commit_cascade(self) -> None:
         """Promote the whole provisional set → permanent and clear pending, IN-MEMORY, once
