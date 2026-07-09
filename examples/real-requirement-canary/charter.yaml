@@ -93,9 +93,13 @@ tooling:
     # anchor repo checks on $EVAL_REPO_DIR (set by the driver from --repo-dir).
     # stdout IS the F5 evidence artifact the Acceptance judge reads: print the
     # ENTIRE delivered file (numbered) so the artifact carries the actual
-    # observable proof for BOTH milestones' acceptance bars — never a silent
-    # `grep -q`. The exit gate stays the M1 sentinel (true at both gates).
-    cmd: "cat -n \"$EVAL_REPO_DIR/notes/hello.md\" && grep -qx HELLO-REQ-M1 \"$EVAL_REPO_DIR/notes/hello.md\""
+    # observable proof — never a silent `grep -q`. The gate fires after EVERY
+    # sub-sprint of EVERY milestone and the plan is MODEL-decomposed, so an
+    # intermediate sub-sprint may legitimately precede the file's creation:
+    # the gate passes while the file does not exist yet, and ENFORCES the M1
+    # sentinel from the moment it does (milestone-close Acceptance then judges
+    # the full bar against the printed evidence).
+    cmd: "if [ -e \"$EVAL_REPO_DIR/notes/hello.md\" ]; then cat -n \"$EVAL_REPO_DIR/notes/hello.md\" && grep -qx HELLO-REQ-M1 \"$EVAL_REPO_DIR/notes/hello.md\"; else echo 'notes/hello.md not yet created (pre-M1 sub-sprint)'; fi"
     timeout_seconds: 30
   acceptance:
     mode: auto               # + calibrated + human_ON_the_loop ⇒ ADVISORY pass

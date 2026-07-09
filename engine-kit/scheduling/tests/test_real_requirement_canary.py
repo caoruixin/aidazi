@@ -80,9 +80,14 @@ class RealRequirementCanaryTests(unittest.TestCase):
         cls.requirement = os.path.join(cls.tmp, "requirement.md")
         shutil.copy(os.path.join(_CANARY, "requirement.md"), cls.requirement)
         cls.plan = os.path.join(cls.tmp, "campaign-plan.json")
-        # The bootstrap run dir lives OUTSIDE the workspace so unit diffs stay
-        # clean (only compact/ lands in the repo, committed before the run).
-        cls.boot = os.path.join(cls.tmp, "bootstrap-run")
+        # The bootstrap run dir MUST live INSIDE the workspace (the default
+        # <repo>/.runs/... derivation): the real claude_code agents' sandbox
+        # restricts reads to the session working directory (= the repo), so the
+        # brief + requirement snapshot are unreadable anywhere else — round 3
+        # proved a sibling tmp dir makes the Stage-1 Deliver blind. Unit-diff
+        # hygiene is covered by the review prompts' engine-artifact exclusion
+        # (`.runs/` is named there) + the pre-campaign commit below.
+        cls.boot = os.path.join(cls.ws, ".runs", f"campaign-bootstrap-{_CID}")
         cls.home = os.path.join(cls.tmp, "campaign-home")
 
     @classmethod
@@ -106,8 +111,10 @@ class RealRequirementCanaryTests(unittest.TestCase):
         return proc
 
     def _requirement_args(self, *extra):
+        # NO --run-dir override: the default <repo>/.runs/campaign-bootstrap-<cid>
+        # keeps the brief + requirement snapshot inside the agents' readable root.
         return ("--requirement", self.requirement, "--campaign-out", self.plan,
-                "--campaign-id", _CID, "--run-dir", self.boot,
+                "--campaign-id", _CID,
                 "--repo-dir", self.ws, "--allow-real", *extra)
 
     def _campaign_args(self, *extra):

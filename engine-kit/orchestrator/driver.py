@@ -2447,9 +2447,13 @@ class Driver:
                 f"may be dropped.\n"
                 f"OUTPUT CONTRACT: your ENTIRE final response IS the brief document "
                 f"(markdown, with explicit scope_in / scope_out / closure_contract / "
-                f"kpi sections) — the engine materializes it VERBATIM as the brief "
-                f"artifact; do NOT attempt to write any file yourself (your sandbox "
-                f"is read-only) and do NOT wrap the brief in commentary.")
+                f"kpi sections, AND a DELIVERY PLAN section listing the "
+                f"requirement's numbered steps IN ORDER, each quoting its "
+                f"byte-exact deliverable — exact file contents / exact sentinel "
+                f"lines VERBATIM, never paraphrased) — the engine materializes it "
+                f"VERBATIM as the brief artifact; do NOT attempt to write any file "
+                f"yourself (your sandbox is read-only) and do NOT wrap the brief "
+                f"in commentary.")
         # ARTIFACT spawn (a brief is a doc, NOT a verdict) → schema_key=None.
         out = self._spawn("research", prompt, schema_key=None,
                           lessons_block=lessons)
@@ -2467,8 +2471,17 @@ class Driver:
         if self._bootstrap_enabled():
             _bpath = os.path.join(self.run_dir, ref)
             os.makedirs(os.path.dirname(_bpath), exist_ok=True)
-            _btext = (out if isinstance(out, str)
-                      else json.dumps(out, ensure_ascii=False, indent=1))
+            # Adapters wrap a non-JSON artifact response as {"artifact": <text>}
+            # — unwrap it so the brief on disk is the READABLE markdown the
+            # Stage-1/Stage-2 decompose agents must read (a JSON-escaped blob
+            # measurably degraded decompose fidelity in real canary round 2).
+            if (isinstance(out, dict) and isinstance(out.get("artifact"), str)
+                    and len(out) == 1):
+                _btext = out["artifact"]
+            elif isinstance(out, str):
+                _btext = out
+            else:
+                _btext = json.dumps(out, ensure_ascii=False, indent=1)
             with open(_bpath, "w", encoding="utf-8") as fh:
                 fh.write(_btext)
             self._audit("brief_materialized",
@@ -2927,22 +2940,38 @@ class Driver:
         p = (
             f"Decompose the SIGNED milestone brief at `{brief_abs}` into an ordered "
             f"CAMPAIGN BACKLOG of milestones (NOT sub-sprints — each milestone is "
-            f"decomposed into sub-sprints in a separate follow-up step). Emit a "
-            f"campaign-decompose-verdict JSON object: goal (the campaign goal, "
-            f"distilled from the brief) + milestones[] where each milestone "
-            f"declares id (path-safe), objective (one line, objectively closable), "
-            f"acceptance_bar (one-line close condition), modules (repo paths it "
-            f"will touch), layers (Δ-9 fix-layers), and optionally depends_on "
-            f"(earlier milestone ids) and milestone_signals (closed vocabulary "
-            f"[a11y, design, frontend, interaction, performance, ui], ONLY where "
-            f"genuinely applicable).\n"
+            f"decomposed into sub-sprints in a separate follow-up step). Read the "
+            f"brief IN FULL first.\n"
+            f"FIDELITY CONTRACT: the milestones MUST mirror the brief's DELIVERY "
+            f"STEPS in order — one milestone per numbered step, NEVER re-grouped "
+            f"by file or module. Every objective and acceptance_bar MUST QUOTE the "
+            f"byte-exact observable content the brief demands for that step (exact "
+            f"sentinel lines / exact file contents, verbatim); a generic bar like "
+            f"'valid non-empty content' is FORBIDDEN — downstream agents see ONLY "
+            f"your text, never the brief.\n"
             f"HARD LIMITS: 1-12 milestones; every milestone's modules+layers MUST "
             f"stay INSIDE the human-signed Gate-1 envelope quoted below — the "
             f"engine runs a deterministic guard and HALTS on any expansion.\n"
             f"SIGNED GATE-1 ENVELOPE (verbatim):\n"
             f"- modules_in_scope: {env.get('modules_in_scope')}\n"
             f"- layers_allowed: {env.get('layers_allowed')}\n"
-            f"- explicitly_out_of_scope: {env.get('explicitly_out_of_scope')}\n")
+            f"- explicitly_out_of_scope: {env.get('explicitly_out_of_scope')}\n"
+            "OUTPUT — return ONE JSON object and NOTHING else (no prose, no code "
+            "fence), EXACTLY this shape — BOTH top-level keys are REQUIRED:\n"
+            "  {\n"
+            "    \"goal\": \"<the campaign goal, distilled from the brief>\",\n"
+            "    \"milestones\": [\n"
+            "      { \"id\": \"<path-safe id, e.g. m1-create>\",\n"
+            "        \"objective\": \"<one line, objectively closable>\",\n"
+            "        \"acceptance_bar\": \"<one-line close condition>\",\n"
+            "        \"modules\": [\"<repo path from the envelope>\"],\n"
+            "        \"layers\": [\"<Δ-9 layer from the envelope>\"],\n"
+            "        \"depends_on\": [\"<earlier milestone id>\"] } ]\n"
+            "  }\n"
+            "depends_on is OPTIONAL (omit on the first milestone); "
+            "milestone_signals is OPTIONAL (closed vocabulary [a11y, design, "
+            "frontend, interaction, performance, ui]) — omit unless genuinely "
+            "applicable. Do NOT invent other keys.\n")
         ledger = getattr(self, "_bootstrap_ledger", None)
         if ledger is not None:
             try:  # lazy import — campaign.py imports driver types; avoid a cycle.
@@ -2979,9 +3008,16 @@ class Driver:
             f"Decompose CAMPAIGN MILESTONE `{mid}` — objective: "
             f"{milestone.get('objective')}; acceptance_bar: "
             f"{milestone.get('acceptance_bar')} — of the SIGNED brief at "
-            f"`{brief_abs}` into an ordered list of sub-sprints. Emit a "
-            f"deliver-plan-verdict: each sub_sprint declares id, objective, "
-            f"scope_in, scope_out, modules, layers, exit_criteria.\n"
+            f"`{brief_abs}` into an ordered list of sub-sprints.\n"
+            f"FIDELITY CONTRACT: the Dev agent executing a sub-sprint sees ONLY "
+            f"that sub-sprint's spec — never the brief, never this milestone "
+            f"text. COPY the byte-exact deliverable content (exact file contents "
+            f"/ exact sentinel lines, verbatim from the brief) into scope_in and "
+            f"exit_criteria; generic objectives like 'establish structure' are "
+            f"FORBIDDEN. Use the MINIMUM number of sub-sprints — ONE is correct "
+            f"when the milestone is a single small change; every sub-sprint must "
+            f"move the milestone's acceptance_bar closer to true and the FINAL "
+            f"sub-sprint must make it TRUE.\n"
             f"HARD LIMITS: at most "
             f"{CAMPAIGN_DECOMPOSE_MAX_SUBSPRINTS_PER_MILESTONE} sub-sprints; "
             f"sub-sprint ids MUST be unique across the WHOLE campaign (prefix "
@@ -2990,13 +3026,26 @@ class Driver:
             f"- modules_in_scope: {env.get('modules_in_scope')}\n"
             f"- layers_allowed: {env.get('layers_allowed')}\n"
             f"- explicitly_out_of_scope: {env.get('explicitly_out_of_scope')}\n"
+            "OUTPUT — return ONE JSON object and NOTHING else (no prose, no code "
+            "fence), EXACTLY this shape — the top-level `sub_sprints` key is "
+            "REQUIRED and every listed field of each entry is REQUIRED:\n"
+            "  {\n"
+            "    \"sub_sprints\": [\n"
+            f"      {{ \"id\": \"{mid}-s1\",\n"
+            "        \"objective\": \"<one line>\",\n"
+            "        \"scope_in\": [\"<concrete deliverable>\"],\n"
+            "        \"scope_out\": [\"<explicit non-goal>\"],\n"
+            "        \"modules\": [\"<repo path from the envelope>\"],\n"
+            "        \"layers\": [\"<Δ-9 layer from the envelope>\"],\n"
+            "        \"exit_criteria\": [\"<observable close condition>\"] } ]\n"
+            "  }\n"
             "TASK-SIGNALS (Track 1 — task-aware skill mounting): for a sub-sprint "
             "whose work involves UI/frontend/accessibility, ALSO set its OPTIONAL "
             "`task_signals` array using ONLY the closed vocabulary "
             "[a11y, design, frontend, interaction, performance, ui]; pick the FEW "
             "signals that genuinely apply and OMIT task_signals entirely for "
             "non-UI sub-sprints. An out-of-vocabulary signal is rejected "
-            "(schema-invalid).")
+            "(schema-invalid). Do NOT invent other keys.")
 
     def _step_campaign_decompose(self) -> None:
         """campaign_decompose_pending (design §3) — the two-stage decompose:
