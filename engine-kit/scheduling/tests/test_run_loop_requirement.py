@@ -333,6 +333,12 @@ class TestRequirementChain(unittest.TestCase):
         # [R2.2 B-1] fail-closed across the refusal window: coverage claims that
         # verified against a wired ledger must be RE-refused if the ledger is
         # gone by the time the plan is re-validated on resume.
+        # [R2.3 NB, acknowledged] the mock backlog carries no coverage claims,
+        # so THIS fixture exercises the dormant-direction + convergence only;
+        # the claim-bearing (c) recheck-on-resume is pinned at the driver tier
+        # (test_driver.TestCampaignBootstrap coverage-claims tests, which prove
+        # verdict reuse re-runs (c) with the re-supplied ledger) and the
+        # emission-tier duplicate below is pure-function pinned.
         with tempfile.TemporaryDirectory() as td:
             env = _Env(td)
             ledger_path = os.path.join(env.repo, "docs",

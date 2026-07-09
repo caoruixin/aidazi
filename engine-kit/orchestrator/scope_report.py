@@ -691,6 +691,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "(default: <campaign-home>/scope-baseline.json)")
     parser.add_argument("--json", action="store_true",
                         help="emit the full report as JSON instead of the text block")
+    parser.add_argument("--repo-dir", default=None,
+                        help="the adopter repo dir — REQUIRED to verify a plan whose "
+                             "signoff binds compact prompt files (prompt_artifacts_digest, "
+                             "Phase-2 design §3.5): without it a digest-bearing signed "
+                             "plan reads 'stale' (fail-closed), matching the runner")
     parser.add_argument("--requirement-ledger", default=None,
                         help="path to the requirement ledger (requirement-ledger.schema."
                              "json) — adds the Δ-19 per-REQ projection + REQUIREMENT_"
@@ -768,7 +773,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 charter = _drv.load_charter(args.charter)
             except Exception:  # noqa: BLE001 - charter optional for the projection
                 charter = None
-        req_report = compute_requirement_coverage(plan, state, ledger, charter=charter)
+        req_report = compute_requirement_coverage(plan, state, ledger, charter=charter,
+                                                   repo_dir=args.repo_dir)
 
     if args.json:
         out = report
