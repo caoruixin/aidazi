@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidazi.framework/schemas/campaign-decompose-verdict.schema.json",
+  "title": "Deliver campaign-decomposition verdict (Stage 1 backlog)",
+  "description": "Phase-2 requirement-driven chain (archive/2026-07-09-phase2-requirement-chain-design.md §3.2). Output shape for the Deliver Agent's STAGE-1 campaign decomposition in the campaign_bootstrap pre-chain: the SIGNED research brief decomposed into an ordered MILESTONE backlog (not sub-sprints — each milestone's sub-sprints are Stage 2, reusing deliver-plan-verdict.schema.json). Parsed ONLY in loop_mode: campaign_bootstrap after the Gate-1 sign-off; no existing mode touches it. Per-milestone modules/layers feed the deterministic envelope guard against the Gate-1 signed_envelope SNAPSHOT; they are recorded in the decompose sidecar, never in the emitted campaign plan (campaign-plan.schema.json is closed). maxItems 12 is a deterministic bound on Stage-2 spawn fan-out (design §3.2 [R0.2 B-3]).",
+  "type": "object",
+  "required": ["goal", "milestones"],
+  "additionalProperties": false,
+  "properties": {
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The user-facing campaign goal, distilled from the SIGNED brief. Projected verbatim into campaign-plan.json `goal`."
+    },
+    "milestones": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "description": "Ordered milestone backlog. Order is the default execution order (depends_on may add constraints; the projection validates the DAG via campaign.topological_order).",
+      "items": {
+        "type": "object",
+        "required": ["id", "objective", "acceptance_bar", "modules", "layers"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "description": "Path-safe milestone id (mirrors campaign-plan.schema.json milestone id constraints)."
+          },
+          "objective": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One-line, objectively closable milestone objective."
+          },
+          "acceptance_bar": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One-line close condition for the milestone (projected into the plan; the milestone-close Acceptance gate judges against the signed intent contract + this bar)."
+          },
+          "modules": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"},
+            "description": "Modules this milestone will touch. Union (with Stage-2 sub-sprint modules) is checked against the Gate-1 signed_envelope snapshot's modules_in_scope by the envelope guard. Sidecar-only — not projected into the plan."
+          },
+          "layers": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "infra",
+                "java_guard",
+                "runtime_guard",
+                "workflow_definition",
+                "prompt_projection",
+                "skill_state",
+                "semantic_planner",
+                "eval_spec",
+                "product_policy",
+                "judge_calibration",
+                "human_review_required"
+              ],
+              "description": "Δ-9 fix-layer (same closed enum as deliver-plan-verdict.schema.json)."
+            },
+            "description": "Δ-9 fix-layers this milestone will touch. Same envelope-guard role as modules. Sidecar-only."
+          },
+          "covers_req_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^REQ-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+            "description": "Δ-19 §3.4 requirement ids this milestone covers. Coverage claims REQUIRE a wired requirement ledger to verify (design §3.3(c) [R0 B-4]): with no ledger, ANY covers_req_ids is a deterministic refusal; with a ledger, every rid must exist in it. Cross-milestone uniqueness enforced at projection (campaign.py Campaign ingress semantics)."
+          },
+          "depends_on": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1},
+            "description": "Milestone ids that must complete before this one (validated as a DAG by topological_order at projection)."
+          },
+          "functional_acceptance": {
+            "type": "string",
+            "enum": ["static", "browser_e2e"],
+            "description": "Optional per-milestone acceptance class. When a wired ledger classifies a covered rid as user_facing, the projection FORCES browser_e2e (OW-AUTO / PR#7 semantics) and OW-M3 re-verifies."
+          },
+          "milestone_signals": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "enum": ["a11y", "design", "frontend", "interaction", "performance", "ui"]},
+            "description": "Track 1 / universal-skill-mounting: optional SIGNED task-affinity signals for the milestone (closed vocabulary; projected into the plan's milestone_signals and drift-guarded by milestone_signals_digest at sign time)."
+          }
+        }
+      }
+    }
+  }
+}

@@ -118,6 +118,13 @@ DRIVER_RESUME_CHECKPOINTS: frozenset = frozenset({
     "review_spec_refinement",
     "acceptance_spec_refinement",
     "customer_gate1_signoff",
+    # Phase-2 campaign_bootstrap (design §3.1/§3.3 [R0 B-5]/[R0.3 N-1]): both can
+    # only FIRE inside the bootstrap pre-chain (no campaign exists yet), but they
+    # are classified here UNCONDITIONALLY so the Driver-checkpoint inventory stays
+    # total. Resolution = human fixes the named input (charter envelope / ledger),
+    # then the bootstrap re-enters the pending state on --resume (Mechanism A).
+    "scope_envelope_unset",
+    "campaign_decompose_refusal",
 })
 # Mechanism B — ordinary STATE_HALTED human gates: resume=True would no-op
 # (driver.py:2100), so the campaign reads the resolved decision and dispatches the
@@ -1046,7 +1053,8 @@ class Campaign:
         active, 'signed' requires the stored signed_scope_hash to MATCH the live
         recomputed hash; a post-signoff edit (or a charter-default flip — G1) ⇒ 'stale';
         a bare top-level signed_by_human with no signoff block ⇒ 'pre_f1' (one re-sign)."""
-        return signoff_status(self.plan, self.charter, self.ledger)
+        return signoff_status(self.plan, self.charter, self.ledger,
+                              repo_dir=self.repo_dir)
 
     # ----- Track-2 T2-A universal F1 freshness gate (design §2.1) --------- #
     def _authority_fresh(self) -> bool:
@@ -1146,7 +1154,8 @@ class Campaign:
             self.state.engine_restamp = None   # human re-sign supersedes the engine epoch
             return
         self.plan = apply_engine_restamp_to_plan(
-            self.plan, self.charter, self.state.engine_restamp, self.ledger)
+            self.plan, self.charter, self.state.engine_restamp, self.ledger,
+            repo_dir=self.repo_dir)
 
     @staticmethod
     def _entry_equal_except_seq(a: dict, b: dict) -> bool:
@@ -1256,6 +1265,20 @@ class Campaign:
             return False
         if stored_digest is not None:
             live_env["milestone_signals_digest"] = stored_digest
+        # Phase-2 §3.5 [R0.4 B-1] × TD6 (R2 B-2): the SAME verify-then-carry-
+        # forward for the prompt-artifact digest — a prompt-byte change (or an
+        # unverifiable repo_dir on a digest-bearing plan) is NEVER an engine
+        # delta ⇒ refuse (block for the human re-sign); otherwise carry the
+        # SIGNED digest into the rebuilt envelope so a legitimate follow-up
+        # restamp does not drop the snapshot copy and read falsely stale.
+        # (The inserted gapfix sub-sprint is fed by a campaign-injected work
+        # contract, not a compact file, so the live recompute is unchanged.)
+        live_pad = prompt_artifacts_digest(self.plan, self.repo_dir)
+        stored_pad = signoff.get("prompt_artifacts_digest")
+        if live_pad != stored_pad:
+            return False
+        if stored_pad is not None:
+            live_env["prompt_artifacts_digest"] = stored_pad
         if not self._is_authorized_followup_insertion(
                 stored_env, live_env, inserted_index):
             return False
@@ -1424,7 +1447,8 @@ class Campaign:
             return None
         import scope_report as _scope
         coverage = _scope.compute_requirement_coverage(
-            self.plan, self.state.to_dict(), self.ledger, charter=self.charter)
+            self.plan, self.state.to_dict(), self.ledger, charter=self.charter,
+            repo_dir=self.repo_dir)
         return _scope.build_gap_report(coverage)
 
     def _gap_followup_eligible(self, gap_report):
@@ -2924,9 +2948,53 @@ def milestone_signals_digest(plan: Optional[dict]) -> Optional[str]:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def prompt_artifacts_digest(plan: Optional[dict],
+                            repo_dir: Optional[str]) -> Optional[str]:
+    """Phase-2 §3.5 [R0.3 B-2] (archive/2026-07-09-phase2-requirement-chain-
+    design.md) — the canonical digest binding the plan's EXECUTABLE compact
+    prompt files (``<repo>/compact/<sid>-{dev,review}-prompt.md``) into the
+    campaign_plan_signoff, mirroring ``milestone_signals_digest``.
+
+    Returns None (DORMANT — legacy plans byte-identical) when ``repo_dir`` is
+    None/unresolvable OR when NO sub-sprint in any milestone's
+    ``subsprint_sequence`` has a compact file. Otherwise sha256 over canonical
+    ``[[sid, {"dev": sha256?, "review": sha256?}], …]`` sorted by sid, one entry
+    per sid that has ≥1 compact file (per-file keys record WHICH exist, so a
+    post-sign deletion changes the digest just like an edit). Deliberately
+    OUTSIDE ``_signed_scope_H`` (H byte-stability); authority comes from
+    ``signoff_status`` recomputing this live + the snapshot copy, under the same
+    process-level (non-cryptographic) signoff trust model as the signals digest."""
+    if not repo_dir or not os.path.isdir(repo_dir):
+        return None
+    sids: set = set()
+    for m in (plan or {}).get("milestones") or []:
+        if isinstance(m, dict):
+            sids.update(str(s) for s in (m.get("subsprint_sequence") or []))
+    entries = []
+    for sid in sorted(sids):
+        rec = {}
+        for kind in ("dev", "review"):
+            p = os.path.join(repo_dir, "compact", f"{sid}-{kind}-prompt.md")
+            if os.path.isfile(p):
+                try:
+                    with open(p, "rb") as fh:
+                        rec[kind] = hashlib.sha256(fh.read()).hexdigest()
+                except OSError:
+                    # An EXISTING-but-unreadable bound file must not silently
+                    # vanish from the basis — record a sentinel that can never
+                    # equal a real sha, so verification reads 'stale' (fail-closed).
+                    rec[kind] = "unreadable"
+        if rec:
+            entries.append([sid, rec])
+    if not entries:
+        return None
+    return hashlib.sha256(_canonical_json(entries).encode("utf-8")).hexdigest()
+
+
 def stamp_signoff(plan: dict, charter: Optional[dict], *, signer: str = "human",
                   signed_at: str = "", charter_ref: str = "",
-                  ledger: Optional[dict] = None) -> dict:
+                  ledger: Optional[dict] = None,
+                  repo_dir: Optional[str] = None) -> dict:
     """Return a DEEP COPY of `plan` with a freshly-stamped `signoff` block — the F1
     "sign" action (the human can't hand-compute the hash). Used by the --sign-plan CLI
     and tests. Re-running it after a scope edit RE-STAMPS the snapshot (a new signature
@@ -2956,6 +3024,16 @@ def stamp_signoff(plan: dict, charter: Optional[dict], *, signer: str = "human",
     if _msd is not None:
         out["signoff"]["milestone_signals_digest"] = _msd
         out["signoff"]["scope_envelope"]["milestone_signals_digest"] = _msd
+    # Phase-2 §3.5 [R0.3 B-2]: bind the plan's compact prompt files the SAME way —
+    # BOTH top-level and the snapshot copy; KEY OMITTED entirely when no repo dir
+    # is supplied or no bound compact file exists (legacy signing byte-identical).
+    # Signing with --repo-dir is the opt-in: bootstrap-emitted plans always sign
+    # with it (their handoff commands carry it), and a hand-authored campaign that
+    # signs with --repo-dir + compact files gains the same protection.
+    _pad = prompt_artifacts_digest(out, repo_dir)
+    if _pad is not None:
+        out["signoff"]["prompt_artifacts_digest"] = _pad
+        out["signoff"]["scope_envelope"]["prompt_artifacts_digest"] = _pad
     return out
 
 
@@ -3101,11 +3179,21 @@ def signoff_snapshot_authentic(plan: Optional[dict]) -> bool:
     snap_digest = snapshot.get("milestone_signals_digest")
     if (top_digest is None) != (snap_digest is None):
         return False
-    return top_digest == snap_digest
+    if top_digest != snap_digest:
+        return False
+    # Phase-2 §3.5 [R0.3 B-2]: the prompt_artifacts digest is snapshot-bound the
+    # SAME way — both-or-neither present and equal (a one-sided/tampered copy
+    # reads NOT-authentic). Pre-feature snapshots carry neither ⇒ unchanged.
+    top_pad = signoff.get("prompt_artifacts_digest")
+    snap_pad = snapshot.get("prompt_artifacts_digest")
+    if (top_pad is None) != (snap_pad is None):
+        return False
+    return top_pad == snap_pad
 
 
 def signoff_status(plan: Optional[dict], charter: Optional[dict] = None,
-                   ledger: Optional[dict] = None) -> str:
+                   ledger: Optional[dict] = None,
+                   repo_dir: Optional[str] = None) -> str:
     """campaign_plan_signoff status: 'signed' | 'stale' | 'pre_f1' | 'unsigned'
     (design §3.3.1). When F1 is inactive this is the legacy bare-`signed_by_human`
     check. When active: a `signoff` block with signed_by_human:true is 'signed' ⟺ its
@@ -3141,6 +3229,21 @@ def signoff_status(plan: Optional[dict], charter: Optional[dict] = None,
                        if isinstance(envelope, dict) else None)
         if stored_digest != live_digest or snap_digest != stored_digest:
             return "stale"
+        # Phase-2 §3.5 [R0.3 B-2] — prompt-artifact freshness, GATED on the
+        # STORED digest's presence (a legacy plan signed WITHOUT a digest stays
+        # 'signed' even when compact files exist at verify time — dormant in
+        # BOTH directions). When present: the two copies must agree AND the live
+        # recompute must match — a post-sign edit/deletion of any bound compact
+        # file, OR an unresolvable repo_dir (live None), reads 'stale'
+        # (fail-closed: the human re-signs after reviewing the changed prompts).
+        stored_pad = signoff.get("prompt_artifacts_digest")
+        snap_pad = (envelope.get("prompt_artifacts_digest")
+                    if isinstance(envelope, dict) else None)
+        if stored_pad is not None or snap_pad is not None:
+            if snap_pad != stored_pad:
+                return "stale"
+            if prompt_artifacts_digest(plan, repo_dir) != stored_pad:
+                return "stale"
         return "signed"
     if plan.get("signed_by_human") is True:
         return "pre_f1"
@@ -3192,7 +3295,8 @@ def _hash_from_envelope(plan: dict, charter: Optional[dict],
 
 def apply_engine_restamp_to_plan(plan: Optional[dict], charter: Optional[dict],
                                  engine_restamp: Optional[dict],
-                                 ledger: Optional[dict] = None) -> dict:
+                                 ledger: Optional[dict] = None,
+                                 repo_dir: Optional[str] = None) -> dict:
     """Return `plan` with its signoff aligned to the authorized engine epoch (E* = the
     plan-file signed envelope + the append-only deltas pinned in `engine_restamp`) IFF that
     reconstruction reproduces the pinned signed_scope_hash; otherwise `plan` unchanged. PURE
@@ -3206,8 +3310,15 @@ def apply_engine_restamp_to_plan(plan: Optional[dict], charter: Optional[dict],
     plan = plan or {}
     if not f1_required(plan):
         return plan
-    if signoff_status(plan, charter, ledger) == "signed":
+    if signoff_status(plan, charter, ledger, repo_dir=repo_dir) == "signed":
         return plan   # genuinely / human re-signed → the engine epoch is moot
+    # Phase-2 §3.5 [R0.4 B-1] verify-then-carry-forward: the restamp below NEVER
+    # recomputes prompt_artifacts_digest — the top-level copy rides dict(signoff)
+    # and the scope_envelope copy rides the deepcopy of the original envelope in
+    # _reconstruct_authorized_envelope, both VERBATIM. A prompt-artifact-stale
+    # plan therefore STAYS stale after a restamp (the digest check re-fires at
+    # every freshness consumer); an engine restamp can never bless a post-sign
+    # prompt edit.
     restamp = engine_restamp or {}
     pinned = restamp.get("signed_scope_hash")
     deltas = restamp.get("deltas") or []

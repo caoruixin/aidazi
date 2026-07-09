@@ -193,6 +193,27 @@ STATE_DECOMPOSE_PENDING = "decompose_pending"    # decompose into the sub-sprint
 LOOP_MODE_DELIVERY_ONLY = "delivery_only"
 LOOP_MODE_FULL_CHAIN_GUIDED = "full_chain_guided"
 
+# Phase-2 requirement-driven chain (archive/2026-07-09-phase2-requirement-chain-design.md
+# §2) — the INTERNAL campaign-bootstrap mode. NOT exposed in run_loop's --loop-mode
+# choices: only the --requirement entry constructs a Driver with it. It drives
+# research → gate1 → campaign_decompose_pending and ENDS (never enters the delivery
+# loop); Driver.run() refuses it (run_campaign_bootstrap is the only entry).
+LOOP_MODE_CAMPAIGN_BOOTSTRAP = "campaign_bootstrap"
+
+# The NEW campaign-tier third pre-state (design §3): Deliver decomposes the SIGNED
+# brief into an ordered milestone backlog + per-milestone sub-sprint plans
+# (two-stage). Out-of-band like the P6.1 pre-states; only campaign_bootstrap
+# reaches it.
+STATE_CAMPAIGN_DECOMPOSE_PENDING = "campaign_decompose_pending"
+
+# Deterministic Stage-2 fan-out bounds (design §3.2 [R0.2 B-3]). The Stage-2 verdict
+# schema (deliver-plan-verdict.schema.json) is SHARED with the single-milestone tier
+# and stays unbounded there; the bootstrap enforces these in code, checked
+# immediately after each Stage-2 schema validation and BEFORE any downstream work.
+# Stage 1's own bound (≤ 12 milestones) is schema-enforced (maxItems).
+CAMPAIGN_DECOMPOSE_MAX_SUBSPRINTS_PER_MILESTONE = 8
+CAMPAIGN_DECOMPOSE_MAX_TOTAL_SUBSPRINTS = 60
+
 # The out-of-band guided pre-states, in the order the bootstrap drives them. Kept
 # separate from LOOP_ORDER on purpose (they are not part of the per-sub-sprint
 # linear loop) — see _drive_guided_prestates().
@@ -277,6 +298,9 @@ def load_verdict_schemas(schemas_dir: Optional[str] = None) -> dict[str, dict]:
         # (the decompose_pending pre-state), so existing delivery_only charters are
         # unaffected, exactly like the acceptance schema above.
         ("deliver_plan", "deliver-plan-verdict.schema.json"),
+        # Phase-2 — the STAGE-1 campaign-backlog verdict for campaign_bootstrap
+        # (design §3.2). Same load-unconditionally/use-only-in-mode discipline.
+        ("campaign_decompose", "campaign-decompose-verdict.schema.json"),
     ):
         path = os.path.join(base, fname)
         with open(path, "r", encoding="utf-8") as fh:
@@ -497,6 +521,27 @@ class RunState:
     #: task-aware skill selection and FAILS CLOSED on a mismatch (never silently mutates which
     #: skills mount). None ⇒ no task_signals authored ⇒ no check (byte-identical to a pre-1-c run).
     task_signals_digest: Optional[str] = None
+    # ---- Phase-2 campaign_bootstrap state (design §2/§3). ALL default to None/False
+    #      and are emitted ONLY when set, so every existing mode's state.json is
+    #      byte-identical (from_dict tolerates absence).
+    #   signed_envelope    : the Gate-1-SIGNED scope envelope SNAPSHOT [R0 B-2]
+    #                        {modules_in_scope, layers_allowed, explicitly_out_of_scope}
+    #                        captured at the human `sign`; every campaign-tier consumer
+    #                        reads THIS, never the live charter. Live-charter drift ⇒
+    #                        the signature is stale ⇒ fresh gate-1 (§2 step 2).
+    #   requirement_ref    : {path (run-dir-relative snapshot), sha256} of the ingested
+    #                        requirement file [R0 B-3] — the canonical Research input.
+    #   campaign_backlog   : persisted Stage-1/Stage-2 decompose verdicts
+    #                        {envelope, stage1, stage2: {milestone_id: verdict}} —
+    #                        reused on resume for interrupted runs / external-input
+    #                        refusals; DROPPED on envelope change or Deliver-output
+    #                        faults so a refusal loop converges via fresh decompose.
+    #   campaign_planned   : the campaign backlog passed the full validation stack
+    #                        (the bootstrap's terminal flag, analog of milestone_planned).
+    signed_envelope: Optional[dict] = None
+    requirement_ref: Optional[dict] = None
+    campaign_backlog: Optional[dict] = None
+    campaign_planned: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -536,6 +581,16 @@ class RunState:
                if self.failing_criteria_by_round else {}),
             **({"e2e_selfsmoke_round": self.e2e_selfsmoke_round}
                if self.e2e_selfsmoke_round else {}),
+            # Phase-2 campaign_bootstrap: emit ONLY when set — every existing mode's
+            # state.json round-trips byte-identically (additive; absence tolerated).
+            **({"signed_envelope": self.signed_envelope}
+               if self.signed_envelope is not None else {}),
+            **({"requirement_ref": self.requirement_ref}
+               if self.requirement_ref is not None else {}),
+            **({"campaign_backlog": self.campaign_backlog}
+               if self.campaign_backlog is not None else {}),
+            **({"campaign_planned": self.campaign_planned}
+               if self.campaign_planned else {}),
         }
 
     @classmethod
@@ -570,6 +625,10 @@ class RunState:
             failing_criteria_by_round=[list(s) for s in
                                        d.get("failing_criteria_by_round", [])],
             e2e_selfsmoke_round=int(d.get("e2e_selfsmoke_round", 0)),
+            signed_envelope=d.get("signed_envelope"),
+            requirement_ref=d.get("requirement_ref"),
+            campaign_backlog=d.get("campaign_backlog"),
+            campaign_planned=bool(d.get("campaign_planned", False)),
         )
 
 
@@ -1993,7 +2052,14 @@ class Driver:
             "- Working-tree diff for this sub-sprint (read the changed files with "
             "Read/Grep/Glob).\n"
             "Reference only — read on demand; raw transcripts are NOT embedded here "
-            "(stable evidence references, not copied content).\n\n",
+            "(stable evidence references, not copied content).\n"
+            "EXPECTED ENGINE ARTIFACTS — `.orchestrator/`, `.runs/` and "
+            "`docs/checkpoints/` are orchestrator STATE written by the delivery "
+            "loop itself, NOT Dev-authored changes: do not report them at all. "
+            "`compact/` and `eval/` are GOVERNED content (executable prompt "
+            "sources / governed test data — process/prompt-artifact-rules.md; "
+            "Dev must not edit eval bad_cases): a Dev CHANGE to either IS a "
+            "reportable finding unless Scope IN explicitly names it.\n\n",
             "## Review responsibilities\n"
             "1. Anti-hardcode kernel — apply the 9-question kernel to EVERY diff "
             "that touches a semantic surface (prompt / runtime semantic decision / "
@@ -2315,6 +2381,16 @@ class Driver:
         ic = self.charter.get("intent_contract") or {}
         return bool(ic.get("confirmed_by_human"))
 
+    def _bootstrap_enabled(self) -> bool:
+        """True iff this run is in the Phase-2 campaign_bootstrap mode (design §2).
+        Every bootstrap-only path is gated behind this so full_chain_guided AND
+        delivery_only stay byte-identical. NOTE the deliberate DECOUPLING [R0.2 B-1]:
+        in this mode a confirmed intent_contract does NOT pre-set brief_signed —
+        research + gate-1 ALWAYS run (the intent contract is the standing ACCEPTANCE
+        authority; gate-1 is the per-requirement SCOPE authority; conflating them
+        would skip research and no brief would ever exist)."""
+        return self.loop_mode == LOOP_MODE_CAMPAIGN_BOOTSTRAP
+
     def _supplied_sequence(self) -> list[str]:
         """The charter's pre-supplied approved sub-sprint sequence
         (autonomy.approved_scope.subsprint_sequence), or []. A non-empty sequence
@@ -2355,14 +2431,64 @@ class Driver:
                     f"so the customer can sign off at Gate 1. Do NOT widen beyond "
                     f"the stated intent — scope widening needs the Gate-1 human "
                     f"checkpoint.")
+        # Phase-2 campaign_bootstrap [R0.2 B-2]: ground the brief in the ingested
+        # requirement SNAPSHOT. Conditional on the bootstrap mode + a recorded
+        # requirement_ref, so every existing mode's research prompt is BYTE-IDENTICAL.
+        # The path is rendered ABSOLUTE (the agent's cwd is the work repo, not the
+        # run dir — the same frame-fix _acceptance_evidence_abs established for F5).
+        if self._bootstrap_enabled() and self.state.requirement_ref:
+            _req_abs = os.path.join(
+                self.run_dir, str(self.state.requirement_ref.get("path") or ""))
+            prompt += (
+                f"\nREQUIREMENT (campaign bootstrap): the customer requirement this "
+                f"brief MUST be grounded in is the snapshot at `{_req_abs}` "
+                f"(sha256 {self.state.requirement_ref.get('sha256')}). Read it IN "
+                f"FULL first; the brief's scope_in/scope_out, closure_contract and "
+                f"kpi must each trace to that requirement — nothing in the brief may "
+                f"come from anywhere else, and nothing material in the requirement "
+                f"may be dropped.\n"
+                f"OUTPUT CONTRACT: your ENTIRE final response IS the brief document "
+                f"(markdown, with explicit scope_in / scope_out / closure_contract / "
+                f"kpi sections, AND a DELIVERY PLAN section listing the "
+                f"requirement's numbered steps IN ORDER, each quoting its "
+                f"byte-exact deliverable — exact file contents / exact sentinel "
+                f"lines VERBATIM, never paraphrased) — the engine materializes it "
+                f"VERBATIM as the brief artifact; do NOT attempt to write any file "
+                f"yourself (your sandbox is read-only) and do NOT wrap the brief "
+                f"in commentary.")
         # ARTIFACT spawn (a brief is a doc, NOT a verdict) → schema_key=None.
-        self._spawn("research", prompt, schema_key=None, lessons_block=lessons)
+        out = self._spawn("research", prompt, schema_key=None,
+                          lessons_block=lessons)
         # The drafted brief is an artifact under the run dir; we persist a stable
         # reference (deterministic — no clock/uuid; the loop_id + subsprint anchor
         # it) so resume + Gate-1 context point at the same draft.
         ref = f"docs/briefs/{self.state.subsprint_id}__brief.md"
         self.state.brief_draft_ref = ref
         self._save_state()
+        # Phase-2 campaign_bootstrap: MATERIALIZE the brief from the spawn output.
+        # Research routes default to a read-only sandbox, so on a REAL run the
+        # agent cannot write the brief file itself — yet the Stage-1/Stage-2
+        # decompose prompts reference it by absolute path. Bootstrap-only; the
+        # single-tier guided flow is byte-identical (return value was discarded).
+        if self._bootstrap_enabled():
+            _bpath = os.path.join(self.run_dir, ref)
+            os.makedirs(os.path.dirname(_bpath), exist_ok=True)
+            # Adapters wrap a non-JSON artifact response as {"artifact": <text>}
+            # — unwrap it so the brief on disk is the READABLE markdown the
+            # Stage-1/Stage-2 decompose agents must read (a JSON-escaped blob
+            # measurably degraded decompose fidelity in real canary round 2).
+            if (isinstance(out, dict) and isinstance(out.get("artifact"), str)
+                    and len(out) == 1):
+                _btext = out["artifact"]
+            elif isinstance(out, str):
+                _btext = out
+            else:
+                _btext = json.dumps(out, ensure_ascii=False, indent=1)
+            with open(_bpath, "w", encoding="utf-8") as fh:
+                fh.write(_btext)
+            self._audit("brief_materialized",
+                        {"brief_ref": ref,
+                         "bytes": len(_btext.encode("utf-8"))})
         self._audit("research_brief_drafted", {"brief_ref": ref})
 
     def _step_gate1(self) -> dict:
@@ -2439,6 +2565,20 @@ class Driver:
             # + audit; set RunState.brief_signed True.
             self._record_gate_decision(cp_path, "sign", note, resolver)
             self.state.brief_signed = True
+            # Phase-2 campaign_bootstrap [R0 B-2]: SNAPSHOT the envelope the human
+            # just signed (exactly what the checkpoint showed). Every campaign-tier
+            # consumer reads THIS snapshot, never the live charter; live drift ⇒
+            # stale signature ⇒ fresh gate-1 (_bootstrap_envelope_drift_reset).
+            # Guided/delivery modes: untouched (no snapshot).
+            if self._bootstrap_enabled():
+                self.state.signed_envelope = {
+                    "modules_in_scope":
+                        list(ctx["proposed_approved_scope"]["modules_in_scope"]),
+                    "layers_allowed":
+                        list(ctx["proposed_approved_scope"]["layers_allowed"]),
+                    "explicitly_out_of_scope":
+                        list(ctx["proposed_approved_scope"]["explicitly_out_of_scope"]),
+                }
             self._save_state()
             self._audit("customer_gate1_signed",
                         {"resolver": resolver, "note": note,
@@ -2671,6 +2811,586 @@ class Driver:
             self.state.subsprint_id = seq[0]
         return True
 
+    # ----- Phase-2: campaign_bootstrap pre-chain --------------------------- #
+    # research → gate1 → campaign_decompose_pending, then STOP (design §2). The
+    # delivery loop is NEVER entered in this mode; the ONLY public entry is
+    # run_campaign_bootstrap() and Driver.run() refuses the mode (fail-closed).
+    # Authority invariants (§5): gate-1 is _step_gate1 VERBATIM (no-auto-sign);
+    # the ONE tightening is the non-empty-envelope precondition [roadmap R0 B-1]
+    # + the signed-envelope snapshot/drift rule [R0 B-2] — both bootstrap-only.
+    def _bootstrap_envelope(self) -> dict:
+        """The envelope the campaign tier is governed by: the Gate-1 SIGNED
+        snapshot when one exists [R0 B-2], else the LIVE charter scope (pre-sign —
+        exactly what gate-1 would show the human)."""
+        if self.state is not None and self.state.signed_envelope:
+            return dict(self.state.signed_envelope)
+        scope = self.autonomy.get("approved_scope") or {}
+        return {
+            "modules_in_scope": self._modules_in_scope(),
+            "layers_allowed": self._layers_allowed(),
+            "explicitly_out_of_scope":
+                list(scope.get("explicitly_out_of_scope") or []),
+        }
+
+    def _bootstrap_envelope_ok(self) -> bool:
+        """The §3.1 authority precondition [roadmap R0 B-1]: campaign decompose
+        REQUIRES a NON-EMPTY envelope (modules_in_scope AND layers_allowed). On
+        failure: scope_envelope_unset CHECKPOINT (a blocking gate at THIS tier —
+        the single-milestone tier's permissive audit-and-proceed is untouched) +
+        audit + return False; the state REMAINS the persisted pre-state so a
+        --resume re-evaluates after the human fills charter.autonomy.approved_scope
+        (Customer authority — decompose can NEVER define its own envelope)."""
+        assert self.state is not None
+        env = self._bootstrap_envelope()
+        missing = [d for d in ("modules_in_scope", "layers_allowed")
+                   if not env.get(d)]
+        if not missing:
+            return True
+        self._write_checkpoint(
+            "scope_envelope_unset", self.state.subsprint_id,
+            context_md=(
+                f"Campaign auto-decompose requires a NON-EMPTY human-signed Gate-1 "
+                f"envelope; empty dimension(s): {missing}.\n\n"
+                f"At campaign scope the decompose step must NEVER define its own "
+                f"envelope and then check itself against it (roadmap R0 B-1 — a "
+                f"deliberate tightening of the single-milestone tier's permissive "
+                f"empty-envelope path). A human (Customer authority) must fill "
+                f"`charter.autonomy.approved_scope.modules_in_scope` AND "
+                f"`.layers_allowed`, then re-run with --resume."),
+            options_md="- fill_approved_scope_and_resume\n- abort")
+        self._audit("scope_envelope_unset",
+                    {"missing_dimensions": missing, "tier": "campaign_bootstrap"})
+        self._save_state()
+        return False
+
+    def _bootstrap_envelope_drift_reset(self) -> None:
+        """[R0 B-2] Compare the LIVE charter envelope to the Gate-1 SIGNED snapshot
+        on every entry toward campaign decompose (incl. resume). Drift ⇒ the gate-1
+        signature is STALE for the new envelope: clear brief_signed +
+        signed_envelope + the cached decompose verdicts, audit, and let the drive
+        re-enter gate1_pending (a FRESH customer_gate1_signoff over the new
+        envelope). Tighten-only: today the same edit silently changes the guard
+        basis with NO re-sign."""
+        assert self.state is not None
+        if not self.state.signed_envelope:
+            return
+        scope = self.autonomy.get("approved_scope") or {}
+        live = {
+            "modules_in_scope": self._modules_in_scope(),
+            "layers_allowed": self._layers_allowed(),
+            "explicitly_out_of_scope":
+                list(scope.get("explicitly_out_of_scope") or []),
+        }
+        if live == self.state.signed_envelope:
+            return
+        self._audit("gate1_envelope_drift",
+                    {"signed": self.state.signed_envelope, "live": live})
+        self.state.brief_signed = False
+        self.state.signed_envelope = None
+        # Verdicts produced under the old envelope are dropped (design §3.3
+        # preamble: reuse only while the envelope snapshot is unchanged) — AND
+        # the planned flag with them [R1 B-2]: a crash between decompose's
+        # campaign_planned=True save and the `done` save must not let a later
+        # drift skip decompose and mark done with NO valid backlog.
+        self.state.campaign_backlog = None
+        self.state.campaign_planned = False
+        self._save_state()
+
+    def _campaign_decompose_refusal(self, reasons: list[str]) -> None:
+        """[R0.3 N-1] ONE checkpoint kind for every deterministic data-quality
+        refusal in the §3.3 validation stack ((c) coverage authority, (d) global
+        uniqueness; run_loop adds (f)/(g) consumers in Commit B). State REMAINS
+        campaign_decompose_pending — a --resume re-enters and re-runs the stack.
+        Classified DRIVER_RESUME in campaign.py (inventory totality, [R0 B-5])."""
+        assert self.state is not None
+        self._write_checkpoint(
+            "campaign_decompose_refusal", self.state.subsprint_id,
+            context_md=(
+                "Campaign decompose produced a plan that FAILS a deterministic "
+                "data-quality check — the engine refuses to present it for "
+                "signature (design §3.3, 'never show an unsignable plan'):\n\n- "
+                + "\n- ".join(reasons)
+                + "\n\nFix the named input (wire/extend the requirement ledger, or "
+                  "let the engine re-decompose on --resume where indicated), then "
+                  "re-run with --resume."),
+            options_md="- fix_inputs_and_resume\n- abort")
+        self._audit("campaign_decompose_refusal", {"reasons": reasons})
+        # [R2 B-1] The refusal REOPENS the pending state regardless of the
+        # caller's tier: run_loop's post-`done` (e)-(h) refusals must make the
+        # next --resume re-enter the pre-chain (envelope-drift check + full
+        # re-validation) — never early-return on a stale `done`.
+        # [R2.2 B-1] …and clears campaign_planned, so the resume re-ENTERS
+        # _step_campaign_decompose and re-runs the FULL driver-side (a)-(d)
+        # stack against the then-current inputs (e.g. a ledger removed after a
+        # post-done refusal must re-trip the coverage-authority check — OW-M3
+        # alone is dormant without a ledger). The persisted campaign_backlog
+        # cache makes this revalidation spawn-free while the envelope snapshot
+        # is unchanged.
+        self.state.state = STATE_CAMPAIGN_DECOMPOSE_PENDING
+        self.state.halt_resume_state = None
+        self.state.campaign_planned = False
+        self._save_state()
+
+    def _project_campaign_decompose_prompt(self, env: dict) -> str:
+        """Stage-1 prompt (design §3.2): decompose the SIGNED brief into an ordered
+        MILESTONE backlog. Self-contained; the envelope is quoted VERBATIM from the
+        signed snapshot; the requirement-ledger projection is included when a
+        ledger is wired (advisory fields stripped), else coverage claims are
+        forbidden outright [R0 B-4]. NEW prompt — pinned in the golden fixture."""
+        brief_abs = os.path.join(self.run_dir,
+                                 str(self.state.brief_draft_ref or ""))
+        p = (
+            f"Decompose the SIGNED milestone brief at `{brief_abs}` into an ordered "
+            f"CAMPAIGN BACKLOG of milestones (NOT sub-sprints — each milestone is "
+            f"decomposed into sub-sprints in a separate follow-up step). Read the "
+            f"brief IN FULL first.\n"
+            f"FIDELITY CONTRACT: the milestones MUST mirror the brief's DELIVERY "
+            f"STEPS in order — one milestone per numbered step, NEVER re-grouped "
+            f"by file or module. Every objective and acceptance_bar MUST QUOTE the "
+            f"byte-exact observable content the brief demands for that step (exact "
+            f"sentinel lines / exact file contents, verbatim); a generic bar like "
+            f"'valid non-empty content' is FORBIDDEN — downstream agents see ONLY "
+            f"your text, never the brief.\n"
+            f"HARD LIMITS: 1-12 milestones; every milestone's modules+layers MUST "
+            f"stay INSIDE the human-signed Gate-1 envelope quoted below — the "
+            f"engine runs a deterministic guard and HALTS on any expansion.\n"
+            f"SIGNED GATE-1 ENVELOPE (verbatim):\n"
+            f"- modules_in_scope: {env.get('modules_in_scope')}\n"
+            f"- layers_allowed: {env.get('layers_allowed')}\n"
+            f"- explicitly_out_of_scope: {env.get('explicitly_out_of_scope')}\n"
+            "OUTPUT — return ONE JSON object and NOTHING else (no prose, no code "
+            "fence), EXACTLY this shape — BOTH top-level keys are REQUIRED:\n"
+            "  {\n"
+            "    \"goal\": \"<the campaign goal, distilled from the brief>\",\n"
+            "    \"milestones\": [\n"
+            "      { \"id\": \"<path-safe id, e.g. m1-create>\",\n"
+            "        \"objective\": \"<one line, objectively closable>\",\n"
+            "        \"acceptance_bar\": \"<one-line close condition>\",\n"
+            "        \"modules\": [\"<repo path from the envelope>\"],\n"
+            "        \"layers\": [\"<Δ-9 layer from the envelope>\"],\n"
+            "        \"depends_on\": [\"<earlier milestone id>\"] } ]\n"
+            "  }\n"
+            "depends_on is OPTIONAL (omit on the first milestone); "
+            "milestone_signals is OPTIONAL (closed vocabulary [a11y, design, "
+            "frontend, interaction, performance, ui]) — omit unless genuinely "
+            "applicable. Do NOT invent other keys.\n")
+        ledger = getattr(self, "_bootstrap_ledger", None)
+        if ledger is not None:
+            try:  # lazy import — campaign.py imports driver types; avoid a cycle.
+                from campaign import requirement_context_ledger_projection
+                projected = requirement_context_ledger_projection(ledger)
+            except Exception:
+                projected = ledger
+            reqs = [
+                {"id": r.get("id"), "statement": r.get("statement"),
+                 "surface": r.get("surface")}
+                for r in (projected or {}).get("requirements") or []
+                if isinstance(r, dict)]
+            p += (
+                f"REQUIREMENT LEDGER (wired): set each milestone's covers_req_ids "
+                f"ONLY from these requirement ids — an unknown id is a "
+                f"deterministic refusal; leave covers_req_ids off milestones that "
+                f"cover none:\n{json.dumps(reqs, ensure_ascii=False)}\n")
+        else:
+            p += ("NO requirement ledger is wired: do NOT emit covers_req_ids on "
+                  "any milestone (coverage claims require a ledger to verify and "
+                  "are refused without one).\n")
+        return p
+
+    def _project_milestone_subsprints_prompt(self, milestone: dict,
+                                             env: dict) -> str:
+        """Stage-2 prompt (design §3.2): decompose ONE backlog milestone into an
+        ordered sub-sprint plan — the existing single-tier decompose CONTRACT
+        (deliver-plan-verdict shape) adapted to the milestone + the SNAPSHOT
+        envelope. NEW prompt — pinned in the golden fixture."""
+        brief_abs = os.path.join(self.run_dir,
+                                 str(self.state.brief_draft_ref or ""))
+        mid = str(milestone.get("id"))
+        return (
+            f"Decompose CAMPAIGN MILESTONE `{mid}` — objective: "
+            f"{milestone.get('objective')}; acceptance_bar: "
+            f"{milestone.get('acceptance_bar')} — of the SIGNED brief at "
+            f"`{brief_abs}` into an ordered list of sub-sprints.\n"
+            f"FIDELITY CONTRACT: the Dev agent executing a sub-sprint sees ONLY "
+            f"that sub-sprint's spec — never the brief, never this milestone "
+            f"text. COPY the byte-exact deliverable content (exact file contents "
+            f"/ exact sentinel lines, verbatim from the brief) into scope_in and "
+            f"exit_criteria; generic objectives like 'establish structure' are "
+            f"FORBIDDEN. Use the MINIMUM number of sub-sprints — ONE is correct "
+            f"when the milestone is a single small change; every sub-sprint must "
+            f"move the milestone's acceptance_bar closer to true and the FINAL "
+            f"sub-sprint must make it TRUE.\n"
+            f"HARD LIMITS: at most "
+            f"{CAMPAIGN_DECOMPOSE_MAX_SUBSPRINTS_PER_MILESTONE} sub-sprints; "
+            f"sub-sprint ids MUST be unique across the WHOLE campaign (prefix "
+            f"them with the milestone id, e.g. `{mid}-s1`); every sub-sprint's "
+            f"modules+layers MUST stay INSIDE the human-signed Gate-1 envelope:\n"
+            f"- modules_in_scope: {env.get('modules_in_scope')}\n"
+            f"- layers_allowed: {env.get('layers_allowed')}\n"
+            f"- explicitly_out_of_scope: {env.get('explicitly_out_of_scope')}\n"
+            "OUTPUT — return ONE JSON object and NOTHING else (no prose, no code "
+            "fence), EXACTLY this shape — the top-level `sub_sprints` key is "
+            "REQUIRED and every listed field of each entry is REQUIRED:\n"
+            "  {\n"
+            "    \"sub_sprints\": [\n"
+            f"      {{ \"id\": \"{mid}-s1\",\n"
+            "        \"objective\": \"<one line>\",\n"
+            "        \"scope_in\": [\"<concrete deliverable>\"],\n"
+            "        \"scope_out\": [\"<explicit non-goal>\"],\n"
+            "        \"modules\": [\"<repo path from the envelope>\"],\n"
+            "        \"layers\": [\"<Δ-9 layer from the envelope>\"],\n"
+            "        \"exit_criteria\": [\"<observable close condition>\"] } ]\n"
+            "  }\n"
+            "TASK-SIGNALS (Track 1 — task-aware skill mounting): for a sub-sprint "
+            "whose work involves UI/frontend/accessibility, ALSO set its OPTIONAL "
+            "`task_signals` array using ONLY the closed vocabulary "
+            "[a11y, design, frontend, interaction, performance, ui]; pick the FEW "
+            "signals that genuinely apply and OMIT task_signals entirely for "
+            "non-UI sub-sprints. An out-of-vocabulary signal is rejected "
+            "(schema-invalid). Do NOT invent other keys.")
+
+    def _step_campaign_decompose(self) -> None:
+        """campaign_decompose_pending (design §3) — the two-stage decompose:
+        Stage 1 = SIGNED brief → milestone backlog (campaign-decompose-verdict);
+        Stage 2 = one Deliver spawn per milestone → sub-sprint plan
+        (deliver-plan-verdict + _validate_subsprint_spec + code bounds).
+        Then the driver-side validation stack (design §3.3 (a)-(d)):
+        schema/bounds ⇒ GateHardFail; envelope expansion ⇒
+        post_gate1_scope_expansion HALT (verdicts dropped — regeneration is the
+        fix); coverage-claim authority + global sid uniqueness ⇒
+        campaign_decompose_refusal (state stays pending). Sets
+        campaign_planned=True ONLY when everything passes; the projection to
+        campaign-plan.json + compact materialization is the run_loop entry's job
+        (Commit B)."""
+        assert self.state is not None
+        self.state.state = STATE_CAMPAIGN_DECOMPOSE_PENDING
+        if STATE_CAMPAIGN_DECOMPOSE_PENDING not in self.state.history:
+            self.state.history.append(STATE_CAMPAIGN_DECOMPOSE_PENDING)
+        self._save_state()
+
+        # §3.1 precondition re-check (post-sign this reads the SNAPSHOT — set at
+        # gate-1 sign in this mode — so a live-charter edit cannot loosen it).
+        if not self._bootstrap_envelope_ok():
+            return
+        env = self._bootstrap_envelope()
+
+        cache = dict(self.state.campaign_backlog or {})
+        # Verdict reuse is valid ONLY under the envelope it was produced with
+        # (design §3.3 preamble); an envelope change dropped the cache already
+        # (_bootstrap_envelope_drift_reset), this guards direct-entry paths.
+        if cache and cache.get("envelope") != env:
+            cache = {}
+
+        # ---- Stage 1: milestone backlog (reused if persisted).
+        stage1 = cache.get("stage1")
+        if stage1 is None:
+            lessons = self._lessons_block("deliver")
+            prompt = lessons + self._project_campaign_decompose_prompt(env)
+            stage1 = self._spawn("deliver", prompt,
+                                 schema_key="campaign_decompose",
+                                 lessons_block=lessons)
+            cache = {"envelope": env, "stage1": stage1, "stage2": {}}
+            self.state.campaign_backlog = cache
+            self._save_state()
+        milestones = [m for m in (stage1.get("milestones") or [])
+                      if isinstance(m, dict)]
+
+        # ---- Stage 2: per-milestone sub-sprints (sequential; bounded by the
+        # Stage-1 schema maxItems; each reused if persisted).
+        stage2 = dict(cache.get("stage2") or {})
+        total_subsprints = sum(
+            len(v.get("sub_sprints") or []) for v in stage2.values())
+        for m in milestones:
+            mid = str(m.get("id"))
+            if mid in stage2:
+                continue
+            lessons = self._lessons_block("deliver")
+            prompt = lessons + self._project_milestone_subsprints_prompt(m, env)
+            verdict = self._spawn("deliver", prompt, schema_key="deliver_plan",
+                                  lessons_block=lessons)
+            subs = [s for s in (verdict.get("sub_sprints") or [])
+                    if isinstance(s, dict)]
+            # (a) code bounds [R0.2 B-3] — checked IMMEDIATELY, before any
+            # downstream work; the shared schema stays unbounded for other tiers.
+            if len(subs) > CAMPAIGN_DECOMPOSE_MAX_SUBSPRINTS_PER_MILESTONE:
+                raise self._gate_hard_fail(
+                    f"campaign decompose: milestone {mid!r} produced {len(subs)} "
+                    f"sub-sprints (bound "
+                    f"{CAMPAIGN_DECOMPOSE_MAX_SUBSPRINTS_PER_MILESTONE}) — split "
+                    f"the milestone or hand-author the plan",
+                    STATE_CAMPAIGN_DECOMPOSE_PENDING)
+            total_subsprints += len(subs)
+            if total_subsprints > CAMPAIGN_DECOMPOSE_MAX_TOTAL_SUBSPRINTS:
+                raise self._gate_hard_fail(
+                    f"campaign decompose: total sub-sprints exceeded the bound "
+                    f"{CAMPAIGN_DECOMPOSE_MAX_TOTAL_SUBSPRINTS} — narrow the "
+                    f"backlog or hand-author the plan",
+                    STATE_CAMPAIGN_DECOMPOSE_PENDING)
+            # (a) per-spec validation — the same bar the single tier applies.
+            for s in subs:
+                problems = self._validate_subsprint_spec(s)
+                if problems:
+                    raise self._gate_hard_fail(
+                        f"campaign decompose: milestone {mid!r} sub-sprint "
+                        f"{str(s.get('id'))!r} spec invalid: {'; '.join(problems)}",
+                        STATE_CAMPAIGN_DECOMPOSE_PENDING)
+            # (a) WITHIN-milestone id uniqueness (the campaign-plan schema check
+            # at load time is per-milestone too, but this verdict never reaches a
+            # plan if it fails here — fail at the source).
+            _ids = [str(s.get("id")) for s in subs]
+            if len(set(_ids)) != len(_ids):
+                raise self._gate_hard_fail(
+                    f"campaign decompose: milestone {mid!r} produced duplicate "
+                    f"sub-sprint ids: {_ids}",
+                    STATE_CAMPAIGN_DECOMPOSE_PENDING)
+            stage2[mid] = verdict
+            cache["stage2"] = stage2
+            self.state.campaign_backlog = cache
+            self._save_state()
+
+        # ---- (b) envelope guard over Stage-1 AND Stage-2 footprints, against
+        # the SNAPSHOT. §3.1 guaranteed both dims non-empty ⇒ present-envelope
+        # semantics (an empty dim would permit nothing — unreachable here).
+        plan_modules: set[str] = set()
+        plan_layers: set[str] = set()
+        for m in milestones:
+            plan_modules.update(str(x) for x in (m.get("modules") or []))
+            plan_layers.update(str(x) for x in (m.get("layers") or []))
+        for v in stage2.values():
+            for s in (v.get("sub_sprints") or []):
+                if isinstance(s, dict):
+                    plan_modules.update(str(x) for x in (s.get("modules") or []))
+                    plan_layers.update(str(x) for x in (s.get("layers") or []))
+        modules_out = sorted(plan_modules - set(env.get("modules_in_scope") or []))
+        layers_out = sorted(plan_layers - set(env.get("layers_allowed") or []))
+        if modules_out or layers_out:
+            self._write_checkpoint(
+                "post_gate1_scope_expansion", self.state.subsprint_id,
+                context_md=(
+                    f"The CAMPAIGN decomposition widened beyond the human-signed "
+                    f"Gate-1 envelope (snapshot):\n\n"
+                    f"- modules out of envelope: {modules_out}\n"
+                    f"- layers out of envelope: {layers_out}\n\n"
+                    f"The engine HALTS — it does NOT widen scope mid-run. Either "
+                    f"widen approved_scope (a FRESH Gate-1 signature will be "
+                    f"required — the envelope snapshot detects the change) or "
+                    f"simply --resume to let Deliver re-decompose within the "
+                    f"signed envelope (the out-of-envelope verdicts are dropped)."),
+                options_md="- widen_approved_scope\n- resume_to_redecompose\n- abort")
+            self._audit("post_gate1_scope_expansion",
+                        {"modules_out": modules_out, "layers_out": layers_out,
+                         "tier": "campaign_bootstrap"})
+            # Deliver-output fault: DROP the cached verdicts so the refusal loop
+            # converges via fresh decompose, never replays the same expansion.
+            self.state.campaign_backlog = None
+            self.state.state = STATE_HALTED
+            self.state.halt_resume_state = STATE_CAMPAIGN_DECOMPOSE_PENDING
+            self._save_state()
+            return
+
+        # ---- (c) coverage-claim authority [R0 B-4] — BEFORE OW-M3 (run_loop).
+        claimed = {str(r) for m in milestones
+                   for r in (m.get("covers_req_ids") or [])}
+        ledger = getattr(self, "_bootstrap_ledger", None)
+        if claimed and ledger is None:
+            self._campaign_decompose_refusal(
+                [f"milestone coverage claims {sorted(claimed)} require a wired "
+                 f"requirement ledger to verify — wire "
+                 f"`charter.requirements.ledger_path` (then --resume) or let the "
+                 f"engine re-decompose without claims"])
+            return
+        if claimed and ledger is not None:
+            known = {str(r.get("id")) for r in
+                     (ledger.get("requirements") or []) if isinstance(r, dict)}
+            unknown = sorted(claimed - known)
+            if unknown:
+                self._campaign_decompose_refusal(
+                    [f"covers_req_ids not present in the requirement ledger: "
+                     f"{unknown} — add them to the ledger (then --resume) or let "
+                     f"the engine re-decompose"])
+                return
+
+        # ---- (d) global sub-sprint-id/path uniqueness [R0.2 N-2] — the compact
+        # lookup is REPO-GLOBAL, so cross-milestone duplicates would silently
+        # share prompt files.
+        sid_owner: dict[str, str] = {}
+        collisions: list[str] = []
+        for mid, v in stage2.items():
+            for s in (v.get("sub_sprints") or []):
+                sid = str(s.get("id")) if isinstance(s, dict) else ""
+                if sid in sid_owner and sid_owner[sid] != mid:
+                    collisions.append(
+                        f"sub-sprint id {sid!r} appears in milestones "
+                        f"{sid_owner[sid]!r} and {mid!r}")
+                sid_owner.setdefault(sid, mid)
+        if collisions:
+            # Deliver-output fault: drop the implicated milestones' Stage-2
+            # verdicts so --resume regenerates them (fresh ids), keeping the rest.
+            bad_mids = set()
+            for c in collisions:
+                for mid in stage2:
+                    if f"{mid!r}" in c:
+                        bad_mids.add(mid)
+            for mid in bad_mids:
+                stage2.pop(mid, None)
+            cache["stage2"] = stage2
+            self.state.campaign_backlog = cache
+            self._campaign_decompose_refusal(
+                [*collisions,
+                 "the colliding milestones' sub-sprint plans were dropped — "
+                 "--resume regenerates them with campaign-unique ids"])
+            return
+
+        # ---- All driver-side checks passed.
+        self.state.campaign_planned = True
+        self._save_state()
+        self._audit("campaign_decomposed",
+                    {"milestone_count": len(milestones),
+                     "milestone_ids": [str(m.get("id")) for m in milestones],
+                     "total_subsprints": total_subsprints})
+
+    def _drive_bootstrap_prestates(self) -> bool:
+        """Drive the campaign_bootstrap pre-chain (research → gate1 → campaign
+        decompose) honoring halts + the envelope precondition/drift rules.
+        Returns True when the campaign backlog is COMPLETE (validated), False on
+        any halt (state already set + saved by the step). Resume-safe: every step
+        is idempotent and keyed on persisted flags."""
+        assert self.state is not None
+
+        # Entry preflight 0b [roadmap R0 B-1] — fail fast BEFORE any spawn. The
+        # state parks at research_pending so a --resume re-enters here.
+        if self.state.state == STATE_IDLE:
+            self.state.state = STATE_RESEARCH_PENDING
+            self._save_state()
+
+        # Envelope drift check [R0 B-2] — FIRST, before the precondition [R1 B-3]:
+        # the precondition must evaluate the envelope the chain will actually run
+        # under. Checked the other way round, a live drift to an EMPTY envelope
+        # passes the precondition on the stale non-empty snapshot, lets gate-1
+        # sign the empty envelope, and then wedges resume behind the stale empty
+        # snapshot. Drift clears the snapshot ⇒ the precondition below reads the
+        # LIVE charter ⇒ empty halts BEFORE any signature.
+        self._bootstrap_envelope_drift_reset()
+        if not self._bootstrap_envelope_ok():
+            return False
+
+        # research — ALWAYS runs in this mode (decoupled skip rule [R0.2 B-1]);
+        # not re-drafted on resume after a gate-1 halt (draft exists).
+        if not self.state.brief_signed and self.state.brief_draft_ref is None:
+            self._step_research()
+
+        if not self.state.brief_signed:
+            result = self._step_gate1()
+            if result.get("status") != "signed":
+                return False
+
+        if not self.state.campaign_planned:
+            self._step_campaign_decompose()
+            if not self.state.campaign_planned:
+                return False
+        return True
+
+    def run_campaign_bootstrap(self, *, resume: bool = False,
+                               requirement_ref: Optional[dict] = None,
+                               requirement_ledger: Optional[dict] = None
+                               ) -> RunState:
+        """The ONLY public entry for loop_mode campaign_bootstrap (design §2).
+        Drives research → gate1 → campaign_decompose_pending and ENDS (state
+        `done`, audit campaign_bootstrap_complete) — the delivery loop is never
+        entered; campaign execution stays the existing --campaign path.
+
+        ``requirement_ref`` = {path (run-dir-relative snapshot), sha256} recorded
+        into RunState on a fresh run [R0 B-3]. ``requirement_ledger`` = the
+        STRICT-loaded ledger dict (None = absent) — the caller (run_loop) resolves
+        and re-supplies it on every invocation incl. resume; present-but-broken
+        ledgers must have already raised at the caller.
+
+        Resume semantics: state `done` is idempotent (returned as-is); a HALTED
+        state re-enters via halt_resume_state when set, else the pre-chain is
+        re-driven from the persisted flags (gate-1 re-consult / precondition
+        re-evaluate / decompose re-run — incl. after a human `abort`, which parks
+        the run but does not forbid an explicit later resume+sign; no auto-sign
+        path exists in any case). Raises GateHardFail on schema/bounds faults
+        (checkpoint + audit already written)."""
+        if self.loop_mode != LOOP_MODE_CAMPAIGN_BOOTSTRAP:
+            raise ValueError(
+                "run_campaign_bootstrap requires loop_mode="
+                f"{LOOP_MODE_CAMPAIGN_BOOTSTRAP!r} (got {self.loop_mode!r})")
+        self._bootstrap_ledger = requirement_ledger
+        if resume:
+            loaded = self._load_state()
+            if loaded is None:
+                raise FileNotFoundError(
+                    f"resume requested but no state.json at {self.state_path}")
+            # Inverse persisted-state guard [R1 B-1] — mirror of run()'s: a
+            # delivery/guided state.json must never be routed through the
+            # bootstrap pre-chain.
+            if loaded.loop_mode != LOOP_MODE_CAMPAIGN_BOOTSTRAP:
+                raise ValueError(
+                    f"state.json was produced by loop_mode={loaded.loop_mode!r} "
+                    f"— resume it with run(), never run_campaign_bootstrap()")
+            self.state = loaded
+            self._audit("loop_resume", {"from_state": self.state.state,
+                                        "subsprint_id": self.state.subsprint_id})
+            if self.state.state == STATE_DONE:
+                return self.state  # idempotent: the backlog is already complete
+            # Requirement-source drift WARN (design §7): the run-dir SNAPSHOT is
+            # canonical; a changed SOURCE file after a halt is audited, never
+            # silently re-ingested (re-run WITHOUT --resume to re-snapshot).
+            _ref = self.state.requirement_ref or {}
+            _src = _ref.get("source_path")
+            if _src and os.path.isfile(_src):
+                try:
+                    with open(_src, "rb") as _fh:
+                        _cur = hashlib.sha256(_fh.read()).hexdigest()
+                    if _cur != _ref.get("sha256"):
+                        self._audit("requirement_source_drift",
+                                    {"source_path": _src,
+                                     "snapshot_sha256": _ref.get("sha256"),
+                                     "live_sha256": _cur})
+                except OSError:
+                    pass
+            if (self.state.state == STATE_HALTED
+                    and self.state.halt_resume_state):
+                self.state.state = self.state.halt_resume_state
+                self.state.halt_resume_state = None
+        else:
+            self.state = RunState(loop_id=self.loop_id,
+                                  subsprint_id="campaign-bootstrap")
+            self.state.loop_mode = self.loop_mode
+            # DECOUPLED skip rule [R0.2 B-1]: brief_signed is NOT pre-set from
+            # intent_contract.confirmed_by_human in this mode.
+            if requirement_ref is not None:
+                self.state.requirement_ref = dict(requirement_ref)
+            self._audit("loop_start", {
+                "charter_mission": (self.charter.get("mission") or {}).get("id"),
+                "subsprint_id": self.state.subsprint_id,
+                "autonomy": self.autonomy.get("level", "human_in_the_loop"),
+                "loop_mode": self.loop_mode,
+                "context": self.context,
+            })
+            self._audit("campaign_bootstrap_start", {
+                "requirement_ref": self.state.requirement_ref,
+                "ledger_wired": requirement_ledger is not None,
+            })
+            # [R2 NB-2] the DISTINCT ingestion event the design names (§2 step
+            # 1): the requirement snapshot's identity, auditable on its own.
+            if self.state.requirement_ref is not None:
+                self._audit("requirement_ingested",
+                            dict(self.state.requirement_ref))
+        self._save_state()
+        if self._drive_bootstrap_prestates():
+            self.state.state = STATE_DONE
+            self._save_state()
+            self._audit("campaign_bootstrap_complete", {
+                "milestone_count": len(
+                    ((self.state.campaign_backlog or {}).get("stage1") or {})
+                    .get("milestones") or []),
+            })
+        else:
+            self._save_state()
+        return self.state
+
     # ----- the loop -------------------------------------------------------- #
     def run(self, subsprint_id: Optional[str] = None, *, resume: bool = False) -> RunState:
         """Drive one sub-sprint end-to-end (dev→gate→review→close→advance).
@@ -2681,11 +3401,26 @@ class Driver:
         Returns the final RunState. Raises GateHardFail (incl. BudgetExceeded) on
         a hard-fail — having already written the checkpoint + audit event.
         """
+        # Phase-2 fail-closed guard: the campaign_bootstrap mode has its OWN entry
+        # (run_campaign_bootstrap) that never reaches the delivery loop. Letting a
+        # bootstrap-mode Driver through run() would misroute its pre-states into
+        # the single-tier guided chain (research/gate1 states are shared) and then
+        # start delivery work no signature authorized.
+        if self.loop_mode == LOOP_MODE_CAMPAIGN_BOOTSTRAP:
+            raise ValueError(
+                "loop_mode=campaign_bootstrap must use run_campaign_bootstrap(), "
+                "never run()")
         if resume:
             loaded = self._load_state()
             if loaded is None:
                 raise FileNotFoundError(
                     f"resume requested but no state.json at {self.state_path}")
+            # Same Phase-2 guard for the PERSISTED mode: a bootstrap state.json
+            # resumed through run() would misroute (see above) — refuse.
+            if loaded.loop_mode == LOOP_MODE_CAMPAIGN_BOOTSTRAP:
+                raise ValueError(
+                    "state.json was produced by loop_mode=campaign_bootstrap — "
+                    "resume it with run_campaign_bootstrap(), never run()")
             self.state = loaded
             self._audit("loop_resume", {"from_state": self.state.state,
                                         "subsprint_id": self.state.subsprint_id})
@@ -5139,7 +5874,8 @@ class Driver:
         charter = ctx.get("charter")
         coverage = scope_report.compute_requirement_coverage(
             plan, state if isinstance(state, dict) else None, ledger,
-            charter=charter if isinstance(charter, dict) else None)
+            charter=charter if isinstance(charter, dict) else None,
+            repo_dir=self.repo_dir)
         gap_report = scope_report.build_gap_report(coverage)
         err = validate_verdict(gap_report, self._pc_schema("gap-report.schema.json"))
         if err is not None:

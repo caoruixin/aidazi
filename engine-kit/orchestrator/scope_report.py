@@ -278,15 +278,18 @@ _WAIVED_TERMINALS = {
 
 
 def _signoff_status_and_hash(plan: dict, charter: Optional[dict],
-                             ledger: Optional[dict] = None):
+                             ledger: Optional[dict] = None,
+                             repo_dir: Optional[str] = None):
     """(status, live_hash) for the plan's F1 signoff, via the campaign module (lazy
     import — same contract as topological_order below). Never raises: a missing campaign
     module / bad input degrades to ('unsigned', None). OW-M3 B1: pass the LIVE `ledger`
     so covered_req_surfaces enters the recompute identically to sign time — else a
-    plan signed WITH a ledger reads a false 'stale' here (external reporting divergence)."""
+    plan signed WITH a ledger reads a false 'stale' here (external reporting divergence).
+    Phase-2 §3.5 [R0.5 caution]: pass `repo_dir` wherever the runner would — a
+    digest-bearing plan needs the same repo-dir-aware basis here."""
     try:
         import campaign as _cp
-        status = _cp.signoff_status(plan, charter, ledger)
+        status = _cp.signoff_status(plan, charter, ledger, repo_dir=repo_dir)
         signoff = plan.get("signoff") or {}
         live = _cp.compute_signed_scope_hash(
             plan, charter or {}, charter_ref=signoff.get("charter_ref"),
@@ -309,7 +312,8 @@ def _snapshot_authentic(plan: dict) -> bool:
 
 
 def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict,
-                                 charter: Optional[dict] = None) -> dict:
+                                 charter: Optional[dict] = None,
+                                 repo_dir: Optional[str] = None) -> dict:
     """Project ``(ledger, signed plan covers_req_ids, state milestone_outcomes)`` → a
     structured per-REQ coverage report (design §3.6). Pure + deterministic."""
     state = state or {}
@@ -322,7 +326,8 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
     try:
         import campaign as _cp
         plan = _cp.apply_engine_restamp_to_plan(
-            plan, charter, state.get("engine_restamp"), ledger)
+            plan, charter, state.get("engine_restamp"), ledger,
+            repo_dir=repo_dir)
     except Exception:
         pass
     reqs = [r for r in (ledger.get("requirements") or []) if isinstance(r, dict)]
@@ -354,7 +359,12 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
     cursor_mi = (state.get("cursor") or {}).get("milestone_index", 0)
     started = state.get("status") is not None
 
-    status, live_hash = _signoff_status_and_hash(plan, charter, ledger)
+    # [R2.2 B-2] the SAME repo-dir-aware basis as the runner — a digest-bearing
+    # signed plan must not be reported falsely stale (and must not trip the
+    # end-of-campaign not_fresh_signed path) just because reporting forgot the
+    # repo dir the runner verified with.
+    status, live_hash = _signoff_status_and_hash(plan, charter, ledger,
+                                                 repo_dir=repo_dir)
     fresh_signed = status == "signed"
     stale = status == "stale"
     blocked = status in ("stale", "pre_f1")   # signed-intent, but blocked pending re-sign
@@ -681,6 +691,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "(default: <campaign-home>/scope-baseline.json)")
     parser.add_argument("--json", action="store_true",
                         help="emit the full report as JSON instead of the text block")
+    parser.add_argument("--repo-dir", default=None,
+                        help="the adopter repo dir — REQUIRED to verify a plan whose "
+                             "signoff binds compact prompt files (prompt_artifacts_digest, "
+                             "Phase-2 design §3.5): without it a digest-bearing signed "
+                             "plan reads 'stale' (fail-closed), matching the runner")
     parser.add_argument("--requirement-ledger", default=None,
                         help="path to the requirement ledger (requirement-ledger.schema."
                              "json) — adds the Δ-19 per-REQ projection + REQUIREMENT_"
@@ -758,7 +773,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 charter = _drv.load_charter(args.charter)
             except Exception:  # noqa: BLE001 - charter optional for the projection
                 charter = None
-        req_report = compute_requirement_coverage(plan, state, ledger, charter=charter)
+        req_report = compute_requirement_coverage(plan, state, ledger, charter=charter,
+                                                   repo_dir=args.repo_dir)
 
     if args.json:
         out = report

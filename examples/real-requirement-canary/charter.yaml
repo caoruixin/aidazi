@@ -1,0 +1,120 @@
+# REAL requirement-chain canary charter (Phase-2 work item Commit D;
+# archive/2026-07-09-phase2-requirement-chain-design.md §6).
+#
+# The FIRST end-to-end proof of the REQUIREMENT-DRIVEN chain over REAL
+# adapters: one requirement file → real Research drafts the brief → gate-1
+# human sign (decision file) → real Deliver two-stage decompose → EMITTED
+# sign-ready campaign plan + generated compact prompts → --sign-plan →
+# the (Phase-1-proven) real campaign to done, pausing ONLY at
+# advisory_acceptance_pass_signoff per milestone.
+#
+# Preflight prerequisites satisfied HERE (design §2):
+#   - 0a: intent_contract signed (confirmed_by_human: true — the canary
+#     author's signature; the run's evidence doc records it).
+#   - 0b: NON-EMPTY envelope (modules_in_scope + layers_allowed) — and
+#     layers_allowed uses the CLOSED Δ-9 enum (`infra`), because the Stage-1/
+#     Stage-2 decompose verdicts are schema-bound to that enum and the
+#     deterministic envelope guard compares against THIS list verbatim (a
+#     free-form layer name here would make every decompose out-of-envelope).
+#   - 0c: --repo-dir is supplied by the runner (the canary test).
+
+mission:
+  id: real-requirement-canary
+  goal: >-
+    Prove the requirement-driven chain end-to-end with real adapters: a
+    requirement file becomes a signed, RUNNING campaign that delivers
+    notes/hello.md with exact sentinel lines.
+
+# Acceptance judges ONLY against this signed contract (Constitution §3.4).
+intent_contract:
+  goal: >-
+    A notes/hello.md in the workspace repo carrying the canary sentinel lines
+    the requirement names.
+  standard: >-
+    After the first milestone, notes/hello.md contains the exact line
+    HELLO-REQ-M1. After the second, it ALSO contains the exact line
+    HELLO-REQ-M2 while the M1 line is preserved unchanged (M1 first).
+  proof_of_done: >-
+    grep finds the exact sentinel line(s) in notes/hello.md; the eval gate
+    (tooling.eval.cmd) enforces the M1 line deterministically and prints the
+    whole file as the F5 evidence.
+  confirmed_by_human: true   # canary author's signature (see the evidence doc)
+
+autonomy:
+  level: human_on_the_loop   # advisory acceptance ⇒ per-milestone sign-off pause
+  approved_scope:
+    subsprint_sequence:      # charter schema requires non-empty; at campaign
+      - bootstrap-placeholder  # tier this is INERT: the bootstrap decouples the
+                             # skip rules and every campaign unit gets its
+                             # per-milestone sequence from the EMITTED plan
+                             # (derive_milestone_context replaces it verbatim)
+    layers_allowed:          # CLOSED Δ-9 enum member — see the header note
+      - infra
+    modules_in_scope:
+      - notes/hello.md
+      - docs/handoff.md
+  auto_pass_rules:
+    clean_pass_auto_advance: true
+
+budget:
+  max_fix_rounds_total: 2
+  max_wall_clock_minutes: 60
+
+tooling:
+  research:                  # REAL in this canary: drafts the campaign brief
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    tools: [Read, Grep, Glob]
+    timeout_seconds: 600
+  deliver:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    timeout_seconds: 600
+  dev:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    sandbox: workspace_write
+    timeout_seconds: 600
+  review:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    tools: [Read, Grep, Glob]
+    timeout_seconds: 600
+  eval:
+    # The eval cmd runs in the per-gate ARTIFACTS dir, not the work repo —
+    # anchor repo checks on $EVAL_REPO_DIR (set by the driver from --repo-dir).
+    # stdout IS the F5 evidence artifact the Acceptance judge reads: print the
+    # ENTIRE delivered file (numbered) so the artifact carries the actual
+    # observable proof — never a silent `grep -q`. The gate fires after EVERY
+    # sub-sprint of EVERY milestone and the plan is MODEL-decomposed, so an
+    # intermediate sub-sprint may legitimately precede the file's creation:
+    # the gate passes while the file does not exist yet, and ENFORCES the M1
+    # sentinel from the moment it does (milestone-close Acceptance then judges
+    # the full bar against the printed evidence).
+    cmd: "if [ -e \"$EVAL_REPO_DIR/notes/hello.md\" ]; then cat -n \"$EVAL_REPO_DIR/notes/hello.md\" && grep -qx HELLO-REQ-M1 \"$EVAL_REPO_DIR/notes/hello.md\"; else echo 'notes/hello.md not yet created (pre-M1 sub-sprint)'; fi"
+    timeout_seconds: 30
+  acceptance:
+    mode: auto               # + calibrated + human_ON_the_loop ⇒ ADVISORY pass
+    run_at: milestone_close  #   → advisory_acceptance_pass_signoff (the pause
+    judge_calibration:       #   the campaign leg of this canary exercises)
+      status: calibrated
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    tools: [Read, Grep, Glob]
+    timeout_seconds: 600
+    on_fix_required:
+      human_confirm_required: true
+      route_options:
+        - deliver_fix_iteration
+        - re_acceptance_after_evidence
+        - research_contract_revision

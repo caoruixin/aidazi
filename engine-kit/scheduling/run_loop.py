@@ -36,7 +36,9 @@ a reference implementation; on any conflict the spec wins and this file is the b
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import os
 import sys
 from typing import Callable, Dict, Optional
@@ -57,6 +59,7 @@ from adapters import MockAdapter, resolve_adapter_class  # noqa: E402
 from driver import (  # noqa: E402
     Driver, load_charter, route_for_role,
     LOOP_MODE_DELIVERY_ONLY, LOOP_MODE_FULL_CHAIN_GUIDED,
+    LOOP_MODE_CAMPAIGN_BOOTSTRAP, GateHardFail, STATE_DONE,
 )
 
 MODE_OVERNIGHT_AUTOLOOP = "overnight_autoloop"
@@ -406,6 +409,28 @@ def build_adapters(charter: dict, *, allow_real: bool = False,
     if loop_mode == LOOP_MODE_FULL_CHAIN_GUIDED:
         # ("deliver",0)=decompose plan; ("deliver",)=close for every later call.
         deliver_canned = {("deliver", 0): _DRY_PLAN, ("deliver",): _DRY_CLOSE}
+    elif loop_mode == LOOP_MODE_CAMPAIGN_BOOTSTRAP:
+        # Phase-2 dry-run: ("deliver",0)=Stage-1 backlog, ("deliver",)=Stage-2
+        # sub-sprints. Both derive their modules/layers from the CHARTER envelope
+        # (first entry of each dimension) so the deterministic envelope guard
+        # passes for ANY charter that satisfies the non-empty precondition —
+        # a mock dry-run smoke-tests the chain, never the adopter's scope.
+        scope = (charter.get("autonomy") or {}).get("approved_scope") or {}
+        _mod = (list(scope.get("modules_in_scope") or []) or ["src"])[0]
+        _lay = (list(scope.get("layers_allowed") or []) or ["infra"])[0]
+        deliver_canned = {
+            ("deliver", 0): {
+                "goal": "dry-run campaign goal",
+                "milestones": [{
+                    "id": "m1", "objective": "dry-run milestone",
+                    "acceptance_bar": "dry-run bar",
+                    "modules": [_mod], "layers": [_lay]}]},
+            ("deliver",): {"sub_sprints": [{
+                "id": "m1-s1", "objective": "dry-run sub-sprint",
+                "scope_in": ["dry-run deliverable"], "scope_out": ["all else"],
+                "modules": [_mod], "layers": [_lay],
+                "exit_criteria": ["dry-run observable"]}]},
+        }
     canned_by_role = {
         "dev": {("dev",): _DRY_DEV},
         "review": {("review",): _DRY_REVIEW},
@@ -807,7 +832,8 @@ def run_campaign_entry(plan: dict, charter: dict, *,
                 ledger = json.load(fh)
             requirement_coverage = _scope.requirement_summary_line(
                 _scope.compute_requirement_coverage(
-                    plan, st.to_dict(), ledger, charter=charter))
+                    plan, st.to_dict(), ledger, charter=charter,
+                    repo_dir=repo_dir))
         except Exception:
             requirement_coverage = None
 
@@ -815,7 +841,8 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     # actionable, distinct from plain "unsigned"). Best-effort.
     try:
         signoff_status = _cp.signoff_status(
-            plan, charter, load_requirement_ledger(ledger_path))
+            plan, charter, load_requirement_ledger(ledger_path),
+            repo_dir=repo_dir)
     except Exception:
         signoff_status = None
 
@@ -846,9 +873,11 @@ def _campaign_resume_hint(result: dict) -> str:
         sstatus = result.get("signoff_status")
         if sstatus == "stale":
             return ("  -> STALE SIGNOFF: the signed scope-envelope hash no longer matches "
-                    "the plan (a milestone/charter edit). Re-sign (re-stamp the snapshot): "
-                    "re-run with --campaign <plan> --charter <charter> --sign-plan, then "
-                    "--resume")
+                    "the plan (a milestone/charter/compact-prompt edit). Re-sign (re-stamp "
+                    "the snapshot): re-run with --campaign <plan> --charter <charter> "
+                    "--repo-dir <adopter repo> --sign-plan, then --resume (--repo-dir is "
+                    "REQUIRED when the signoff binds compact prompts — "
+                    "prompt_artifacts_digest)")
         if sstatus == "pre_f1":
             return ("  -> PRE-F1 plan (bare signed_by_human, no signoff snapshot). Stamp "
                     "the F1 snapshot once: re-run with --campaign <plan> --charter "
@@ -1107,6 +1136,514 @@ def _resolve_memory_root(cli_root: Optional[str], charter: dict,
     return resolved
 
 
+# --------------------------------------------------------------------------- #
+# Phase-2 — the requirement-driven chain entry (--requirement; design
+# archive/2026-07-09-phase2-requirement-chain-design.md §2-§4, Codex R0.5
+# APPROVE). One command from a requirement file to a sign-ready, RUNNABLE
+# campaign plan: bootstrap pre-chain (research → gate-1 → campaign decompose,
+# Commit A) + the run_loop-tier projection/validation/emission below (Commit B).
+# --------------------------------------------------------------------------- #
+
+def _slugify_campaign_id(path: str) -> str:
+    """Derive a path-safe campaign id from the requirement filename (design
+    §3.3(e)): basename minus extension, non-[A-Za-z0-9._-] → '-', trimmed."""
+    base = os.path.splitext(os.path.basename(path))[0]
+    slug = "".join(c if c.isalnum() or c in "._-" else "-" for c in base)
+    slug = slug.strip("-.").lstrip("_") or "campaign"
+    return slug[:128]
+
+
+def _ingest_requirement(requirement_path: str, run_dir: str) -> dict:
+    """Snapshot the requirement file into the run dir [R0 B-3]: byte copy to
+    <run_dir>/requirement.md + sha256. The SNAPSHOT is canonical from then on
+    (source drift after a halt is a WARN audit — driver resume side)."""
+    with open(requirement_path, "rb") as fh:
+        data = fh.read()
+    os.makedirs(run_dir, exist_ok=True)
+    snap = os.path.join(run_dir, "requirement.md")
+    with open(snap, "wb") as fh:
+        fh.write(data)
+    return {"path": "requirement.md",
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "source_path": os.path.abspath(requirement_path)}
+
+
+def make_bootstrap_decision_resolver(campaign_id: str, decision_path: str,
+                                     run_dir: str):
+    """[design §4 / R0 N-4 / R0.2 N-1] Identity-bound FILE resolver for the
+    bootstrap gate-1 pause. No campaign exists yet, so the DERIVED campaign id
+    is the identity anchor. Reuses campaign-decision.schema.json VERBATIM.
+
+    Fail-closed binding — ALL must hold or the resolver returns None (re-halt):
+    - campaign_id == the derived id (exact);
+    - pause_reason == "customer_gate1_signoff";
+    - checkpoint == the LIVE gate-1 checkpoint basename (the newest
+      customer_gate1_signoff checkpoint in the run dir, exact match);
+    - choice ∈ {sign, reject, abort} (the gate-1 option set);
+    - milestone_id / subsprint_id ABSENT (no unit exists — supplying them is
+      an identity mismatch, refused)."""
+    def _refuse(reason: str):
+        print(f"bootstrap decision REFUSED: {reason} — the gate re-halts; fix "
+              f"the decision file and re-run with --resume.")
+        return None
+
+    def _resolver(gate_id, context, options):
+        if gate_id != "customer_gate1":
+            return None
+        try:
+            with open(decision_path, encoding="utf-8") as fh:
+                decision = json.load(fh)
+        except (OSError, ValueError) as exc:
+            return _refuse(f"unreadable decision file: {exc}")
+        import campaign as _cp  # lazy (campaign imports run_loop)
+        try:
+            _cp._validate_or_raise(decision, "campaign-decision.schema.json",
+                                   "bootstrap decision")
+        except ValueError as exc:
+            return _refuse(str(exc))
+        if decision.get("campaign_id") != campaign_id:
+            return _refuse(f"campaign_id {decision.get('campaign_id')!r} != "
+                           f"derived id {campaign_id!r}")
+        if decision.get("pause_reason") != "customer_gate1_signoff":
+            return _refuse(f"pause_reason {decision.get('pause_reason')!r} != "
+                           f"'customer_gate1_signoff'")
+        if decision.get("milestone_id") or decision.get("subsprint_id"):
+            return _refuse("milestone_id/subsprint_id supplied but NO unit "
+                           "exists at the bootstrap gate")
+        cp_dir = os.path.join(run_dir, "docs", "checkpoints")
+        live = sorted(f for f in (os.listdir(cp_dir)
+                                  if os.path.isdir(cp_dir) else [])
+                      if "__customer_gate1_signoff__" in f)
+        if not live:
+            return _refuse("no live customer_gate1_signoff checkpoint found")
+        if decision.get("checkpoint") != live[-1]:
+            return _refuse(f"checkpoint {decision.get('checkpoint')!r} != live "
+                           f"{live[-1]!r}")
+        choice = decision.get("choice")
+        if choice not in ("sign", "reject", "abort"):
+            return _refuse(f"choice {choice!r} not in sign|reject|abort")
+        return {"choice": choice, "note": str(decision.get("note") or ""),
+                "resolver": "bootstrap-decision-file"}
+    return _resolver
+
+
+def _project_campaign_plan(stage1: dict, stage2: dict, campaign_id: str,
+                           ledger: Optional[dict]) -> dict:
+    """Design §3.3(e): decompose verdicts → campaign-plan.json with EVERY
+    milestone's subsprint_sequence FILLED [R0 B-1]. OW-AUTO derivation: a
+    covered rid classified user_facing forces functional_acceptance browser_e2e
+    (PR#7 semantics; last-occurrence-wins surface map, matching the sign-off
+    gate) — the forcing is re-VERIFIED by OW-M3 in the sign-stack, not trusted.
+    No budget/gap_followup/trunk/isolation invented (schema defaults apply; the
+    human may edit BEFORE signing)."""
+    surface_by_rid: dict = {}
+    for r in (ledger or {}).get("requirements") or []:
+        if isinstance(r, dict) and r.get("id") is not None:
+            surface_by_rid[str(r["id"])] = r.get("surface")
+    milestones = []
+    for m in stage1.get("milestones") or []:
+        mid = str(m.get("id"))
+        entry = {
+            "id": mid,
+            "objective": str(m.get("objective")),
+            "acceptance_bar": str(m.get("acceptance_bar")),
+            "subsprint_sequence": [
+                str(s.get("id")) for s in
+                ((stage2.get(mid) or {}).get("sub_sprints") or [])],
+        }
+        for k in ("covers_req_ids", "depends_on", "milestone_signals"):
+            if m.get(k):
+                entry[k] = [str(x) for x in m[k]]
+        fa = m.get("functional_acceptance")
+        if any(surface_by_rid.get(str(r)) == "user_facing"
+               for r in (m.get("covers_req_ids") or [])):
+            fa = "browser_e2e"
+        if fa:
+            entry["functional_acceptance"] = fa
+        milestones.append(entry)
+    return {"campaign_id": campaign_id, "goal": str(stage1.get("goal")),
+            "delivery_mode": "campaign", "milestones": milestones}
+
+
+def _bootstrap_plan_violations(plan: dict, charter: dict,
+                               ledger: Optional[dict]) -> list:
+    """Design §3.3(f) — the FULL sign-time validation stack run EARLY ('never
+    show an unsignable plan'). Returns refusal reasons (empty ⇒ sign-ready)."""
+    import campaign as _cp  # lazy
+    reasons: list = []
+    try:
+        _cp._validate_or_raise(plan, "campaign-plan.schema.json",
+                               "projected plan")
+    except ValueError as exc:
+        reasons.append(f"projected plan schema-invalid: {exc}")
+        return reasons  # field-level checks below assume the shape
+    try:
+        _cp.topological_order(plan.get("milestones") or [])
+    except ValueError as exc:
+        reasons.append(f"milestone dependency DAG invalid: {exc}")
+    seen_rids: dict = {}
+    for m in plan.get("milestones") or []:
+        for rid in (m.get("covers_req_ids") or []):
+            if rid in seen_rids:
+                reasons.append(
+                    f"covers_req_ids {rid!r} claimed by BOTH "
+                    f"{seen_rids[rid]!r} and {m['id']!r} (at-most-one "
+                    f"covering milestone per REQ)")
+            seen_rids[rid] = m["id"]
+    try:
+        enforce_campaign_plan_for_real_run(plan)
+    except CharterValidationError as exc:
+        reasons.append(f"gap-followup bounds: {exc}")
+    # [R2.2 B-1] coverage-authority defense-in-depth (design §3.3(c)): OW-M3
+    # below is DORMANT without a ledger, so re-assert the no-ledger/unknown-rid
+    # rule HERE too — the emission path must refuse coverage claims it cannot
+    # verify regardless of what the driver-side check saw earlier.
+    _claimed = {str(r) for m in (plan.get("milestones") or [])
+                for r in (m.get("covers_req_ids") or [])}
+    if _claimed and ledger is None:
+        reasons.append(
+            f"coverage claims {sorted(_claimed)} require a wired requirement "
+            f"ledger to verify — wire `charter.requirements.ledger_path` or "
+            f"drop covers_req_ids")
+    elif _claimed:
+        _known = {str(r.get("id")) for r in
+                  (ledger.get("requirements") or []) if isinstance(r, dict)}
+        _unknown = sorted(_claimed - _known)
+        if _unknown:
+            reasons.append(f"covers_req_ids not present in the requirement "
+                           f"ledger: {_unknown}")
+    _viol = _cp.mandatory_e2e_violations(plan, charter, ledger)
+    if _viol:
+        reasons.append(_cp.render_mandatory_e2e_refusal(
+            _viol, action="refusing to present the plan for signature"))
+    # Capability-contract parity with --sign-plan (Phase-4 native-E2E): a plan
+    # whose charter pins a framework capability this deployment lacks can never
+    # be signed — surface it HERE ('never show an unsignable plan'), not at the
+    # human's later sign attempt.
+    if charter.get("required_framework_capabilities"):
+        import framework_capabilities as _fc
+        try:
+            _cap = _fc.required_capability_violations(charter)
+        except _fc.CapabilityContractError as exc:
+            _cap = None
+            reasons.append(f"capability contract: {exc}")
+        if _cap:
+            reasons.append(_fc.render_capability_refusal(
+                _cap, action="refusing to present the plan for signature"))
+    return reasons
+
+
+def _materialize_compact_prompts(drv, stage1: dict, stage2: dict):
+    """Design §3.3(g) [R0 B-1]: write compact/<sid>-{dev,review}-prompt.md for
+    EVERY sub-sprint under the RESOLVED repo dir via the EXISTING projection
+    renderers — the strict-prompt channel the Phase-1 real canary proved.
+    NEVER overwrites (adopter-authored is normative): any pre-existing file ⇒
+    ([], collision reasons). Both files carry the projection front-matter and
+    are re-validated through _validate_compact_text before write."""
+    plans = []
+    reasons = []
+    for m in stage1.get("milestones") or []:
+        mid = str(m.get("id"))
+        for s in ((stage2.get(mid) or {}).get("sub_sprints") or []):
+            sid = str(s.get("id"))
+            dev_path = drv._compact_prompt_path(sid, "dev-prompt")
+            rev_path = drv._compact_prompt_path(sid, "review-prompt")
+            if not dev_path or not rev_path:
+                reasons.append(f"sub-sprint id {sid!r} is not a safe compact "
+                               f"path component (or no repo dir bound)")
+                continue
+            for p in (dev_path, rev_path):
+                if os.path.exists(p):
+                    reasons.append(
+                        f"compact file already exists (adopter-authored is "
+                        f"normative — never overwritten): {p}")
+            plans.append((sid, s, dev_path, rev_path))
+    if reasons:
+        return [], reasons
+    written = []
+    for sid, s, dev_path, rev_path in plans:
+        for path, kind, body in (
+                (dev_path, "Dev", drv._project_dev_prompt(s)),
+                (rev_path, "Review", drv._project_review_prompt(s))):
+            text = ("---\n"
+                    f"title: {kind} prompt (engine projection) — {sid}\n"
+                    f"sprint_id: {sid}\n"
+                    "context_budget:\n"
+                    "  self_contained: true\n"
+                    "projection: true   # generated by the campaign bootstrap; "
+                    "edit the signed plan, not this file\n"
+                    "---\n\n" + body)
+            fm, b = drv._split_front_matter(text)
+            problems = drv._validate_compact_text(fm, b)
+            if problems:
+                return [], [f"generated {kind} compact for {sid!r} failed "
+                            f"content validation: {'; '.join(problems)}"]
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            written.append(
+                (sid, path,
+                 hashlib.sha256(text.encode("utf-8")).hexdigest()))
+    return written, []
+
+
+def run_requirement_entry(charter: dict, *, requirement_path: str,
+                          charter_path: str, repo_dir: Optional[str],
+                          campaign_out: Optional[str],
+                          campaign_id: Optional[str] = None,
+                          run_dir: Optional[str] = None, resume: bool = False,
+                          decision_path: Optional[str] = None,
+                          allow_real: bool = False, clock=None,
+                          memory_root: Optional[str] = None,
+                          allow_gitlink_drift: bool = False,
+                          gate_resolver=None, start: bool = False,
+                          campaign_run_dir: Optional[str] = None,
+                          input_fn=None) -> int:
+    """The --requirement entry (design §2/§3.3(e)-(h)/§3.4). Exit codes reuse
+    the campaign vocabulary: 0 plan emitted; 2 invalid inputs; 10 halted
+    awaiting a human; 1 unexpected error."""
+    clock = clock or _production_clock()
+    # Preflight 0c [R0.3 B-1]: --repo-dir REQUIRED — strict compact lookup (and
+    # therefore the emitted campaign's runnability) is repo_dir-dependent.
+    if not repo_dir or not os.path.isdir(repo_dir):
+        print(f"--requirement REFUSED: --repo-dir is REQUIRED and must be an "
+              f"existing directory (got {repo_dir!r}) — the emitted campaign's "
+              f"strict prompts live under <repo>/compact/ and every printed "
+              f"command carries the same --repo-dir.")
+        return CAMPAIGN_EXIT_INVALID
+    repo_dir = os.path.abspath(repo_dir)
+    if not campaign_out:
+        print("--requirement REFUSED: --campaign-out is REQUIRED (the emitted "
+              "campaign-plan.json path).")
+        return CAMPAIGN_EXIT_INVALID
+    if not resume and not os.path.isfile(requirement_path):
+        print(f"--requirement REFUSED: requirement file not found: "
+              f"{requirement_path}")
+        return CAMPAIGN_EXIT_INVALID
+    # Preflight 0a [R0.2 B-1]: the SAME signed-intent-contract gate acceptance
+    # enforces (Constitution §3.4 invariant #4) — checked up-front so a
+    # requirement-start can never wander into a mid-campaign
+    # acceptance_spec_refinement halt.
+    _ic_problems = Driver._validate_acceptance_context(
+        charter.get("intent_contract") or {})
+    if _ic_problems:
+        print("--requirement REFUSED: charter.intent_contract is not a "
+              "complete HUMAN-SIGNED contract (every campaign unit's "
+              "Acceptance gate will demand it):")
+        for p in _ic_problems:
+            print(f"  - {p}")
+        return CAMPAIGN_EXIT_INVALID
+    # Real-run preflights (parity with the single-loop/campaign entries).
+    if allow_real:
+        for r in (os.path.dirname(os.path.abspath(charter_path)), os.getcwd()):
+            if r:
+                load_local_env(root=r)
+        try:
+            enforce_charter_for_real_run(charter)
+        except CharterValidationError as exc:
+            print(f"REAL RUN ABORTED before any adapter was invoked: {exc}")
+            return CAMPAIGN_EXIT_INVALID
+    # Requirement ledger: STRICT (absent = dormant None; present-but-broken
+    # REFUSES) — re-resolved on every invocation incl. resume (§3.3(c) basis).
+    try:
+        ledger = load_requirement_ledger_strict(
+            resolve_ledger_path(charter, repo_dir))
+    except LedgerError as exc:
+        print(f"--requirement REFUSED: {exc}")
+        return CAMPAIGN_EXIT_INVALID
+
+    cid = campaign_id or _slugify_campaign_id(requirement_path)
+    # [R2 B-3] the campaign id feeds the plan schema, the Driver loop id and
+    # checkpoint/audit paths — an unsafe id must die HERE as a clean rc-2 input
+    # refusal, never as a late traceback or a mid-flow rc 10.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", cid):
+        print(f"--requirement REFUSED: campaign id {cid!r} is not schema-safe "
+              f"(need ^[A-Za-z0-9][A-Za-z0-9._-]{{0,127}}$) — pass a valid "
+              f"--campaign-id.")
+        return CAMPAIGN_EXIT_INVALID
+    loop_id = f"campaign-bootstrap-{cid}"
+    run_dir = run_dir or os.path.join(repo_dir, ".runs", loop_id)
+    requirement_ref = None
+    if not resume:
+        requirement_ref = _ingest_requirement(requirement_path, run_dir)
+    if gate_resolver is None and decision_path:
+        gate_resolver = make_bootstrap_decision_resolver(
+            cid, decision_path, run_dir)
+
+    adapters = build_adapters(charter, allow_real=allow_real,
+                              loop_mode=LOOP_MODE_CAMPAIGN_BOOTSTRAP)
+    drv = Driver(
+        charter, run_dir, adapters, loop_id=loop_id, clock=clock,
+        context={"schedule_mode": "campaign_bootstrap",
+                 "allow_real": allow_real,
+                 "loop_mode": LOOP_MODE_CAMPAIGN_BOOTSTRAP},
+        repo_dir=repo_dir, memory_root=memory_root,
+        loop_mode=LOOP_MODE_CAMPAIGN_BOOTSTRAP, gate_resolver=gate_resolver)
+    try:
+        final = drv.run_campaign_bootstrap(
+            resume=resume, requirement_ref=requirement_ref,
+            requirement_ledger=ledger)
+    except GateHardFail as exc:
+        # [R0 N-3] a deterministic decompose fault (schema/bounds) — checkpoint
+        # already written; a clean rc-10 pause, never a traceback.
+        print(f"campaign bootstrap HALTED (gate_hard_fail): {exc}")
+        if exc.checkpoint_path:
+            print(f"  checkpoint: {exc.checkpoint_path}")
+        print(f"  fix the input (or let Deliver re-decompose) and re-run with "
+              f"--resume.")
+        return CAMPAIGN_EXIT_PAUSED
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"--requirement ERROR: {exc}")
+        return CAMPAIGN_EXIT_INVALID
+
+    if final.state != STATE_DONE:
+        print(f"campaign bootstrap PAUSED at state={final.state} — a human "
+              f"decision or input fix is required (see the newest checkpoint "
+              f"under {os.path.join(run_dir, 'docs', 'checkpoints')}); then "
+              f"re-run with --resume.")
+        return CAMPAIGN_EXIT_PAUSED
+
+    # ---- (e)-(f): projection + the early sign-stack (never show unsignable).
+    backlog = final.campaign_backlog or {}
+    stage1 = backlog.get("stage1") or {}
+    stage2 = backlog.get("stage2") or {}
+    plan = _project_campaign_plan(stage1, stage2, cid, ledger)
+    reasons = _bootstrap_plan_violations(plan, charter, ledger)
+    if reasons:
+        drv._campaign_decompose_refusal(reasons)
+        print("campaign bootstrap REFUSED to present an unsignable plan:")
+        for r in reasons:
+            print(f"  - {r}")
+        return CAMPAIGN_EXIT_PAUSED
+
+    # ---- (g): strict-prompt materialization under the resolved repo dir.
+    written, reasons = _materialize_compact_prompts(drv, stage1, stage2)
+    if reasons:
+        drv._campaign_decompose_refusal(reasons)
+        print("campaign bootstrap REFUSED (compact prompt materialization):")
+        for r in reasons:
+            print(f"  - {r}")
+        return CAMPAIGN_EXIT_PAUSED
+
+    # ---- (h): emit plan + sidecar + audit.
+    plan_bytes = json.dumps(plan, indent=2, sort_keys=True).encode("utf-8")
+    with open(campaign_out, "wb") as fh:
+        fh.write(plan_bytes)
+    verdict_sha256 = hashlib.sha256(json.dumps(
+        {"stage1": stage1, "stage2": stage2}, sort_keys=True,
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+    sidecar = {
+        "stage1": stage1, "stage2": stage2,
+        "envelope": backlog.get("envelope"),
+        "requirement_ref": final.requirement_ref,
+        "verdict_sha256": verdict_sha256,
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "compact_files": [
+            {"sid": sid, "path": os.path.relpath(path, repo_dir),
+             "sha256": sha} for sid, path, sha in written],
+    }
+    sidecar_path = f"{campaign_out}.decompose-verdict.json"
+    with open(sidecar_path, "w", encoding="utf-8") as fh:
+        json.dump(sidecar, fh, indent=2, sort_keys=True)
+    drv._audit("campaign_plan_emitted", {
+        "campaign_id": cid, "plan_path": os.path.abspath(campaign_out),
+        "plan_sha256": sidecar["plan_sha256"],
+        "verdict_sha256": verdict_sha256,
+        "requirement_sha256": (final.requirement_ref or {}).get("sha256"),
+        "compact_files": sidecar["compact_files"],
+        "ledger_wired": ledger is not None,
+    })
+
+    # ---- §3.4 backlog table + the EXACT handoff commands (all carry
+    # --repo-dir [R0.3 B-1]).
+    print(f"=== campaign bootstrap COMPLETE — plan emitted (NOT signed) ===")
+    print(f"campaign_id    : {cid}")
+    print(f"plan           : {os.path.abspath(campaign_out)}")
+    print(f"sidecar        : {os.path.abspath(sidecar_path)}")
+    print(f"goal           : {plan['goal']}")
+    print(f"milestones     :")
+    for m in plan["milestones"]:
+        print(f"  - {m['id']}: {m['objective']}")
+        print(f"      acceptance_bar: {m.get('acceptance_bar')}")
+        print(f"      sub-sprints: {m.get('subsprint_sequence')}")
+        if m.get("covers_req_ids"):
+            print(f"      covers_req_ids: {m['covers_req_ids']} "
+                  f"(acceptance: {m.get('functional_acceptance', 'inherited')})")
+        if m.get("depends_on"):
+            print(f"      depends_on: {m['depends_on']}")
+    print(f"compact prompts: {len(written)} file(s) under "
+          f"{os.path.join(repo_dir, 'compact')}")
+    print(f"REVIEW the plan + prompts, then sign:")
+    print(f"  python3.12 engine-kit/scheduling/run_loop.py "
+          f"--campaign {campaign_out} --charter {charter_path} "
+          f"--repo-dir {repo_dir} --sign-plan")
+    print(f"then run the signed campaign:")
+    print(f"  python3.12 engine-kit/scheduling/run_loop.py "
+          f"--campaign {campaign_out} --charter {charter_path} "
+          f"--repo-dir {repo_dir} --resume --allow-real")
+
+    # ---- Commit C (design §4): the ONE-SITTING inline sign. Interactive ONLY:
+    # a wired input_fn (tests) or a real TTY. `sign` records the human's
+    # identity and stamps campaign_plan_signoff via the SAME stamp_signoff the
+    # --sign-plan CLI uses (with repo_dir, so the §3.5 digest binds); ANY other
+    # answer defers (rc 0, unsigned plan + the printed --sign-plan command).
+    # The engine NEVER signs without this explicit human input.
+    if input_fn is None and (sys.stdin is not None and sys.stdin.isatty()
+                             and sys.stdout.isatty()):
+        input_fn = input
+    if input_fn is None:
+        return CAMPAIGN_EXIT_DONE
+    ans = str(input_fn(
+        "sign campaign_plan_signoff NOW? (type 'sign' to sign, anything else "
+        "defers)> ") or "").strip()
+    if ans != "sign":
+        print("deferred — sign later with the printed --sign-plan command.")
+        return CAMPAIGN_EXIT_DONE
+    signer = str(input_fn("signer identity (name/email)> ") or "").strip()
+    if not signer:
+        print("no signer identity given — deferred (a signature is "
+              "identity-bound; sign later with --sign-plan).")
+        return CAMPAIGN_EXIT_DONE
+    import campaign as _cp  # lazy
+    signed = _cp.stamp_signoff(plan, charter, signer=signer,
+                               signed_at=clock(),
+                               charter_ref=os.path.abspath(charter_path),
+                               ledger=ledger, repo_dir=repo_dir)
+    try:
+        _cp._validate_or_raise(signed, "campaign-plan.schema.json",
+                               "signed plan")
+    except ValueError as exc:
+        print(f"inline sign ERROR: stamped plan is schema-invalid: {exc}")
+        return CAMPAIGN_EXIT_INVALID
+    with open(campaign_out, "w", encoding="utf-8") as fh:
+        json.dump(signed, fh, indent=2, sort_keys=True)
+    drv._audit("campaign_plan_signed_inline", {
+        "campaign_id": cid, "signer": signer,
+        "signed_scope_hash": signed["signoff"]["signed_scope_hash"],
+        "prompt_artifacts_digest":
+            signed["signoff"].get("prompt_artifacts_digest"),
+    })
+    print(f"SIGNED by {signer} — signed_scope_hash="
+          f"{signed['signoff']['signed_scope_hash']}")
+    print(f"run the campaign:")
+    print(f"  python3.12 engine-kit/scheduling/run_loop.py "
+          f"--campaign {campaign_out} --charter {charter_path} "
+          f"--repo-dir {repo_dir} --resume --allow-real")
+    if not start:
+        return CAMPAIGN_EXIT_DONE
+    # --start: continue IN-PROCESS into the campaign entry — every real-run
+    # preflight runs exactly as a --campaign invocation would (run_campaign_entry
+    # is the same function main() dispatches to) [design §4 --start].
+    print("=== --start: driving the signed campaign in-process ===")
+    result = run_campaign_entry(
+        signed, charter, clock=clock, campaign_run_dir=campaign_run_dir,
+        resume=False, decision_path=decision_path, allow_real=allow_real,
+        repo_dir=repo_dir, memory_root=memory_root,
+        allow_gitlink_drift=allow_gitlink_drift)
+    print_campaign_result(result)
+    return result["exit_code"]
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="aidazi schedule entrypoint — run one loop (plain cron/CI).")
@@ -1152,6 +1689,23 @@ def main(argv=None) -> int:
                              "exit. The campaign_plan_signoff re-sign action when a plan "
                              "uses covers_req_ids / is stale (uses --charter for the "
                              "resolved acceptance + charter hash).")
+    parser.add_argument("--requirement", default=None,
+                        help="Phase-2 requirement-driven chain: path to a requirement "
+                             "file (markdown). Drives research → gate-1 → campaign "
+                             "decompose and emits a sign-ready campaign-plan.json to "
+                             "--campaign-out. REQUIRES --repo-dir and a charter with a "
+                             "signed intent_contract. Mutually exclusive with --campaign.")
+    parser.add_argument("--campaign-out", default=None,
+                        help="(with --requirement) output path for the emitted "
+                             "campaign-plan.json (+ a .decompose-verdict.json sidecar)")
+    parser.add_argument("--campaign-id", default=None,
+                        help="(with --requirement) campaign id for the emitted plan "
+                             "(default: a slug of the requirement filename)")
+    parser.add_argument("--start", action="store_true",
+                        help="(with --requirement, INTERACTIVE only) after an inline "
+                             "campaign_plan_signoff sign, continue in-process into the "
+                             "campaign entry (all --campaign preflights apply). Without "
+                             "an inline sign this flag does nothing (default OFF).")
     parser.add_argument("--resume", action="store_true",
                         help="resume a paused run from its persisted state")
     args = parser.parse_args(argv)
@@ -1167,6 +1721,33 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(f"memory.root ERROR: {exc} — aborted before any run.")
         return 2
+
+    # Phase-2 requirement-driven chain (--requirement): requirement file →
+    # bootstrap pre-chain → sign-ready campaign plan. Mutually exclusive with
+    # --campaign (the emitted plan is DRIVEN by a later --campaign invocation).
+    if args.requirement:
+        if args.campaign:
+            print("--requirement and --campaign are mutually exclusive: the "
+                  "bootstrap EMITS the plan a later --campaign run drives.")
+            return CAMPAIGN_EXIT_INVALID
+        # Commit C (design §4): at a TTY with no decision file, wire the SAME
+        # interactive gate resolver full_chain_guided uses, so gate-1 + the
+        # inline plan sign land in ONE sitting. Non-TTY: the decision-file
+        # resolver (when --decision) or a clean rc-10 halt (never auto-signs).
+        _gate_resolver = None
+        if (args.decision is None and sys.stdin is not None
+                and sys.stdin.isatty()):
+            _gate_resolver = make_interactive_gate_resolver()
+        return run_requirement_entry(
+            charter, requirement_path=args.requirement,
+            charter_path=args.charter, repo_dir=args.repo_dir,
+            campaign_out=args.campaign_out, campaign_id=args.campaign_id,
+            run_dir=args.run_dir, resume=args.resume,
+            decision_path=args.decision, allow_real=args.allow_real,
+            clock=_production_clock(), memory_root=effective_memory_root,
+            allow_gitlink_drift=args.allow_gitlink_drift,
+            gate_resolver=_gate_resolver, start=args.start,
+            campaign_run_dir=args.campaign_run_dir)
 
     # Campaign mode: drive the WHOLE milestone backlog (continuous multi-milestone
     # delivery, 以终为始) — NOT one sub-sprint. Pauses persist to the campaign home and
@@ -1215,10 +1796,20 @@ def main(argv=None) -> int:
                     print(_fc.render_capability_refusal(
                         _cap_violations, action="refusing to sign the plan"))
                     return 2
+            _prior_pad = (plan.get("signoff") or {}).get(
+                "prompt_artifacts_digest")
+            if _prior_pad is not None and not args.repo_dir:
+                print("--sign-plan REFUSED: this plan's signoff binds compact "
+                      "prompt files (prompt_artifacts_digest) — re-signing "
+                      "WITHOUT --repo-dir would STRIP that binding and let "
+                      "edited prompts read 'signed'. Pass --repo-dir "
+                      "<adopter repo> (Phase-2 design §3.5, fail-closed).")
+                return 2
             signed = _cp.stamp_signoff(plan, charter,
                                        signed_at=_production_clock()(),
                                        charter_ref=os.path.abspath(args.charter),
-                                       ledger=_ow_ledger)
+                                       ledger=_ow_ledger,
+                                       repo_dir=args.repo_dir)
             try:
                 _cp._validate_or_raise(signed, "campaign-plan.schema.json",
                                        "signed plan")
