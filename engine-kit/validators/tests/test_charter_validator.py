@@ -1065,6 +1065,17 @@ class HaltConditionsTests(unittest.TestCase):
         self.assertFalse(report.ok)
         self.assertIn("halt_condition_id_collision", report.rules_fired)
 
+    def test_id_collision_with_campaign_checkpoint_fails(self):
+        # R1 NB-2: collision vs a CAMPAIGN-tier checkpoint kind (campaign.KNOWN_CHECKPOINTS),
+        # not just the 9 MANDATORY ones — proves the lazy campaign import feeds the guard.
+        c = self._base()
+        c["autonomy"]["halt_conditions"] = [
+            {"id": "milestone_merge",
+             "when": {"metric": "milestone_id", "op": "==", "value": "x"}}]
+        report = cv.validate_charter(c)
+        self.assertFalse(report.ok)
+        self.assertIn("halt_condition_id_collision", report.rules_fired)
+
     def test_id_collision_with_new_kind_fails(self):
         # non-vacuous BECAUSE the id regex allows underscores (R0 N-2).
         c = self._base()

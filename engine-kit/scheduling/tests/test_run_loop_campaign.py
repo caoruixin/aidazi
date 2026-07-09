@@ -1183,5 +1183,72 @@ class GapFollowupRealRunPreflight(unittest.TestCase):
             self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
 
 
+class TestPauseNotifier(unittest.TestCase):
+    """Phase-3 push-not-poll (design §4.3): notifications.on_pause fires on the
+    run_campaign_entry exit-10 path — canary (c). FAIL-SAFE: a failing/timed-out
+    notifier never changes the pause or exit code."""
+
+    def _campaign_ledger_events(self, home, cid):
+        path = audit.audit_path(cid, os.path.join(home, "audit"))
+        if not os.path.isfile(path):
+            return []
+        with open(path, encoding="utf-8") as fh:
+            return [json.loads(line)["type"] for line in fh if line.strip()]
+
+    def _run_paused(self, d, on_pause, timeout_seconds=10):
+        charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+        charter["notifications"] = {"on_pause": on_pause,
+                                    "timeout_seconds": timeout_seconds}
+        # An UNSIGNED plan pauses at campaign_plan_signoff (exit 10) — the simplest
+        # exit-10 path that exercises the notifier hook.
+        plan = _plan("cli-notif", [{"id": "m1", "objective": "x",
+                                    "subsprint_sequence": ["sprint-001"]}])
+        home = os.path.join(d, "h")
+        r = rl.run_campaign_entry(plan, charter, clock=_clock(),
+                                  campaign_run_dir=home,
+                                  adapters=_acceptance_adapters(ACC_PASS))
+        return r, home
+
+    def test_notifier_fires_on_pause(self):
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "fired.txt")
+            r, home = self._run_paused(
+                d, ["/bin/sh", "-c", f'printf "%s" "$AIDAZI_PAUSE_REASON" > "{marker}"'])
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_PAUSED)
+            # the hook ran with pause context injected:
+            self.assertTrue(os.path.isfile(marker))
+            with open(marker, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "campaign_plan_signoff")
+            # and it left a REDACTED audit event on the campaign chain:
+            self.assertIn("campaign_pause_notified",
+                          self._campaign_ledger_events(home, "cli-notif"))
+
+    def test_failing_notifier_does_not_change_pause(self):
+        with tempfile.TemporaryDirectory() as d:
+            r, home = self._run_paused(d, ["/bin/sh", "-c", "exit 3"])
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_PAUSED)   # unchanged
+            self.assertEqual(r["pause_reason"], "campaign_plan_signoff")
+            self.assertIn("campaign_pause_notified",
+                          self._campaign_ledger_events(home, "cli-notif"))
+
+    def test_timeout_notifier_does_not_change_pause(self):
+        with tempfile.TemporaryDirectory() as d:
+            r, _ = self._run_paused(d, ["/bin/sh", "-c", "sleep 30"], timeout_seconds=1)
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_PAUSED)   # unchanged
+
+    def test_no_notifications_block_no_event(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            plan = _plan("cli-nonotif", [{"id": "m1", "objective": "x",
+                                          "subsprint_sequence": ["sprint-001"]}])
+            home = os.path.join(d, "h")
+            r = rl.run_campaign_entry(plan, charter, clock=_clock(),
+                                      campaign_run_dir=home,
+                                      adapters=_acceptance_adapters(ACC_PASS))
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_PAUSED)
+            self.assertNotIn("campaign_pause_notified",
+                             self._campaign_ledger_events(home, "cli-nonotif"))
+
+
 if __name__ == "__main__":
     unittest.main()

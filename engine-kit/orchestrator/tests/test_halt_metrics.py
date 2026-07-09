@@ -66,11 +66,50 @@ class ValidateWhenTests(unittest.TestCase):
         self.assertIn("halt_condition_when_shape", self._rules("nope"))
 
 
+class SchemaLockstepTests(unittest.TestCase):
+    """R1 NB-1: the charter schema metric/op enums MUST equal the registry (single source
+    of truth) — mechanically guard against drift."""
+
+    def _schema(self):
+        import json
+        cur = _ORCH_DIR
+        while True:
+            cand = os.path.join(cur, "schemas", "mission-charter.schema.json")
+            if os.path.isfile(cand):
+                with open(cand, encoding="utf-8") as fh:
+                    return json.load(fh)
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                self.fail("mission-charter.schema.json not found")
+            cur = parent
+
+    def _when_props(self):
+        return (self._schema()["properties"]["autonomy"]["properties"]
+                ["halt_conditions"]["items"]["properties"]["when"]["properties"])
+
+    def test_metric_enum_matches_registry(self):
+        self.assertEqual(set(self._when_props()["metric"]["enum"]),
+                         set(hm.METRIC_NAMES))
+
+    def test_op_enum_matches_registry(self):
+        self.assertEqual(set(self._when_props()["op"]["enum"]), set(hm.OPS))
+
+
 class DigestTests(unittest.TestCase):
     def test_in_array_order_independent(self):
         a = hm.condition_digest({"metric": "milestone_id", "op": "in", "value": ["b", "a"]})
         b = hm.condition_digest({"metric": "milestone_id", "op": "in", "value": ["a", "b"]})
         self.assertEqual(a, b)
+
+    def test_note_is_not_part_of_digest(self):
+        # condition_digest hashes ONLY the `when` object — a `note` change must not alter it.
+        w = {"metric": "milestone_id", "op": "==", "value": "x"}
+        self.assertEqual(hm.condition_digest(w), hm.condition_digest(dict(w)))
+        # (ack_key uses condition_digest(when), so a note edit does not change the key.)
+        c1 = {"id": "a", "note": "one", "when": w}
+        c2 = {"id": "a", "note": "TWO", "when": w}
+        self.assertEqual(hm.ack_key(c1, {"milestone_id": "x"}),
+                         hm.ack_key(c2, {"milestone_id": "x"}))
 
     def test_predicate_change_changes_digest(self):
         a = hm.condition_digest({"metric": "milestone_id", "op": "==", "value": "x"})
