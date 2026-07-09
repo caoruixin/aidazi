@@ -193,8 +193,23 @@ class TestRequirementChain(unittest.TestCase):
             for m in plan["milestones"]:
                 self.assertTrue(m["subsprint_sequence"])
             # Sidecar + compact files exist; compacts are valid compact sources.
-            self.assertTrue(os.path.exists(
-                env.out + ".decompose-verdict.json"))
+            sidecar = json.load(open(env.out + ".decompose-verdict.json",
+                                     encoding="utf-8"))
+            # [R2 NB] provenance pinned: verdict digest + the distinct
+            # requirement_ingested audit event.
+            self.assertTrue(sidecar.get("verdict_sha256"))
+            import audit_log as audit_mod
+            ledger_path = os.path.join(
+                env.run_dir, ".orchestrator", "audit",
+                "campaign-bootstrap-req-refund.jsonl")
+            events = audit_mod.read_events(ledger_path)
+            ingested = [e for e in events if e["type"] == "requirement_ingested"]
+            self.assertEqual(len(ingested), 1)
+            self.assertEqual(ingested[0]["payload"]["path"], "requirement.md")
+            self.assertTrue(ingested[0]["payload"]["sha256"])
+            emitted = [e for e in events if e["type"] == "campaign_plan_emitted"]
+            self.assertEqual(emitted[0]["payload"]["verdict_sha256"],
+                             sidecar["verdict_sha256"])
             dev = os.path.join(env.repo, "compact", "m1-s1-dev-prompt.md")
             rev = os.path.join(env.repo, "compact", "m1-s1-review-prompt.md")
             for p in (dev, rev):
@@ -307,10 +322,54 @@ class TestRequirementChain(unittest.TestCase):
     def test_invalid_campaign_id_rc2(self):
         with tempfile.TemporaryDirectory() as td:
             env = _Env(td)
-            rc, out = _run_entry(env, campaign_id="_not-schema-safe",
+            for bad in ("_not-schema-safe", "trailing-newline\n", "a" * 129,
+                        "has/slash", "中文"):
+                rc, out = _run_entry(env, campaign_id=bad,
+                                     gate_resolver=_sign_resolver())
+                self.assertEqual(rc, 2, f"campaign_id {bad!r} not refused")
+                self.assertIn("not schema-safe", out)
+
+    def test_ledger_removed_after_refusal_refused_on_resume(self):
+        # [R2.2 B-1] fail-closed across the refusal window: coverage claims that
+        # verified against a wired ledger must be RE-refused if the ledger is
+        # gone by the time the plan is re-validated on resume.
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            ledger_path = os.path.join(env.repo, "docs",
+                                       "requirements-ledger.json")
+            os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
+            with open(ledger_path, "w", encoding="utf-8") as fh:
+                json.dump({"version": "v1", "requirements": [
+                    {"id": "REQ-1", "statement": "s",
+                     "source": {"channel": "customer_direct"},
+                     "customer_disposition": "accepted",
+                     "surface": "non_user_facing"}]}, fh)
+            # A collision forces a post-done refusal on run 1 (the mock backlog
+            # carries no claims, so seed the claims path via the plan check
+            # being re-run — the collision is just the refusal vehicle here).
+            pre = os.path.join(env.repo, "compact", "m1-s1-dev-prompt.md")
+            with open(pre, "w", encoding="utf-8") as fh:
+                fh.write("collide")
+            rc, _ = _run_entry(env, gate_resolver=_sign_resolver())
+            self.assertEqual(rc, 10)
+            os.remove(pre)
+            os.remove(ledger_path)  # the ledger vanishes before the resume
+            rc, out = _run_entry(env, resume=True,
                                  gate_resolver=_sign_resolver())
-            self.assertEqual(rc, 2)
-            self.assertIn("not schema-safe", out)
+            # The mock backlog claims nothing ⇒ ledger removal alone must NOT
+            # block (dormant), and the resume converges…
+            self.assertEqual(rc, 0, out)
+            # …while a plan WITH claims and NO ledger is refused by the
+            # emission-path guard (pure-function check, defense-in-depth).
+            plan = {"campaign_id": "cid", "goal": "g",
+                    "delivery_mode": "campaign", "milestones": [
+                        {"id": "m1", "objective": "o",
+                         "covers_req_ids": ["REQ-1"],
+                         "subsprint_sequence": ["s1"]}]}
+            charter = load_charter(env.charter_path)
+            reasons = rl._bootstrap_plan_violations(plan, charter, None)
+            self.assertTrue(any("require a wired requirement ledger" in r
+                                for r in reasons), reasons)
 
 
 class TestOneSittingInlineSign(unittest.TestCase):

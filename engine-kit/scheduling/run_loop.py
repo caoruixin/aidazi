@@ -1292,6 +1292,24 @@ def _bootstrap_plan_violations(plan: dict, charter: dict,
         enforce_campaign_plan_for_real_run(plan)
     except CharterValidationError as exc:
         reasons.append(f"gap-followup bounds: {exc}")
+    # [R2.2 B-1] coverage-authority defense-in-depth (design §3.3(c)): OW-M3
+    # below is DORMANT without a ledger, so re-assert the no-ledger/unknown-rid
+    # rule HERE too — the emission path must refuse coverage claims it cannot
+    # verify regardless of what the driver-side check saw earlier.
+    _claimed = {str(r) for m in (plan.get("milestones") or [])
+                for r in (m.get("covers_req_ids") or [])}
+    if _claimed and ledger is None:
+        reasons.append(
+            f"coverage claims {sorted(_claimed)} require a wired requirement "
+            f"ledger to verify — wire `charter.requirements.ledger_path` or "
+            f"drop covers_req_ids")
+    elif _claimed:
+        _known = {str(r.get("id")) for r in
+                  (ledger.get("requirements") or []) if isinstance(r, dict)}
+        _unknown = sorted(_claimed - _known)
+        if _unknown:
+            reasons.append(f"covers_req_ids not present in the requirement "
+                           f"ledger: {_unknown}")
     _viol = _cp.mandatory_e2e_violations(plan, charter, ledger)
     if _viol:
         reasons.append(_cp.render_mandatory_e2e_refusal(
@@ -1436,7 +1454,7 @@ def run_requirement_entry(charter: dict, *, requirement_path: str,
     # [R2 B-3] the campaign id feeds the plan schema, the Driver loop id and
     # checkpoint/audit paths — an unsafe id must die HERE as a clean rc-2 input
     # refusal, never as a late traceback or a mid-flow rc 10.
-    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", cid):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", cid):
         print(f"--requirement REFUSED: campaign id {cid!r} is not schema-safe "
               f"(need ^[A-Za-z0-9][A-Za-z0-9._-]{{0,127}}$) — pass a valid "
               f"--campaign-id.")

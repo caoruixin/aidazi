@@ -2878,8 +2878,16 @@ class Driver:
         # caller's tier: run_loop's post-`done` (e)-(h) refusals must make the
         # next --resume re-enter the pre-chain (envelope-drift check + full
         # re-validation) — never early-return on a stale `done`.
+        # [R2.2 B-1] …and clears campaign_planned, so the resume re-ENTERS
+        # _step_campaign_decompose and re-runs the FULL driver-side (a)-(d)
+        # stack against the then-current inputs (e.g. a ledger removed after a
+        # post-done refusal must re-trip the coverage-authority check — OW-M3
+        # alone is dormant without a ledger). The persisted campaign_backlog
+        # cache makes this revalidation spawn-free while the envelope snapshot
+        # is unchanged.
         self.state.state = STATE_CAMPAIGN_DECOMPOSE_PENDING
         self.state.halt_resume_state = None
+        self.state.campaign_planned = False
         self._save_state()
 
     def _project_campaign_decompose_prompt(self, env: dict) -> str:

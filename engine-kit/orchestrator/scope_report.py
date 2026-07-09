@@ -359,7 +359,12 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
     cursor_mi = (state.get("cursor") or {}).get("milestone_index", 0)
     started = state.get("status") is not None
 
-    status, live_hash = _signoff_status_and_hash(plan, charter, ledger)
+    # [R2.2 B-2] the SAME repo-dir-aware basis as the runner — a digest-bearing
+    # signed plan must not be reported falsely stale (and must not trip the
+    # end-of-campaign not_fresh_signed path) just because reporting forgot the
+    # repo dir the runner verified with.
+    status, live_hash = _signoff_status_and_hash(plan, charter, ledger,
+                                                 repo_dir=repo_dir)
     fresh_signed = status == "signed"
     stale = status == "stale"
     blocked = status in ("stale", "pre_f1")   # signed-intent, but blocked pending re-sign

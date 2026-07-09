@@ -278,9 +278,12 @@ class LiveCampaignFollowupDigestTests(unittest.TestCase):
             st = cp.run_campaign(fresh(plan), home, self._run_unit,
                                  clock=_clock(), charter=CHARTER,
                                  repo_dir=repo, resume=True)
-            # The epoch is NOT advanced over an edited prompt — the campaign
-            # blocks for the human re-sign instead of finishing.
+            # [R2.2 NB-2] the epoch is NOT advanced over an edited prompt: the
+            # campaign specifically PAUSES FOR RE-SIGN (never finishes, never
+            # records the follow-up as an engine-restamped epoch).
             self.assertNotEqual(st.status, cp.STATUS_DONE)
+            self.assertEqual(st.pause_reason, "campaign_plan_signoff")
+            self.assertIsNone(st.engine_restamp)
 
 
 if __name__ == "__main__":
