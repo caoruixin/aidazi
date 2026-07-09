@@ -5,7 +5,7 @@ status: canary GREEN (offline, deterministic — no real model spend)
 created: 2026-07-09
 base_commit: 6a2078a
 design: archive/2026-07-09-phase3-halt-conditions-design.md (Codex R0.7 APPROVE)
-implementation: 6a2078a..aadfdff (Clusters 1/2/3)
+implementation: 6a2078a..792aaeb (Clusters 1/2/3 + R2/R2.2 gate fixes)
 ---
 
 # Phase-3 halt-conditions + push-not-poll — offline canary evidence
@@ -16,7 +16,7 @@ notifier fires on every pause. This round's canary is **fully offline + determin
 `run_unit` / a local notifier script) — **no real model spend** — realized as a checked-in test
 suite (so it re-runs on every `pytest`, not a one-shot script).
 
-## Canary suite (58 tests, all GREEN)
+## Canary suite (68 tests, all GREEN)
 
 `cd engine-kit && python3.12 -m pytest orchestrator/tests/test_halt_conditions_e2e.py
 orchestrator/tests/test_halt_metrics.py scheduling/tests/test_pause_notifier.py
