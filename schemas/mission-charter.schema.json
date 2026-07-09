@@ -112,6 +112,33 @@
             "max_rounds": {"type": "integer", "minimum": 0, "description": "Max bounded fix→rerun→re-judge cycles before fail-closed HALT (driver._check_budget sibling cap on state.e2e_remediation_round). Required when enabled."},
             "max_no_progress_rounds": {"type": "integer", "minimum": 1, "description": "Halt-threshold for a round whose failing-criterion set is NOT a strict proper subset of the prior round's (mirrors gap_followup). A round that INTRODUCES a new failing criterion is an immediate regression HALT. Default (absent) 1 — no-progress HALTs on the first occurrence; a value > 1 tolerates non-progress and is rejected by charter_validator as a §1.7-D evasion."}
           }
+        },
+        "halt_conditions": {
+          "type": "array",
+          "description": "Phase-3 (archive/2026-07-09-phase3-halt-conditions-design.md). Pre-set, declarative STRUCTURAL halt conditions (Constitution-safe, tighten-only). Each is a PURE predicate over ALREADY-AUDITED, plan-static facts evaluated BEFORE a unit is dispatched (EP-pre); a match PAUSES the campaign at a halt_condition_met checkpoint carrying the condition id + evaluated facts, resolved ONLY via the standard identity-bound Mechanism-B human decision file. A condition can NEVER mutate a verdict, pick a route, or auto-resolve anything — the schema has NO action/route/outcome field. Absent/empty ⇒ byte-identical to no halt conditions. metric/op are a CLOSED whitelist (single source of truth: orchestrator.halt_metrics; charter_validator cross-checks). ids MUST NOT collide with any MANDATORY_CHECKPOINT / engine checkpoint kind (validator ERROR).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "when"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+                "description": "Stable condition id (lowercase, digits, '-'/'_'). Underscores allowed so the collision check vs checkpoint kinds is non-vacuous."
+              },
+              "note": {"type": "string", "description": "Optional human rationale (NOT part of the condition_digest)."},
+              "when": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["metric", "op", "value"],
+                "properties": {
+                  "metric": {"type": "string", "enum": ["milestone_id", "subsprint_id", "milestone_functional_acceptance"]},
+                  "op": {"type": "string", "enum": ["==", "!=", "in", "not_in"]},
+                  "value": {"description": "Compared to the metric's value; type/enum is cross-checked against orchestrator.halt_metrics by charter_validator (in/not_in require an array)."}
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -365,6 +392,20 @@
       "properties": {
         "enabled": {"type": "boolean", "default": false, "description": "Activate Loop Memory. Absent ⇒ treated as false ⇒ OFF. Only literal boolean true enables; the resolver defaults this to false explicitly."},
         "root": {"type": "string", "minLength": 1, "default": "memory", "description": "Loop Memory root directory. A RELATIVE path resolves against the charter's directory and MUST stay contained within it — a `..`/absolute escape is rejected (a declarative root must not write outside the adopter tree; use --memory-root for an external path). Defaults to \"memory\" when memory is enabled without an explicit (non-empty) root."}
+      }
+    },
+    "notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Phase-3 (archive/2026-07-09-phase3-halt-conditions-design.md §4). OPT-IN push notifier. DEFAULT OFF (absent ⇒ byte-identical to no notifier). on_pause is an ARGV LIST (never a shell string ⇒ no injection surface) run on EVERY campaign pause (exit 10) with pause context injected as AIDAZI_PAUSE_* env vars. It is a TRUSTED, adopter-owned side-effecting hook (NOT sandboxed): the framework guarantees it is FAIL-SAFE (a failed/timed-out notifier never affects the pause or exit code), BOUNDED (timeout), fired only AFTER the pause is durably persisted, and AUDITED with REDACTED metadata (argv0/argc/sha256 — never the full argv/env/output). Governance integrity does not depend on notifier behavior: the resume path re-validates any decision file fail-closed. A hook that corrupts its own state/plan files is out-of-scope trusted-hook misuse (at worst a fail-closed resume).",
+      "properties": {
+        "on_pause": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "description": "argv[0] is the executable; no shell. Pause context is passed via AIDAZI_PAUSE_CAMPAIGN_ID/REASON/CHECKPOINT/MILESTONE_ID/SUBSPRINT_ID env vars, so the argv stays fixed."
+        },
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10, "description": "Hard bound on the notifier subprocess (clamped to 60). On timeout the notifier is killed and the pause is unaffected."}
       }
     }
   },

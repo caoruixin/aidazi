@@ -46,6 +46,7 @@ from typing import Callable, Dict, Optional
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))          # engine-kit/scheduling
 _ENGINE_KIT_DIR = os.path.dirname(_THIS_DIR)                    # engine-kit/
 for _p in (
+    _THIS_DIR,   # engine-kit/scheduling — for sibling imports (e.g. pause_notifier)
     _ENGINE_KIT_DIR,
     os.path.join(_ENGINE_KIT_DIR, "audit"),
     os.path.join(_ENGINE_KIT_DIR, "orchestrator"),
@@ -641,6 +642,44 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
                 return None
             out = {k: decision[k] for k in ("choice", "note") if k in decision}
             return out or None
+        if pause_reason == "halt_condition_met":
+            # Phase-3 (design §3.5a): campaign-tier pre-set halt. Bound by campaign_id +
+            # pause_reason + the per-pause nonce basename (matched above) AND the live
+            # halt_condition_pending record: condition_id (tamper-evident) + milestone_id +
+            # the pending's own checkpoint_basename (consistency). NOT a unit ⇒ subsprint_id
+            # is forbidden. A pause with no live pending is unresolvable and refused.
+            try:
+                with open(os.path.join(campaign_home, "campaign-state.json"),
+                          encoding="utf-8") as fh:
+                    state = json.load(fh)
+            except (OSError, ValueError):
+                sys.stderr.write(
+                    "campaign decision: cannot read campaign-state for "
+                    "halt_condition_met — refusing (fail-closed)\n")
+                return None
+            pending = state.get("halt_condition_pending")
+            if not isinstance(pending, dict):
+                sys.stderr.write(
+                    "campaign decision: halt_condition_met with no live "
+                    "halt_condition_pending — refusing (fail-closed)\n")
+                return None
+            if pending.get("checkpoint_basename") != live_cpt:
+                return _reject("halt_condition checkpoint",
+                               pending.get("checkpoint_basename"), live_cpt)
+            if decision.get("condition_id") != pending.get("condition_id"):
+                return _reject("condition_id", decision.get("condition_id"),
+                               pending.get("condition_id"))
+            if decision.get("milestone_id") != pending.get("milestone_id"):
+                return _reject("milestone_id", decision.get("milestone_id"),
+                               pending.get("milestone_id"))
+            if decision.get("subsprint_id") is not None:
+                sys.stderr.write(
+                    "campaign decision: halt_condition_met must not carry "
+                    "subsprint_id — refusing (fail-closed)\n")
+                return None
+            out = {k: decision[k]
+                   for k in ("choice", "condition_id", "note") if k in decision}
+            return out or None
         if checkpoint_path is not None:
             # A checkpoint-bearing pause is ALWAYS on a unit: its milestone/sub-sprint
             # identity MUST be resolvable from campaign-state.json AND match. A missed
@@ -781,6 +820,14 @@ def run_campaign_entry(plan: dict, charter: dict, *,
             # injected test run_loop_fn without the param never breaks.
             if allow_gitlink_drift:
                 run_loop_kwargs["allow_gitlink_drift"] = True
+            # Charter enforcement is the LAST real-run preflight (after the plan/capability/
+            # OW-M3/skills preflights so their specific errors surface first), but still BEFORE
+            # make_run_unit / run_campaign — so the campaign never reads/evaluates an invalid
+            # charter's autonomy.halt_conditions at EP-pre. This closes the R3 B1 gap: the
+            # validator-only Phase-3 invariants (closed-metric/op, id-collision, notifications
+            # shape) are enforced on the REAL campaign path (raises CharterValidationError → the
+            # except below → CAMPAIGN_EXIT_INVALID), not silently no-op'd at runtime.
+            enforce_charter_for_real_run(charter)
         run_unit = _cp.make_run_unit(charter, units_dir, campaign_id,
                                      clock=clock, plan=plan,
                                      ledger_path=ledger_path, **run_loop_kwargs)
@@ -846,13 +893,47 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     except Exception:
         signoff_status = None
 
+    # Phase-3 push-not-poll (design §4.3): on EVERY campaign pause (exit 10), fire the
+    # charter's notifications.on_pause hook AFTER the pause is durably persisted (the campaign
+    # already _saved it) and the exit-10 result is computed. FAIL-SAFE: the notifier can never
+    # affect the pause or exit code. Default-OFF ⇒ a complete no-op (byte-identical).
+    # Phase-3: a halt_condition_met pause is campaign-tier (NOT a unit), so paused_unit is empty
+    # — surface the milestone_id from halt_condition_pending (needed for the identity-bound
+    # decision). subsprint_id is DELIBERATELY NOT surfaced for this gate (R2.2 NB): the decision
+    # forbids subsprint_id, so exposing it would mislead a machine/human consumer into authoring
+    # a decision the resolver refuses.
+    _hcp = getattr(st, "halt_condition_pending", None) or {}
+    _pause_milestone_id = paused_unit.get("milestone_id") or _hcp.get("milestone_id")
+    _pause_subsprint_id = paused_unit.get("subsprint_id")
+    if exit_code == CAMPAIGN_EXIT_PAUSED:
+        try:
+            import pause_notifier as _pn
+            pause_ctx = {
+                "campaign_id": campaign_id,
+                "reason": st.pause_reason,
+                "checkpoint": (os.path.basename(st.pause_checkpoint)
+                               if st.pause_checkpoint else None),
+                "milestone_id": _pause_milestone_id,
+                "subsprint_id": _pause_subsprint_id,
+            }
+            _ledger = audit.audit_path(campaign_id, os.path.join(home, "audit"))
+
+            def _emit_notif(evtype: str, payload: dict) -> None:
+                audit.append_event(campaign_id, evtype, payload,
+                                   ts=clock(), path=_ledger)
+
+            _pn.notify_on_pause(charter, pause_ctx, _emit_notif)
+        except Exception:
+            pass  # the notifier path must NEVER break the pause / exit-10 return
+
     return {
         **base,
         "status": st.status,
         "pause_reason": st.pause_reason,
         "pause_checkpoint": st.pause_checkpoint,
-        "pause_milestone_id": paused_unit.get("milestone_id"),
-        "pause_subsprint_id": paused_unit.get("subsprint_id"),
+        "pause_milestone_id": _pause_milestone_id,
+        "pause_subsprint_id": _pause_subsprint_id,
+        "pause_condition_id": _hcp.get("condition_id"),   # Phase-3 halt_condition_met identity
         "pause_loop_id": paused_unit.get("loop_id"),
         "milestone_index": st.milestone_index,
         "milestones_total": len(plan.get("milestones") or []),
@@ -907,6 +988,20 @@ def _campaign_resume_hint(result: dict) -> str:
                 f'"campaign_id": {result.get("campaign_id")!r}, '
                 f'"pause_reason": "completeness_gap_review", "checkpoint": {base!r} '
                 "(NO subsprint_id), then re-run with --resume --decision <file>")
+    if reason == "halt_condition_met":
+        # Phase-3: a PRE-SET structural halt YOU declared. Campaign-tier (NO subsprint_id);
+        # binds to the condition_id + the per-pause nonce basename.
+        cpt = result.get("pause_checkpoint")
+        base = os.path.basename(cpt) if cpt else None
+        return ('  -> your pre-set halt condition '
+                f'{result.get("pause_condition_id")!r} fired. Author a campaign-decision.json '
+                'with "choice": "proceed"|"abort", '
+                f'"campaign_id": {result.get("campaign_id")!r}, '
+                '"pause_reason": "halt_condition_met", '
+                f'"condition_id": {result.get("pause_condition_id")!r}, '
+                f'"milestone_id": {result.get("pause_milestone_id")!r}, '
+                f'"checkpoint": {base!r} (NO subsprint_id), then re-run with '
+                "--resume --decision <file>")
     cpt = result.get("pause_checkpoint")
     base = os.path.basename(cpt) if cpt else None
     ident = (f'"campaign_id": {result.get("campaign_id")!r}, '

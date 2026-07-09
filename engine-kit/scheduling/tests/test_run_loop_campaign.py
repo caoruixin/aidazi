@@ -1183,5 +1183,114 @@ class GapFollowupRealRunPreflight(unittest.TestCase):
             self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
 
 
+class TestPauseNotifier(unittest.TestCase):
+    """Phase-3 push-not-poll (design §4.3): notifications.on_pause fires on the
+    run_campaign_entry exit-10 path — canary (c). FAIL-SAFE: a failing/timed-out
+    notifier never changes the pause or exit code."""
+
+    def _campaign_ledger_events(self, home, cid):
+        path = audit.audit_path(cid, os.path.join(home, "audit"))
+        if not os.path.isfile(path):
+            return []
+        with open(path, encoding="utf-8") as fh:
+            return [json.loads(line)["type"] for line in fh if line.strip()]
+
+    def _run_paused(self, d, on_pause, timeout_seconds=10):
+        charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+        charter["notifications"] = {"on_pause": on_pause,
+                                    "timeout_seconds": timeout_seconds}
+        # An UNSIGNED plan pauses at campaign_plan_signoff (exit 10) — the simplest
+        # exit-10 path that exercises the notifier hook.
+        plan = _plan("cli-notif", [{"id": "m1", "objective": "x",
+                                    "subsprint_sequence": ["sprint-001"]}])
+        home = os.path.join(d, "h")
+        r = rl.run_campaign_entry(plan, charter, clock=_clock(),
+                                  campaign_run_dir=home,
+                                  adapters=_acceptance_adapters(ACC_PASS))
+        return r, home
+
+    def test_notifier_fires_on_pause(self):
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "fired.txt")
+            r, home = self._run_paused(
+                d, ["/bin/sh", "-c", f'printf "%s" "$AIDAZI_PAUSE_REASON" > "{marker}"'])
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_PAUSED)
+            # the hook ran with pause context injected:
+            self.assertTrue(os.path.isfile(marker))
+            with open(marker, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "campaign_plan_signoff")
+            # and it left a REDACTED audit event on the campaign chain:
+            self.assertIn("campaign_pause_notified",
+                          self._campaign_ledger_events(home, "cli-notif"))
+
+    def test_failing_notifier_does_not_change_pause(self):
+        with tempfile.TemporaryDirectory() as d:
+            r, home = self._run_paused(d, ["/bin/sh", "-c", "exit 3"])
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_PAUSED)   # unchanged
+            self.assertEqual(r["pause_reason"], "campaign_plan_signoff")
+            self.assertIn("campaign_pause_notified",
+                          self._campaign_ledger_events(home, "cli-notif"))
+
+    def test_timeout_notifier_does_not_change_pause(self):
+        with tempfile.TemporaryDirectory() as d:
+            r, _ = self._run_paused(d, ["/bin/sh", "-c", "sleep 30"], timeout_seconds=1)
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_PAUSED)   # unchanged
+
+    def test_no_notifications_block_no_event(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+            plan = _plan("cli-nonotif", [{"id": "m1", "objective": "x",
+                                          "subsprint_sequence": ["sprint-001"]}])
+            home = os.path.join(d, "h")
+            r = rl.run_campaign_entry(plan, charter, clock=_clock(),
+                                      campaign_run_dir=home,
+                                      adapters=_acceptance_adapters(ACC_PASS))
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_PAUSED)
+            self.assertNotIn("campaign_pause_notified",
+                             self._campaign_ledger_events(home, "cli-nonotif"))
+
+
+class TestRealRunCharterEnforcement(unittest.TestCase):
+    """R3 B1: a REAL (--allow-real) campaign run MUST enforce the charter validator BEFORE
+    the campaign reads raw autonomy.halt_conditions / notifications — so a validator-only
+    Phase-3 invariant (id-collision, unknown metric, blank notifier argv0) fail-closes to
+    CAMPAIGN_EXIT_INVALID before any adapter/model is built (not silently no-op at runtime)."""
+
+    def _real_run(self, d, mutate):
+        charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+        mutate(charter)
+        plan = _plan("cli-real", [{"id": "m1", "objective": "x",
+                                   "subsprint_sequence": ["sprint-001"]}])
+        # allow_real=True (no adapters injected) — the charter preflight is the LAST real-run
+        # preflight (after plan/capability/OW-M3/skills), but still BEFORE any adapter build,
+        # so an invalid charter raises → CAMPAIGN_EXIT_INVALID before EP-pre.
+        return rl.run_campaign_entry(plan, charter, clock=_clock(),
+                                     campaign_run_dir=os.path.join(d, "h"), allow_real=True)
+
+    def test_halt_condition_id_collision_is_invalid(self):
+        def mutate(c):
+            c.setdefault("autonomy", {})["halt_conditions"] = [
+                {"id": "gate_hard_fail",   # collides with a checkpoint kind → validator ERROR
+                 "when": {"metric": "milestone_id", "op": "==", "value": "m1"}}]
+        with tempfile.TemporaryDirectory() as d:
+            r = self._real_run(d, mutate)
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
+
+    def test_unknown_halt_metric_is_invalid(self):
+        def mutate(c):
+            c.setdefault("autonomy", {})["halt_conditions"] = [
+                {"id": "big", "when": {"metric": "files_changed", "op": ">", "value": 40}}]
+        with tempfile.TemporaryDirectory() as d:
+            r = self._real_run(d, mutate)
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
+
+    def test_blank_notifier_argv0_is_invalid(self):
+        def mutate(c):
+            c["notifications"] = {"on_pause": ["   "]}   # blank executable → validator ERROR
+        with tempfile.TemporaryDirectory() as d:
+            r = self._real_run(d, mutate)
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
+
+
 if __name__ == "__main__":
     unittest.main()

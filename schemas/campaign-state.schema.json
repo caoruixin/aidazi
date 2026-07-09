@@ -163,6 +163,36 @@
           "checkpoint_path": {"type": ["string", "null"], "description": "When this unit HALTED: the checkpoint file path, persisted alongside pause_reason for the same §3.5c crash-recovery replay (the human resolves it on resume)."}
         }
       }
-    }
+    },
+    "halt_condition_acks": {
+      "type": "array",
+      "description": "Phase-3 (design §3.4). PERMANENT halt-condition ack keys — a committed pre-dispatch halt cascade. Each key is a tuple [condition_id, condition_digest, milestone_id(, subsprint_id)] (gate-once-per-scope). Additive; absent/empty ⇒ no halt condition has ever been acknowledged (byte-identical to a pre-Phase-3 campaign).",
+      "items": {"type": "array", "items": {"type": "string"}, "minItems": 3}
+    },
+    "halt_condition_provisional": {
+      "type": "array",
+      "description": "Phase-3 (design §3.4). PROVISIONAL ack keys for the CURRENT pre-dispatch halt cascade — proceeded but not yet committed. Promoted en masse into halt_condition_acks at the redispatched unit's outcome save; flushed en masse when the plan is re-signed to a new epoch since the cascade's first halt. Additive; absent/empty ⇒ no cascade outstanding.",
+      "items": {"type": "array", "items": {"type": "string"}, "minItems": 3}
+    },
+    "halt_condition_pending": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Phase-3 (design §3.5). The DURABLE identity of the OUTSTANDING halt_condition_met pause (the file-based decision resolver binds to it). signed_scope_hash is the cascade epoch, captured at HALT time. Additive; absent/null ⇒ no halt_condition_met pause outstanding. When present it MUST be complete (the resolver identity-binds against it) — an incomplete record is a fail-closed state error (R2 NB-2).",
+      "required": ["condition_id", "condition_digest", "metric", "ack_scope", "ack_key", "milestone_id", "subsprint_id", "checkpoint_basename", "facts", "signed_scope_hash", "resolved"],
+      "properties": {
+        "condition_id": {"type": "string"},
+        "condition_digest": {"type": "string"},
+        "metric": {"type": "string"},
+        "ack_scope": {"type": "string", "enum": ["milestone", "subsprint"]},
+        "ack_key": {"type": "array", "items": {"type": "string"}, "minItems": 3},
+        "milestone_id": {"type": ["string", "null"]},
+        "subsprint_id": {"type": ["string", "null"]},
+        "checkpoint_basename": {"type": ["string", "null"]},
+        "facts": {"type": "object"},
+        "signed_scope_hash": {"type": ["string", "null"]},
+        "resolved": {"type": "boolean"}
+      }
+    },
+    "halt_condition_seq": {"type": "integer", "minimum": 0, "description": "Phase-3 (design §3.5). Monotonic per-pause halt_condition_met NONCE counter (the checkpoint basename suffix). Additive; absent/0 ⇒ no halt_condition_met pause has been emitted."}
   }
 }

@@ -188,6 +188,55 @@
               "minimum": 1
             }
           }
+        },
+        "halt_conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "when"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "note": {
+                "type": "string"
+              },
+              "when": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "metric",
+                  "op",
+                  "value"
+                ],
+                "properties": {
+                  "metric": {
+                    "type": "string",
+                    "enum": [
+                      "milestone_id",
+                      "subsprint_id",
+                      "milestone_functional_acceptance"
+                    ]
+                  },
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "==",
+                      "!=",
+                      "in",
+                      "not_in"
+                    ]
+                  },
+                  "value": {}
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -654,6 +703,25 @@
           "default": "memory"
         }
       }
+    },
+    "notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "on_pause": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 10
+        }
+      }
     }
   },
   "$defs": {
@@ -1032,5 +1100,5 @@
     }
   },
   "x-canonical-source": "mission-charter.schema.json",
-  "x-canonical-sha256": "4c4aa235e991507949460aaa9e07cbdcc7aaf1c4c4ee4744c2e2542bd13c49fe"
+  "x-canonical-sha256": "91a6897a01f9a38304ba56991965497a59a6ff802fdf6d0ec04ae878d27b07aa"
 }

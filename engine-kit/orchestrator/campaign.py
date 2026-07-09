@@ -44,6 +44,7 @@ for _p in (_THIS_DIR, _ENGINE_KIT_DIR, _AUDIT_DIR):
         sys.path.insert(0, _p)
 import audit_log as audit  # noqa: E402  (engine-kit/audit/audit_log.py — REUSE)
 import loop_ingress as li  # noqa: E402  (milestone-tier git isolation + merge)
+import halt_metrics as hm  # noqa: E402  (Phase-3 halt-conditions metric registry — pure SoT)
 
 # A safe campaign_id — SAME discipline as the Driver's loop_id (letters/digits then
 # ._- only; no path separators, no leading dot). It is interpolated into the audit
@@ -152,6 +153,10 @@ CAMPAIGN_CHECKPOINTS: frozenset = frozenset({
     # auto-dispatch is permitted only under human_on_the_loop or higher). Resolved Mechanism-B
     # via the adjust_scope decision shape (remediate|accept_gap|abort).
     "completeness_gap_review",
+    # Phase-3 (design §3.5): the campaign emits this at EP-pre (before dispatching a unit) when a
+    # pre-set autonomy.halt_conditions predicate matches. Resolved Mechanism-B via an identity-
+    # bound proceed|abort decision; proceed re-dispatches the SAME (not-yet-run) unit.
+    "halt_condition_met",
 })
 # Non-pause checkpoints — emitted by the Driver but auto-resolved / informational;
 # they never leave the loop paused awaiting a human (design §5.4a).
@@ -382,6 +387,20 @@ class CampaignState:
     # are the bounds the static charter validator CANNOT enforce (the gap-set is only knowable
     # at runtime). Additive; absent ⇒ no gap-followup has run (byte-identical to today).
     gap_followup_state: dict = field(default_factory=dict)
+    # Phase-3 (design §3.4/§3.5): pre-set halt-conditions state. ALL default-empty and emitted
+    # ONLY when non-empty/non-zero, so a campaign whose charter declares no halt_conditions (or
+    # never halts on one) persists a byte-identical state.json.
+    #   halt_condition_acks         — PERMANENT ack keys (a committed pre-dispatch cascade).
+    #   halt_condition_provisional  — this-cascade ack keys, provisional until the unit dispatches
+    #                                 (promoted en masse at the outcome save; flushed on drift).
+    #   halt_condition_pending      — the durable identity of the OUTSTANDING halt_condition_met
+    #                                 pause (the resolver binds to it); carries the halt-time
+    #                                 signed_scope_hash = the cascade epoch.
+    #   halt_condition_seq          — monotonic per-pause nonce counter (checkpoint basename).
+    halt_condition_acks: List[list] = field(default_factory=list)
+    halt_condition_provisional: List[list] = field(default_factory=list)
+    halt_condition_pending: Optional[dict] = None
+    halt_condition_seq: int = 0
 
     def to_dict(self) -> dict:
         d = {
@@ -412,6 +431,15 @@ class CampaignState:
             d["freshness_block"] = self.freshness_block
         if self.engine_restamp:
             d["engine_restamp"] = self.engine_restamp
+        # Phase-3: emit halt-condition state ONLY when active (byte-identical when absent).
+        if self.halt_condition_acks:
+            d["halt_condition_acks"] = self.halt_condition_acks
+        if self.halt_condition_provisional:
+            d["halt_condition_provisional"] = self.halt_condition_provisional
+        if self.halt_condition_pending:
+            d["halt_condition_pending"] = self.halt_condition_pending
+        if self.halt_condition_seq:
+            d["halt_condition_seq"] = self.halt_condition_seq
         return d
 
     @classmethod
@@ -434,7 +462,11 @@ class CampaignState:
             milestone_context=d.get("milestone_context"),
             pending_milestone_advance=bool(d.get("pending_milestone_advance", False)),
             milestone_outcomes=list(d.get("milestone_outcomes") or []),
-            gap_followup_state=dict(d.get("gap_followup_state") or {}))
+            gap_followup_state=dict(d.get("gap_followup_state") or {}),
+            halt_condition_acks=[list(k) for k in (d.get("halt_condition_acks") or [])],
+            halt_condition_provisional=[list(k) for k in (d.get("halt_condition_provisional") or [])],
+            halt_condition_pending=d.get("halt_condition_pending"),
+            halt_condition_seq=int(d.get("halt_condition_seq") or 0))
 
 
 # --------------------------------------------------------------------------- #
@@ -858,6 +890,145 @@ class Campaign:
         self._pause(reason, self.state.pause_checkpoint, "campaign_repause",
                     {"why": why})
         return "paused"
+
+    # ----- Phase-3 pre-set halt conditions (design §3.4/§3.5) --------------- #
+    def _halt_conditions(self) -> list:
+        """The charter's declared halt conditions (default []). Absent/empty ⇒ the whole
+        halt-condition machinery is a strict NO-OP (byte-identical to a pre-Phase-3 charter)."""
+        return ((self.charter or {}).get("autonomy") or {}).get("halt_conditions") or []
+
+    def _halt_ctx(self, milestone: dict, subsprint_id: str) -> dict:
+        """Build the pure EP-pre fact context from ALREADY-AUDITED plan-static facts. The
+        resolved acceptance class (charter inheritance applied) is derived HERE so halt_metrics
+        stays pure (design §3.2 [R0.2 B-1])."""
+        mode, _src = resolve_functional_acceptance(
+            self.charter, milestone.get("functional_acceptance"))
+        return {
+            "milestone_id": milestone.get("id"),
+            "subsprint_id": subsprint_id,
+            "milestone_functional_acceptance": mode,
+        }
+
+    def _halt_acked_keys(self) -> list:
+        """Permanent ∪ this-cascade provisional ack keys (what EP-pre skips)."""
+        return list(self.state.halt_condition_acks) + list(self.state.halt_condition_provisional)
+
+    def _halt_epoch_recheck(self) -> None:
+        """Drift flush (design §3.4 [R0.6 B-1]). When a halt_condition_met cascade is
+        outstanding and the plan was re-signed to a NEW epoch since the cascade's FIRST halt
+        (pending.signed_scope_hash != live), drop the ENTIRE provisional set + discard pending
+        so every cascade condition re-arms in the current epoch. Called at the TOP of EP-pre
+        (after _authority_fresh passes, so the live hash is a signed epoch).
+
+        Mutates IN-MEMORY only — it must NOT persist here [R2 B-1]. At this point run() has
+        already flipped status to STATUS_RUNNING in-memory for the redispatch, and the cursor
+        unit has NOT started; a _save now would persist STATUS_RUNNING for a never-started unit,
+        so a crash before dispatch would drive crash-recovery to run_unit(resume=True) and the
+        Driver would raise on the missing unit state.json (the exact hazard the barrier-free
+        ACT_REDISPATCH_FRESH path avoids). The flush is instead persisted by the NEXT durable
+        save — the re-fire _pause (if a condition re-matches) or the unit-outcome save (if none
+        does). A crash before that save replays from the last PAUSED state (proceed's save) and
+        re-does this deterministic flush; no STATUS_RUNNING-before-dispatch window exists."""
+        pending = self.state.halt_condition_pending
+        if not pending:
+            return
+        if pending.get("signed_scope_hash") != self._live_signed_scope_hash():
+            self.state.halt_condition_provisional = []
+            self.state.halt_condition_pending = None
+            self._audit("campaign_halt_condition_epoch_rearm",
+                        {"milestone_id": pending.get("milestone_id"),
+                         "condition_id": pending.get("condition_id")})
+
+    def _halt_commit_cascade(self) -> None:
+        """Promote the whole provisional set → permanent and clear pending, IN-MEMORY, once
+        the redispatched unit is about to record an outcome (design §3.4/§3.5 [R0.5/R0.6 B-1]).
+        Called right after run_unit returns; the ensuing outcome _save persists it atomically.
+        No-op when no cascade is outstanding."""
+        if not self.state.halt_condition_provisional and not self.state.halt_condition_pending:
+            return
+        for key in self.state.halt_condition_provisional:
+            if key not in self.state.halt_condition_acks:
+                self.state.halt_condition_acks.append(key)
+        self.state.halt_condition_provisional = []
+        self.state.halt_condition_pending = None
+
+    def _write_halt_condition_checkpoint(self, match: dict, milestone_id: str) -> str:
+        """Write a campaign-tier halt_condition_met checkpoint with a per-pause NONCE
+        (monotonic halt_condition_seq + clock stamp) in its filename, so each pause has a
+        UNIQUE basename the decision resolver binds on (a stale decision from an earlier halt
+        is refused). Records the condition id + evaluated facts (human-readable + tamper-
+        evident). Mirrors _write_gap_review_checkpoint."""
+        seq = int(self.state.halt_condition_seq) + 1
+        self.state.halt_condition_seq = seq
+        try:
+            dt = datetime.fromisoformat(self.clock().replace("Z", "+00:00"))
+            stamp = dt.strftime("%Y%m%d-%H%M%S")
+        except (ValueError, AttributeError):
+            stamp = "00000000-000000"
+        fname = f"{stamp}__halt_condition_met__r{seq}.md"
+        cps_dir = os.path.join(self.run_dir, "docs", "checkpoints")
+        os.makedirs(cps_dir, exist_ok=True)
+        path = os.path.join(cps_dir, fname)
+        cid = match.get("condition_id")
+        facts = match.get("facts") or {}
+        body = (
+            f"---\n"
+            f"checkpoint_id: halt_condition_met\n"
+            f"scope: {milestone_id or 'campaign'}\n"
+            f"emitted_at: {self.clock()}\n"
+            f"condition_id: {cid}\n"
+            f"decision: pending\n"
+            f"resolved_at: null\n"
+            f"resolver: null\n"
+            f"---\n\n"
+            f"# Context\n"
+            f"A PRE-SET halt condition you declared in autonomy.halt_conditions fired BEFORE "
+            f"this unit was dispatched (Phase-3, tighten-only — no gate was relaxed).\n\n"
+            f"- condition id: `{cid}`\n"
+            f"- metric: `{match.get('metric')}`\n"
+            f"- evaluated facts: `{facts}`\n\n"
+            f"This is NOT an engine gate — it is a structural halt YOU asked for. Author a "
+            f"campaign-decision.json with THIS checkpoint basename + condition_id: `{cid}` + "
+            f"milestone_id + a proceed|abort choice, then `--resume --decision <file>`.\n\n"
+            f"# Options (halt_condition_met)\n"
+            f"- proceed — acknowledge this condition and re-dispatch the (not-yet-run) unit\n"
+            f"- abort — end the campaign\n"
+        )
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path
+
+    def _eval_halt_conditions(self, milestone: dict, subsprint_id: str) -> Optional[CampaignState]:
+        """EP-pre (design §3.4). Called AFTER _authority_fresh passes and BEFORE run_unit.
+        Returns a PAUSED CampaignState when a pre-set condition fires (the caller returns it),
+        else None (dispatch proceeds byte-identically). NO-OP when no halt_conditions declared."""
+        conditions = self._halt_conditions()
+        if not conditions:
+            return None
+        self._halt_epoch_recheck()   # flush a stale-epoch cascade before evaluating
+        ctx = self._halt_ctx(milestone, subsprint_id)
+        match = hm.evaluate(conditions, ctx, self._halt_acked_keys())
+        if match is None:
+            return None
+        mid = milestone.get("id")
+        checkpoint_path = self._write_halt_condition_checkpoint(match, mid)
+        self.state.halt_condition_pending = {
+            "condition_id": match["condition_id"],
+            "condition_digest": match["condition_digest"],
+            "metric": match["metric"],
+            "ack_scope": match["ack_scope"],
+            "ack_key": match["ack_key"],
+            "milestone_id": mid,
+            "subsprint_id": subsprint_id,
+            "checkpoint_basename": os.path.basename(checkpoint_path),
+            "facts": match["facts"],
+            "signed_scope_hash": self._live_signed_scope_hash(),
+            "resolved": False,
+        }
+        return self._pause(
+            "halt_condition_met", checkpoint_path, "campaign_halt_condition",
+            {"milestone_id": mid, "subsprint_id": subsprint_id,
+             "condition_id": match["condition_id"], "facts": match["facts"]})
 
     # ----- milestone-tier git isolation (campaign Loop Ingress) ------------- #
     def _milestone_isolation_cfg(self) -> dict:
@@ -2081,6 +2252,45 @@ class Campaign:
                         {"pause_reason": reason,
                          "action": "advance_after_merge", "choice": choice})
             return "proceed"
+        if reason == "halt_condition_met":
+            # Phase-3 (design §3.5). THIN branch: the resolver (run_loop) already schema-
+            # validated + identity-bound the decision to the live halt_condition_pending
+            # (condition_id + nonce basename + milestone_id; no subsprint_id). All
+            # freshness/drift handling is at the redispatch EP-pre (_halt_epoch_recheck), so
+            # here we only record the human's proceed/abort — crash-idempotently.
+            decision = (decision_resolver(reason, self.state.pause_checkpoint)
+                        if decision_resolver is not None else None)
+            if not decision:
+                return self._repause(reason, "decision_pending")
+            pending = self.state.halt_condition_pending or {}
+            choice = decision.get("choice")
+            if choice == "abort":
+                # Tidy terminal-state overlay residue (R0.7 NB); not a suppression risk.
+                self.state.halt_condition_pending = None
+                self.state.halt_condition_provisional = []
+                self._end("halt_condition_aborted")
+                return "ended"
+            if choice != "proceed":
+                # Defense-in-depth (R3 N3): the file resolver's schema restricts choice to
+                # proceed|abort, but an injected/custom resolver might not — so an unrecognized
+                # choice fail-closes to a RE-PAUSE (never treated as an implicit proceed).
+                return self._repause("halt_condition_met", "unrecognized_choice")
+            # proceed: add the PROVISIONAL ack (idempotent), mark resolved, persist, then follow
+            # the barrier-free ACT_REDISPATCH_FRESH shape (leave PAUSED, run() clears it & re-
+            # dispatches the SAME not-yet-run unit). It NEVER advances the cursor / calls
+            # _complete_milestone. On the redispatch, EP-pre skips the acked condition (or the
+            # NEXT unacked one fires) — and _halt_epoch_recheck re-arms the whole cascade if the
+            # plan was re-signed to a new epoch since the halt.
+            key = list(pending.get("ack_key") or [])
+            if key and key not in self.state.halt_condition_provisional:
+                self.state.halt_condition_provisional.append(key)
+            if pending:
+                pending["resolved"] = True
+            self._save()
+            self._audit("campaign_resume_dispatch",
+                        {"pause_reason": reason, "choice": choice,
+                         "condition_id": pending.get("condition_id")})
+            return "proceed"
         if reason == "deliver_followup_required":
             # The manual follow-up contract (Codex inc-2 #3): Deliver INSERTS the
             # follow-up sub-sprint at cursor+1. A genuine insertion is detected iff the
@@ -2397,6 +2607,14 @@ class Campaign:
                     if not self._authority_fresh():
                         self._block_for_resign(self.state.pause_reason)
                         return self.state
+                    # Phase-3 EP-pre (design §3.4): AFTER freshness passes and BEFORE the
+                    # irreversible run_unit, evaluate the pre-set autonomy.halt_conditions
+                    # against plan-static facts. A match PAUSES here (halt_condition_met); the
+                    # cursor is UNCHANGED (the unit has not run) so proceed re-dispatches it.
+                    # NO-OP (byte-identical) when no halt_conditions are declared.
+                    halt = self._eval_halt_conditions(milestone, subsprint_id)
+                    if halt is not None:
+                        return halt
                     # Pass THIS milestone's LIVE sequence + its functional_acceptance so the
                     # production run_unit derives a per-milestone execution context whose
                     # terminal sub-sprint anchors Acceptance (design §5) and whose acceptance
@@ -2418,6 +2636,11 @@ class Campaign:
                     self.state.wall_clock_minutes = (
                         self._base_wall
                         + _iso_minutes(self._invocation_start, self.clock()))
+                    # Phase-3 (design §3.4/§3.5): the unit DISPATCHED, so commit the whole
+                    # pre-dispatch halt-condition cascade — promote provisional acks → permanent
+                    # and clear pending, IN-MEMORY. The outcome _save below (advance/done/pause,
+                    # or _complete_milestone) persists it atomically with the unit's outcome.
+                    self._halt_commit_cascade()
                 unit = {"milestone_id": milestone["id"], "subsprint_id": subsprint_id,
                         "status": "done", "final_state": final_state,
                         "loop_id": summary.get("loop_id")}
