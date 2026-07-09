@@ -3243,6 +3243,22 @@ class Driver:
                                         "subsprint_id": self.state.subsprint_id})
             if self.state.state == STATE_DONE:
                 return self.state  # idempotent: the backlog is already complete
+            # Requirement-source drift WARN (design §7): the run-dir SNAPSHOT is
+            # canonical; a changed SOURCE file after a halt is audited, never
+            # silently re-ingested (re-run WITHOUT --resume to re-snapshot).
+            _ref = self.state.requirement_ref or {}
+            _src = _ref.get("source_path")
+            if _src and os.path.isfile(_src):
+                try:
+                    with open(_src, "rb") as _fh:
+                        _cur = hashlib.sha256(_fh.read()).hexdigest()
+                    if _cur != _ref.get("sha256"):
+                        self._audit("requirement_source_drift",
+                                    {"source_path": _src,
+                                     "snapshot_sha256": _ref.get("sha256"),
+                                     "live_sha256": _cur})
+                except OSError:
+                    pass
             if (self.state.state == STATE_HALTED
                     and self.state.halt_resume_state):
                 self.state.state = self.state.halt_resume_state
