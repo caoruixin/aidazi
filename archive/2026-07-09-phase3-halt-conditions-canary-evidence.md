@@ -23,7 +23,7 @@ orchestrator/tests/test_halt_metrics.py scheduling/tests/test_pause_notifier.py
 scheduling/tests/test_run_loop_campaign.py::TestPauseNotifier
 validators/tests/test_charter_validator.py::HaltConditionsTests
 validators/tests/test_charter_validator.py::NotificationsTests`
-→ **65 passed** (the full design §6 matrix + the tighten-only invariants + the notifier).
+→ **68 passed** (the full design §6 matrix + the tighten-only invariants + the notifier).
 
 ### (a) A pre-set condition halts with the right checkpoint + facts
 
@@ -42,13 +42,14 @@ browser_e2e) with two conditions (`hot-milestone` on `milestone_id in [m2]`, `ga
   (fail-closed identity binding) → the gate re-pauses.
 - `test_abort_ends_campaign_and_clears_overlay` — `abort` ends the campaign and clears the overlay.
 
-### (b) Absent conditions ⇒ zero extra halts, byte-identical
+### (b) Absent conditions ⇒ zero extra halts, byte-identical (vs the BASE tree)
 
-`test_halt_conditions_e2e.py::CanaryB_ByteIdentical::test_no_conditions_is_byte_identical` — the SAME
-scripted plan run with an absent `halt_conditions` charter vs an empty `halt_conditions: []`: same
-DONE status, and NONE of the four new state fields (`halt_condition_acks`/`_provisional`/`_pending`/
-`_seq`) is serialized. (The static byte-identical guarantee is additionally covered by the schema/
-validator NO-OP tests and the full-suite non-regression.)
+`CanaryB_ByteIdentical` — absent vs empty `halt_conditions`: same DONE status, none of the four new
+state fields serialized. `ByteIdenticalGolden` — the STRONGER additivity proof: a checked-in golden
+`orchestrator/tests/fixtures/phase3-baseline-campaign-state.json` was captured by running the
+no-condition scenario on the **base tree 6a2078a** (pre-Phase-3), and the current build's
+no-condition run (and a declared-but-never-matching-condition run) reproduce it **byte-for-byte**
+(879 B) — proving the Phase-3 changes are byte-additive to the pre-Phase-3 campaign state.
 
 ### (c) The notifier fires on every pause (and is fail-safe)
 
@@ -94,9 +95,12 @@ raise) + REDACTED audit (no full argv/env/output).
   R0.6 B-1 freshness-block path].
 - `test_crash_replay_after_proceed_is_idempotent` — resuming the resolved/DONE state is a no-op.
 
-**Byte-identical (true byte-diff, `ByteIdenticalGolden`):** two no-condition runs produce
-byte-identical `campaign-state.json` (golden), AND a declared-but-never-matching condition is
-byte-identical to no conditions — a non-matching condition perturbs nothing.
+- `ResolvedClassAndRestamp::test_charter_inherited_browser_e2e_fires` — a milestone that INHERITS
+  `browser_e2e` from the charter (no explicit `functional_acceptance`) fires the gate-e2e condition
+  on the RESOLVED class, proving the resolved-class extractor [design R0.2 B-1].
+- `ResolvedClassAndRestamp::test_epoch_flush_touches_only_the_active_cascade_not_committed_acks` —
+  unit-level proof that the drift/restamp flush drops ONLY the active provisional cascade + pending
+  and NEVER a permanent (committed) ack [design R0.3/R0.5 B-3].
 
 ### R2 gate fix (crash-safety)
 
@@ -122,7 +126,7 @@ lockstep drift-guard.
 
 ## Full-suite non-regression
 
-`cd engine-kit && python3.12 -m pytest` → **1995 passed / 12 skipped / 1 failed**. The single failure
+`cd engine-kit && python3.12 -m pytest` → **1998 passed / 12 skipped / 1 failed**. The single failure
 is the PRE-EXISTING `README.md:122/341` doc-reconciliation red (PR#8 leftover, byte-identical to
 main — out of scope; confirmed present with the Phase-3 changes stashed). Kernel-coverage,
 load-closure, and all other gates are green.
@@ -137,6 +141,7 @@ load-closure, and all other gates are green.
   the epoch-recheck crash-safety bug + incomplete §6 canary coverage; 3 NB) → **fixed** (crash-safe
   flush + the full §6 canary matrix + resume-hint/schema NBs).
 - Cluster 3 (lever-2 verify + lever-3 doc + teaching docs): committed `aadfdff`.
+- R2.2 re-gate: 1 blocking (base-tree golden byte-diff + 2 missing §6 variants) + 1 NB → fixed (checked-in base golden fixture; inherited-browser_e2e + unit-level restamp-survival variants; pause_subsprint_id no longer surfaced for the campaign-tier gate).
 - R3 whole-scope gate: pending (after R2 re-gate APPROVE).
 
 Nothing in this phase weakens a MANDATORY_CHECKPOINT, acceptance authority (§1.7-C), signed-scope

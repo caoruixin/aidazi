@@ -1,0 +1,44 @@
+{
+  "campaign_id": "golden-1",
+  "cursor": {
+    "milestone_index": 2,
+    "subsprint_index": 0
+  },
+  "followup_baseline_seq": null,
+  "milestone_context": null,
+  "milestone_outcomes": [
+    {
+      "milestone_id": "m1",
+      "terminal": "acceptance_off"
+    },
+    {
+      "milestone_id": "m2",
+      "terminal": "acceptance_pass_authoritative"
+    }
+  ],
+  "pause_checkpoint": null,
+  "pause_reason": null,
+  "pending_milestone_advance": false,
+  "spent": {
+    "subsprints_run": 2,
+    "total_spawns": 2,
+    "wall_clock_minutes": 0.05
+  },
+  "status": "done",
+  "units": [
+    {
+      "final_state": "advance",
+      "loop_id": "L-s1",
+      "milestone_id": "m1",
+      "status": "done",
+      "subsprint_id": "s1"
+    },
+    {
+      "final_state": "done",
+      "loop_id": "L-s2",
+      "milestone_id": "m2",
+      "status": "done",
+      "subsprint_id": "s2"
+    }
+  ]
+}

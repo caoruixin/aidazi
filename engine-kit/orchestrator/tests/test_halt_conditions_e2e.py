@@ -418,27 +418,96 @@ class AckLifecycleVariants(unittest.TestCase):
 
 
 class ByteIdenticalGolden(unittest.TestCase):
-    """True byte-level comparison (R2 B-2), not just absent-field checks."""
+    """True byte-diff against a CHECKED-IN golden captured from the BASE tree 6a2078a
+    (R2.2 B-1) — proves ADDITIVITY: with no halt_conditions/notifications, the Phase-3
+    campaign produces byte-identical campaign-state to the pre-Phase-3 engine."""
+
+    # The scenario MUST match tools used to generate the fixture (a no-condition run).
+    _GOLDEN_PLAN = {"campaign_id": "golden-1", "goal": "g", "signed_by_human": True,
+                    "milestones": [{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]},
+                                   {"id": "m2", "objective": "b", "subsprint_sequence": ["s2"]}]}
+    _FIXTURE = os.path.join(_TESTS_DIR, "fixtures", "phase3-baseline-campaign-state.json")
 
     def _run_state_bytes(self, charter):
         with tempfile.TemporaryDirectory() as d:
-            cp.run_campaign(_plan(_TWO_MS), d, _run_unit(_FINAL), clock=_clock(),
-                            charter=charter)
+            st = cp.run_campaign(self._GOLDEN_PLAN, d, _run_unit(_FINAL), clock=_clock(),
+                                 charter=charter)
+            self.assertEqual(st.status, cp.STATUS_DONE)
             with open(os.path.join(d, "campaign-state.json"), "rb") as fh:
                 return fh.read()
 
-    def test_two_no_condition_runs_are_byte_identical(self):
-        # Deterministic clock + mock run_unit ⇒ reproducible bytes; the golden.
-        golden = self._run_state_bytes({"autonomy": {}})
-        self.assertEqual(golden, self._run_state_bytes({"autonomy": {}}))
+    def test_no_conditions_matches_base_tree_golden(self):
+        # The checked-in golden was captured by running THIS scenario on 6a2078a (pre-Phase-3).
+        with open(self._FIXTURE, "rb") as fh:
+            golden = fh.read()
+        self.assertEqual(self._run_state_bytes({"autonomy": {"level": "human_on_the_loop"}}),
+                         golden, "no-condition run drifted from the pre-Phase-3 base state bytes")
 
-    def test_never_matching_condition_is_byte_identical_to_no_conditions(self):
-        # A declared-but-never-matching condition perturbs NOTHING (no halt, no state field).
-        golden = self._run_state_bytes({"autonomy": {}})
-        never = _charter([{"id": "never",
-                           "when": {"metric": "milestone_id", "op": "in",
-                                    "value": ["does-not-exist"]}}])
-        self.assertEqual(golden, self._run_state_bytes(never))
+    def test_never_matching_condition_matches_base_golden(self):
+        # A declared-but-never-matching condition perturbs NOTHING (no halt, no state field) —
+        # still byte-identical to the pre-Phase-3 base.
+        with open(self._FIXTURE, "rb") as fh:
+            golden = fh.read()
+        never = {"autonomy": {"level": "human_on_the_loop",
+                              "halt_conditions": [{"id": "never",
+                                                   "when": {"metric": "milestone_id", "op": "in",
+                                                            "value": ["does-not-exist"]}}]}}
+        self.assertEqual(self._run_state_bytes(never), golden)
+
+
+class ResolvedClassAndRestamp(unittest.TestCase):
+    """R2.2: the inherited-browser_e2e extractor + committed-ack-survives-engine_restamp."""
+
+    def test_charter_inherited_browser_e2e_fires(self):
+        # The milestone declares NO functional_acceptance; it INHERITS browser_e2e from the
+        # charter (tooling.acceptance.functional.mode). The gate-e2e condition MUST fire on the
+        # RESOLVED class, not the raw (absent) milestone field (design R0.2 B-1).
+        plan = _plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}])  # no f_a
+        charter = {"autonomy": {"halt_conditions": [
+            {"id": "gate-e2e", "when": {"metric": "milestone_functional_acceptance",
+                                        "op": "==", "value": "browser_e2e"}}]},
+            "tooling": {"acceptance": {"functional": {"mode": "browser_e2e"}}}}
+        with tempfile.TemporaryDirectory() as d:
+            st = cp.run_campaign(plan, d, _run_unit({"m1": "done"}), clock=_clock(),
+                                 charter=charter)
+            self.assertEqual(st.pause_reason, "halt_condition_met")
+            self.assertEqual(st.halt_condition_pending["condition_id"], "gate-e2e")
+            self.assertEqual(st.halt_condition_pending["facts"],
+                             {"milestone_functional_acceptance": "browser_e2e"})
+
+    def test_epoch_flush_touches_only_the_active_cascade_not_committed_acks(self):
+        # committed-ack-survives-engine_restamp (design R0.3/R0.5 B-3), proven directly at the
+        # unit level: an engine_restamp advances the signed hash; the drift flush drops ONLY the
+        # active provisional cascade + pending, and NEVER a permanent (committed) ack.
+        with tempfile.TemporaryDirectory() as d:
+            camp = cp.Campaign(_plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}]), d,
+                               _run_unit({}), clock=_clock())
+            camp.state = cp.CampaignState(
+                campaign_id="camp-1",
+                halt_condition_acks=[["committed", "digA", "m1"]],       # a permanent ack
+                halt_condition_provisional=[["provisional", "digB", "m2"]],  # active cascade
+                halt_condition_pending={"condition_id": "provisional", "signed_scope_hash": "H0",
+                                        "milestone_id": "m2"})
+            with mock.patch.object(camp, "_audit"), \
+                    mock.patch.object(camp, "_live_signed_scope_hash", return_value="H1"):
+                camp._halt_epoch_recheck()   # H0 (pending) != H1 (live) ⇒ restamp/re-sign
+            self.assertEqual(camp.state.halt_condition_acks, [["committed", "digA", "m1"]])  # survives
+            self.assertEqual(camp.state.halt_condition_provisional, [])   # active cascade flushed
+            self.assertIsNone(camp.state.halt_condition_pending)          # pending discarded
+
+    def test_epoch_flush_is_noop_when_hash_matches(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp = cp.Campaign(_plan([{"id": "m1", "objective": "a", "subsprint_sequence": ["s1"]}]), d,
+                               _run_unit({}), clock=_clock())
+            camp.state = cp.CampaignState(
+                campaign_id="camp-1",
+                halt_condition_provisional=[["p", "d", "m2"]],
+                halt_condition_pending={"condition_id": "p", "signed_scope_hash": "H0"})
+            with mock.patch.object(camp, "_audit"), \
+                    mock.patch.object(camp, "_live_signed_scope_hash", return_value="H0"):
+                camp._halt_epoch_recheck()   # same epoch ⇒ no flush
+            self.assertEqual(camp.state.halt_condition_provisional, [["p", "d", "m2"]])
+            self.assertIsNotNone(camp.state.halt_condition_pending)
 
 
 if __name__ == "__main__":

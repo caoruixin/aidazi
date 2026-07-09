@@ -890,10 +890,13 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     # already _saved it) and the exit-10 result is computed. FAIL-SAFE: the notifier can never
     # affect the pause or exit code. Default-OFF ⇒ a complete no-op (byte-identical).
     # Phase-3: a halt_condition_met pause is campaign-tier (NOT a unit), so paused_unit is empty
-    # — surface the identity from halt_condition_pending instead (R2 NB-1).
+    # — surface the milestone_id from halt_condition_pending (needed for the identity-bound
+    # decision). subsprint_id is DELIBERATELY NOT surfaced for this gate (R2.2 NB): the decision
+    # forbids subsprint_id, so exposing it would mislead a machine/human consumer into authoring
+    # a decision the resolver refuses.
     _hcp = getattr(st, "halt_condition_pending", None) or {}
     _pause_milestone_id = paused_unit.get("milestone_id") or _hcp.get("milestone_id")
-    _pause_subsprint_id = paused_unit.get("subsprint_id") or _hcp.get("subsprint_id")
+    _pause_subsprint_id = paused_unit.get("subsprint_id")
     if exit_code == CAMPAIGN_EXIT_PAUSED:
         try:
             import pause_notifier as _pn
