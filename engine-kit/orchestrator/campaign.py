@@ -118,6 +118,13 @@ DRIVER_RESUME_CHECKPOINTS: frozenset = frozenset({
     "review_spec_refinement",
     "acceptance_spec_refinement",
     "customer_gate1_signoff",
+    # Phase-2 campaign_bootstrap (design §3.1/§3.3 [R0 B-5]/[R0.3 N-1]): both can
+    # only FIRE inside the bootstrap pre-chain (no campaign exists yet), but they
+    # are classified here UNCONDITIONALLY so the Driver-checkpoint inventory stays
+    # total. Resolution = human fixes the named input (charter envelope / ledger),
+    # then the bootstrap re-enters the pending state on --resume (Mechanism A).
+    "scope_envelope_unset",
+    "campaign_decompose_refusal",
 })
 # Mechanism B — ordinary STATE_HALTED human gates: resume=True would no-op
 # (driver.py:2100), so the campaign reads the resolved decision and dispatches the

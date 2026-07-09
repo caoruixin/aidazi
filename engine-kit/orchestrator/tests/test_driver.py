@@ -417,6 +417,31 @@ class UniversalSignalSourceDriverTests(unittest.TestCase):
                 drv2._step_decompose()
             got["decompose_prompt"] = hashlib.sha256(
                 cap["p"].encode("utf-8")).hexdigest()
+
+        # Phase-2 (design §3.2): the campaign_bootstrap prompts are ALSO pinned
+        # (bootstrap research block + Stage-1 backlog + Stage-2 per-milestone).
+        # They embed the run dir (ABSOLUTE requirement/brief paths — the agent-cwd
+        # frame-fix), so bytes are normalized over <RUN> as well as <ROOT>.
+        with tempfile.TemporaryDirectory() as d3:
+            drv3 = _bootstrap_driver(d3, gate_resolver=_sign_resolver())
+            drv3.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            spawns = [e for e in audit.read_events(drv3.audit_ledger)
+                      if e["type"] == "spawn"]
+
+            def _bh(ref):
+                raw = open(os.path.join(d3, ref), encoding="utf-8").read()
+                norm = (raw.replace(root, "<ROOT>")
+                        .replace(os.path.realpath(d3), "<RUN>")
+                        .replace(d3, "<RUN>"))
+                return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+            research_refs = [e["payload"]["prompt_ref"] for e in spawns
+                             if e["payload"]["role"] == "research"]
+            deliver_refs = [e["payload"]["prompt_ref"] for e in spawns
+                            if e["payload"]["role"] == "deliver"]
+            got["bootstrap_research_prompt"] = _bh(research_refs[0])
+            got["campaign_decompose_stage1_prompt"] = _bh(deliver_refs[0])
+            got["campaign_decompose_stage2_prompt"] = _bh(deliver_refs[1])
         self.assertEqual(got, golden,
                          "signal-free dispatched-prompt bytes drifted from the golden "
                          "(pre-Phase-1-proven); a drift here means signal-free adopters "
@@ -4090,6 +4115,365 @@ class TestRecordOnlyP2Policy(unittest.TestCase):
             self.assertEqual(final.state, STATE_HALTED)
             types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
             self.assertNotIn("review_decision_normalized", types)
+
+
+# --------------------------------------------------------------------------- #
+# Phase-2 — campaign_bootstrap pre-chain (requirement → gate-1 → campaign
+# decompose; archive/2026-07-09-phase2-requirement-chain-design.md §2/§3).
+# --------------------------------------------------------------------------- #
+import json  # noqa: E402
+
+from driver import (  # noqa: E402
+    STATE_CAMPAIGN_DECOMPOSE_PENDING, LOOP_MODE_CAMPAIGN_BOOTSTRAP,
+    CAMPAIGN_DECOMPOSE_MAX_SUBSPRINTS_PER_MILESTONE, STATE_DONE, STATE_HALTED,
+)
+
+# A schema-valid Stage-1 campaign backlog fully INSIDE the demo charter envelope
+# (modules_in_scope: eligibility.py + check.py; layers: semantic_planner +
+# prompt_projection).
+BOOTSTRAP_STAGE1 = {
+    "goal": "refund eligibility end-to-end",
+    "milestones": [
+        {"id": "m1", "objective": "eligibility rules engine",
+         "acceptance_bar": "demo bad-cases all pass",
+         "modules": ["src/tools/eligibility.py"], "layers": ["semantic_planner"]},
+        {"id": "m2", "objective": "pipeline eligibility check",
+         "acceptance_bar": "check wired into the pipeline",
+         "modules": ["src/pipeline/check.py"], "layers": ["prompt_projection"],
+         "depends_on": ["m1"]},
+    ],
+}
+
+
+def _stage2(mid, module, layer, *, sid=None, n=1):
+    """A schema-valid Stage-2 plan for one milestone (n sub-sprints)."""
+    return {"sub_sprints": [{
+        "id": sid or f"{mid}-s{i + 1}", "objective": f"{mid} slice {i + 1}",
+        "scope_in": [f"{mid} deliverable {i + 1}"], "scope_out": ["everything else"],
+        "modules": [module], "layers": [layer],
+        "exit_criteria": [f"{mid} slice {i + 1} observably done"],
+    } for i in range(n)]}
+
+
+BOOTSTRAP_STAGE2_M1 = _stage2("m1", "src/tools/eligibility.py", "semantic_planner")
+BOOTSTRAP_STAGE2_M2 = _stage2("m2", "src/pipeline/check.py", "prompt_projection")
+
+
+def _bootstrap_adapters(stage1=BOOTSTRAP_STAGE1,
+                        stage2=(BOOTSTRAP_STAGE2_M1, BOOTSTRAP_STAGE2_M2),
+                        research=RESEARCH_ARTIFACT):
+    """deliver serves Stage-1 on its FIRST call, then Stage-2 per milestone in
+    backlog order. dev/review present but unused (the bootstrap never enters the
+    delivery loop — any call would raise)."""
+    deliver = {("deliver", 0): stage1}
+    for i, v in enumerate(stage2):
+        deliver[("deliver", i + 1)] = v
+    return {
+        "research": MockAdapter({("research",): research}, harness="claude_code",
+                                provider="anthropic", model="claude-opus-4-8"),
+        "dev": MockAdapter({}, harness="claude_code", provider="anthropic",
+                           model="claude-sonnet-4-6"),
+        "review": MockAdapter({}, harness="headless", provider="deepseek",
+                              model="deepseek-chat"),
+        "deliver": MockAdapter(deliver, harness="claude_code",
+                               provider="anthropic", model="claude-opus-4-8"),
+    }
+
+
+def _bootstrap_charter(**kw):
+    """The guided demo charter with an EMPTY subsprint_sequence (irrelevant at
+    campaign tier) — envelope non-empty by default."""
+    return _guided_charter(**kw)
+
+
+def _bootstrap_driver(run_dir, *, charter=None, adapters=None,
+                      gate_resolver=None, loop_id="loop-bootstrap-001"):
+    charter = charter if charter is not None else _bootstrap_charter()
+    return Driver(charter, run_dir, adapters or _bootstrap_adapters(),
+                  loop_id=loop_id, clock=_clock(),
+                  loop_mode=LOOP_MODE_CAMPAIGN_BOOTSTRAP,
+                  gate_resolver=gate_resolver)
+
+
+REQ_REF = {"path": "requirement.md", "sha256": "f" * 64}
+LEDGER_REQ1 = {"version": "v1",
+               "requirements": [{"id": "REQ-1", "statement": "eligibility works",
+                                 "surface": "non_user_facing"}]}
+
+
+class TestCampaignBootstrap(unittest.TestCase):
+    # (a) happy path: requirement-grounded research → gate1 sign (envelope
+    # SNAPSHOT) → two-stage decompose → validated backlog → done.
+    def test_happy_path_requirement_to_validated_backlog(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _bootstrap_driver(d, gate_resolver=_sign_resolver())
+            final = drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            self.assertEqual(final.state, STATE_DONE)
+            self.assertTrue(final.campaign_planned)
+            self.assertEqual(final.history,
+                             [STATE_RESEARCH_PENDING, STATE_GATE1_PENDING,
+                              STATE_CAMPAIGN_DECOMPOSE_PENDING])
+            # The envelope SNAPSHOT is exactly what gate-1 showed [R0 B-2].
+            self.assertEqual(final.signed_envelope, {
+                "modules_in_scope": ["src/tools/eligibility.py",
+                                     "src/pipeline/check.py"],
+                "layers_allowed": ["semantic_planner", "prompt_projection"],
+                "explicitly_out_of_scope": ["src/escalation"]})
+            # Both stages persisted for downstream projection (Commit B).
+            self.assertEqual(
+                (final.campaign_backlog or {}).get("stage1"), BOOTSTRAP_STAGE1)
+            self.assertEqual(
+                set((final.campaign_backlog or {}).get("stage2") or {}),
+                {"m1", "m2"})
+            # Research was GROUNDED in the requirement snapshot [R0.2 B-2]:
+            # the first research prompt names the ABSOLUTE snapshot path + sha.
+            events = audit.read_events(drv_.audit_ledger)
+            research_prompts = [
+                open(os.path.join(d, e["payload"]["prompt_ref"]),
+                     encoding="utf-8").read()
+                for e in events if e["type"] == "spawn"
+                and e["payload"]["role"] == "research"]
+            self.assertEqual(len(research_prompts), 1)
+            self.assertIn(os.path.join(d, "requirement.md"), research_prompts[0])
+            self.assertIn(REQ_REF["sha256"], research_prompts[0])
+            types = [e["type"] for e in events]
+            order = [t for t in types if t in (
+                "campaign_bootstrap_start", "research_brief_drafted",
+                "customer_gate1_signed", "campaign_decomposed",
+                "campaign_bootstrap_complete")]
+            self.assertEqual(order, [
+                "campaign_bootstrap_start", "research_brief_drafted",
+                "customer_gate1_signed", "campaign_decomposed",
+                "campaign_bootstrap_complete"])
+            self.assertTrue(audit.verify_chain(drv_.audit_ledger).ok)
+
+    # (b) preflight 0b [roadmap R0 B-1]: empty envelope ⇒ scope_envelope_unset
+    # BEFORE any spawn; human fills the charter; --resume proceeds.
+    def test_empty_envelope_halts_before_any_spawn_then_resume(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _bootstrap_charter()
+            charter["autonomy"]["approved_scope"]["modules_in_scope"] = []
+            drv_ = _bootstrap_driver(d, charter=charter,
+                                     gate_resolver=_sign_resolver())
+            final = drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            self.assertEqual(final.state, STATE_RESEARCH_PENDING)  # parked
+            self.assertFalse(final.campaign_planned)
+            self.assertIsNone(final.brief_draft_ref)  # NO spawn happened
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("scope_envelope_unset", types)
+            self.assertTrue(any(
+                "scope_envelope_unset" in f
+                for f in os.listdir(os.path.join(d, "docs", "checkpoints"))))
+            # Human fills the envelope → a fresh driver (new process) resumes.
+            drv2 = _bootstrap_driver(d, gate_resolver=_sign_resolver())
+            final2 = drv2.run_campaign_bootstrap(resume=True)
+            self.assertEqual(final2.state, STATE_DONE)
+
+    # (c) decoupled skip rule [R0.2 B-1]: a confirmed intent_contract does NOT
+    # skip research/gate-1 in THIS mode (the single-tier proxy skip is untouched
+    # — TestFullChainGuided covers it).
+    def test_confirmed_intent_contract_does_not_skip_research(self):
+        with tempfile.TemporaryDirectory() as d:
+            charter = _bootstrap_charter(confirmed_by_human=True)
+            drv_ = _bootstrap_driver(d, charter=charter,
+                                     gate_resolver=_sign_resolver())
+            final = drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            self.assertEqual(final.state, STATE_DONE)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("research_brief_drafted", types)   # research RAN
+            self.assertIn("customer_gate1_signed", types)    # gate-1 RAN
+            self.assertNotIn("research_skipped", types)
+
+    # (d) gate-1 halt (no resolver) → resume re-consults WITHOUT re-drafting the
+    # brief; the decompose spawns happen only once overall.
+    def test_gate1_halt_then_resume_signs_without_redraft(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _bootstrap_driver(d, gate_resolver=_none_resolver())
+            final = drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            self.assertEqual(final.state, STATE_GATE1_PENDING)
+            self.assertIsNotNone(final.brief_draft_ref)
+            # Resume: research MUST NOT re-run — its adapter would raise (empty
+            # map). deliver serves stage1+stage2 fresh (never spawned yet).
+            adapters = _bootstrap_adapters()
+            adapters["research"] = MockAdapter({}, harness="claude_code",
+                                               provider="anthropic",
+                                               model="claude-opus-4-8")
+            drv2 = _bootstrap_driver(d, adapters=adapters,
+                                     gate_resolver=_sign_resolver())
+            final2 = drv2.run_campaign_bootstrap(resume=True)
+            self.assertEqual(final2.state, STATE_DONE)
+
+    # (e) envelope drift after sign [R0 B-2]: a post-sign charter edit forces a
+    # FRESH gate-1 over the new envelope; cached verdicts are dropped.
+    def test_envelope_drift_forces_fresh_gate1(self):
+        with tempfile.TemporaryDirectory() as d:
+            # Round 1: claims without a ledger → refusal AFTER sign (state parks
+            # at campaign_decompose_pending with a signed envelope snapshot).
+            stage1 = json.loads(json.dumps(BOOTSTRAP_STAGE1))
+            stage1["milestones"][0]["covers_req_ids"] = ["REQ-1"]
+            drv_ = _bootstrap_driver(
+                d, adapters=_bootstrap_adapters(stage1=stage1),
+                gate_resolver=_sign_resolver())
+            final = drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            self.assertEqual(final.state, STATE_CAMPAIGN_DECOMPOSE_PENDING)
+            self.assertIsNotNone(final.signed_envelope)
+            # Round 2: the human WIDENS the charter envelope → drift ⇒ fresh
+            # gate-1 (second customer_gate1_signed) ⇒ decompose re-runs fresh.
+            charter = _bootstrap_charter()
+            charter["autonomy"]["approved_scope"]["modules_in_scope"].append(
+                "src/new/area.py")
+            drv2 = _bootstrap_driver(d, charter=charter,
+                                     gate_resolver=_sign_resolver())
+            final2 = drv2.run_campaign_bootstrap(resume=True)
+            self.assertEqual(final2.state, STATE_DONE)
+            types = [e["type"] for e in audit.read_events(drv2.audit_ledger)]
+            self.assertIn("gate1_envelope_drift", types)
+            self.assertEqual(types.count("customer_gate1_signed"), 2)
+            self.assertEqual(final2.signed_envelope["modules_in_scope"][-1],
+                             "src/new/area.py")
+
+    # (f) envelope guard over the STAGE-2 footprint: an out-of-envelope
+    # sub-sprint halts post_gate1_scope_expansion + drops the cached verdicts.
+    def test_stage2_out_of_envelope_halts_and_drops_backlog(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad_m2 = _stage2("m2", "src/escalation/new_path.py", "infra")
+            drv_ = _bootstrap_driver(
+                d, adapters=_bootstrap_adapters(
+                    stage2=(BOOTSTRAP_STAGE2_M1, bad_m2)),
+                gate_resolver=_sign_resolver())
+            final = drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            self.assertEqual(final.state, STATE_HALTED)
+            self.assertEqual(final.halt_resume_state,
+                             STATE_CAMPAIGN_DECOMPOSE_PENDING)
+            self.assertIsNone(final.campaign_backlog)  # dropped — regen on resume
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("post_gate1_scope_expansion", types)
+            # Resume regenerates BOTH stages within the envelope → done.
+            drv2 = _bootstrap_driver(d, gate_resolver=_sign_resolver())
+            final2 = drv2.run_campaign_bootstrap(resume=True)
+            self.assertEqual(final2.state, STATE_DONE)
+
+    # (g) Stage-2 code bounds [R0.2 B-3]: > MAX per milestone ⇒ GateHardFail.
+    def test_stage2_bounds_hard_fail(self):
+        with tempfile.TemporaryDirectory() as d:
+            over = _stage2("m1", "src/tools/eligibility.py", "semantic_planner",
+                           n=CAMPAIGN_DECOMPOSE_MAX_SUBSPRINTS_PER_MILESTONE + 1)
+            drv_ = _bootstrap_driver(
+                d, adapters=_bootstrap_adapters(
+                    stage2=(over, BOOTSTRAP_STAGE2_M2)),
+                gate_resolver=_sign_resolver())
+            with self.assertRaises(GateHardFail):
+                drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+
+    # (h) Stage-1 schema bound: 13 milestones ⇒ schema-invalid ⇒ GateHardFail.
+    def test_stage1_schema_bound_hard_fail(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = BOOTSTRAP_STAGE1["milestones"][0]
+            stage1 = {"goal": "too many", "milestones": [
+                {**m, "id": f"m{i}"} for i in range(13)]}
+            drv_ = _bootstrap_driver(
+                d, adapters=_bootstrap_adapters(stage1=stage1),
+                gate_resolver=_sign_resolver())
+            with self.assertRaises(GateHardFail):
+                drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+
+    # (i) coverage-claim authority [R0 B-4]: claims with NO ledger ⇒ refusal;
+    # wiring the ledger later ⇒ resume passes WITHOUT re-spawning Deliver.
+    def test_coverage_claims_require_ledger_then_resume_reuses_verdicts(self):
+        with tempfile.TemporaryDirectory() as d:
+            stage1 = json.loads(json.dumps(BOOTSTRAP_STAGE1))
+            stage1["milestones"][0]["covers_req_ids"] = ["REQ-1"]
+            drv_ = _bootstrap_driver(
+                d, adapters=_bootstrap_adapters(stage1=stage1),
+                gate_resolver=_sign_resolver())
+            final = drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            self.assertEqual(final.state, STATE_CAMPAIGN_DECOMPOSE_PENDING)
+            self.assertFalse(final.campaign_planned)
+            types = [e["type"] for e in audit.read_events(drv_.audit_ledger)]
+            self.assertIn("campaign_decompose_refusal", types)
+            # Resume WITH the ledger: every adapter would RAISE if spawned —
+            # proving the cached Stage-1/Stage-2 verdicts are reused (§3.3).
+            adapters = {r: MockAdapter({}, harness="claude_code",
+                                       provider="anthropic", model="claude-opus-4-8")
+                        for r in ("research", "dev", "review", "deliver")}
+            drv2 = _bootstrap_driver(d, adapters=adapters,
+                                     gate_resolver=_sign_resolver())
+            final2 = drv2.run_campaign_bootstrap(resume=True,
+                                                 requirement_ledger=LEDGER_REQ1)
+            self.assertEqual(final2.state, STATE_DONE)
+
+    # (j) unknown rid against a WIRED ledger ⇒ the same refusal kind.
+    def test_unknown_rid_refused_against_wired_ledger(self):
+        with tempfile.TemporaryDirectory() as d:
+            stage1 = json.loads(json.dumps(BOOTSTRAP_STAGE1))
+            stage1["milestones"][0]["covers_req_ids"] = ["REQ-404"]
+            drv_ = _bootstrap_driver(
+                d, adapters=_bootstrap_adapters(stage1=stage1),
+                gate_resolver=_sign_resolver())
+            final = drv_.run_campaign_bootstrap(requirement_ref=REQ_REF,
+                                                requirement_ledger=LEDGER_REQ1)
+            self.assertEqual(final.state, STATE_CAMPAIGN_DECOMPOSE_PENDING)
+            self.assertIn("campaign_decompose_refusal",
+                          [e["type"] for e in
+                           audit.read_events(drv_.audit_ledger)])
+
+    # (k) global sid uniqueness [R0.2 N-2]: a cross-milestone collision is
+    # refused; the implicated Stage-2 verdicts are dropped; resume regenerates.
+    def test_cross_milestone_sid_collision_refused_then_regenerated(self):
+        with tempfile.TemporaryDirectory() as d:
+            collide1 = _stage2("m1", "src/tools/eligibility.py",
+                               "semantic_planner", sid="shared-s1")
+            collide2 = _stage2("m2", "src/pipeline/check.py",
+                               "prompt_projection", sid="shared-s1")
+            drv_ = _bootstrap_driver(
+                d, adapters=_bootstrap_adapters(stage2=(collide1, collide2)),
+                gate_resolver=_sign_resolver())
+            final = drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            self.assertEqual(final.state, STATE_CAMPAIGN_DECOMPOSE_PENDING)
+            self.assertEqual((final.campaign_backlog or {}).get("stage2"), {})
+            # Resume: stage1 is REUSED (deliver call 0/1 = the two Stage-2
+            # regens); research would raise if re-spawned.
+            adapters = _bootstrap_adapters()
+            adapters["research"] = MockAdapter({}, harness="claude_code",
+                                               provider="anthropic",
+                                               model="claude-opus-4-8")
+            adapters["deliver"] = MockAdapter(
+                {("deliver", 0): BOOTSTRAP_STAGE2_M1,
+                 ("deliver", 1): BOOTSTRAP_STAGE2_M2},
+                harness="claude_code", provider="anthropic",
+                model="claude-opus-4-8")
+            drv2 = _bootstrap_driver(d, adapters=adapters,
+                                     gate_resolver=_sign_resolver())
+            final2 = drv2.run_campaign_bootstrap(resume=True)
+            self.assertEqual(final2.state, STATE_DONE)
+
+    # (l) fail-closed entry guards: run() refuses the mode in BOTH directions.
+    def test_run_refuses_bootstrap_mode_and_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _bootstrap_driver(d, gate_resolver=_none_resolver())
+            with self.assertRaises(ValueError):
+                drv_.run(subsprint_id="sprint-001")
+            drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)  # halts @ gate1
+            drv2 = _guided_driver(d, loop_mode=LOOP_MODE_DELIVERY_ONLY)
+            with self.assertRaises(ValueError):
+                drv2.run(resume=True)
+            # And the bootstrap entry refuses NON-bootstrap drivers.
+            with self.assertRaises(ValueError):
+                drv2.run_campaign_bootstrap(resume=True)
+
+    # (m) done is idempotent: resuming a completed bootstrap returns as-is
+    # (no spawns — every adapter would raise).
+    def test_done_resume_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _bootstrap_driver(d, gate_resolver=_sign_resolver())
+            drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            adapters = {r: MockAdapter({}, harness="claude_code",
+                                       provider="anthropic", model="claude-opus-4-8")
+                        for r in ("research", "dev", "review", "deliver")}
+            drv2 = _bootstrap_driver(d, adapters=adapters)
+            final = drv2.run_campaign_bootstrap(resume=True)
+            self.assertEqual(final.state, STATE_DONE)
+            self.assertTrue(final.campaign_planned)
 
 
 if __name__ == "__main__":
