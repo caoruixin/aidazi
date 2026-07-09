@@ -2847,8 +2847,12 @@ class Driver:
         self.state.brief_signed = False
         self.state.signed_envelope = None
         # Verdicts produced under the old envelope are dropped (design §3.3
-        # preamble: reuse only while the envelope snapshot is unchanged).
+        # preamble: reuse only while the envelope snapshot is unchanged) — AND
+        # the planned flag with them [R1 B-2]: a crash between decompose's
+        # campaign_planned=True save and the `done` save must not let a later
+        # drift skip decompose and mark done with NO valid backlog.
         self.state.campaign_backlog = None
+        self.state.campaign_planned = False
         self._save_state()
 
     def _campaign_decompose_refusal(self, reasons: list[str]) -> None:
@@ -3167,6 +3171,15 @@ class Driver:
         if self.state.state == STATE_IDLE:
             self.state.state = STATE_RESEARCH_PENDING
             self._save_state()
+
+        # Envelope drift check [R0 B-2] — FIRST, before the precondition [R1 B-3]:
+        # the precondition must evaluate the envelope the chain will actually run
+        # under. Checked the other way round, a live drift to an EMPTY envelope
+        # passes the precondition on the stale non-empty snapshot, lets gate-1
+        # sign the empty envelope, and then wedges resume behind the stale empty
+        # snapshot. Drift clears the snapshot ⇒ the precondition below reads the
+        # LIVE charter ⇒ empty halts BEFORE any signature.
+        self._bootstrap_envelope_drift_reset()
         if not self._bootstrap_envelope_ok():
             return False
 
@@ -3174,10 +3187,6 @@ class Driver:
         # not re-drafted on resume after a gate-1 halt (draft exists).
         if not self.state.brief_signed and self.state.brief_draft_ref is None:
             self._step_research()
-
-        # Envelope drift check [R0 B-2] — BEFORE consulting/skipping gate-1, so a
-        # post-sign charter edit forces a FRESH signature over the new envelope.
-        self._bootstrap_envelope_drift_reset()
 
         if not self.state.brief_signed:
             result = self._step_gate1()
@@ -3222,6 +3231,13 @@ class Driver:
             if loaded is None:
                 raise FileNotFoundError(
                     f"resume requested but no state.json at {self.state_path}")
+            # Inverse persisted-state guard [R1 B-1] — mirror of run()'s: a
+            # delivery/guided state.json must never be routed through the
+            # bootstrap pre-chain.
+            if loaded.loop_mode != LOOP_MODE_CAMPAIGN_BOOTSTRAP:
+                raise ValueError(
+                    f"state.json was produced by loop_mode={loaded.loop_mode!r} "
+                    f"— resume it with run(), never run_campaign_bootstrap()")
             self.state = loaded
             self._audit("loop_resume", {"from_state": self.state.state,
                                         "subsprint_id": self.state.subsprint_id})

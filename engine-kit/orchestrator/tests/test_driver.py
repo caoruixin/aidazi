@@ -4475,6 +4475,124 @@ class TestCampaignBootstrap(unittest.TestCase):
             self.assertEqual(final.state, STATE_DONE)
             self.assertTrue(final.campaign_planned)
 
+    # (n) [R1 B-1] inverse persisted-state guard: a delivery/guided state.json
+    # must never route through the bootstrap pre-chain.
+    def test_bootstrap_resume_refuses_non_bootstrap_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _guided_driver(d, gate_resolver=_sign_resolver())
+            drv_.run(subsprint_id="sprint-001")  # persists a guided state.json
+            drv2 = _bootstrap_driver(d)
+            with self.assertRaises(ValueError):
+                drv2.run_campaign_bootstrap(resume=True)
+
+    # (o) [R1 NB] the campaign-wide Σ bound: 12 milestones × 6 sub-sprints = 72
+    # > 60 ⇒ GateHardFail (each milestone individually under the per-bound).
+    def test_stage2_total_bound_hard_fail(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = BOOTSTRAP_STAGE1["milestones"][0]
+            stage1 = {"goal": "wide", "milestones": [
+                {**m, "id": f"m{i}"} for i in range(12)]}
+            stage2 = tuple(
+                _stage2(f"m{i}", "src/tools/eligibility.py",
+                        "semantic_planner", n=6) for i in range(12))
+            drv_ = _bootstrap_driver(
+                d, adapters=_bootstrap_adapters(stage1=stage1, stage2=stage2),
+                gate_resolver=_sign_resolver())
+            with self.assertRaises(GateHardFail):
+                drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+
+    # (p) [R1 NB] gate-1 abort parks the run; an EXPLICIT later resume+sign
+    # proceeds (no auto-sign path — the resolver is re-consulted).
+    def test_gate1_abort_then_explicit_resume_sign(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _bootstrap_driver(d, gate_resolver=_choice_resolver("abort"))
+            final = drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            self.assertEqual(final.state, STATE_HALTED)
+            self.assertFalse(final.brief_signed)
+            drv2 = _bootstrap_driver(d, gate_resolver=_sign_resolver())
+            final2 = drv2.run_campaign_bootstrap(resume=True)
+            self.assertEqual(final2.state, STATE_DONE)
+            types = [e["type"] for e in audit.read_events(drv2.audit_ledger)]
+            self.assertIn("customer_gate1_aborted", types)
+            self.assertIn("customer_gate1_signed", types)
+
+    # (q) [R1 NB] WITHIN-milestone duplicate sub-sprint ids ⇒ GateHardFail.
+    def test_within_milestone_duplicate_sid_hard_fail(self):
+        with tempfile.TemporaryDirectory() as d:
+            dup = _stage2("m1", "src/tools/eligibility.py", "semantic_planner",
+                          n=2)
+            dup["sub_sprints"][1]["id"] = dup["sub_sprints"][0]["id"]
+            drv_ = _bootstrap_driver(
+                d, adapters=_bootstrap_adapters(
+                    stage2=(dup, BOOTSTRAP_STAGE2_M2)),
+                gate_resolver=_sign_resolver())
+            with self.assertRaises(GateHardFail):
+                drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+
+    # (r) [R1 B-3] drift-to-EMPTY: after a sign, emptying the live envelope must
+    # halt scope_envelope_unset BEFORE any second signature (drift clears the
+    # stale snapshot first), and filling the charter later must UNSTICK resume.
+    def test_drift_to_empty_halts_before_gate1_then_unsticks(self):
+        with tempfile.TemporaryDirectory() as d:
+            # Park post-sign at a refusal (claims, no ledger) — snapshot is set.
+            stage1 = json.loads(json.dumps(BOOTSTRAP_STAGE1))
+            stage1["milestones"][0]["covers_req_ids"] = ["REQ-1"]
+            drv_ = _bootstrap_driver(
+                d, adapters=_bootstrap_adapters(stage1=stage1),
+                gate_resolver=_sign_resolver())
+            drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            # Human EMPTIES the live envelope → resume must NOT re-sign.
+            charter = _bootstrap_charter()
+            charter["autonomy"]["approved_scope"]["modules_in_scope"] = []
+            drv2 = _bootstrap_driver(d, charter=charter,
+                                     gate_resolver=_sign_resolver())
+            final2 = drv2.run_campaign_bootstrap(resume=True)
+            self.assertNotEqual(final2.state, STATE_DONE)
+            self.assertIsNone(final2.signed_envelope)  # stale snapshot cleared
+            types2 = [e["type"] for e in audit.read_events(drv2.audit_ledger)]
+            self.assertIn("gate1_envelope_drift", types2)
+            self.assertIn("scope_envelope_unset", types2)
+            self.assertEqual(types2.count("customer_gate1_signed"), 1)  # round 1 only
+            # Human fills the envelope back → resume signs FRESH and completes.
+            drv3 = _bootstrap_driver(d, gate_resolver=_sign_resolver())
+            final3 = drv3.run_campaign_bootstrap(resume=True,
+                                                 requirement_ledger=LEDGER_REQ1)
+            self.assertEqual(final3.state, STATE_DONE)
+            types3 = [e["type"] for e in audit.read_events(drv3.audit_ledger)]
+            self.assertEqual(types3.count("customer_gate1_signed"), 2)
+
+    # (s) [R1 B-2] crash window: campaign_planned=True persisted but the process
+    # died before `done`. A drift on resume must RE-DECOMPOSE (planned flag
+    # cleared with the backlog), never mark done with no valid backlog.
+    def test_crash_after_planned_then_drift_redecomposes(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _bootstrap_driver(d, gate_resolver=_sign_resolver())
+            drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            # Simulate the crash window: rewind state to the pending state while
+            # campaign_planned stays True (exactly what a crash between the two
+            # saves leaves behind).
+            sp = os.path.join(d, ".orchestrator", "state.json")
+            st = json.load(open(sp, encoding="utf-8"))
+            assert st["campaign_planned"] is True
+            st["state"] = STATE_CAMPAIGN_DECOMPOSE_PENDING
+            json.dump(st, open(sp, "w", encoding="utf-8"))
+            # Drift: the human widens the envelope after the crash.
+            charter = _bootstrap_charter()
+            charter["autonomy"]["approved_scope"]["modules_in_scope"].append(
+                "src/new/area.py")
+            drv2 = _bootstrap_driver(d, charter=charter,
+                                     gate_resolver=_sign_resolver())
+            final2 = drv2.run_campaign_bootstrap(resume=True)
+            self.assertEqual(final2.state, STATE_DONE)
+            # The backlog was REGENERATED under the fresh signature, not skipped.
+            self.assertIsNotNone(final2.campaign_backlog)
+            self.assertEqual(
+                set((final2.campaign_backlog or {}).get("stage2") or {}),
+                {"m1", "m2"})
+            types = [e["type"] for e in audit.read_events(drv2.audit_ledger)]
+            self.assertIn("gate1_envelope_drift", types)
+            self.assertEqual(types.count("campaign_decomposed"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
