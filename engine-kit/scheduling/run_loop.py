@@ -1295,6 +1295,20 @@ def _bootstrap_plan_violations(plan: dict, charter: dict,
     if _viol:
         reasons.append(_cp.render_mandatory_e2e_refusal(
             _viol, action="refusing to present the plan for signature"))
+    # Capability-contract parity with --sign-plan (Phase-4 native-E2E): a plan
+    # whose charter pins a framework capability this deployment lacks can never
+    # be signed — surface it HERE ('never show an unsignable plan'), not at the
+    # human's later sign attempt.
+    if charter.get("required_framework_capabilities"):
+        import framework_capabilities as _fc
+        try:
+            _cap = _fc.required_capability_violations(charter)
+        except _fc.CapabilityContractError as exc:
+            _cap = None
+            reasons.append(f"capability contract: {exc}")
+        if _cap:
+            reasons.append(_fc.render_capability_refusal(
+                _cap, action="refusing to present the plan for signature"))
     return reasons
 
 
@@ -1361,7 +1375,9 @@ def run_requirement_entry(charter: dict, *, requirement_path: str,
                           allow_real: bool = False, clock=None,
                           memory_root: Optional[str] = None,
                           allow_gitlink_drift: bool = False,
-                          gate_resolver=None) -> int:
+                          gate_resolver=None, start: bool = False,
+                          campaign_run_dir: Optional[str] = None,
+                          input_fn=None) -> int:
     """The --requirement entry (design §2/§3.3(e)-(h)/§3.4). Exit codes reuse
     the campaign vocabulary: 0 plan emitted; 2 invalid inputs; 10 halted
     awaiting a human; 1 unexpected error."""
@@ -1531,7 +1547,67 @@ def run_requirement_entry(charter: dict, *, requirement_path: str,
     print(f"  python3.12 engine-kit/scheduling/run_loop.py "
           f"--campaign {campaign_out} --charter {charter_path} "
           f"--repo-dir {repo_dir} --resume --allow-real")
-    return CAMPAIGN_EXIT_DONE
+
+    # ---- Commit C (design §4): the ONE-SITTING inline sign. Interactive ONLY:
+    # a wired input_fn (tests) or a real TTY. `sign` records the human's
+    # identity and stamps campaign_plan_signoff via the SAME stamp_signoff the
+    # --sign-plan CLI uses (with repo_dir, so the §3.5 digest binds); ANY other
+    # answer defers (rc 0, unsigned plan + the printed --sign-plan command).
+    # The engine NEVER signs without this explicit human input.
+    if input_fn is None and (sys.stdin is not None and sys.stdin.isatty()
+                             and sys.stdout.isatty()):
+        input_fn = input
+    if input_fn is None:
+        return CAMPAIGN_EXIT_DONE
+    ans = str(input_fn(
+        "sign campaign_plan_signoff NOW? (type 'sign' to sign, anything else "
+        "defers)> ") or "").strip()
+    if ans != "sign":
+        print("deferred — sign later with the printed --sign-plan command.")
+        return CAMPAIGN_EXIT_DONE
+    signer = str(input_fn("signer identity (name/email)> ") or "").strip()
+    if not signer:
+        print("no signer identity given — deferred (a signature is "
+              "identity-bound; sign later with --sign-plan).")
+        return CAMPAIGN_EXIT_DONE
+    import campaign as _cp  # lazy
+    signed = _cp.stamp_signoff(plan, charter, signer=signer,
+                               signed_at=clock(),
+                               charter_ref=os.path.abspath(charter_path),
+                               ledger=ledger, repo_dir=repo_dir)
+    try:
+        _cp._validate_or_raise(signed, "campaign-plan.schema.json",
+                               "signed plan")
+    except ValueError as exc:
+        print(f"inline sign ERROR: stamped plan is schema-invalid: {exc}")
+        return CAMPAIGN_EXIT_INVALID
+    with open(campaign_out, "w", encoding="utf-8") as fh:
+        json.dump(signed, fh, indent=2, sort_keys=True)
+    drv._audit("campaign_plan_signed_inline", {
+        "campaign_id": cid, "signer": signer,
+        "signed_scope_hash": signed["signoff"]["signed_scope_hash"],
+        "prompt_artifacts_digest":
+            signed["signoff"].get("prompt_artifacts_digest"),
+    })
+    print(f"SIGNED by {signer} — signed_scope_hash="
+          f"{signed['signoff']['signed_scope_hash']}")
+    print(f"run the campaign:")
+    print(f"  python3.12 engine-kit/scheduling/run_loop.py "
+          f"--campaign {campaign_out} --charter {charter_path} "
+          f"--repo-dir {repo_dir} --resume --allow-real")
+    if not start:
+        return CAMPAIGN_EXIT_DONE
+    # --start: continue IN-PROCESS into the campaign entry — every real-run
+    # preflight runs exactly as a --campaign invocation would (run_campaign_entry
+    # is the same function main() dispatches to) [design §4 --start].
+    print("=== --start: driving the signed campaign in-process ===")
+    result = run_campaign_entry(
+        signed, charter, clock=clock, campaign_run_dir=campaign_run_dir,
+        resume=False, decision_path=decision_path, allow_real=allow_real,
+        repo_dir=repo_dir, memory_root=memory_root,
+        allow_gitlink_drift=allow_gitlink_drift)
+    print_campaign_result(result)
+    return result["exit_code"]
 
 
 def main(argv=None) -> int:
@@ -1591,6 +1667,11 @@ def main(argv=None) -> int:
     parser.add_argument("--campaign-id", default=None,
                         help="(with --requirement) campaign id for the emitted plan "
                              "(default: a slug of the requirement filename)")
+    parser.add_argument("--start", action="store_true",
+                        help="(with --requirement, INTERACTIVE only) after an inline "
+                             "campaign_plan_signoff sign, continue in-process into the "
+                             "campaign entry (all --campaign preflights apply). Without "
+                             "an inline sign this flag does nothing (default OFF).")
     parser.add_argument("--resume", action="store_true",
                         help="resume a paused run from its persisted state")
     args = parser.parse_args(argv)
@@ -1615,6 +1696,14 @@ def main(argv=None) -> int:
             print("--requirement and --campaign are mutually exclusive: the "
                   "bootstrap EMITS the plan a later --campaign run drives.")
             return CAMPAIGN_EXIT_INVALID
+        # Commit C (design §4): at a TTY with no decision file, wire the SAME
+        # interactive gate resolver full_chain_guided uses, so gate-1 + the
+        # inline plan sign land in ONE sitting. Non-TTY: the decision-file
+        # resolver (when --decision) or a clean rc-10 halt (never auto-signs).
+        _gate_resolver = None
+        if (args.decision is None and sys.stdin is not None
+                and sys.stdin.isatty()):
+            _gate_resolver = make_interactive_gate_resolver()
         return run_requirement_entry(
             charter, requirement_path=args.requirement,
             charter_path=args.charter, repo_dir=args.repo_dir,
@@ -1622,7 +1711,9 @@ def main(argv=None) -> int:
             run_dir=args.run_dir, resume=args.resume,
             decision_path=args.decision, allow_real=args.allow_real,
             clock=_production_clock(), memory_root=effective_memory_root,
-            allow_gitlink_drift=args.allow_gitlink_drift)
+            allow_gitlink_drift=args.allow_gitlink_drift,
+            gate_resolver=_gate_resolver, start=args.start,
+            campaign_run_dir=args.campaign_run_dir)
 
     # Campaign mode: drive the WHOLE milestone backlog (continuous multi-milestone
     # delivery, 以终为始) — NOT one sub-sprint. Pauses persist to the campaign home and

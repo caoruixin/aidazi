@@ -262,6 +262,64 @@ class TestRequirementChain(unittest.TestCase):
                                 for f in os.listdir(cp_dir)))
 
 
+class TestOneSittingInlineSign(unittest.TestCase):
+    """Commit C (design §4): the interactive one-sitting UX — scripted
+    input_fn stands in for the TTY (the entry treats a wired input_fn exactly
+    like an interactive session)."""
+
+    def _scripted(self, answers):
+        it = iter(answers)
+        return lambda prompt="": next(it)
+
+    def test_inline_sign_writes_signed_plan_with_digest(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            rc, out = _run_entry(env, gate_resolver=_sign_resolver(),
+                                 input_fn=self._scripted(["sign", "tester@t"]))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("SIGNED by tester@t", out)
+            signed = json.load(open(env.out, encoding="utf-8"))
+            charter = load_charter(env.charter_path)
+            self.assertEqual(signed["signoff"]["signer"], "tester@t")
+            self.assertIn("prompt_artifacts_digest", signed["signoff"])
+            self.assertEqual(cp.signoff_status(signed, charter, None,
+                                               repo_dir=env.repo), "signed")
+
+    def test_defer_leaves_plan_unsigned(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            rc, out = _run_entry(env, gate_resolver=_sign_resolver(),
+                                 input_fn=self._scripted(["later"]))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("deferred", out)
+            plan = json.load(open(env.out, encoding="utf-8"))
+            self.assertNotIn("signoff", plan)
+
+    def test_empty_signer_identity_defers(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            rc, out = _run_entry(env, gate_resolver=_sign_resolver(),
+                                 input_fn=self._scripted(["sign", ""]))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("no signer identity", out)
+            plan = json.load(open(env.out, encoding="utf-8"))
+            self.assertNotIn("signoff", plan)
+
+    def test_start_drives_the_signed_campaign_in_process(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            home = os.path.join(td, "campaign-home")
+            rc, out = _run_entry(env, gate_resolver=_sign_resolver(),
+                                 input_fn=self._scripted(["sign", "tester@t"]),
+                                 start=True, campaign_run_dir=home)
+            self.assertIn("--start: driving the signed campaign", out)
+            self.assertIn("CAMPAIGN_STATUS=", out)
+            self.assertIn(rc, (0, 10))  # done, or a legitimate human gate
+            self.assertNotIn("milestone_decompose_required", out)
+            self.assertTrue(os.path.exists(
+                os.path.join(home, "campaign-state.json")))
+
+
 class TestProjectionAndSignStack(unittest.TestCase):
     STAGE1 = {"goal": "g", "milestones": [
         {"id": "m1", "objective": "o1", "acceptance_bar": "b1",
