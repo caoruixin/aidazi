@@ -2270,6 +2270,11 @@ class Campaign:
                 self.state.halt_condition_provisional = []
                 self._end("halt_condition_aborted")
                 return "ended"
+            if choice != "proceed":
+                # Defense-in-depth (R3 N3): the file resolver's schema restricts choice to
+                # proceed|abort, but an injected/custom resolver might not — so an unrecognized
+                # choice fail-closes to a RE-PAUSE (never treated as an implicit proceed).
+                return self._repause("halt_condition_met", "unrecognized_choice")
             # proceed: add the PROVISIONAL ack (idempotent), mark resolved, persist, then follow
             # the barrier-free ACT_REDISPATCH_FRESH shape (leave PAUSED, run() clears it & re-
             # dispatches the SAME not-yet-run unit). It NEVER advances the cursor / calls

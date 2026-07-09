@@ -1250,5 +1250,46 @@ class TestPauseNotifier(unittest.TestCase):
                              self._campaign_ledger_events(home, "cli-nonotif"))
 
 
+class TestRealRunCharterEnforcement(unittest.TestCase):
+    """R3 B1: a REAL (--allow-real) campaign run MUST enforce the charter validator BEFORE
+    the campaign reads raw autonomy.halt_conditions / notifications — so a validator-only
+    Phase-3 invariant (id-collision, unknown metric, blank notifier argv0) fail-closes to
+    CAMPAIGN_EXIT_INVALID before any adapter/model is built (not silently no-op at runtime)."""
+
+    def _real_run(self, d, mutate):
+        charter = _acceptance_charter(level="human_on_the_loop", mode="auto")
+        mutate(charter)
+        plan = _plan("cli-real", [{"id": "m1", "objective": "x",
+                                   "subsprint_sequence": ["sprint-001"]}])
+        # allow_real=True (no adapters injected) — the charter preflight is the FIRST gate,
+        # so an invalid charter raises BEFORE any adapter build.
+        return rl.run_campaign_entry(plan, charter, clock=_clock(),
+                                     campaign_run_dir=os.path.join(d, "h"), allow_real=True)
+
+    def test_halt_condition_id_collision_is_invalid(self):
+        def mutate(c):
+            c.setdefault("autonomy", {})["halt_conditions"] = [
+                {"id": "gate_hard_fail",   # collides with a checkpoint kind → validator ERROR
+                 "when": {"metric": "milestone_id", "op": "==", "value": "m1"}}]
+        with tempfile.TemporaryDirectory() as d:
+            r = self._real_run(d, mutate)
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
+
+    def test_unknown_halt_metric_is_invalid(self):
+        def mutate(c):
+            c.setdefault("autonomy", {})["halt_conditions"] = [
+                {"id": "big", "when": {"metric": "files_changed", "op": ">", "value": 40}}]
+        with tempfile.TemporaryDirectory() as d:
+            r = self._real_run(d, mutate)
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
+
+    def test_blank_notifier_argv0_is_invalid(self):
+        def mutate(c):
+            c["notifications"] = {"on_pause": ["   "]}   # blank executable → validator ERROR
+        with tempfile.TemporaryDirectory() as d:
+            r = self._real_run(d, mutate)
+            self.assertEqual(r["exit_code"], rl.CAMPAIGN_EXIT_INVALID)
+
+
 if __name__ == "__main__":
     unittest.main()

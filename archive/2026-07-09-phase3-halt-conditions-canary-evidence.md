@@ -126,7 +126,7 @@ lockstep drift-guard.
 
 ## Full-suite non-regression
 
-`cd engine-kit && python3.12 -m pytest` → **1998 passed / 12 skipped / 1 failed**. The single failure
+`cd engine-kit && python3.12 -m pytest` → **2001 passed / 12 skipped / 1 failed**. The single failure
 is the PRE-EXISTING `README.md:122/341` doc-reconciliation red (PR#8 leftover, byte-identical to
 main — out of scope; confirmed present with the Phase-3 changes stashed). Kernel-coverage,
 load-closure, and all other gates are green.
@@ -142,7 +142,7 @@ load-closure, and all other gates are green.
   flush + the full §6 canary matrix + resume-hint/schema NBs).
 - Cluster 3 (lever-2 verify + lever-3 doc + teaching docs): committed `aadfdff`.
 - R2.2 re-gate: 1 blocking (base-tree golden byte-diff + 2 missing §6 variants) + 1 NB → fixed (checked-in base golden fixture; inherited-browser_e2e + unit-level restamp-survival variants; pause_subsprint_id no longer surfaced for the campaign-tier gate).
-- R3 whole-scope gate: pending (after R2 re-gate APPROVE).
+- R3 whole-scope gate: 1 blocking (real `--campaign --allow-real` did not run the charter validator before EP-pre ⇒ Phase-3 charter invariants unenforced at runtime) + 4 NB → fixed (enforce_charter_for_real_run wired as the last real-run preflight → CAMPAIGN_EXIT_INVALID; + real-run regression tests; resume choice!=proceed re-pauses; judge-calibration doc M3/rates clarified). R3 re-gate pending.
 
 Nothing in this phase weakens a MANDATORY_CHECKPOINT, acceptance authority (§1.7-C), signed-scope
 freshness (Δ-19 F1/T2-A), or the OW-M3 E2E mandate.

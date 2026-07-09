@@ -49,8 +49,10 @@ including the adopter's known bad cases):
   bound is tighter than raw agreement.
 
 `status: calibrated` is set ONLY when **both** hold. Otherwise `status: uncalibrated` (acceptance
-stays advisory). The labeled set + both computed rates are recorded alongside the record so a
-reviewer can reproduce the decision deterministically.
+stays advisory). The computed `agreement_rate` / `flip_rate` are NOT stored inside the record
+(`acceptance-calibration-record.schema.json` is `additionalProperties: false`) — they live in the
+labeled-set manifest / a calibration sidecar next to the record, so a reviewer can reproduce the
+decision deterministically; only the resulting `status` + thresholds are pinned in the record.
 
 ## 3. Re-calibration triggers (when `calibrated` reverts to `uncalibrated`)
 
@@ -83,9 +85,13 @@ Authoritative auto-ship (an Acceptance `pass` ships WITHOUT a human checkpoint, 
 3. `autonomy.level: fully_autonomous_within_budget`.
 
 Absent any one, an Acceptance pass stays advisory and HALTs for sign-off. This document does **not**
-change that gate — it documents the earned on-ramp. M3 (browser_e2e) additionally needs a
-`judge_calibration_m3` record; v1 ships none, so a browser-functional pass stays advisory until an
-adopter builds and calibrates an M3 labeled set.
+change that gate — it documents the earned on-ramp for the M1 (`static`) class. **M3 (browser_e2e)
+auto-ship is NOT unlockable by calibration in v1:** the runtime hard-returns non-authoritative for
+`browser_e2e` regardless of any declared `judge_calibration_m3.status` (the driver's acceptance-
+authority resolver), so a browser-functional pass ALWAYS stays advisory (HALTs for sign-off) in v1.
+M3 auto-ship remains gated on future runtime tooling (an M3-class bad-case suite + the authority-
+resolver change), not merely on an adopter authoring an M3 record — this doc freezes the ledger
+contract ahead of that build.
 
 ## 5. Relationship to Phase-3 halt conditions
 

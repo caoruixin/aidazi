@@ -820,6 +820,14 @@ def run_campaign_entry(plan: dict, charter: dict, *,
             # injected test run_loop_fn without the param never breaks.
             if allow_gitlink_drift:
                 run_loop_kwargs["allow_gitlink_drift"] = True
+            # Charter enforcement is the LAST real-run preflight (after the plan/capability/
+            # OW-M3/skills preflights so their specific errors surface first), but still BEFORE
+            # make_run_unit / run_campaign — so the campaign never reads/evaluates an invalid
+            # charter's autonomy.halt_conditions at EP-pre. This closes the R3 B1 gap: the
+            # validator-only Phase-3 invariants (closed-metric/op, id-collision, notifications
+            # shape) are enforced on the REAL campaign path (raises CharterValidationError → the
+            # except below → CAMPAIGN_EXIT_INVALID), not silently no-op'd at runtime.
+            enforce_charter_for_real_run(charter)
         run_unit = _cp.make_run_unit(charter, units_dir, campaign_id,
                                      clock=clock, plan=plan,
                                      ledger_path=ledger_path, **run_loop_kwargs)
