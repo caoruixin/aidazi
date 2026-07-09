@@ -2052,7 +2052,12 @@ class Driver:
             "- Working-tree diff for this sub-sprint (read the changed files with "
             "Read/Grep/Glob).\n"
             "Reference only — read on demand; raw transcripts are NOT embedded here "
-            "(stable evidence references, not copied content).\n\n",
+            "(stable evidence references, not copied content).\n"
+            "EXPECTED ENGINE ARTIFACTS — `.orchestrator/`, `.runs/`, `compact/`, "
+            "`docs/checkpoints/`, `eval/` are orchestrator state written by the "
+            "delivery loop itself, NOT Dev-authored changes: do not report them "
+            "at all (Phase-2 canary-proven exclusion; the same rule the campaign "
+            "canary's hand-authored review prompts carried).\n\n",
             "## Review responsibilities\n"
             "1. Anti-hardcode kernel — apply the 9-question kernel to EVERY diff "
             "that touches a semantic surface (prompt / runtime semantic decision / "
@@ -2439,15 +2444,36 @@ class Driver:
                 f"FULL first; the brief's scope_in/scope_out, closure_contract and "
                 f"kpi must each trace to that requirement — nothing in the brief may "
                 f"come from anywhere else, and nothing material in the requirement "
-                f"may be dropped.")
+                f"may be dropped.\n"
+                f"OUTPUT CONTRACT: your ENTIRE final response IS the brief document "
+                f"(markdown, with explicit scope_in / scope_out / closure_contract / "
+                f"kpi sections) — the engine materializes it VERBATIM as the brief "
+                f"artifact; do NOT attempt to write any file yourself (your sandbox "
+                f"is read-only) and do NOT wrap the brief in commentary.")
         # ARTIFACT spawn (a brief is a doc, NOT a verdict) → schema_key=None.
-        self._spawn("research", prompt, schema_key=None, lessons_block=lessons)
+        out = self._spawn("research", prompt, schema_key=None,
+                          lessons_block=lessons)
         # The drafted brief is an artifact under the run dir; we persist a stable
         # reference (deterministic — no clock/uuid; the loop_id + subsprint anchor
         # it) so resume + Gate-1 context point at the same draft.
         ref = f"docs/briefs/{self.state.subsprint_id}__brief.md"
         self.state.brief_draft_ref = ref
         self._save_state()
+        # Phase-2 campaign_bootstrap: MATERIALIZE the brief from the spawn output.
+        # Research routes default to a read-only sandbox, so on a REAL run the
+        # agent cannot write the brief file itself — yet the Stage-1/Stage-2
+        # decompose prompts reference it by absolute path. Bootstrap-only; the
+        # single-tier guided flow is byte-identical (return value was discarded).
+        if self._bootstrap_enabled():
+            _bpath = os.path.join(self.run_dir, ref)
+            os.makedirs(os.path.dirname(_bpath), exist_ok=True)
+            _btext = (out if isinstance(out, str)
+                      else json.dumps(out, ensure_ascii=False, indent=1))
+            with open(_bpath, "w", encoding="utf-8") as fh:
+                fh.write(_btext)
+            self._audit("brief_materialized",
+                        {"brief_ref": ref,
+                         "bytes": len(_btext.encode("utf-8"))})
         self._audit("research_brief_drafted", {"brief_ref": ref})
 
     def _step_gate1(self) -> dict:
