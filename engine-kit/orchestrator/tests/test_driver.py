@@ -554,6 +554,33 @@ class TestSubSprintGate(unittest.TestCase):
                 gate["payload"]["evidence_path"].startswith(
                     "eval/runs/sprint-001/subsprint_gate/"))
 
+    def test_eval_cmd_sees_repo_anchor_env(self):
+        # The cmd's CWD is the artifacts dir (deliberate), so repo-anchored
+        # checks portably reference $EVAL_REPO_DIR (= the bound work repo;
+        # empty when none is bound). Found by the Phase-1 real campaign
+        # canary: a repo-relative grep gate_hard_failed although the real Dev
+        # HAD delivered the file.
+        import subprocess as _sp
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            # repo_dir turns Loop Ingress ON — it needs a real git repo.
+            _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+            _sp.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost",
+                     "commit", "-qm", "seed", "--allow-empty"],
+                    cwd=repo, check=True)
+            probe = os.path.join(d, "env-probe.txt")
+            charter = load_charter(CHARTER_PATH)
+            charter["tooling"]["eval"] = {
+                "cmd": f'printf "%s" "$EVAL_REPO_DIR" > "{probe}"',
+                "timeout_seconds": 30}
+            drv_ = _driver(d, charter=charter)
+            drv_.repo_dir = repo
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            with open(probe, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), repo)
+
     def test_eval_cmd_failure_blocks_review_and_close(self):
         fail_cmd = (f'FAKE_EVAL_EXIT=4 "{_sys.executable}" "{_FAKE_EVAL}"')
         charter = load_charter(CHARTER_PATH)

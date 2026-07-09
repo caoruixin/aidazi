@@ -1306,6 +1306,15 @@ class Driver:
         os.makedirs(eval_run_dir, exist_ok=True)
         env = dict(os.environ)
         env["EVAL_RUN_DIR"] = eval_run_dir
+        # The cmd's CWD is the per-gate ARTIFACTS dir (deliberate — see the
+        # docstring), NOT the work repo, so a repo-anchored check ("run the
+        # tests", "grep the delivered file") needs an anchor the charter can
+        # reference portably: EVAL_REPO_DIR = the bound work repo (empty when
+        # no repo is bound — a repo-anchored cmd then fails, correctly, rather
+        # than probing the artifacts dir). Found by the Phase-1 real campaign
+        # canary: its `grep <file>` eval ran against the artifacts dir and
+        # gate_hard_failed although the real Dev HAD delivered the file.
+        env["EVAL_REPO_DIR"] = self.repo_dir or ""
         stdout_path = os.path.join(eval_run_dir, "stdout.txt")
         stderr_path = os.path.join(eval_run_dir, "stderr.txt")
         import subprocess  # local import: only when an eval command is configured
@@ -2225,9 +2234,47 @@ class Driver:
         # part of the prompt → recorded in input_hash; the matching narrowed load set is
         # what the WP-7 load_graph_hash fingerprints). HALT-on-insufficiency, never guess.
         directive = self._task_scoped_coldstart_directive("deliver", "close")
+        # SELF-CONTAINED OUTPUT CONTRACT (parity with the projected Review/Acceptance
+        # prompt contracts — the close prompt was the LAST bare one-liner): a real
+        # spawned agent cannot be assumed to have the close-verdict schema in context
+        # (the taxonomy doc is a cold-start load that may be unavailable in a thin
+        # work repo), and the REAL campaign canary proved the failure mode — a live
+        # close spawn echoed a review-shaped verdict and gate_hard_failed on
+        # deliver-close-verdict.schema.json. The engine also states the MECHANICAL
+        # next_subsprint fact (it knows the signed sequence; the agent judges the
+        # verdict letter, never guesses sequence position).
+        seq = [str(s) for s in self._supplied_sequence()]
+        sid = str(self.state.subsprint_id)
+        nxt = None
+        if sid in seq:
+            i = seq.index(sid)
+            nxt = seq[i + 1] if i + 1 < len(seq) else None
+        position = (f'This is the LAST sub-sprint of the sequence {seq} — set '
+                    f'next_subsprint to null.' if nxt is None else
+                    f'The sequence {seq} continues with {nxt!r} — set '
+                    f'next_subsprint to "{nxt}".')
         prompt = (lessons + directive
                   + f"Close sub-sprint {self.state.subsprint_id}. "
-                    f"Emit a deliver-close-verdict.")
+                    f"Emit a deliver-close-verdict.\n\n"
+                    "## Output — emit a deliver-close-verdict "
+                    "(deliver-close-verdict.schema.json)\n"
+                    "Return ONE JSON object and nothing else:\n"
+                    '  verdict: "A" | "B" | "C" | "D"  (A=clean pass; '
+                    "B=acceptable with minor fixes; C=scope-broadening; "
+                    "D=non-convergent; C/D halt for the human per "
+                    "deliver-close-taxonomy)\n"
+                    '  verdict_subclass: "<taxonomy subclass, e.g. B-doc-only>" '
+                    "— OPTIONAL: OMIT the key entirely when you have no "
+                    "subclass label; never emit null\n"
+                    "  blocking_count: <integer >= 0 — open P0+P1 from the "
+                    "Code Review>\n"
+                    '  worst_severity: "P0" | "P1" | "P2" | "none"\n'
+                    "  in_scope: <boolean — the work stayed within "
+                    "charter.approved_scope>\n"
+                    '  next_subsprint: "<sub-sprint id>" | null\n'
+                    '  reason: "<paragraph rationale; cite Code Reviewer '
+                    'findings if relevant>"\n'
+                    f"{position}\n")
         verdict = self._spawn("deliver", prompt, schema_key="close",
                               lessons_block=lessons)
         self.state.history.append(STATE_CLOSE_PENDING)
@@ -4583,6 +4630,15 @@ class Driver:
             "(governance/acceptance-kernel.md is unreadable — surface this as a framework "
             "deployment error rather than proceeding on an incomplete projection.)\n\n")
 
+    def _acceptance_evidence_abs(self, evidence_path: str) -> str:
+        """Absolute filesystem location of the F5 evidence artifact for the
+        spawned judge to READ (run-dir-anchored when relative). The verdict
+        still CITES the run-relative form — only the read reference is
+        frame-independent."""
+        if os.path.isabs(evidence_path):
+            return evidence_path
+        return os.path.join(self.run_dir, evidence_path)
+
     def _project_acceptance_prompt(self, ic: dict, evidence_path: str,
                                    calibration_status: str) -> str:
         """Deterministically PROJECT the signed intent contract + milestone context
@@ -4665,9 +4721,20 @@ class Driver:
             "Judge the DELIVERED BEHAVIOR (customer perspective), not code "
             "structure.\n\n",
             "## Accumulated evidence (read-only; do NOT re-run the harness)\n"
-            f"- F5 execution evidence (authoritative): {evidence_path}\n"
+            # PATH FRAME (found by the Phase-1 real campaign canary): a real
+            # spawned Acceptance agent runs with CWD = the WORK repo, while the
+            # F5 evidence lives under the orchestrator RUN DIR — a bare
+            # run-relative ref is unresolvable from the agent's frame, so the
+            # live judge (correctly, §4.2.8 #5) refused to elevate past
+            # `partial` for want of the execution artifact. READ via the
+            # absolute path; CITE the run-relative form in verdict cases.
+            f"- F5 execution evidence (authoritative), READ IT AT THIS ABSOLUTE "
+            f"PATH: {self._acceptance_evidence_abs(evidence_path)}\n"
+            f"  (an orchestrator run-dir artifact; in your verdict cases cite "
+            f"it by its run-relative form: {evidence_path})\n"
             "- Per-sub-sprint Reviewer outcomes: docs/codex-findings.md and the "
-            "review transcripts under `.orchestrator/audit/transcripts/`.\n"
+            f"review transcripts under "
+            f"`{os.path.join(self.run_dir, '.orchestrator', 'audit', 'transcripts')}`.\n"
             "- Do NOT judge from code inspection alone (§4.2.8 anti-pattern #5); "
             "every case MUST cite an execution evidence_path under eval/runs/.\n\n",
             "## Authority & calibration (do NOT override)\n"

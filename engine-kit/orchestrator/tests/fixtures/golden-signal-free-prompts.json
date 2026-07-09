@@ -1,9 +1,9 @@
 {
- "$comment": "Universal-skill-mounting Phase-1 golden (Codex P1-gate NB2): sha256 of every ROOT-NORMALIZED dispatched prompt + the decompose prompt for the signal-free p2-charter fixture flow. PROVEN byte-identical to pre-Phase-1 commit 4fa39af via worktree A/B (2026-07-06). Any diff = prompt-byte drift for signal-free adopters; regenerate ONLY with a reviewed rationale.",
+ "$comment": "Universal-skill-mounting Phase-1 golden (Codex P1-gate NB2): sha256 of every ROOT-NORMALIZED dispatched prompt + the decompose prompt for the signal-free p2-charter fixture flow. PROVEN byte-identical to pre-Phase-1 commit 4fa39af via worktree A/B (2026-07-06). Any diff = prompt-byte drift for signal-free adopters; regenerate ONLY with a reviewed rationale. REGENERATED 2026-07-09 (deliver close prompt ONLY, reviewed rationale = campaign-unblock Phase-1 / Codex R3 scope): the REAL campaign canary proved the bare one-line close prompt fails live spawns (a real close agent echoed a review-shaped verdict and gate_hard_failed on deliver-close-verdict.schema.json), so _step_close now embeds the self-contained output contract + the engine-known next_subsprint fact — parity with the projected Review/Acceptance prompt contracts (b05d7a3). dev/review/decompose hashes UNCHANGED.",
  "prompts": {
   "0001__dev__prompt.md": "3ddc6178521f25eb5b8576dd7622fc326947d40aaf4f224821706ff08ae0ad1c",
   "0002__review__prompt.md": "481fe74e4e15afd47a7acf80d1570c9520a9e368b64f73775e140de3623f1686",
-  "0003__deliver__prompt.md": "f48292e778487db52756659d4b61bf5adffb7ead6919e2675d7fb9d328f98bbe",
+  "0003__deliver__prompt.md": "3d0cb6c2c503a575af6a628aad12db4cc07f02da0584b55079eb4a376d7db3d2",
   "decompose_prompt": "1bd9f12eefa304575e95c0bfe82cb55af3b06324b83cf62ff30767886ad1584a"
  }
 }

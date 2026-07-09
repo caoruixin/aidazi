@@ -20,6 +20,7 @@ import hashlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -583,6 +584,58 @@ class TestCampaignMainCLI(unittest.TestCase):
             self.assertEqual(m2["status"], "done")
             self.assertEqual(m2["milestone_index"], 2)
             self.assertEqual(m2["milestones_total"], 2)
+
+    def test_main_with_repo_dir_does_not_duplicate_the_kwarg(self):
+        # REGRESSION (found by the Phase-1 REAL campaign canary, pre-spawn):
+        # --repo-dir reached run_unit BOTH per-dispatch (run_campaign passes
+        # repo_dir=) AND ambiently inside **run_loop_kwargs — the duplicated
+        # kwarg crashed EVERY campaign run that set --repo-dir ("got multiple
+        # values for keyword argument 'repo_dir'"), i.e. every real
+        # strict-prompt campaign. The mock CLI tests never passed --repo-dir,
+        # which is why this survived offline. Pin the production argv path.
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            ws = os.path.join(d, "ws")
+            os.makedirs(ws)
+            subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+            subprocess.run(["git", "-c", "user.name=t", "-c",
+                            "user.email=t@localhost", "commit", "-qm", "seed",
+                            "--allow-empty"], cwd=ws, check=True)
+            planfile = os.path.join(d, "plan.json")
+            plan = _plan("cliRepoDir", [
+                {"id": "m1", "objective": "a",
+                 "subsprint_sequence": ["sprint-001"]}], signed=True)
+            with open(planfile, "w", encoding="utf-8") as fh:
+                json.dump(plan, fh)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = rl.main(["--campaign", planfile,
+                                "--charter", _EXAMPLE_CHARTER,
+                                "--campaign-run-dir", home,
+                                "--repo-dir", ws])
+            # The run must COMPLETE the campaign contract (mock adapters), not
+            # crash with an exit-2 TypeError before the first unit.
+            self.assertEqual(code, rl.CAMPAIGN_EXIT_DONE, buf.getvalue())
+
+    def test_run_unit_repo_dir_precedence(self):
+        # Per-dispatch repo_dir WINS; the ambient (CLI) value is the fallback;
+        # neither path may duplicate the kwarg.
+        with tempfile.TemporaryDirectory() as d:
+            charter = _acceptance_charter()
+            calls = []
+
+            def fake_run_loop(unit_charter, **kw):
+                calls.append(kw)
+                return {"final_state": "advance", "spawn_count": 0}
+
+            unit = cp.make_run_unit(
+                charter, os.path.join(d, "units"), "cid", clock=_clock(),
+                run_loop_fn=fake_run_loop, repo_dir="/ambient/from-cli")
+            unit("sprint-001", milestone_id="m1")
+            self.assertEqual(calls[-1]["repo_dir"], "/ambient/from-cli")
+            unit("sprint-001", milestone_id="m1",
+                 repo_dir="/per-dispatch/wins")
+            self.assertEqual(calls[-1]["repo_dir"], "/per-dispatch/wins")
 
     def test_main_unreadable_plan_exits_invalid(self):
         with tempfile.TemporaryDirectory() as d:

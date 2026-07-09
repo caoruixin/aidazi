@@ -1,0 +1,101 @@
+# REAL campaign canary charter (Phase-1 work item D;
+# archive/2026-07-09-autonomy-roadmap-campaign-unblock.md §2).
+#
+# The FIRST end-to-end proof that the campaign orchestrator drives a REAL
+# multi-milestone backlog: real claude_code spawns for Dev / Review / Deliver /
+# Acceptance, pausing ONLY at advisory_acceptance_pass_signoff per milestone.
+# Schema-valid (mission-charter.schema.json) — the offline companion test
+# (test_real_campaign_canary_inputs.py) asserts validate_charter is clean.
+#
+# R0 B-4 prerequisites, satisfied HERE so the first legitimate pause is the
+# advisory sign-off (any earlier refinement halt = canary FAILURE):
+#   - intent_contract signed (confirmed_by_human: true — signed by the canary
+#     author; the run's evidence doc records the signature).
+#   - strict prompts: per-sub-sprint compact dev/review prompts ship in
+#     workspace/compact/ (context_budget.self_contained: true).
+
+mission:
+  id: real-campaign-canary
+  goal: >-
+    Prove the campaign orchestrator end-to-end with real adapters: two
+    milestones create and extend notes/hello.md with exact sentinel lines.
+
+# Acceptance judges ONLY against this signed contract (Constitution §3.4).
+intent_contract:
+  goal: >-
+    A notes/hello.md in the workspace repo carrying the canary sentinel lines.
+  standard: >-
+    After milestone m1-hello, notes/hello.md contains the exact line
+    HELLO-CANARY-M1. After milestone m2-append, it ALSO contains the exact
+    line HELLO-CANARY-M2 while the M1 line is preserved unchanged.
+  proof_of_done: >-
+    grep finds the exact sentinel line(s) in notes/hello.md; the eval gate
+    (tooling.eval.cmd) enforces the M1 line deterministically.
+  confirmed_by_human: true   # canary author's signature (see the evidence doc)
+
+autonomy:
+  level: human_on_the_loop   # advisory acceptance ⇒ per-milestone sign-off pause
+  approved_scope:
+    subsprint_sequence:      # per-milestone override comes from the campaign plan
+      - sprint-m1
+    layers_allowed:
+      - content
+    modules_in_scope:
+      - notes/hello.md
+      - docs/handoff.md
+  auto_pass_rules:
+    clean_pass_auto_advance: true
+
+budget:
+  max_fix_rounds_total: 2
+  max_wall_clock_minutes: 60
+
+tooling:
+  research:                  # not spawned in delivery_only campaign units
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    timeout_seconds: 300
+  deliver:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    timeout_seconds: 600
+  dev:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    sandbox: workspace_write
+    timeout_seconds: 600
+  review:
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    tools: [Read, Grep, Glob]
+    timeout_seconds: 600
+  eval:
+    # The eval cmd runs in the per-gate ARTIFACTS dir, not the work repo —
+    # anchor repo checks on $EVAL_REPO_DIR (set by the driver from --repo-dir).
+    cmd: "grep -q HELLO-CANARY-M1 \"$EVAL_REPO_DIR/notes/hello.md\""
+    timeout_seconds: 30
+  acceptance:
+    mode: auto               # + calibrated + human_ON_the_loop ⇒ ADVISORY pass
+    run_at: milestone_close  #   → advisory_acceptance_pass_signoff (the pause
+    judge_calibration:       #   this canary exists to exercise)
+      status: calibrated
+    agent_kind: claude_code
+    harness: claude_code
+    provider: anthropic
+    model: claude-sonnet-4-6
+    tools: [Read, Grep, Glob]
+    timeout_seconds: 600
+    on_fix_required:
+      human_confirm_required: true
+      route_options:
+        - deliver_fix_iteration
+        - re_acceptance_after_evidence
+        - research_contract_revision
