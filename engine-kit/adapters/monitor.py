@@ -448,9 +448,15 @@ def _tail(text: str, limit: int = 8000) -> str:
 
 
 def _ps_snapshot(pid: int) -> str:
+    # `comm` (executable name only), NOT `command`: the full command column
+    # would re-persist argv verbatim — including a prompt riding argv (the kimi
+    # harness) — defeating the argv.txt oversize-token redaction above. The
+    # (redacted) argv is already recorded in argv.txt; ps.txt only needs the
+    # live process STATE (times/CPU/stat), so the command column is pure
+    # duplicate leak surface.
     try:
         proc = subprocess.run(  # noqa: S603 - fixed ps invocation
-            ["ps", "-o", "pid,ppid,etime,time,%cpu,stat,command", "-p", str(pid)],
+            ["ps", "-o", "pid,ppid,etime,time,%cpu,stat,comm", "-p", str(pid)],
             capture_output=True, text=True, timeout=1)
     except Exception as exc:
         return f"ps failed: {exc}\n"

@@ -312,6 +312,52 @@ class KimiStreamExtractionTests(unittest.TestCase):
                          {"verdict": "pass", "blocking_count": 0})
 
 
+_CAPTURE = os.path.join(
+    os.path.dirname(_ENGINE_KIT_DIR), "archive",
+    "2026-07-09-cursor-kimi-stream-captures", "kimi-stream.jsonl")
+
+
+@unittest.skipUnless(
+    os.path.exists(_CAPTURE),
+    "archived real capture not present (vendored adopter copies of engine-kit "
+    "ship without archive/; the framework repo always runs this)")
+class KimiRealCapturePinTests(unittest.TestCase):
+    """Pin the probe + extraction against the ARCHIVED REAL stream (Kimi Code
+    0.18.0) — not synthetic shapes."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(_CAPTURE, encoding="utf-8") as fh:
+            cls.lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        cls.stdout = "\n".join(cls.lines)
+
+    def test_probe_over_real_stream(self):
+        p = KimiStreamProbe()
+        p.observe(self.lines[0])               # first event (tool_calls)
+        self.assertTrue(p.active())            # session sentinel opened
+        for ln in self.lines[1:-1]:
+            p.observe(ln)
+        self.assertTrue(p.active())            # still leased before trailer
+        p.observe(self.lines[-1])              # session.resume_hint meta
+        self.assertFalse(p.active())           # trailer cleared ALL leases
+
+    def test_extraction_yields_final_assistant_content(self):
+        events = [json.loads(ln) for ln in self.lines]
+        finals = [e["content"] for e in events
+                  if e.get("role") == "assistant"
+                  and isinstance(e.get("content"), str) and e["content"].strip()]
+        self.assertTrue(finals)
+        self.assertEqual(
+            KimiAdapter._final_response_from_stream(self.stdout), finals[-1])
+
+    def test_real_stream_has_the_expected_grammar(self):
+        roles = {json.loads(ln).get("role") for ln in self.lines}
+        self.assertLessEqual({"assistant", "tool", "meta"}, roles)
+        trailer = json.loads(self.lines[-1])
+        self.assertEqual(trailer.get("role"), "meta")
+        self.assertTrue(str(trailer.get("type", "")).startswith("session."))
+
+
 @unittest.skipUnless(os.environ.get(_ALLOW_ENV) == "1",
                      "real kimi write-capability test (opt-in via "
                      "AIDAZI_ALLOW_REAL_ADAPTER=1)")

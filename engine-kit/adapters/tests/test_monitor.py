@@ -347,6 +347,26 @@ class RedactOversizeArgvTests(unittest.TestCase):
         self.assertIn("kimi", argv_txt)        # short tokens stay actionable
         self.assertIn("stream-json", argv_txt)
 
+    def test_ps_snapshot_never_requests_the_command_column(self):
+        # ps.txt must not re-persist argv (a prompt riding argv — kimi) around
+        # the argv.txt redaction: the snapshot asks for `comm` (executable name
+        # only), never `command`/`args`.
+        from adapters.monitor import _ps_snapshot
+        captured = {}
+
+        def _fake_run(argv, **kw):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
+
+        with mock.patch("adapters.monitor.subprocess.run",
+                        side_effect=_fake_run):
+            _ps_snapshot(12345)
+        spec = captured["argv"][captured["argv"].index("-o") + 1]
+        cols = spec.split(",")
+        self.assertIn("comm", cols)
+        self.assertNotIn("command", cols)
+        self.assertNotIn("args", cols)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

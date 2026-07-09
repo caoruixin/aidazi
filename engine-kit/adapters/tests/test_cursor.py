@@ -412,6 +412,51 @@ class CursorStreamExtractionTests(unittest.TestCase):
             CursorAdapter._final_result_text_from_stream("   ", "dev")
 
 
+_CAPTURE = os.path.join(
+    os.path.dirname(_ENGINE_KIT_DIR), "archive",
+    "2026-07-09-cursor-kimi-stream-captures", "cursor-stream.jsonl")
+
+
+@unittest.skipUnless(
+    os.path.exists(_CAPTURE),
+    "archived real capture not present (vendored adopter copies of engine-kit "
+    "ship without archive/; the framework repo always runs this)")
+class CursorRealCapturePinTests(unittest.TestCase):
+    """Pin the probe + extraction against the ARCHIVED REAL stream (build
+    2026.06.24) — not synthetic shapes — so a grammar drift in the capture
+    contract is caught here first."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(_CAPTURE, encoding="utf-8") as fh:
+            cls.lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        cls.stdout = "\n".join(cls.lines)
+
+    def test_probe_over_real_stream(self):
+        p = CursorStreamProbe()
+        p.observe(self.lines[0])               # system/init
+        self.assertTrue(p.active())            # session lease opened
+        for ln in self.lines[1:-1]:
+            p.observe(ln)
+        self.assertTrue(p.active())            # still leased before terminal
+        p.observe(self.lines[-1])              # result event
+        self.assertFalse(p.active())           # terminal cleared ALL leases
+
+    def test_extraction_matches_result_event(self):
+        events = [json.loads(ln) for ln in self.lines]
+        terminal = [e for e in events if e.get("type") == "result"]
+        self.assertEqual(len(terminal), 1)
+        self.assertEqual(
+            CursorAdapter._final_result_text_from_stream(self.stdout, "dev"),
+            terminal[0]["result"])
+
+    def test_real_stream_has_the_expected_grammar(self):
+        types = {json.loads(ln).get("type") for ln in self.lines}
+        # The grammar the probe is built on: init, tool_call pairs, terminal.
+        self.assertLessEqual({"system", "tool_call", "assistant", "result"},
+                             types)
+
+
 class CursorModelDenylistTests(unittest.TestCase):
     """Harness-name-as-model fails closed BEFORE any I/O (defense-in-depth;
     the charter validator is the primary preflight gate)."""
