@@ -312,5 +312,61 @@ class LivenessLeaseIntegrationTests(unittest.TestCase):
         self.assertFalse(created[1].active())
 
 
+class RedactOversizeArgvTests(unittest.TestCase):
+    """Stuck diagnostics never persist an oversize argv token (a prompt riding
+    argv — the kimi harness); short tokens stay verbatim for actionability."""
+
+    def test_short_tokens_verbatim(self):
+        from adapters.monitor import _redact_oversize
+        for tok in ("kimi", "--output-format", "stream-json", "-m", "x" * 2048):
+            self.assertEqual(_redact_oversize(tok), tok)
+
+    def test_oversize_token_redacted_to_sha256(self):
+        import hashlib
+        from adapters.monitor import _redact_oversize
+        prompt = "--prompt=" + ("governance context " * 200)  # > 2048 bytes
+        red = _redact_oversize(prompt)
+        self.assertNotIn("governance context", red)
+        self.assertIn(f"len={len(prompt)}", red)
+        self.assertIn(hashlib.sha256(prompt.encode()).hexdigest(), red)
+
+    def test_diagnostic_argv_file_redacts_prompt(self):
+        import hashlib  # noqa: F401 - parity with the unit above
+        from adapters.monitor import _record_diagnostic
+        d = tempfile.mkdtemp(prefix="mon-diag-")
+        prompt = "--prompt=" + ("SECRET governance body " * 200)
+        _record_diagnostic(
+            MonitorConfig(diagnostics_root=d), None, "dev", "kimi", 1,
+            ["kimi", prompt, "--output-format", "stream-json"], None, 12345,
+            {"reason": "test"}, [], [])
+        sub = os.path.join(d, os.listdir(d)[0])
+        with open(os.path.join(sub, "argv.txt"), encoding="utf-8") as fh:
+            argv_txt = fh.read()
+        self.assertNotIn("SECRET governance body", argv_txt)
+        self.assertIn("sha256:", argv_txt)
+        self.assertIn("kimi", argv_txt)        # short tokens stay actionable
+        self.assertIn("stream-json", argv_txt)
+
+    def test_ps_snapshot_never_requests_the_command_column(self):
+        # ps.txt must not re-persist argv (a prompt riding argv — kimi) around
+        # the argv.txt redaction: the snapshot asks for `comm` (executable name
+        # only), never `command`/`args`.
+        from adapters.monitor import _ps_snapshot
+        captured = {}
+
+        def _fake_run(argv, **kw):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
+
+        with mock.patch("adapters.monitor.subprocess.run",
+                        side_effect=_fake_run):
+            _ps_snapshot(12345)
+        spec = captured["argv"][captured["argv"].index("-o") + 1]
+        cols = spec.split(",")
+        self.assertIn("comm", cols)
+        self.assertNotIn("command", cols)
+        self.assertNotIn("args", cols)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

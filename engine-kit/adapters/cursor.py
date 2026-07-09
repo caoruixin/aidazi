@@ -3,8 +3,8 @@
 
 Adapter for the ``cursor`` harness (ADR-0001 #3; plan §4.1 facet A). It runs the
 Cursor Agent CLI (``cursor-agent``) non-interactively via subprocess
-(``cursor-agent -p --output-format json --force [--model M] <prompt>``), then
-extracts the role's JSON verdict from the model's final message. The DRIVER
+(``cursor-agent -p --output-format stream-json --force [--model M] <prompt>``),
+then extracts the role's JSON verdict from the model's final message. The DRIVER
 validates that verdict against the role's schema; this adapter never lowers the
 bar. A coding-agent harness (it can edit files), so it is a valid Dev backing.
 
@@ -29,15 +29,21 @@ session spawned before auth completes fails AT exec (non-zero return / stderr),
 which surfaces as an ``AdapterError`` (driver → gate_hard_fail), never a
 permissive default.
 
-EXACT CLI FORM — confirmed against ``cursor-agent --help`` (build 2026.06.24):
-    cursor-agent -p --output-format json [--force] [--model M] [--trust] <prompt>
+EXACT CLI FORM — confirmed against ``cursor-agent --help`` (build 2026.06.24) and
+a REAL captured stream (archive/2026-07-09-cursor-kimi-stream-captures/):
+    cursor-agent -p --output-format stream-json [--force] [--model M] [--trust] <prompt>
   - ``-p/--print`` : non-interactive / scripting mode. Has access to all tools
     incl. write + shell. REQUIRED for headless use.
-  - ``--output-format json`` : machine-parseable single-JSON envelope (only works
-    with ``--print``). ``text`` (default) / ``stream-json`` are the alternatives;
-    we use ``json`` so the result is one parseable object. The verdict-emitting
-    role prompt instructs the model to make its final message ONLY a JSON object,
-    so the envelope's result field IS the verdict.
+  - ``--output-format stream-json`` : NDJSON event stream (only works with
+    ``--print``); ``text`` (default) / ``json`` are the alternatives. We use
+    ``stream-json`` — NOT the former single-envelope ``json`` — for LIVENESS:
+    the ``json`` mode prints ONE envelope at the very END, so the whole session
+    is silent and the shared monitor's ~180s silence-kill (adapters/monitor.py)
+    false-kills any long cursor turn. The incremental stream keeps
+    output-liveness fresh AND is the substrate for ``CursorStreamProbe`` (the
+    active-work lease covering long silent tool windows). The verdict-emitting
+    role prompt instructs the model to make its final message ONLY a JSON
+    object, so the terminal event's result text IS the verdict.
   - ``-f/--force`` : force-allow tool calls unless explicitly denied — the
     headless analogue of codex's ``--sandbox workspace-write`` / claude's
     ``acceptEdits`` (a ``-p`` session cannot answer an interactive approval
@@ -73,6 +79,93 @@ from .base import Adapter, AdapterError
 from .monitor import run_with_monitor
 
 _ALLOW_ENV = "AIDAZI_ALLOW_REAL_ADAPTER"
+
+#: Harness names that adopters have (really) misconfigured as a MODEL id — the
+#: registry's old ``cursor-agent-dev`` placeholder produced a live campaign
+#: failure ("Cannot use this model: cursor-agent", airplat 2026-07-07). The
+#: charter validator is the primary gate (model_is_harness_name, ERROR at
+#: preflight); this adapter-level check is defense-in-depth for direct-API
+#: users. ``auto`` is the CLI's own account-default id and is always valid.
+_HARNESS_NAME_MODELS = frozenset({
+    "claude_code", "claude", "codex", "cursor", "cursor-agent",
+    "kimi", "kimi_code", "headless", "mock",
+})
+
+
+class CursorStreamProbe:
+    """Active-work lease derived from ``cursor-agent -p --output-format
+    stream-json`` NDJSON events.
+
+    cursor-agent build 2026.06.24 emits (VERIFIED against a real captured
+    stream — archive/2026-07-09-cursor-kimi-stream-captures/cursor-stream.jsonl):
+    ``{"type":"system","subtype":"init",...}`` → ``{"type":"user"|"assistant",
+    "message":{...}}`` → paired ``{"type":"tool_call","subtype":"started",
+    "call_id":...}`` / ``{"type":"tool_call","subtype":"completed","call_id":...}``
+    → a terminal ``{"type":"result","subtype":"success"|...,"result":...}``.
+    Like codex (and unlike ``claude -p``, which streams tokens), cursor-agent is
+    SILENT while the remote model reasons and while a tool call runs — so the
+    shared monitor's SILENCE + idle-CPU kill (adapters/monitor.py) false-kills a
+    legitimately-busy long spawn at ~180s. Same root cause, same fix shape as
+    codex.CodexStreamProbe (A3).
+
+    This probe OPENS a lease on the ``system``/``init`` session start (a session
+    sentinel covering init→first-event latency and long silent reasoning) and on
+    each ``tool_call``/``started`` (keyed by ``call_id``), and CLOSES the item
+    lease on ANY non-``started`` subtype for that ``call_id`` (``completed`` is
+    the observed close; an errored tool still arrives as ``completed`` with an
+    error result — and closing on unknown terminal subtypes fails toward LESS
+    suppression, never more). The terminal ``result`` event clears ALL leases.
+    ``active()`` is true while ≥1 lease is open; the monitor suppresses ONLY its
+    silence-kill while active — a genuinely hung process is still bounded by the
+    per-role hard ``timeout_seconds``.
+
+    Discipline (mirrors claude_code.ToolLeaseProbe / codex.CodexStreamProbe):
+    liveness is NEVER inferred from a child PID — only from observed events.
+    Malformed / non-dict / unknown events never open or extend a lease. Session
+    + item leases are kept as mutual version-robustness. A FRESH probe is built
+    per monitor attempt.
+    """
+
+    _SESSION = "\x00session"
+
+    def __init__(self):
+        self._open: set = set()
+
+    def observe(self, line: str) -> None:
+        line = line.strip()
+        if not line:
+            return
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            return  # malformed -> never opens/extends a lease
+        if not isinstance(obj, dict):
+            return
+        etype = obj.get("type")
+        if not isinstance(etype, str):
+            return
+        if etype == "result":
+            self._open.clear()  # terminal event — session is over
+            return
+        if etype == "system" and obj.get("subtype") == "init":
+            self._open.add(self._SESSION)
+            return
+        if etype == "tool_call":
+            call_id = obj.get("call_id")
+            subtype = obj.get("subtype")
+            if subtype == "started":
+                # A start with an id opens a precise lease; a start without one
+                # (defensive; unobserved in build 2026.06.24) falls back to the
+                # session lease, which the terminal result event clears.
+                self._open.add(call_id if isinstance(call_id, str) and call_id
+                               else self._SESSION)
+            elif isinstance(call_id, str) and call_id:
+                # Any non-started subtype (observed: "completed" — incl. errored
+                # tools) closes the item lease for that call.
+                self._open.discard(call_id)
+
+    def active(self) -> bool:
+        return bool(self._open)
 
 
 class CursorAdapter(Adapter):
@@ -127,12 +220,15 @@ class CursorAdapter(Adapter):
             ) from None
 
     def _build_argv(self, *, sandbox_flags: Sequence[str]) -> list[str]:
-        # `cursor-agent -p --output-format json` runs non-interactively and prints
-        # a single JSON envelope. The PROMPT IS PASSED ON STDIN (``input=``), NOT
-        # as an argv token (no dash-injection — parity with codex/claude_code).
-        # cursor-agent exposes no per-call allowed-tools flag, so tool-gating for
-        # this harness lives in the prompt + sandbox, not argv.
-        argv = [self.binary, "-p", "--output-format", "json"]
+        # `cursor-agent -p --output-format stream-json` runs non-interactively
+        # and prints an NDJSON event stream (see CursorStreamProbe: the stream is
+        # what keeps output-liveness fresh AND carries the tool-lease events; the
+        # former single-envelope `json` mode was silent until the end and got
+        # false-killed by the monitor on any long turn). The PROMPT IS PASSED ON
+        # STDIN (``input=``), NOT as an argv token (no dash-injection — parity
+        # with codex/claude_code). cursor-agent exposes no per-call allowed-tools
+        # flag, so tool-gating for this harness lives in the prompt + sandbox.
+        argv = [self.binary, "-p", "--output-format", "stream-json"]
         if self.model:
             argv += ["--model", self.model]
         argv += list(sandbox_flags)
@@ -161,6 +257,19 @@ class CursorAdapter(Adapter):
         # like codex's. The codex adapter is the one that un-blocks the OS-sandbox
         # network for an explicit grant; here the param is recorded/audited by the
         # driver but does not change the argv.
+        # FAIL CLOSED on a harness-name-as-model misconfiguration BEFORE any I/O.
+        # The charter validator already rejects this at preflight
+        # (model_is_harness_name); this is defense-in-depth for direct-API users.
+        # Real observed failure: registry placeholder `model: cursor-agent` →
+        # "Cannot use this model: cursor-agent" at first spawn (airplat 2026-07-07).
+        if self.model and self.model.strip().lower() in _HARNESS_NAME_MODELS:
+            raise AdapterError(
+                f"cursor adapter: model {self.model!r} is a HARNESS name, not a "
+                f"model id — the cursor-agent CLI rejects it at spawn. Use "
+                f"'auto' for the account default, or pin a concrete model id "
+                f"(see `cursor-agent --list-models`); role={role!r}",
+                role=role,
+            )
         # FAIL CLOSED on an unsupported sandbox BEFORE any I/O — a verdict-/code-
         # producing session must run under a known flag set.
         sandbox_flags = self._sandbox_flags(sandbox, role)
@@ -201,6 +310,12 @@ class CursorAdapter(Adapter):
                 cwd=self.cwd,
                 role=role,
                 harness=self.harness,
+                # cursor-agent is silent while the remote model reasons / a tool
+                # call runs; the stream-derived lease suppresses the monitor's
+                # ~180s silence-kill so a long Dev/verdict spawn is not
+                # false-killed (hard timeout_seconds still bounds a truly hung
+                # process). Same fix shape as codex (A3).
+                liveness_probe_factory=CursorStreamProbe,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise AdapterError(
@@ -213,8 +328,10 @@ class CursorAdapter(Adapter):
                 f"{proc.stderr.strip()[:500]}",
                 role=role,
             )
-        # The model's final message text from the `--output-format json` envelope.
-        result_text = self._envelope_result_text(proc.stdout, role)
+        # The model's final message text from the stream-json NDJSON events
+        # (single-envelope back-compat inside — a CLI-build skew never silently
+        # drops the message).
+        result_text = self._final_result_text_from_stream(proc.stdout, role)
         # ARTIFACT spawn (no schema — e.g. Dev / Research on the cursor harness):
         # the final message IS the artifact (code + handoff prose), NOT a JSON
         # verdict, so return it RAW (parity with claude_code / codex / kimi). The
@@ -232,6 +349,66 @@ class CursorAdapter(Adapter):
                 role=role,
             )
         return verdict
+
+    @classmethod
+    def _final_result_text_from_stream(cls, stdout: str, role: str) -> str:
+        """Extract the model's final message text from ``--output-format
+        stream-json`` NDJSON output (grammar verified against a real captured
+        stream — see CursorStreamProbe).
+
+        Priority (fail toward NEVER silently dropping the message):
+        1. The terminal ``{"type":"result",...}`` event's ``result`` field —
+           byte-parity with the former ``json`` single-envelope mode (the
+           envelope WAS this event), so artifact/verdict semantics are
+           unchanged by the stream switch.
+        2. If the stream was truncated before the terminal event (e.g. a
+           killed process), the concatenated ``assistant`` message texts —
+           a best-effort salvage that still ends with the final message.
+        3. If NOTHING parsed as a known stream event, fall back to the
+           tolerant single-envelope walk (``_envelope_result_text``) — a
+           CLI-build skew back to ``json``-style output still yields text.
+        Only truly empty output raises (via the fallback walk).
+        """
+        result_text: Optional[str] = None
+        assistant_texts: list[str] = []
+        saw_stream_event = False
+        for raw in (stdout or "").splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict) or not isinstance(obj.get("type"), str):
+                continue
+            saw_stream_event = True
+            etype = obj["type"]
+            if etype == "result":
+                val = obj.get("result")
+                if isinstance(val, str) and val.strip():
+                    result_text = val
+            elif etype == "assistant":
+                msg = obj.get("message")
+                if isinstance(msg, dict):
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        for block in content:
+                            if (isinstance(block, dict)
+                                    and isinstance(block.get("text"), str)
+                                    and block["text"].strip()):
+                                assistant_texts.append(block["text"])
+                    elif isinstance(content, str) and content.strip():
+                        assistant_texts.append(content)
+        if result_text is not None:
+            return result_text
+        if assistant_texts:
+            return "\n".join(assistant_texts).strip()
+        if saw_stream_event:
+            # Parsed events but none carried text — hand the raw stream to the
+            # coercer path rather than inventing emptiness.
+            return (stdout or "").strip()
+        return cls._envelope_result_text(stdout, role)
 
     @staticmethod
     def _envelope_result_text(stdout: str, role: str) -> str:

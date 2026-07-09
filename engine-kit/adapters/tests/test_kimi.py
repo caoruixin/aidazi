@@ -23,6 +23,7 @@ from adapters import (  # noqa: E402
     Adapter, AdapterError, MockAdapter, KimiAdapter,
     ADAPTER_REGISTRY, resolve_adapter_class,
 )
+from adapters.kimi import KimiStreamProbe  # noqa: E402
 
 _ALLOW_ENV = "AIDAZI_ALLOW_REAL_ADAPTER"
 _SCHEMA = {"type": "object"}
@@ -57,12 +58,14 @@ class KimiGateTests(unittest.TestCase):
 
 
 class KimiArgvTests(unittest.TestCase):
-    def test_argv_is_kimi_prompt_text(self):
+    def test_argv_is_kimi_prompt_stream_json(self):
         a = KimiAdapter(model="kimi-code/kimi-for-coding", binary="kimi")
         argv = a._build_argv("hello", ["Read"])
         # Prompt rides the ATTACHED long-option form (immune to dash-injection),
-        # NOT a separate `-p <prompt>` token.
-        self.assertEqual(argv[:4], ["kimi", "--prompt=hello", "--output-format", "text"])
+        # NOT a separate `-p <prompt>` token. stream-json, NOT text: the event
+        # stream keeps output-liveness fresh + feeds the lease probe.
+        self.assertEqual(argv[:4],
+                         ["kimi", "--prompt=hello", "--output-format", "stream-json"])
         self.assertNotIn("-p", argv)
         self.assertNotIn("hello", argv)  # only ever attached, never standalone
         self.assertIn("-m", argv)
@@ -152,6 +155,207 @@ class KimiRegistryTests(unittest.TestCase):
 
     def test_existing_harnesses_intact(self):
         self.assertIs(resolve_adapter_class("mock"), MockAdapter)
+
+
+class KimiStreamProbeTests(unittest.TestCase):
+    """Probe battery (mirrors the codex/cursor batteries) — the event grammar
+    comes from a REAL captured stream, Kimi Code 0.18.0
+    (archive/2026-07-09-cursor-kimi-stream-captures/kimi-stream.jsonl)."""
+
+    @staticmethod
+    def _tool_call(cid="tool_1"):
+        return json.dumps({"role": "assistant", "tool_calls": [
+            {"type": "function", "id": cid,
+             "function": {"name": "Write", "arguments": "{}"}}]})
+
+    @staticmethod
+    def _tool_result(cid="tool_1"):
+        return json.dumps({"role": "tool", "tool_call_id": cid, "content": "ok"})
+
+    @staticmethod
+    def _meta():
+        return json.dumps({"role": "meta", "type": "session.resume_hint",
+                           "session_id": "s1", "content": "..."})
+
+    def test_first_event_opens_session_lease(self):
+        # No explicit session-start event exists — the FIRST well-formed
+        # known-role event opens the session sentinel (one kimi -p process IS
+        # one turn), covering silent reasoning between events.
+        p = KimiStreamProbe()
+        self.assertFalse(p.active())
+        p.observe(json.dumps({"role": "assistant", "content": "thinking..."}))
+        self.assertTrue(p.active())
+        p.observe(self._meta())
+        self.assertFalse(p.active())           # terminal trailer clears all
+
+    def test_tool_open_then_close_session_still_held(self):
+        p = KimiStreamProbe()
+        p.observe(self._tool_call("t1"))
+        self.assertTrue(p.active())            # silent tool window
+        p.observe(self._tool_result("t1"))
+        self.assertTrue(p.active())            # session sentinel still held
+        p.observe(self._meta())
+        self.assertFalse(p.active())
+
+    def test_parallel_tool_calls_close_independently(self):
+        p = KimiStreamProbe()
+        p.observe(json.dumps({"role": "assistant", "tool_calls": [
+            {"id": "t1", "function": {"name": "Read"}},
+            {"id": "t2", "function": {"name": "Read"}}]}))
+        p.observe(self._tool_result("t1"))
+        p.observe(self._tool_result("t2"))
+        p.observe(self._meta())
+        self.assertFalse(p.active())
+
+    def test_unknown_tool_result_is_noop(self):
+        p = KimiStreamProbe()
+        p.observe(self._tool_call("t1"))
+        p.observe(self._tool_result("SOMETHING_ELSE"))
+        self.assertTrue(p.active())            # t1 (+ session) still open
+
+    def test_unknown_session_meta_variant_clears(self):
+        # Any session.* meta clears — failing toward LESS suppression.
+        p = KimiStreamProbe()
+        p.observe(self._tool_call("t1"))
+        p.observe(json.dumps({"role": "meta", "type": "session.closed"}))
+        self.assertFalse(p.active())
+
+    def test_non_session_meta_is_noop(self):
+        p = KimiStreamProbe()
+        p.observe(self._tool_call("t1"))
+        p.observe(json.dumps({"role": "meta", "type": "usage.report"}))
+        self.assertTrue(p.active())
+
+    def test_malformed_never_opens(self):
+        p = KimiStreamProbe()
+        p.observe("not json")
+        p.observe("{ broken")
+        p.observe("")
+        p.observe(json.dumps([1, 2]))
+        p.observe(json.dumps({"role": 42}))
+        p.observe(json.dumps({"role": "wizard"}))  # unknown role
+        self.assertFalse(p.active())
+        p.observe(self._tool_call("t1"))
+        p.observe("garbage")                   # does not close/extend
+        self.assertTrue(p.active())
+
+    def test_tool_call_without_id_still_opens_session(self):
+        p = KimiStreamProbe()
+        p.observe(json.dumps({"role": "assistant", "tool_calls": [
+            {"function": {"name": "Write"}}]}))
+        self.assertTrue(p.active())            # session sentinel
+        p.observe(self._meta())
+        self.assertFalse(p.active())
+
+
+class KimiProbeWiringTests(unittest.TestCase):
+    """The adapter actually passes the probe factory into the monitor."""
+
+    def test_spawn_wires_liveness_probe_factory(self):
+        a = KimiAdapter(model="m", allow_subprocess=True)
+        captured = {}
+        stream = "\n".join([
+            json.dumps({"role": "assistant", "content": '{"ok": true}'}),
+            json.dumps({"role": "meta", "type": "session.resume_hint"}),
+        ])
+
+        def _fake_run(argv, **kw):
+            captured.update(kw)
+            return subprocess.CompletedProcess(argv, 0, stdout=stream, stderr="")
+
+        with mock.patch("adapters.kimi.run_with_monitor", side_effect=_fake_run):
+            verdict = a.spawn("review", "p", [], _SCHEMA)
+        self.assertIs(captured.get("liveness_probe_factory"), KimiStreamProbe)
+        self.assertEqual(verdict, {"ok": True})
+
+
+class KimiStreamExtractionTests(unittest.TestCase):
+    """stream-json final-response extraction (pure, offline; capture-shaped)."""
+
+    def test_last_assistant_content_wins(self):
+        out = "\n".join([
+            json.dumps({"role": "assistant", "tool_calls": [
+                {"id": "t1", "function": {"name": "Write", "arguments": "{}"}}]}),
+            json.dumps({"role": "tool", "tool_call_id": "t1",
+                        "content": "Wrote 12 bytes"}),
+            json.dumps({"role": "assistant", "content": "intermediate note"}),
+            json.dumps({"role": "assistant", "content": "DONE"}),
+            json.dumps({"role": "meta", "type": "session.resume_hint"}),
+        ])
+        self.assertEqual(KimiAdapter._final_response_from_stream(out), "DONE")
+
+    def test_content_block_list_tolerated(self):
+        out = json.dumps({"role": "assistant", "content": [
+            {"type": "text", "text": "part a"}, {"type": "text", "text": "part b"}]})
+        self.assertEqual(
+            KimiAdapter._final_response_from_stream(out), "part a\npart b")
+
+    def test_tool_events_are_not_a_response(self):
+        # tool_calls / tool events carry no response text; with no assistant
+        # content the raw stdout falls through the legacy _clean_text path.
+        out = json.dumps({"role": "tool", "tool_call_id": "t1", "content": "ok"})
+        self.assertEqual(KimiAdapter._final_response_from_stream(out), out)
+
+    def test_text_mode_backcompat_via_clean_text(self):
+        # A CLI-build skew back to text-mode output still yields the message.
+        self.assertEqual(
+            KimiAdapter._final_response_from_stream("• done\n\n"), "done")
+
+    def test_verdict_parses_from_stream(self):
+        out = "\n".join([
+            json.dumps({"role": "assistant",
+                        "content": '{"verdict": "pass", "blocking_count": 0}'}),
+            json.dumps({"role": "meta", "type": "session.resume_hint"}),
+        ])
+        text = KimiAdapter._final_response_from_stream(out)
+        self.assertEqual(KimiAdapter._parse_verdict_text(text, "review"),
+                         {"verdict": "pass", "blocking_count": 0})
+
+
+_CAPTURE = os.path.join(
+    os.path.dirname(_ENGINE_KIT_DIR), "archive",
+    "2026-07-09-cursor-kimi-stream-captures", "kimi-stream.jsonl")
+
+
+@unittest.skipUnless(
+    os.path.exists(_CAPTURE),
+    "archived real capture not present (vendored adopter copies of engine-kit "
+    "ship without archive/; the framework repo always runs this)")
+class KimiRealCapturePinTests(unittest.TestCase):
+    """Pin the probe + extraction against the ARCHIVED REAL stream (Kimi Code
+    0.18.0) — not synthetic shapes."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(_CAPTURE, encoding="utf-8") as fh:
+            cls.lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        cls.stdout = "\n".join(cls.lines)
+
+    def test_probe_over_real_stream(self):
+        p = KimiStreamProbe()
+        p.observe(self.lines[0])               # first event (tool_calls)
+        self.assertTrue(p.active())            # session sentinel opened
+        for ln in self.lines[1:-1]:
+            p.observe(ln)
+        self.assertTrue(p.active())            # still leased before trailer
+        p.observe(self.lines[-1])              # session.resume_hint meta
+        self.assertFalse(p.active())           # trailer cleared ALL leases
+
+    def test_extraction_yields_final_assistant_content(self):
+        events = [json.loads(ln) for ln in self.lines]
+        finals = [e["content"] for e in events
+                  if e.get("role") == "assistant"
+                  and isinstance(e.get("content"), str) and e["content"].strip()]
+        self.assertTrue(finals)
+        self.assertEqual(
+            KimiAdapter._final_response_from_stream(self.stdout), finals[-1])
+
+    def test_real_stream_has_the_expected_grammar(self):
+        roles = {json.loads(ln).get("role") for ln in self.lines}
+        self.assertLessEqual({"assistant", "tool", "meta"}, roles)
+        trailer = json.loads(self.lines[-1])
+        self.assertEqual(trailer.get("role"), "meta")
+        self.assertTrue(str(trailer.get("type", "")).startswith("session."))
 
 
 @unittest.skipUnless(os.environ.get(_ALLOW_ENV) == "1",

@@ -554,6 +554,33 @@ class TestSubSprintGate(unittest.TestCase):
                 gate["payload"]["evidence_path"].startswith(
                     "eval/runs/sprint-001/subsprint_gate/"))
 
+    def test_eval_cmd_sees_repo_anchor_env(self):
+        # The cmd's CWD is the artifacts dir (deliberate), so repo-anchored
+        # checks portably reference $EVAL_REPO_DIR (= the bound work repo;
+        # empty when none is bound). Found by the Phase-1 real campaign
+        # canary: a repo-relative grep gate_hard_failed although the real Dev
+        # HAD delivered the file.
+        import subprocess as _sp
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            # repo_dir turns Loop Ingress ON — it needs a real git repo.
+            _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+            _sp.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost",
+                     "commit", "-qm", "seed", "--allow-empty"],
+                    cwd=repo, check=True)
+            probe = os.path.join(d, "env-probe.txt")
+            charter = load_charter(CHARTER_PATH)
+            charter["tooling"]["eval"] = {
+                "cmd": f'printf "%s" "$EVAL_REPO_DIR" > "{probe}"',
+                "timeout_seconds": 30}
+            drv_ = _driver(d, charter=charter)
+            drv_.repo_dir = repo
+            final = drv_.run(subsprint_id="sprint-001")
+            self.assertEqual(final.state, STATE_ADVANCE)
+            with open(probe, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), repo)
+
     def test_eval_cmd_failure_blocks_review_and_close(self):
         fail_cmd = (f'FAKE_EVAL_EXIT=4 "{_sys.executable}" "{_FAKE_EVAL}"')
         charter = load_charter(CHARTER_PATH)
@@ -570,6 +597,59 @@ class TestSubSprintGate(unittest.TestCase):
             events = audit.read_events(drv_.audit_ledger)
             gate = next(e for e in events if e["type"] == "subsprint_gate_run")
             self.assertFalse(gate["payload"]["ok"])
+
+
+class TestClosePromptSequenceHint(unittest.TestCase):
+    """R3 B-1: the close prompt's next_subsprint hint uses supplied-OR-planned
+    sequence, and NEVER claims 'last' when the sid cannot be anchored (that
+    would steer a live agent into a premature milestone close)."""
+
+    class _Captured(Exception):
+        pass
+
+    def _close_prompt(self, *, supplied, planned, sid):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d)
+            drv_.run(subsprint_id="sprint-001")
+            cap = {}
+
+            def fake(role, prompt, schema_key=None, lessons_block=None):
+                cap["p"] = prompt
+                raise self._Captured()
+
+            drv_._spawn = fake
+            drv_._supplied_sequence = lambda: list(supplied)
+            drv_.state.planned_sequence = list(planned)
+            drv_.state.subsprint_id = sid
+            with self.assertRaises(self._Captured):
+                drv_._step_close()
+            return cap["p"]
+
+    def test_supplied_sequence_anchors_next(self):
+        p = self._close_prompt(supplied=["sprint-001", "sprint-002"],
+                               planned=[], sid="sprint-001")
+        self.assertIn('set next_subsprint to "sprint-002"', p)
+
+    def test_planned_sequence_is_the_resumed_guided_fallback(self):
+        # A resumed guided run: supplied empty, decompose result persisted in
+        # state.planned_sequence — the hint anchors THERE, not on "last".
+        p = self._close_prompt(supplied=[],
+                               planned=["sprint-001", "sprint-002"],
+                               sid="sprint-001")
+        self.assertIn('set next_subsprint to "sprint-002"', p)
+        p_last = self._close_prompt(supplied=[],
+                                    planned=["sprint-001", "sprint-002"],
+                                    sid="sprint-002")
+        self.assertIn("LAST sub-sprint", p_last)
+
+    def test_unanchored_sid_gets_neutral_instruction_never_last(self):
+        p = self._close_prompt(supplied=["sprint-001"], planned=["sprint-001"],
+                               sid="sprint-999")
+        self.assertIn("could not anchor", p)
+        self.assertNotIn("LAST sub-sprint", p)
+        p2 = self._close_prompt(supplied=[], planned=[], sid="sprint-001")
+        self.assertIn("could not anchor", p2)
+        self.assertNotIn("LAST sub-sprint", p2)
 
 
 class TestInvalidVerdictHardFails(unittest.TestCase):

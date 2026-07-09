@@ -97,5 +97,31 @@ class SignPlanGateTests(unittest.TestCase):
                 self.assertIn("signoff", json.load(fh))      # stamped
 
 
+class ModelIsHarnessNamePreflightTests(unittest.TestCase):
+    """The airplat 2026-07-07 misbinding (`model: cursor-agent`) now dies at the
+    real-run preflight gate — never at the first spawn mid-campaign."""
+
+    def test_harness_name_model_refuses_real_run(self):
+        charter = _acceptance_charter()
+        charter["tooling"]["dev"] = {
+            "agent_kind": "cursor", "harness": "cursor",
+            "provider": "anysphere", "model": "cursor-agent",
+        }
+        with self.assertRaises(rl.CharterValidationError) as cm:
+            rl.enforce_charter_for_real_run(charter)
+        self.assertIn("model_is_harness_name", str(cm.exception))
+
+    def test_auto_model_is_not_refused_by_this_rule(self):
+        charter = _acceptance_charter()
+        charter["tooling"]["dev"] = {
+            "agent_kind": "cursor", "harness": "cursor",
+            "provider": "anysphere", "model": "auto",
+        }
+        try:
+            rl.enforce_charter_for_real_run(charter)
+        except rl.CharterValidationError as exc:
+            self.assertNotIn("model_is_harness_name", str(exc))
+
+
 if __name__ == "__main__":
     unittest.main()

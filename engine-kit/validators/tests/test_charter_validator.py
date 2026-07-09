@@ -1018,5 +1018,113 @@ class BackwardCompatTests(unittest.TestCase):
                 )
 
 
+class ModelIsHarnessNameTests(unittest.TestCase):
+    """A harness name is never a model id: deterministic ERROR at preflight
+    (the airplat 2026-07-07 'Cannot use this model: cursor-agent' failure)."""
+
+    @staticmethod
+    def _charter_with_dev(model, *, harness="cursor", provider="anysphere"):
+        return {
+            "mission": {"id": "m", "goal": "g"},
+            "autonomy": {
+                "level": "human_in_the_loop",
+                "approved_scope": {
+                    "subsprint_sequence": ["s1"],
+                    "layers_allowed": ["l1"],
+                    "modules_in_scope": ["m1"],
+                },
+                "auto_pass_rules": {},
+            },
+            "budget": {"max_fix_rounds_total": 1, "max_wall_clock_minutes": 1},
+            "tooling": {
+                "research": {"agent_kind": "claude_code"},
+                "deliver": {"agent_kind": "claude_code"},
+                "dev": {"agent_kind": harness, "harness": harness,
+                        "provider": provider, "model": model},
+                "review": {"agent_kind": "codex"},
+                "eval": {"cmd": "true", "timeout_seconds": 1},
+                "acceptance": {
+                    "enabled": False,
+                    "on_fix_required": {
+                        "human_confirm_required": True,
+                        "route_options": ["deliver_fix_iteration"],
+                    },
+                },
+            },
+        }
+
+    def test_cursor_agent_as_model_errors(self):
+        report = cv.validate_charter(self._charter_with_dev("cursor-agent"))
+        self.assertFalse(report.ok)
+        self.assertIn("model_is_harness_name", report.rules_fired)
+        # NOT downgraded to the unknown-model WARN — the check fires first.
+        self.assertNotIn("model_unknown", report.rules_fired)
+
+    def test_every_harness_name_errors(self):
+        for bad in sorted(cv._HARNESS_NAME_MODEL_DENYLIST):
+            report = cv.validate_charter(self._charter_with_dev(bad))
+            self.assertIn("model_is_harness_name", report.rules_fired, bad)
+
+    def test_check_is_case_insensitive(self):
+        report = cv.validate_charter(self._charter_with_dev("Cursor-Agent"))
+        self.assertIn("model_is_harness_name", report.rules_fired)
+
+    def test_auto_is_a_real_model_value(self):
+        # 'auto' = the cursor CLI's account-default routing id; with the fixed
+        # registry (cursor-agent-dev.model: auto) it resolves cleanly.
+        report = cv.validate_charter(self._charter_with_dev("auto"))
+        self.assertNotIn("model_is_harness_name", report.rules_fired)
+        self.assertTrue(report.ok, msg=report.render())
+
+    def test_concrete_model_id_passes_the_check(self):
+        report = cv.validate_charter(
+            self._charter_with_dev("sonnet-4-thinking"))
+        self.assertNotIn("model_is_harness_name", report.rules_fired)
+
+    def test_legacy_charter_untouched(self):
+        # v2-gating preserved: a LEGACY role (agent_kind only, no harness/
+        # provider/capability_ref) never reaches the capability gate, even with
+        # a harness-name model. (charter_validator.py:971 guard.)
+        charter = self._charter_with_dev("x")
+        charter["tooling"]["dev"] = {"agent_kind": "cursor",
+                                     "model": "cursor-agent"}
+        report = cv.validate_charter(charter)
+        self.assertNotIn("model_is_harness_name", report.rules_fired)
+
+    def test_denylist_covers_registry_and_binaries(self):
+        # The static denylist must stay a superset of the live harness registry
+        # + known binary names + the cursor adapter's own defense-in-depth set,
+        # so a future harness addition cannot silently reopen the hole.
+        engine_kit_dir = os.path.dirname(_VALIDATORS_DIR)
+        if engine_kit_dir not in sys.path:
+            sys.path.insert(0, engine_kit_dir)
+        from adapters import ADAPTER_REGISTRY
+        from adapters.cursor import _HARNESS_NAME_MODELS
+        expected = (set(ADAPTER_REGISTRY) | {"cursor-agent", "claude", "aider"}
+                    | set(_HARNESS_NAME_MODELS))
+        self.assertTrue(
+            expected <= set(cv._HARNESS_NAME_MODEL_DENYLIST),
+            msg=f"denylist missing: {expected - set(cv._HARNESS_NAME_MODEL_DENYLIST)}")
+
+
+class CursorRegistryProfileTests(unittest.TestCase):
+    """The shipped registry no longer carries the harness-name placeholder that
+    caused the live failure (root-cause fix)."""
+
+    def test_cursor_profile_model_is_auto(self):
+        registry = cv.load_model_registry(None)
+        rec = registry["models"]["cursor-agent-dev"]
+        self.assertEqual(rec["model"], "auto")
+        self.assertNotIn(rec["model"], cv._HARNESS_NAME_MODEL_DENYLIST)
+
+    def test_no_registry_profile_uses_a_harness_name_model(self):
+        registry = cv.load_model_registry(None)
+        for pid, rec in (registry.get("models") or {}).items():
+            self.assertNotIn(
+                str(rec.get("model", "")).strip().lower(),
+                cv._HARNESS_NAME_MODEL_DENYLIST,
+                msg=f"registry profile {pid} ships a harness-name model")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

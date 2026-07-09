@@ -1,0 +1,28 @@
+{
+  "campaign_id": "real-campaign-canary",
+  "goal": "Prove real-adapter campaign delivery end-to-end: two milestones create and extend notes/hello.md with exact sentinel lines (sign -> run -> advisory pause -> ship decision -> resume -> done).",
+  "delivery_mode": "campaign",
+  "signed_by_human": false,
+  "budget": {
+    "max_subsprints": 4,
+    "max_total_spawns": 40,
+    "max_wall_clock_minutes": 60
+  },
+  "milestones": [
+    {
+      "id": "m1-hello",
+      "objective": "Create notes/hello.md containing exactly the line HELLO-CANARY-M1.",
+      "acceptance_bar": "notes/hello.md exists and contains the exact line HELLO-CANARY-M1 (nothing about M2 yet).",
+      "functional_acceptance": "static",
+      "subsprint_sequence": ["sprint-m1"]
+    },
+    {
+      "id": "m2-append",
+      "objective": "Append exactly the line HELLO-CANARY-M2 to notes/hello.md, preserving the M1 line unchanged.",
+      "acceptance_bar": "notes/hello.md contains BOTH exact lines HELLO-CANARY-M1 and HELLO-CANARY-M2, M1 first.",
+      "functional_acceptance": "static",
+      "subsprint_sequence": ["sprint-m2"],
+      "depends_on": ["m1-hello"]
+    }
+  ]
+}

@@ -408,7 +408,8 @@ def _record_diagnostic(
     safe = "-".join(x for x in (harness, role, f"attempt{attempt}") if x)
     path = os.path.join(root, f"{stamp}-{safe or 'agent'}")
     os.makedirs(path, exist_ok=True)
-    _write(os.path.join(path, "argv.txt"), shlex.join(str(a) for a in argv) + "\n")
+    _write(os.path.join(path, "argv.txt"),
+           shlex.join(_redact_oversize(str(a)) for a in argv) + "\n")
     _write(os.path.join(path, "pid.txt"), f"{pid}\n")
     _write(os.path.join(path, "reason.json"), json.dumps(reason, indent=2) + "\n")
     if input_text is not None:
@@ -421,6 +422,22 @@ def _record_diagnostic(
     _write(os.path.join(path, "ps.txt"), _ps_snapshot(pid))
 
 
+def _redact_oversize(token: str, limit: int = 2048) -> str:
+    """Redact an oversize argv token to its sha256 in the stuck diagnostics.
+
+    A CLI flag/binary path is never this long; the only oversize argv token in
+    practice is a PROMPT passed on argv (the kimi harness — its CLI has no
+    stdin prompt form), which may carry governance context that must not be
+    PERSISTED to a diagnostics file. Parity with the stdin path, which records
+    ``input.sha256.txt`` — never the prompt body. Short tokens pass verbatim
+    so diagnostics stay directly actionable.
+    """
+    if len(token) <= limit:
+        return token
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"<redacted len={len(token)} sha256:{digest}>"
+
+
 def _write(path: str, text: str):
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
@@ -431,9 +448,15 @@ def _tail(text: str, limit: int = 8000) -> str:
 
 
 def _ps_snapshot(pid: int) -> str:
+    # `comm` (executable name only), NOT `command`: the full command column
+    # would re-persist argv verbatim — including a prompt riding argv (the kimi
+    # harness) — defeating the argv.txt oversize-token redaction above. The
+    # (redacted) argv is already recorded in argv.txt; ps.txt only needs the
+    # live process STATE (times/CPU/stat), so the command column is pure
+    # duplicate leak surface.
     try:
         proc = subprocess.run(  # noqa: S603 - fixed ps invocation
-            ["ps", "-o", "pid,ppid,etime,time,%cpu,stat,command", "-p", str(pid)],
+            ["ps", "-o", "pid,ppid,etime,time,%cpu,stat,comm", "-p", str(pid)],
             capture_output=True, text=True, timeout=1)
     except Exception as exc:
         return f"ps failed: {exc}\n"

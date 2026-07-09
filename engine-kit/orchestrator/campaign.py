@@ -3367,6 +3367,16 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
             f"loop_mode={requested_mode!r} (full_chain_guided per-milestone decompose "
             "is deferred — design §6)")
 
+    # `repo_dir` reaches a unit by TWO paths: per-dispatch (run_campaign passes
+    # run_unit(..., repo_dir=...)) and ambiently via **run_loop_kwargs (the CLI's
+    # --repo-dir). POP the ambient copy out here: forwarding BOTH duplicated the
+    # kwarg at the run_loop_fn call and crashed EVERY campaign run that set
+    # --repo-dir ("got multiple values for keyword argument 'repo_dir'") — i.e.
+    # every real strict-prompt campaign, since compact/<id>-*-prompt.md
+    # resolution REQUIRES a repo. Found by the Phase-1 real campaign canary
+    # before any spawn. Per-dispatch wins; the ambient value is the fallback.
+    ambient_repo_dir = run_loop_kwargs.pop("repo_dir", None)
+
     # The signed-plan provenance reference (optional). The correctness-critical
     # per-milestone SEQUENCE arrives LIVE from the campaign per dispatch (below), so
     # this hash is only a reference to the signed plan, never the source of the
@@ -3436,7 +3446,7 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
             # own missing-spec refinement HALT (still fail-closed, never a bare run). Needs a
             # repo (delivery dir); absent ⇒ offline/mock, where strict-prompt resolution is
             # off and the contract is moot.
-            _gf_repo = repo_dir or run_loop_kwargs.get("repo_dir")
+            _gf_repo = repo_dir or ambient_repo_dir
             if gap_followup_spec and _gf_repo:
                 try:
                     _cdir = os.path.join(_gf_repo, "compact")
@@ -3507,7 +3517,7 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
                     pass
 
         cps_dir = os.path.join(unit_run_dir, "docs", "checkpoints")
-        effective_repo = repo_dir or run_loop_kwargs.get("repo_dir")
+        effective_repo = repo_dir or ambient_repo_dir
         # §1.7-F gap-followup crash-recovery (Codex R2 B2 / R3 B2): the campaign re-enters an
         # in-flight gapfix with resume=True, but a gapfix that crashed BEFORE its first Driver
         # save has no state.json to resume — run it FRESH. Scoped to a gap-followup dispatch
