@@ -246,6 +246,15 @@ class TestRequirementChain(unittest.TestCase):
                 fh.write(text.replace("\nPOST-SIGN EDIT\n", ""))
             self.assertEqual(cp.signoff_status(signed, charter, None,
                                                repo_dir=env.repo), "signed")
+            # [R3 B-2] the digest-STRIP laundering path is refused: re-signing
+            # a digest-bearing plan WITHOUT --repo-dir would stamp a signoff
+            # with NO digest (edited prompts would then read 'signed').
+            rc, out = _run_main(["--charter", env.charter_path,
+                                 "--campaign", env.out, "--sign-plan"])
+            self.assertEqual(rc, 2, out)
+            self.assertIn("STRIP", out)
+            resigned = json.load(open(env.out, encoding="utf-8"))
+            self.assertIn("prompt_artifacts_digest", resigned["signoff"])
             # (2) [R0 B-1 regression] the SIGNED plan runs under the MOCK
             # campaign runner with ZERO milestone_decompose_required pauses.
             home = os.path.join(td, "campaign-home")

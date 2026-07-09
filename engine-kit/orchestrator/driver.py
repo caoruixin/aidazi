@@ -2053,11 +2053,13 @@ class Driver:
             "Read/Grep/Glob).\n"
             "Reference only — read on demand; raw transcripts are NOT embedded here "
             "(stable evidence references, not copied content).\n"
-            "EXPECTED ENGINE ARTIFACTS — `.orchestrator/`, `.runs/`, `compact/`, "
-            "`docs/checkpoints/`, `eval/` are orchestrator state written by the "
-            "delivery loop itself, NOT Dev-authored changes: do not report them "
-            "at all (Phase-2 canary-proven exclusion; the same rule the campaign "
-            "canary's hand-authored review prompts carried).\n\n",
+            "EXPECTED ENGINE ARTIFACTS — `.orchestrator/`, `.runs/` and "
+            "`docs/checkpoints/` are orchestrator STATE written by the delivery "
+            "loop itself, NOT Dev-authored changes: do not report them at all. "
+            "`compact/` and `eval/` are GOVERNED content (executable prompt "
+            "sources / governed test data — process/prompt-artifact-rules.md; "
+            "Dev must not edit eval bad_cases): a Dev CHANGE to either IS a "
+            "reportable finding unless Scope IN explicitly names it.\n\n",
             "## Review responsibilities\n"
             "1. Anti-hardcode kernel — apply the 9-question kernel to EVERY diff "
             "that touches a semantic surface (prompt / runtime semantic decision / "

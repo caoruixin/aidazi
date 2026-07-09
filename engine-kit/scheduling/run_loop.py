@@ -873,9 +873,11 @@ def _campaign_resume_hint(result: dict) -> str:
         sstatus = result.get("signoff_status")
         if sstatus == "stale":
             return ("  -> STALE SIGNOFF: the signed scope-envelope hash no longer matches "
-                    "the plan (a milestone/charter edit). Re-sign (re-stamp the snapshot): "
-                    "re-run with --campaign <plan> --charter <charter> --sign-plan, then "
-                    "--resume")
+                    "the plan (a milestone/charter/compact-prompt edit). Re-sign (re-stamp "
+                    "the snapshot): re-run with --campaign <plan> --charter <charter> "
+                    "--repo-dir <adopter repo> --sign-plan, then --resume (--repo-dir is "
+                    "REQUIRED when the signoff binds compact prompts — "
+                    "prompt_artifacts_digest)")
         if sstatus == "pre_f1":
             return ("  -> PRE-F1 plan (bare signed_by_human, no signoff snapshot). Stamp "
                     "the F1 snapshot once: re-run with --campaign <plan> --charter "
@@ -1794,6 +1796,15 @@ def main(argv=None) -> int:
                     print(_fc.render_capability_refusal(
                         _cap_violations, action="refusing to sign the plan"))
                     return 2
+            _prior_pad = (plan.get("signoff") or {}).get(
+                "prompt_artifacts_digest")
+            if _prior_pad is not None and not args.repo_dir:
+                print("--sign-plan REFUSED: this plan's signoff binds compact "
+                      "prompt files (prompt_artifacts_digest) — re-signing "
+                      "WITHOUT --repo-dir would STRIP that binding and let "
+                      "edited prompts read 'signed'. Pass --repo-dir "
+                      "<adopter repo> (Phase-2 design §3.5, fail-closed).")
+                return 2
             signed = _cp.stamp_signoff(plan, charter,
                                        signed_at=_production_clock()(),
                                        charter_ref=os.path.abspath(args.charter),

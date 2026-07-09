@@ -4461,6 +4461,21 @@ class TestCampaignBootstrap(unittest.TestCase):
             with self.assertRaises(ValueError):
                 drv2.run_campaign_bootstrap(resume=True)
 
+    # [R3 B-1] the projected Review prompt's artifact rule is PRECISE: engine
+    # STATE is excluded, but compact/ + eval/ are GOVERNED content whose Dev
+    # changes ARE reportable (an over-broad exclusion could hide tampering).
+    def test_projected_review_prompt_artifact_rule_is_precise(self):
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _bootstrap_driver(d, gate_resolver=_sign_resolver())
+            drv_.run_campaign_bootstrap(requirement_ref=REQ_REF)
+            prompt = drv_._project_review_prompt(
+                {"id": "s1", "objective": "o", "scope_in": ["x"],
+                 "scope_out": [], "modules": ["m"], "layers": ["infra"],
+                 "exit_criteria": ["c"]})
+            self.assertIn(".orchestrator/", prompt)
+            self.assertIn("GOVERNED content", prompt)
+            self.assertIn("reportable finding", prompt)
+
     # (m) done is idempotent: resuming a completed bootstrap returns as-is
     # (no spawns — every adapter would raise).
     def test_done_resume_is_idempotent(self):

@@ -588,7 +588,7 @@ protects `milestone_signals` (§1.15):
   `--campaign --allow-real --resume` reaches the FIRST `advisory_acceptance_pass_signoff`
   pause rc 10 with NO earlier pause (proves "requirement → campaign RUNNING") → drive to
   done via the Phase-1-proven decision flow. Evidence doc in archive/ (ledger style of
-  2026-07-09). 
+  2026-07-09).
 - Gates: R1 after A, R2 after B+B′(+C), R3 whole-scope after D; suite + kernel/load-closure/
   doc-reconciliation green at every commit; review_runner.py + codex xhigh, background.
 
