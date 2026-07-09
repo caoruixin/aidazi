@@ -217,6 +217,20 @@ _NATIVE_HARNESS_PROVIDER: dict[str, str] = {
 _CODING_AGENT_HARNESSES: frozenset[str] = frozenset(
     {"claude_code", "codex", "kimi", "aider", "cursor"})
 
+# Harness names that adopters have (really) misconfigured as a MODEL id. The
+# shipped registry's old `cursor-agent-dev` placeholder (`model: cursor-agent`)
+# produced a LIVE campaign failure — "Cannot use this model: cursor-agent"
+# (airplat 2026-07-07): the misbinding sailed through preflight as a
+# `model_unknown` WARN and detonated at the FIRST real spawn deep inside the
+# campaign. A harness name is NEVER a model id on any CLI, so this is a
+# deterministic ERROR (fail-closed at preflight — enforce_charter_for_real_run
+# blocks the real run before any adapter is built), not a WARN. Superset of
+# adapters.ADAPTER_REGISTRY keys + known binary names (consistency-tested).
+_HARNESS_NAME_MODEL_DENYLIST: frozenset[str] = frozenset({
+    "claude_code", "claude", "codex", "cursor", "cursor-agent",
+    "kimi", "kimi_code", "headless", "aider", "mock",
+})
+
 # Roles whose output is a schema-valid verdict (structured-output floor applies).
 _VERDICT_ROLES: frozenset[str] = frozenset({"research", "deliver", "review", "acceptance"})
 # Judgment roles whose RECOMMENDED structured-output target is `high` (WARN if medium).
@@ -1024,6 +1038,24 @@ def _check_capability_gate(charter: dict, report: Report, *, model_registry_path
                 f"explicitly (or use a capability_ref plus matching provider/model) "
                 f"(role-configuration-contract.md §5)",
                 base)
+            continue
+
+        # --- FAIL CLOSED: a harness name is not a model id --------------------
+        # Deterministic + offline (no CLI probe): the denylist is static, so a
+        # misbinding dies HERE at preflight (exit 2 on a real run) instead of at
+        # the first real spawn mid-campaign. `model_unknown` below stays a WARN
+        # for genuinely unregistered models; THIS shape is never valid anywhere.
+        if model.strip().lower() in _HARNESS_NAME_MODEL_DENYLIST:
+            report.error(
+                "model_is_harness_name",
+                f"role '{role}' declares model '{model}', which is a HARNESS "
+                f"name, not a model id — the CLI rejects it at spawn (observed: "
+                f"cursor-agent 'Cannot use this model: cursor-agent', airplat "
+                f"2026-07-07). Use the harness's account-default id ('auto' for "
+                f"cursor — see `cursor-agent --list-models`) or a concrete "
+                f"model id (role-configuration-contract.md §5)",
+                f"{base}.model",
+            )
             continue
 
         # --- resolve the capability record ------------------------------------
