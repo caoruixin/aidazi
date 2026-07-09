@@ -5778,7 +5778,8 @@ class Driver:
         charter = ctx.get("charter")
         coverage = scope_report.compute_requirement_coverage(
             plan, state if isinstance(state, dict) else None, ledger,
-            charter=charter if isinstance(charter, dict) else None)
+            charter=charter if isinstance(charter, dict) else None,
+            repo_dir=self.repo_dir)
         gap_report = scope_report.build_gap_report(coverage)
         err = validate_verdict(gap_report, self._pc_schema("gap-report.schema.json"))
         if err is not None:

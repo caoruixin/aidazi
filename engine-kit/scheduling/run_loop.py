@@ -831,7 +831,8 @@ def run_campaign_entry(plan: dict, charter: dict, *,
                 ledger = json.load(fh)
             requirement_coverage = _scope.requirement_summary_line(
                 _scope.compute_requirement_coverage(
-                    plan, st.to_dict(), ledger, charter=charter))
+                    plan, st.to_dict(), ledger, charter=charter,
+                    repo_dir=repo_dir))
         except Exception:
             requirement_coverage = None
 
@@ -839,7 +840,8 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     # actionable, distinct from plain "unsigned"). Best-effort.
     try:
         signoff_status = _cp.signoff_status(
-            plan, charter, load_requirement_ledger(ledger_path))
+            plan, charter, load_requirement_ledger(ledger_path),
+            repo_dir=repo_dir)
     except Exception:
         signoff_status = None
 
@@ -1672,7 +1674,8 @@ def main(argv=None) -> int:
             signed = _cp.stamp_signoff(plan, charter,
                                        signed_at=_production_clock()(),
                                        charter_ref=os.path.abspath(args.charter),
-                                       ledger=_ow_ledger)
+                                       ledger=_ow_ledger,
+                                       repo_dir=args.repo_dir)
             try:
                 _cp._validate_or_raise(signed, "campaign-plan.schema.json",
                                        "signed plan")

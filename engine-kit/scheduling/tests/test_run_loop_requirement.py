@@ -215,7 +215,22 @@ class TestRequirementChain(unittest.TestCase):
             self.assertEqual(rc, 0, out)
             signed = json.load(open(env.out, encoding="utf-8"))
             charter = load_charter(env.charter_path)
-            self.assertEqual(cp.signoff_status(signed, charter, None), "signed")
+            self.assertEqual(cp.signoff_status(signed, charter, None,
+                                               repo_dir=env.repo), "signed")
+            # Commit B′ [R0.3 B-2]: signing WITH --repo-dir bound the generated
+            # compact prompts into the signature — a post-sign edit ⇒ 'stale'.
+            self.assertIn("prompt_artifacts_digest", signed["signoff"])
+            dev = os.path.join(env.repo, "compact", "m1-s1-dev-prompt.md")
+            with open(dev, "a", encoding="utf-8") as fh:
+                fh.write("\nPOST-SIGN EDIT\n")
+            self.assertEqual(cp.signoff_status(signed, charter, None,
+                                               repo_dir=env.repo), "stale")
+            # restore for the campaign-run leg below
+            text = open(dev, encoding="utf-8").read()
+            with open(dev, "w", encoding="utf-8") as fh:
+                fh.write(text.replace("\nPOST-SIGN EDIT\n", ""))
+            self.assertEqual(cp.signoff_status(signed, charter, None,
+                                               repo_dir=env.repo), "signed")
             # (2) [R0 B-1 regression] the SIGNED plan runs under the MOCK
             # campaign runner with ZERO milestone_decompose_required pauses.
             home = os.path.join(td, "campaign-home")
