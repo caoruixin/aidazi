@@ -701,6 +701,13 @@ GAP_ENDED = "gap_ended"        # the human aborted at completeness_gap_review
 # adjust_scope decision (remediate|accept_gap|abort).
 GAP_REVIEW_CHECKPOINT = "completeness_gap_review"
 
+# Phase-4 (design §3.2/§3.4): the coordinator-GLOBAL pause reasons — the only pauses that
+# legitimately set the top-level status to 'paused' WITHOUT any per-milestone pause. A
+# campaign_plan_signoff (F1 re-sign at genesis) or a completeness_gap_review (gap-followup at
+# quiescence) is coordinator-scoped, not milestone-scoped; any OTHER top-level pause_reason with
+# no paused milestone is a stale-gate hole (_check_parallel_state_consistency fail-closes on it).
+_GLOBAL_PAUSE_REASONS: frozenset = frozenset({"campaign_plan_signoff", GAP_REVIEW_CHECKPOINT})
+
 # Schema defaults (campaign-plan.schema.json gap_followup) — mirrored so an ABSENT
 # gap_followup block uses conservative engine defaults, never an unbounded value.
 GAP_FOLLOWUP_DEFAULT_MAX_SUBSPRINTS = 3
@@ -1140,19 +1147,19 @@ class Campaign:
             raise ValueError(
                 f"spent.subsprints_run {subsprints_run} != recorded unit count {len(units)} — "
                 f"a crash-resume budget undercount (fail-closed, design §3.3 B-11)")
-        # Oldest-pause mirror tie (Codex R1 B-5; design §3.2/§3.3). When ANY milestone is paused,
-        # the top-level singleton pause_reason/pause_checkpoint MUST mirror the OLDEST outstanding
-        # milestone pause — defined as the smallest topological (plan) index, the only
-        # deterministic total order available in state (there is no per-pause timestamp). This is
-        # the legacy-mirror invariant the resolver relies on. When NO milestone is paused the
-        # top-level fields are unconstrained here: they may legitimately hold a coordinator-GLOBAL
-        # pause (campaign_plan_signoff / completeness_gap_review, §3.4) or be null.
+        # Top-level status ↔ milestone-phase coherence + the oldest-pause mirror tie
+        # (Codex R1 B-5; design §3.2/§3.3/§3.4). The top-level singletons mirror per-milestone
+        # phase; a tampered/bug-written combination must not slip through.
+        status = data.get("status")
         order = {m["id"]: i for i, m in enumerate(self.milestones)}
         paused_mids = sorted(
             (mid for mid, r in rt.items()
              if isinstance(r, dict) and r.get("phase") == "paused"),
             key=lambda x: order.get(x, len(self.milestones)))
         if paused_mids:
+            # A per-milestone pause ⇒ the top-level singleton pause_reason/pause_checkpoint MUST
+            # mirror the OLDEST outstanding milestone pause — the smallest topological (plan)
+            # index, the only deterministic total order in state (there is no per-pause timestamp).
             oldest = rt[paused_mids[0]]
             if data.get("pause_reason") != oldest.get("pause_reason") or \
                     data.get("pause_checkpoint") != oldest.get("pause_checkpoint"):
@@ -1162,6 +1169,36 @@ class Campaign:
                     f"match the OLDEST outstanding milestone pause {paused_mids[0]!r} "
                     f"({oldest.get('pause_reason')!r}/{oldest.get('pause_checkpoint')!r}) — the "
                     f"top-level singletons must mirror it (fail-closed, design §3.2)")
+        elif status == STATUS_PAUSED:
+            # status=='paused' with NO paused milestone is legitimate ONLY for a coordinator-GLOBAL
+            # pause (§3.4): campaign_plan_signoff (F1 re-sign) or completeness_gap_review
+            # (gap-followup at quiescence), each WITH its durable checkpoint. A milestone-scoped
+            # pause_reason (e.g. gate_hard_fail) with no paused milestone is a stale-gate hole
+            # (Codex R1 B-5 round-2) — fail closed.
+            if data.get("pause_reason") not in _GLOBAL_PAUSE_REASONS \
+                    or not data.get("pause_checkpoint"):
+                raise ValueError(
+                    f"parallel campaign status is 'paused' but NO milestone is paused and the "
+                    f"top-level pause_reason {data.get('pause_reason')!r} is not a "
+                    f"coordinator-global pause ({sorted(_GLOBAL_PAUSE_REASONS)}) with a "
+                    f"checkpoint — a milestone-scoped pause with no paused milestone is a stale "
+                    f"gate (fail-closed, design §3.2/§3.4)")
+        # status=='done' ⇒ EVERY milestone terminal (design §3.4/§4/§7.1): a dependency-target
+        # (some other milestone depends_on it) is terminal ONLY at 'merged'; a leaf may terminate
+        # at 'done' or 'merged'. A running/ready/paused milestone — or a dependency-target stuck at
+        # 'done'-unmerged — means the campaign is NOT done (the latter is an exit-10 needs-human).
+        if status == STATUS_DONE:
+            dep_targets = {d for m in self.milestones
+                           for d in (m.get("depends_on") or [])}
+            for m in self.milestones:
+                mid = m["id"]
+                ph = parallel_effective_phase(rt, mid)
+                if ph == "merged" or (ph == "done" and mid not in dep_targets):
+                    continue
+                raise ValueError(
+                    f"parallel campaign status is 'done' but milestone {mid!r} is in phase "
+                    f"{ph!r} — 'done' requires every milestone terminal (a dependency-target at "
+                    f"'merged', a leaf at 'done' or 'merged'); fail-closed, design §3.4/§4")
         cur = data.get("cursor") or {}
         if cur.get("milestone_index", 0) != 0 or cur.get("subsprint_index", 0) != 0:
             raise ValueError(

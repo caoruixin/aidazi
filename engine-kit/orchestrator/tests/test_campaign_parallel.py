@@ -406,6 +406,96 @@ class TestPhase4StateConsistency(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._camp()._check_parallel_state_consistency(s)
 
+    # ----- Codex R1 B-5 round-2: top-level status ↔ milestone-phase coherence ------------ #
+    def test_rejects_paused_status_with_no_paused_milestone_and_nonglobal_reason(self):
+        # status 'paused' + a milestone-scoped pause_reason but NO milestone paused = stale gate.
+        s = self._valid_state()  # m1 done, m2 running — none paused
+        s["status"] = "paused"
+        s["pause_reason"] = "gate_hard_fail"
+        s["pause_checkpoint"] = "/cp/stale"
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+    def test_accepts_global_pause_with_no_paused_milestone(self):
+        # A coordinator-global pause (campaign_plan_signoff) WITH its checkpoint is legitimate
+        # even with no per-milestone pause (F1 re-sign at genesis; milestones still 'ready').
+        s = {
+            "campaign_id": "camp-1", "status": "paused",
+            "cursor": {"milestone_index": 0, "subsprint_index": 0},
+            "spent": {"subsprints_run": 0, "total_spawns": 0, "wall_clock_minutes": 0},
+            "units": [],
+            "pause_reason": "campaign_plan_signoff", "pause_checkpoint": "/cp/signoff",
+            "milestone_runtime": {
+                "m1": {"phase": "ready", "subsprint_index": 0, "current_attempt_nonce": 0,
+                       "folded": []},
+                "m2": {"phase": "ready", "subsprint_index": 0, "current_attempt_nonce": 0,
+                       "folded": []},
+            },
+        }
+        self._camp()._check_parallel_state_consistency(s)
+
+    def test_rejects_global_pause_without_checkpoint(self):
+        s = self._valid_state()
+        s["status"] = "paused"
+        s["pause_reason"] = "campaign_plan_signoff"
+        s["pause_checkpoint"] = None
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+    def test_rejects_done_status_with_running_milestone(self):
+        # status 'done' while a milestone is still running is incoherent (Codex R1 B-5 round-2).
+        s = self._valid_state()  # m1 done, m2 running
+        s["status"] = "done"
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+    def test_accepts_done_status_when_all_terminal(self):
+        s = {
+            "campaign_id": "camp-1", "status": "done",
+            "cursor": {"milestone_index": 0, "subsprint_index": 0},
+            "spent": {"subsprints_run": 2, "total_spawns": 0, "wall_clock_minutes": 0},
+            "units": [
+                {"milestone_id": "m1", "subsprint_id": "s1", "status": "done",
+                 "loop_id": "u1", "attempt_nonce": 1},
+                {"milestone_id": "m2", "subsprint_id": "s2", "status": "done",
+                 "loop_id": "u2", "attempt_nonce": 1},
+            ],
+            "milestone_runtime": {
+                "m1": {"phase": "merged", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "folded": [["u1", 1]]},
+                # a LEAF (nothing depends on it) may terminate at 'done'-unmerged (design §7.1).
+                "m2": {"phase": "done", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "folded": [["u2", 1]]},
+            },
+        }
+        self._camp()._check_parallel_state_consistency(s)
+
+    def test_rejects_done_status_when_dependency_target_unmerged(self):
+        # m1 is a dependency-target (m2 depends_on it) ⇒ it must be 'merged', not 'done', for done.
+        ms = [_ms("m1", ["s1"]), _ms("m2", ["s2"], depends_on=["m1"])]
+        plan = _plan(ms, max_concurrent=2)
+        d = tempfile.mkdtemp()
+        camp = cp.Campaign(plan, d, _fake_run_unit(), clock=_clock())
+        s = {
+            "campaign_id": "camp-1", "status": "done",
+            "cursor": {"milestone_index": 0, "subsprint_index": 0},
+            "spent": {"subsprints_run": 2, "total_spawns": 0, "wall_clock_minutes": 0},
+            "units": [
+                {"milestone_id": "m1", "subsprint_id": "s1", "status": "done",
+                 "loop_id": "u1", "attempt_nonce": 1},
+                {"milestone_id": "m2", "subsprint_id": "s2", "status": "done",
+                 "loop_id": "u2", "attempt_nonce": 1},
+            ],
+            "milestone_runtime": {
+                "m1": {"phase": "done", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "folded": [["u1", 1]]},
+                "m2": {"phase": "merged", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "folded": [["u2", 1]]},
+            },
+        }
+        with self.assertRaises(ValueError):
+            camp._check_parallel_state_consistency(s)
+
 
 class TestPhase4StateSchema(unittest.TestCase):
     """The campaign-state schema must be valid Draft 2020-12 AND actually validate a parallel
