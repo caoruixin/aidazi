@@ -1171,39 +1171,64 @@ class Campaign:
                     f"top-level singletons must mirror it (fail-closed, design §3.2)")
         elif status == STATUS_PAUSED:
             # status=='paused' with NO paused milestone is legitimate ONLY for a coordinator-GLOBAL
-            # pause (§3.4): campaign_plan_signoff (F1 re-sign) or completeness_gap_review
-            # (gap-followup at quiescence), each WITH its durable checkpoint. A milestone-scoped
-            # pause_reason (e.g. gate_hard_fail) with no paused milestone is a stale-gate hole
-            # (Codex R1 B-5 round-2) — fail closed.
-            if data.get("pause_reason") not in _GLOBAL_PAUSE_REASONS \
-                    or not data.get("pause_checkpoint"):
+            # pause (§3.4): campaign_plan_signoff (F1 re-sign at genesis) or completeness_gap_review
+            # (gap-followup), each WITH its durable checkpoint. A milestone-scoped pause_reason
+            # (e.g. gate_hard_fail) with no paused milestone is a stale-gate hole — fail closed.
+            pr = data.get("pause_reason")
+            if pr not in _GLOBAL_PAUSE_REASONS or not data.get("pause_checkpoint"):
                 raise ValueError(
                     f"parallel campaign status is 'paused' but NO milestone is paused and the "
-                    f"top-level pause_reason {data.get('pause_reason')!r} is not a "
-                    f"coordinator-global pause ({sorted(_GLOBAL_PAUSE_REASONS)}) with a "
-                    f"checkpoint — a milestone-scoped pause with no paused milestone is a stale "
-                    f"gate (fail-closed, design §3.2/§3.4)")
-        # status=='done' ⇒ EVERY milestone terminal (design §3.4/§4/§7.1): a dependency-target
-        # (some other milestone depends_on it) is terminal ONLY at 'merged'; a leaf may terminate
-        # at 'done' or 'merged'. A running/ready/paused milestone — or a dependency-target stuck at
-        # 'done'-unmerged — means the campaign is NOT done (the latter is an exit-10 needs-human).
+                    f"top-level pause_reason {pr!r} is not a coordinator-global pause "
+                    f"({sorted(_GLOBAL_PAUSE_REASONS)}) with a checkpoint — a milestone-scoped "
+                    f"pause with no paused milestone is a stale gate (fail-closed, §3.2/§3.4)")
+            # completeness_gap_review fires ONLY at QUIESCENCE (§3.4): gap-followup runs from the
+            # outer loop at backlog exhaustion — every milestone terminal AND zero workers in
+            # flight. campaign_plan_signoff (genesis) has NO such requirement (Codex R1 B-5 rnd-3).
+            if pr == GAP_REVIEW_CHECKPOINT:
+                nonterm = self._parallel_first_nonterminal(rt)
+                if nonterm is not None or inflight_count:
+                    raise ValueError(
+                        f"parallel campaign is paused at completeness_gap_review but is NOT "
+                        f"quiescent (needs every milestone terminal AND zero in-flight; found "
+                        f"non-terminal milestone {nonterm!r}, {inflight_count} in-flight) — "
+                        f"gap-followup fires only at backlog exhaustion (fail-closed, §3.4)")
+        # status=='done' ⇒ a QUIESCENT TERMINAL state (design §3.4/§4/§7.1): EVERY milestone
+        # terminal (a dependency-target at 'merged', a leaf at 'done' or 'merged') AND zero workers
+        # in flight. A running/ready/paused milestone, a dependency-target stuck at 'done'-unmerged
+        # (an exit-10 needs-human, not 'done'), or any lingering inflight ⇒ NOT done.
         if status == STATUS_DONE:
-            dep_targets = {d for m in self.milestones
-                           for d in (m.get("depends_on") or [])}
-            for m in self.milestones:
-                mid = m["id"]
-                ph = parallel_effective_phase(rt, mid)
-                if ph == "merged" or (ph == "done" and mid not in dep_targets):
-                    continue
+            nonterm = self._parallel_first_nonterminal(rt)
+            if nonterm is not None:
                 raise ValueError(
-                    f"parallel campaign status is 'done' but milestone {mid!r} is in phase "
-                    f"{ph!r} — 'done' requires every milestone terminal (a dependency-target at "
-                    f"'merged', a leaf at 'done' or 'merged'); fail-closed, design §3.4/§4")
+                    f"parallel campaign status is 'done' but milestone {nonterm!r} is in phase "
+                    f"{parallel_effective_phase(rt, nonterm)!r} — 'done' requires every milestone "
+                    f"terminal (a dependency-target at 'merged', a leaf at 'done' or 'merged'); "
+                    f"fail-closed, design §3.4/§4")
+            if inflight_count:
+                raise ValueError(
+                    f"parallel campaign status is 'done' but {inflight_count} milestone(s) still "
+                    f"carry an in-flight sub-sprint — 'done' requires quiescence (zero workers) "
+                    f"(fail-closed, design §3.4)")
         cur = data.get("cursor") or {}
         if cur.get("milestone_index", 0) != 0 or cur.get("subsprint_index", 0) != 0:
             raise ValueError(
                 f"parallel campaign state must pin the top-level cursor mirror to (0,0), got "
                 f"{cur!r} (fail-closed, design §3.2)")
+
+    def _parallel_first_nonterminal(self, rt: dict) -> Optional[str]:
+        """The first milestone (plan order) that is NOT terminal, or None if ALL are terminal
+        (the design §3.4/§4/§7.1 `all_terminal` predicate): a dependency-target (some other
+        milestone `depends_on` it) is terminal ONLY at 'merged'; a leaf may terminate at 'done'
+        or 'merged'. A milestone with no runtime entry has effective phase 'ready' ⇒ NOT terminal.
+        Pure w.r.t. `rt`; used for the status=='done' and completeness_gap_review quiescence gates."""
+        dep_targets = {d for m in self.milestones for d in (m.get("depends_on") or [])}
+        for m in self.milestones:
+            mid = m["id"]
+            ph = parallel_effective_phase(rt, mid)
+            if ph == "merged" or (ph == "done" and mid not in dep_targets):
+                continue
+            return mid
+        return None
 
     # ----- budget (countable proxies; design §5.4a) ---------------------- #
     def _over_budget(self) -> Optional[str]:

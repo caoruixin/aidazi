@@ -496,6 +496,60 @@ class TestPhase4StateConsistency(unittest.TestCase):
         with self.assertRaises(ValueError):
             camp._check_parallel_state_consistency(s)
 
+    # ----- Codex R1 B-5 round-3: 'done' + completeness_gap_review require QUIESCENCE ----- #
+    def test_rejects_done_status_with_lingering_inflight(self):
+        # Every phase terminal, but a record still carries an in-flight sub-sprint ⇒ not quiescent.
+        s = {
+            "campaign_id": "camp-1", "status": "done",
+            "cursor": {"milestone_index": 0, "subsprint_index": 0},
+            "spent": {"subsprints_run": 2, "total_spawns": 0, "wall_clock_minutes": 0},
+            "units": [
+                {"milestone_id": "m1", "subsprint_id": "s1", "status": "done",
+                 "loop_id": "u1", "attempt_nonce": 1},
+                {"milestone_id": "m2", "subsprint_id": "s2", "status": "done",
+                 "loop_id": "u2", "attempt_nonce": 1},
+            ],
+            "milestone_runtime": {
+                "m1": {"phase": "merged", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "folded": [["u1", 1]]},
+                "m2": {"phase": "done", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "inflight": {"attempt_nonce": 1, "subsprint_id": "s2b"},
+                       "folded": [["u2", 1]]},
+            },
+        }
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+    def test_rejects_gap_review_when_not_quiescent(self):
+        # completeness_gap_review fires only at backlog exhaustion; a running milestone ⇒ reject.
+        s = self._valid_state()  # m1 done, m2 running
+        s["status"] = "paused"
+        s["pause_reason"] = "completeness_gap_review"
+        s["pause_checkpoint"] = "/cp/gap"
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+    def test_accepts_gap_review_when_quiescent(self):
+        s = {
+            "campaign_id": "camp-1", "status": "paused",
+            "cursor": {"milestone_index": 0, "subsprint_index": 0},
+            "spent": {"subsprints_run": 2, "total_spawns": 0, "wall_clock_minutes": 0},
+            "units": [
+                {"milestone_id": "m1", "subsprint_id": "s1", "status": "done",
+                 "loop_id": "u1", "attempt_nonce": 1},
+                {"milestone_id": "m2", "subsprint_id": "s2", "status": "done",
+                 "loop_id": "u2", "attempt_nonce": 1},
+            ],
+            "pause_reason": "completeness_gap_review", "pause_checkpoint": "/cp/gap",
+            "milestone_runtime": {
+                "m1": {"phase": "merged", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "folded": [["u1", 1]]},
+                "m2": {"phase": "done", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "folded": [["u2", 1]]},
+            },
+        }
+        self._camp()._check_parallel_state_consistency(s)
+
 
 class TestPhase4StateSchema(unittest.TestCase):
     """The campaign-state schema must be valid Draft 2020-12 AND actually validate a parallel
