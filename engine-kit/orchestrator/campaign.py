@@ -4114,7 +4114,7 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
     def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
                  resume=False, functional_acceptance=None, repo_dir=None,
                  covered_req_ids=None, gap_followup_spec=None,
-                 milestone_signals=None):
+                 milestone_signals=None, requirement_context=None):
         # Validate id components BEFORE building any path (fail-closed; never makedirs
         # an unsafe path), then build a COLLISION-FREE, bounded loop_id by hashing the
         # (campaign, milestone, subsprint) tuple — a raw '-' join is ambiguous when ids
@@ -4206,7 +4206,26 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
         # gap_report stays dormant (byte-identical to today). Best-effort: a sidecar failure
         # never breaks a dispatch (the gap_report stays dormant), but it IS recorded (below) so a
         # wired-ledger failure is observable rather than silent (Codex R-P2b NB-1).
-        if plan is not None and ledger_path and os.path.isfile(ledger_path):
+        if requirement_context is not None:
+            # Phase-4 worker mode (design §5.2): the COORDINATOR produced the WHOLE
+            # requirement-context.json (from its authoritative in-memory state) and handed it in;
+            # write it VERBATIM and SKIP the self-read of the live campaign-state.json below (a
+            # worker never reads campaign state). This removes the worker↔state-file coupling
+            # outright. Best-effort + NON-SILENT, mirroring the serial write's failure recording.
+            try:
+                with open(os.path.join(unit_run_dir, "requirement-context.json"),
+                          "w", encoding="utf-8") as fh:
+                    json.dump(requirement_context, fh, indent=2, sort_keys=True)
+            except OSError as _exc:
+                try:
+                    with open(os.path.join(unit_run_dir, "requirement-context.error"),
+                              "w", encoding="utf-8") as fh:
+                        fh.write(f"requirement-context sidecar (worker-supplied) not written "
+                                 f"(gap_report dormant for this unit): "
+                                 f"{type(_exc).__name__}: {_exc}\n")
+                except OSError:
+                    pass
+        elif plan is not None and ledger_path and os.path.isfile(ledger_path):
             try:
                 with open(ledger_path, encoding="utf-8") as fh:
                     _ledger = json.load(fh)
