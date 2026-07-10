@@ -1,0 +1,229 @@
+"""Phase-4 (parallel campaign runner) — Cluster 3 tests: the coordinator _drive_parallel.
+
+The coordinator launches REAL isolated worker subprocesses (campaign_worker) that run a
+deterministic test-double run_loop. The OFFLINE canary (repo_dir=None ⇒ no git worktrees, no
+merge gate) exercises the concurrent dispatch/fold/scheduler/budget/termination core: two
+disjoint-lock milestones run concurrently to done, each unit folded exactly once, budget
+accounted, and the campaign reaches DONE. stdlib unittest; POSIX (subprocess/flock)."""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+
+_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_ORCH_DIR = os.path.dirname(_TESTS_DIR)
+_ENGINE_KIT_DIR = os.path.dirname(_ORCH_DIR)
+for _p in (_TESTS_DIR, _ORCH_DIR, _ENGINE_KIT_DIR,
+           os.path.join(_ENGINE_KIT_DIR, "audit"),
+           os.path.join(_ENGINE_KIT_DIR, "scheduling")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import campaign as cp  # noqa: E402
+
+CHARTER = {"charter_id": "ch", "goal": "g"}
+CLOCK_FIXED = {"kind": "fixed", "value": "2026-07-11T00:00:00Z"}
+
+
+def _clock():
+    n = {"i": 0}
+
+    def tick():
+        n["i"] += 1
+        return f"2026-07-11T00:{n['i'] // 60:02d}:{n['i'] % 60:02d}Z"
+    return tick
+
+
+def _ms(mid, seq, **kw):
+    m = {"id": mid, "objective": "o", "subsprint_sequence": list(seq)}
+    m.update(kw)
+    return m
+
+
+def _parallel_plan(milestones, *, max_concurrent=2, max_subsprints=None):
+    budget = {"max_concurrent": max_concurrent}
+    if max_subsprints is not None:
+        budget["max_subsprints"] = max_subsprints
+    return {"campaign_id": "camp-1", "goal": "g", "milestones": milestones,
+            "budget": budget,
+            "milestone_isolation": {"default_strategy": "new_worktree",
+                                    "merge_prompt_at_close": True}}
+
+
+def _dummy_run_unit(*a, **k):
+    return {"final_state": "advance", "spawn_count": 0, "loop_id": "x"}
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-C", repo, *args],
+                          capture_output=True, text=True, check=True).stdout
+
+
+def _make_repo(root):
+    repo = os.path.join(root, "repo")
+    os.makedirs(repo)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Coordinator Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    with open(os.path.join(repo, "file.txt"), "w", encoding="utf-8") as fh:
+        fh.write("original\n")
+    _git(repo, "add", "file.txt")
+    _git(repo, "commit", "-q", "-m", "init")
+    return repo
+
+
+class TestParallelCoordinatorOffline(unittest.TestCase):
+    def _run(self, plan, *, worker_entrypoint="run_loop"):
+        signed = cp.stamp_signoff(plan, CHARTER)
+        self.assertEqual(cp.signoff_status(signed, CHARTER), "signed")
+        d = tempfile.mkdtemp()
+        camp = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=None, ledger_path=None)
+        camp.worker_exec = {
+            "run_loop_entrypoint": f"_worker_canary_support:{worker_entrypoint}",
+            "extra_sys_path": [_TESTS_DIR], "clock_policy": CLOCK_FIXED}
+        return camp, camp.run(), d
+
+    def test_two_disjoint_milestones_run_to_done(self):
+        ms = [_ms("m1", ["s1"], module_locks=["a"]),
+              _ms("m2", ["s2"], module_locks=["b"])]
+        camp, st, d = self._run(_parallel_plan(ms))
+        self.assertEqual(st.status, "done")
+        # Both milestones reached a terminal phase (leaf done-unmerged: no repo ⇒ no merge gate).
+        rt = st.milestone_runtime
+        self.assertEqual(rt["m1"]["phase"], "done")
+        self.assertEqual(rt["m2"]["phase"], "done")
+        # Exactly one unit folded per milestone; budget accounted once each.
+        self.assertEqual(st.subsprints_run, 2)
+        self.assertEqual(len(st.units), 2)
+        folded = sorted(u["milestone_id"] for u in st.units)
+        self.assertEqual(folded, ["m1", "m2"])
+        # Each unit carries its attempt_nonce (the fold key) and a milestone_outcome recorded.
+        self.assertTrue(all(u.get("attempt_nonce") == 1 for u in st.units))
+        self.assertEqual(sorted(o["milestone_id"] for o in st.milestone_outcomes),
+                         ["m1", "m2"])
+        # No in-flight workers remain.
+        self.assertEqual(sum(1 for r in rt.values() if r.get("inflight")), 0)
+
+    def test_multi_subsprint_milestone_folds_each_subsprint(self):
+        ms = [_ms("m1", ["s1", "s2"], module_locks=["a"]),
+              _ms("m2", ["t1"], module_locks=["b"])]
+        camp, st, d = self._run(_parallel_plan(ms))
+        self.assertEqual(st.status, "done")
+        self.assertEqual(st.subsprints_run, 3)          # 2 + 1
+        self.assertEqual(len(st.units), 3)
+        self.assertEqual(st.milestone_runtime["m1"]["subsprint_index"], 2)
+
+    def test_signed_max_subsprints_never_exceeded(self):
+        # cap=2 across two milestones ⇒ both single-sub-sprint units fit exactly.
+        ms = [_ms("m1", ["s1"], module_locks=["a"]),
+              _ms("m2", ["s2"], module_locks=["b"])]
+        camp, st, d = self._run(_parallel_plan(ms, max_subsprints=2))
+        self.assertEqual(st.status, "done")
+        self.assertEqual(st.subsprints_run, 2)
+
+
+class TestParallelCoordinatorGit(unittest.TestCase):
+    """N=2 disjoint-lock canary in REAL git worktrees (design §7): two milestones run
+    concurrently in their own worktrees, each pausing at the milestone_merge human gate
+    (§1.7-D — the engine never auto-merges; merge EXECUTION on resume is Cluster 4)."""
+
+    def test_two_milestones_pause_at_milestone_merge(self):
+        root = tempfile.mkdtemp()
+        repo = _make_repo(root)
+        ms = [_ms("m1", ["s1"], module_locks=["a"]),
+              _ms("m2", ["s2"], module_locks=["b"])]
+        signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
+        d = os.path.join(root, "run")
+        camp = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=repo, ledger_path=None)
+        camp.worker_exec = {"run_loop_entrypoint": "_worker_canary_support:run_loop",
+                            "extra_sys_path": [_TESTS_DIR], "clock_policy": CLOCK_FIXED}
+        st = camp.run()
+
+        # Parked at the human merge gate(s): status PAUSED, both milestones paused at
+        # milestone_merge, the top-level mirror = the OLDEST (topological) paused milestone.
+        self.assertEqual(st.status, "paused")
+        rt = st.milestone_runtime
+        self.assertEqual(rt["m1"]["phase"], "paused")
+        self.assertEqual(rt["m2"]["phase"], "paused")
+        self.assertEqual(rt["m1"]["pause_reason"], "milestone_merge")
+        self.assertEqual(rt["m2"]["pause_reason"], "milestone_merge")
+        self.assertEqual(st.pause_reason, "milestone_merge")     # mirror
+        # Both ran concurrently to done: 2 units folded, both milestone_outcomes stamped, each
+        # milestone got its own isolated branch.
+        self.assertEqual(st.subsprints_run, 2)
+        self.assertEqual(len(st.units), 2)
+        self.assertEqual(sorted(o["milestone_id"] for o in st.milestone_outcomes),
+                         ["m1", "m2"])
+        branches = _git(repo, "branch", "--list")
+        self.assertIn("milestone/camp-1/m1", branches)
+        self.assertIn("milestone/camp-1/m2", branches)
+        # Neither branch is merged into trunk yet (merge is the human-gated Cluster-4 step).
+        self.assertEqual(sum(1 for r in rt.values() if r.get("inflight")), 0)
+        # The parallel state validates against its own consistency gate (round-trips clean).
+        cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(), charter=CHARTER,
+                    repo_dir=repo, ledger_path=None)._check_state_consistency(st.to_dict())
+
+
+class TestParallelReporting(unittest.TestCase):
+    """run_loop phase-derived output + pauses[] (design §3.2.1/§6.3), additive to
+    CAMPAIGN_STATUS=."""
+
+    def _print(self, result):
+        import io
+        import contextlib
+        import run_loop as rl
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rl.print_campaign_result(result)
+        return buf.getvalue()
+
+    def _parallel_result(self):
+        return {
+            "campaign_id": "camp-1", "campaign_home": "/tmp/x", "status": "paused",
+            "pause_reason": "milestone_merge", "pause_checkpoint": "/cp/m1.md",
+            "milestone_index": 0, "milestones_total": 2, "milestones_complete": 0,
+            "subsprints_run": 2, "total_spawns": 0, "exit_code": 10,
+            "milestones": [{"milestone_id": "m1", "phase": "paused",
+                            "pause_reason": "milestone_merge", "pause_checkpoint": "/cp/m1.md"},
+                           {"milestone_id": "m2", "phase": "paused",
+                            "pause_reason": "milestone_merge", "pause_checkpoint": "/cp/m2.md"}],
+            "pauses": [{"milestone_id": "m1", "subsprint_id": None,
+                        "pause_reason": "milestone_merge", "checkpoint": "m1.md",
+                        "condition_id": None, "loop_id": None},
+                       {"milestone_id": "m2", "subsprint_id": None,
+                        "pause_reason": "milestone_merge", "checkpoint": "m2.md",
+                        "condition_id": None, "loop_id": None}],
+        }
+
+    def test_phase_derived_progress_and_all_pauses(self):
+        out = self._print(self._parallel_result())
+        self.assertIn("phase-derived", out)                 # not the (0,0) mirror
+        self.assertIn("legacy mirror", out)
+        self.assertIn("m1=paused", out)
+        self.assertIn("parked pauses  : 2", out)             # BOTH pauses surfaced (§6.3)
+        self.assertIn("CAMPAIGN_STATUS=", out)               # stable contract preserved
+        self.assertIn("CAMPAIGN_MILESTONES=", out)           # additive parallel contract
+        machine = [ln for ln in out.splitlines()
+                   if ln.startswith("CAMPAIGN_MILESTONES=")][0]
+        parsed = json.loads(machine.split("=", 1)[1])
+        self.assertEqual(len(parsed["pauses"]), 2)
+        self.assertEqual(parsed["milestones_complete"], 0)
+
+    def test_serial_result_output_unchanged(self):
+        # A serial result (no 'milestones' key) keeps the cursor line + no parallel contract.
+        serial = {"campaign_id": "c", "campaign_home": "/tmp/y", "status": "done",
+                  "milestone_index": 2, "milestones_total": 2, "subsprints_run": 3,
+                  "total_spawns": 1, "exit_code": 0}
+        out = self._print(serial)
+        self.assertIn("milestones     : 2/2 complete", out)
+        self.assertNotIn("phase-derived", out)
+        self.assertNotIn("CAMPAIGN_MILESTONES=", out)
+
+
+if __name__ == "__main__":
+    unittest.main()

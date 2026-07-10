@@ -926,6 +926,33 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         except Exception:
             pass  # the notifier path must NEVER break the pause / exit-10 return
 
+    # Phase-4 (design §3.2.1/§6.3): a PARALLEL run reports per-milestone PHASE + ALL parked
+    # pauses; the scalar milestone_index stays the fail-closed (0,0) legacy mirror. A serial run
+    # (no milestone_runtime) omits both keys ⇒ byte-identical output.
+    _rt = getattr(st, "milestone_runtime", None) or {}
+    parallel_extra: dict = {}
+    if _rt:
+        _order = {m["id"]: i for i, m in enumerate(plan.get("milestones") or [])}
+        _mids = sorted(_rt, key=lambda x: _order.get(x, len(_order)))
+        parallel_extra = {
+            "milestones": [
+                {"milestone_id": mid, "phase": _rt[mid].get("phase"),
+                 "pause_reason": _rt[mid].get("pause_reason"),
+                 "pause_checkpoint": _rt[mid].get("pause_checkpoint")}
+                for mid in _mids],
+            "pauses": [
+                {"milestone_id": mid,
+                 "subsprint_id": (_rt[mid].get("inflight") or {}).get("subsprint_id"),
+                 "pause_reason": _rt[mid].get("pause_reason"),
+                 "checkpoint": (os.path.basename(_rt[mid]["pause_checkpoint"])
+                                if _rt[mid].get("pause_checkpoint") else None),
+                 "condition_id": (_rt[mid].get("halt_condition_pending")
+                                  or {}).get("condition_id"),
+                 "loop_id": (_rt[mid].get("inflight") or {}).get("loop_id")}
+                for mid in _mids if _rt[mid].get("phase") == "paused"],
+            "milestones_complete": sum(
+                1 for mid in _mids if _rt[mid].get("phase") in ("done", "merged")),
+        }
     return {
         **base,
         "status": st.status,
@@ -944,6 +971,7 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         "requirement_coverage": requirement_coverage,
         "signoff_status": signoff_status,
         "milestone_outcomes": list(st.milestone_outcomes or []),
+        **parallel_extra,
     }
 
 
@@ -1026,8 +1054,18 @@ def print_campaign_result(result: dict) -> None:
     if status == "invalid":
         print(f"error          : {result.get('error')}")
     else:
-        print(f"milestones     : {result.get('milestone_index')}/"
-              f"{result.get('milestones_total')} complete")
+        # Phase-4 (design §3.2.1): under milestone_runtime the scalar milestone_index is the
+        # fail-closed (0,0) mirror, so report PHASE-DERIVED progress; serial keeps the cursor line.
+        if result.get("milestones") is not None:
+            print(f"milestones     : {result.get('milestones_complete')}/"
+                  f"{result.get('milestones_total')} complete (phase-derived; "
+                  f"milestone_index={result.get('milestone_index')} is the legacy mirror)")
+            print("               : "
+                  + ", ".join(f"{m['milestone_id']}={m['phase']}"
+                              for m in result.get("milestones") or []))
+        else:
+            print(f"milestones     : {result.get('milestone_index')}/"
+                  f"{result.get('milestones_total')} complete")
         print(f"spent          : subsprints={result.get('subsprints_run')} "
               f"spawns={result.get('total_spawns')}")
         cov = result.get("scope_coverage")
@@ -1064,6 +1102,14 @@ def print_campaign_result(result: dict) -> None:
                   f"subsprint={result.get('pause_subsprint_id')} "
                   f"loop={result.get('pause_loop_id')}")
         print(f"checkpoint     : {result.get('pause_checkpoint')}")
+        # Phase-4 (design §6.3): surface EVERY parked pause (a parallel run may park several);
+        # each needs its own --resume with a decision selecting that milestone's checkpoint.
+        _pauses = result.get("pauses")
+        if _pauses:
+            print(f"parked pauses  : {len(_pauses)} (resume each with its own decision)")
+            for p in _pauses:
+                print(f"               : milestone={p.get('milestone_id')} "
+                      f"reason={p.get('pause_reason')} checkpoint={p.get('checkpoint')}")
         print(_campaign_resume_hint(result))
     machine = {k: result.get(k) for k in (
         "campaign_id", "status", "pause_reason", "pause_checkpoint",
@@ -1071,6 +1117,15 @@ def print_campaign_result(result: dict) -> None:
         "milestone_index", "milestones_total", "subsprints_run", "total_spawns",
         "exit_code")}
     print("CAMPAIGN_STATUS=" + json.dumps(machine, sort_keys=True))
+    # Phase-4 ADDITIVE parse contract (the CAMPAIGN_STATUS= line above stays byte-identical for
+    # serial): the per-milestone phase array + parked pauses + phase-derived progress. Emitted
+    # ONLY for a parallel run (milestone_runtime present).
+    if result.get("milestones") is not None:
+        print("CAMPAIGN_MILESTONES=" + json.dumps(
+            {"milestones": result.get("milestones"),
+             "pauses": result.get("pauses"),
+             "milestones_complete": result.get("milestones_complete"),
+             "milestones_total": result.get("milestones_total")}, sort_keys=True))
     # Parallel, ADDITIVE parse contract (the CAMPAIGN_STATUS= line above stays
     # byte-identical) — emitted only when the scope-coverage projection succeeded.
     if result.get("scope_coverage"):
