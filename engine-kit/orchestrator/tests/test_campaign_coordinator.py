@@ -185,6 +185,86 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
                     repo_dir=None, ledger_path=None)._check_state_consistency(
                         camp.state.to_dict())
 
+    def test_epoch_drift_holds_milestone(self):
+        # Codex C3 B-5: a slice-different-but-signed fold records epoch_drift AND parks the
+        # milestone — it must NOT stay 'ready' for its next sub-sprint or become terminal.
+        import campaign_worker as cw
+        ms = [_ms("m1", ["s1", "s2"], module_locks=["a"])]   # 2 sub-sprints: 'advance' would continue
+        signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
+        d = tempfile.mkdtemp()
+        camp = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=None, ledger_path=None)
+        camp._worker_mod = cw
+        camp._worker_procs = {}
+        camp._base_wall = 0.0
+        camp._invocation_start = camp.clock()
+        camp._init_milestone_runtime()
+        r = camp.state.milestone_runtime["m1"]
+        r["current_attempt_nonce"] = 1
+        r["phase"] = "running"
+        epoch0 = camp._live_signed_scope_hash()
+        tampered_slice = json.loads(json.dumps(camp._dispatch_freshness_slice(ms[0])))
+        tampered_slice["wrapper"]["goal"] = "DIFFERENT"      # slice differs from the live slice
+        r["inflight"] = {"attempt_nonce": 1, "loop_id": "u1", "subsprint_id": "s1",
+                         "work_dir": None,
+                         "dispatch_epoch": "STALE_" + str(epoch0),   # != live epoch
+                         "dispatch_freshness_slice": tampered_slice}
+        wdir = camp._worker_dir("m1")
+        camp._worker_procs["m1"] = {"proc": None, "worker_dir": wdir,
+                                    "units_dir": os.path.join(wdir, "units"),
+                                    "attempt_nonce": 1}
+        cw._atomic_write_json(cw.result_path(wdir, 1), {
+            "attempt_nonce": 1, "milestone_id": "m1", "subsprint_id": "s1",
+            "dispatch_epoch": r["inflight"]["dispatch_epoch"],
+            "result": {"final_state": "advance", "spawn_count": 1, "loop_id": "u1",
+                       "pause_reason": None, "checkpoint_path": None}})
+        camp._fold_ready("m1")
+
+        r = camp.state.milestone_runtime["m1"]
+        self.assertIsNotNone(r.get("epoch_drift"))            # durable gate recorded
+        self.assertEqual(r["phase"], "paused")                # HELD — not 'ready' for s2
+        self.assertEqual(r["pause_reason"], "epoch_drift")
+        self.assertEqual(len(camp.state.units), 1)            # the unit WAS folded (authorized)
+        # not re-admitted, and the campaign is NOT all-terminal (cannot reach DONE this run).
+        self.assertNotIn("m1", cp.parallel_ready_set(
+            camp.milestones, camp.state.milestone_runtime))
+        self.assertIsNotNone(
+            camp._parallel_first_nonterminal(camp.state.milestone_runtime))
+        camp._check_state_consistency(camp.state.to_dict())   # round-trips clean
+
+    def test_budget_exhausted_state_validates(self):
+        # Codex C3 B-6: campaign_budget_exhausted is a validator-accepted coordinator-global
+        # null-checkpoint pause (may coexist with a done milestone).
+        camp, _st, _d = self._run(_parallel_plan(
+            [_ms("m1", ["s1"], module_locks=["a"])]))   # any signed camp for the validator
+        s = {"campaign_id": "camp-1", "status": "paused",
+             "cursor": {"milestone_index": 0, "subsprint_index": 0},
+             "spent": {"subsprints_run": 1, "total_spawns": 0, "wall_clock_minutes": 0},
+             "units": [{"milestone_id": "m1", "subsprint_id": "s1", "status": "done",
+                        "loop_id": "u1", "attempt_nonce": 1}],
+             "pause_reason": "campaign_budget_exhausted", "pause_checkpoint": None,
+             "milestone_runtime": {
+                 "m1": {"phase": "done", "subsprint_index": 1, "current_attempt_nonce": 1,
+                        "folded": [["u1", 1]]}}}
+        camp._check_parallel_state_consistency(s)   # accepted (null-checkpoint global drain)
+
+    def test_dependency_stall_repauses_dep_target_at_merge(self):
+        # Codex C3 B-6: a dep-target at 'done'-unmerged (offline, no merge gate) with a blocked
+        # dependent re-pauses the dep-target at milestone_merge (per-milestone, no new kind), and
+        # the resulting state validates.
+        ms = [_ms("m1", ["s1"], module_locks=["a"]),
+              _ms("m2", ["s2"], module_locks=["b"], depends_on=["m1"])]
+        camp, st, d = self._run(_parallel_plan(ms))
+        self.assertEqual(st.status, "paused")
+        rt = st.milestone_runtime
+        self.assertEqual(rt["m1"]["phase"], "paused")
+        self.assertEqual(rt["m1"]["pause_reason"], "milestone_merge")   # re-paused to unblock m2
+        self.assertEqual(rt["m2"]["phase"], "ready")                    # never ran (blocked)
+        self.assertEqual(st.pause_reason, "milestone_merge")            # mirror
+        cp.Campaign(cp.stamp_signoff(_parallel_plan(ms), CHARTER), d, _dummy_run_unit,
+                    clock=_clock(), charter=CHARTER, repo_dir=None,
+                    ledger_path=None)._check_state_consistency(st.to_dict())
+
 
 class TestParallelCoordinatorGit(unittest.TestCase):
     """N=2 disjoint-lock canary in REAL git worktrees (design §7): two milestones run
