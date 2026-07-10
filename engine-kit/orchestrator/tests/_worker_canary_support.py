@@ -20,6 +20,13 @@ def run_loop(charter, *, run_dir, loop_id, subsprint_id, clock=None,
     return {"final_state": "advance", "spawn_count": 2}
 
 
+def run_loop_raises(charter, *, run_dir, loop_id, subsprint_id, clock=None,
+                    resume=False, repo_dir=None, **kw):
+    """Raise, to exercise the worker's ``main`` error path (an OBSERVABLE error result that
+    echoes the fold identity — design §5.3 / Codex C2 B-2)."""
+    raise RuntimeError("canary run_loop failure")
+
+
 def run_loop_blocking(charter, *, run_dir, loop_id, subsprint_id, clock=None,
                       resume=False, repo_dir=None, **kw):
     """Like ``run_loop`` but BLOCKS until a sentinel file appears (env

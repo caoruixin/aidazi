@@ -111,16 +111,20 @@ class TestWorkerHelpers(unittest.TestCase):
         with self.assertRaises(ValueError):
             cw._resolve_run_loop("_worker_canary_support:does_not_exist")
 
-    def test_build_worker_input_requires_subsprint(self):
-        with self.assertRaises(ValueError):
-            cw.build_worker_input(campaign_id=CID, units_dir="u", charter=CHARTER,
-                                  dispatch={}, attempt_nonce=1)
+    def _full_dispatch(self, **over):
+        d = {"subsprint_id": "s1", "milestone_id": "m1", "subsprint_sequence": ["s1"]}
+        d.update(over)
+        return d
 
-    def test_build_worker_input_carries_full_contract(self):
-        wi = cw.build_worker_input(
-            campaign_id=CID, units_dir="u", charter=CHARTER, plan=PLAN,
-            clock=CLOCK_FIXED, requirement_context={"a": 1}, dispatch_epoch="H",
-            dispatch={"subsprint_id": "s1", "milestone_id": "m1"}, attempt_nonce=7)
+    def _bwi(self, **over):
+        kw = dict(campaign_id=CID, units_dir="u", charter=CHARTER, plan=PLAN,
+                  clock=CLOCK_FIXED, dispatch_epoch="H", attempt_nonce=1,
+                  requirement_context={"a": 1}, dispatch=self._full_dispatch())
+        kw.update(over)
+        return cw.build_worker_input(**kw)
+
+    def test_build_worker_input_accepts_full_contract(self):
+        wi = self._bwi(attempt_nonce=7)
         for k in ("campaign_id", "units_dir", "charter", "plan", "ledger_path",
                   "run_loop_kwargs", "run_loop_entrypoint", "clock", "extra_sys_path",
                   "requirement_context", "dispatch", "attempt_nonce", "dispatch_epoch"):
@@ -128,6 +132,42 @@ class TestWorkerHelpers(unittest.TestCase):
         self.assertEqual(wi["attempt_nonce"], 7)
         self.assertEqual(wi["clock"], CLOCK_FIXED)
         self.assertEqual(wi["dispatch_epoch"], "H")
+
+    def test_build_worker_input_fail_closed(self):
+        # Codex C2 B-1: incomplete worker-input must be rejected at BUILD time.
+        with self.assertRaises(ValueError):        # empty dispatch
+            cw.build_worker_input(campaign_id=CID, units_dir="u", charter=CHARTER,
+                                  dispatch={}, attempt_nonce=1)
+        with self.assertRaises(ValueError):        # missing subsprint_sequence
+            self._bwi(dispatch={"subsprint_id": "s1", "milestone_id": "m1"})
+        with self.assertRaises(ValueError):        # subsprint_sequence lacks subsprint_id
+            self._bwi(dispatch=self._full_dispatch(subsprint_sequence=["other"]))
+        with self.assertRaises(ValueError):        # missing milestone_id
+            self._bwi(dispatch={"subsprint_id": "s1", "subsprint_sequence": ["s1"]})
+        with self.assertRaises(ValueError):        # non-int attempt_nonce
+            self._bwi(attempt_nonce="1")
+        with self.assertRaises(ValueError):        # missing dispatch_epoch
+            self._bwi(dispatch_epoch=None)
+        with self.assertRaises(ValueError):        # ledger-wired but no requirement_context
+            self._bwi(ledger_path="/tmp/ledger.json", requirement_context=None)
+        # A genuinely NON-ledger worker (no ledger_path) may carry requirement_context=None.
+        self.assertIsNone(self._bwi(ledger_path=None,
+                                    requirement_context=None)["requirement_context"])
+
+    def test_worker_lock_held_false_without_lock_file(self):
+        self.assertFalse(cw.worker_lock_held(tempfile.mkdtemp()))
+
+    def test_worker_lock_held_true_while_locked(self):
+        import fcntl
+        d = tempfile.mkdtemp()
+        fd = os.open(cw.lock_path(d), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            self.assertTrue(cw.worker_lock_held(d))    # a held lock ⇒ probe reports held
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        self.assertFalse(cw.worker_lock_held(d))       # released ⇒ not held
 
 
 class TestWorkerFoldIdentity(unittest.TestCase):
@@ -149,9 +189,12 @@ class TestWorkerFoldIdentity(unittest.TestCase):
         ru = campaign.make_run_unit(
             CHARTER, serial_units, CID, clock=cw._clock_from_policy(CLOCK_FIXED),
             plan=PLAN, run_loop_fn=DOUBLE, ledger_path=ledger_path)
-        serial = ru("s1", milestone_id="m1")
-        serial_ctx = _read_json(os.path.join(
-            serial_units, serial["loop_id"], "requirement-context.json"))
+        # Full dispatch contract: subsprint_sequence pins loop_mode=delivery_only + derivation.
+        serial = ru("s1", milestone_id="m1", subsprint_sequence=["s1"])
+        serial_sidecar = os.path.join(
+            serial_units, serial["loop_id"], "requirement-context.json")
+        with open(serial_sidecar, "rb") as fh:
+            serial_bytes = fh.read()
 
         # --- WORKER: hand it EXACTLY the coordinator sidecar (== serial's self-read bytes). ---
         worker_dir = os.path.join(tmp, "worker")
@@ -159,10 +202,11 @@ class TestWorkerFoldIdentity(unittest.TestCase):
         wi = cw.build_worker_input(
             campaign_id=CID, units_dir=worker_units, charter=CHARTER, plan=PLAN,
             ledger_path=ledger_path,                      # present but IGNORED in worker mode
-            requirement_context=serial_ctx, clock=CLOCK_FIXED,
+            requirement_context=json.loads(serial_bytes), clock=CLOCK_FIXED,
             run_loop_entrypoint="_worker_canary_support:run_loop",
             extra_sys_path=[_TESTS_DIR],
-            dispatch={"subsprint_id": "s1", "milestone_id": "m1"},
+            dispatch={"subsprint_id": "s1", "milestone_id": "m1",
+                      "subsprint_sequence": ["s1"]},
             attempt_nonce=1, dispatch_epoch="H0")
         cw.write_worker_input(worker_dir, wi)
         out = cw.run_worker(worker_dir)
@@ -174,10 +218,20 @@ class TestWorkerFoldIdentity(unittest.TestCase):
         self.assertEqual(worker["spawn_count"], serial["spawn_count"])
         self.assertEqual(worker["pause_reason"], serial["pause_reason"])
         self.assertEqual(worker["checkpoint_path"], serial["checkpoint_path"])
-        # the worker wrote the sidecar VERBATIM ⇒ byte-identical to the serial self-read.
-        worker_ctx = _read_json(os.path.join(
-            worker_units, worker["loop_id"], "requirement-context.json"))
-        self.assertEqual(worker_ctx, serial_ctx)
+        # BYTE-identity of the sidecar (Codex C2 B-4: compare raw bytes, not parsed dicts).
+        worker_sidecar = os.path.join(
+            worker_units, worker["loop_id"], "requirement-context.json")
+        with open(worker_sidecar, "rb") as fh:
+            worker_bytes = fh.read()
+        self.assertEqual(worker_bytes, serial_bytes)
+        # the per-milestone derived-context sidecar is ALSO byte-identical (deterministic).
+        with open(os.path.join(serial_units, serial["loop_id"],
+                               "derived-context.json"), "rb") as fh:
+            s_dc = fh.read()
+        with open(os.path.join(worker_units, worker["loop_id"],
+                               "derived-context.json"), "rb") as fh:
+            w_dc = fh.read()
+        self.assertEqual(w_dc, s_dc)
         # attempt-scoped result + worker-owned lease exist; the result echoes the fold key.
         self.assertTrue(os.path.exists(cw.result_path(worker_dir, 1)))
         self.assertTrue(os.path.exists(cw.lease_path(worker_dir, 1)))
@@ -200,10 +254,11 @@ class TestWorkerFoldIdentity(unittest.TestCase):
                     "campaign_state": {"status": "clean"}, "charter": CHARTER}
         wi = cw.build_worker_input(
             campaign_id=CID, units_dir=worker_units, charter=CHARTER, plan=PLAN,
-            requirement_context=supplied, clock=CLOCK_FIXED,
+            requirement_context=supplied, clock=CLOCK_FIXED, dispatch_epoch="H",
             run_loop_entrypoint="_worker_canary_support:run_loop",
             extra_sys_path=[_TESTS_DIR],
-            dispatch={"subsprint_id": "s1", "milestone_id": "m1"}, attempt_nonce=1)
+            dispatch={"subsprint_id": "s1", "milestone_id": "m1",
+                      "subsprint_sequence": ["s1"]}, attempt_nonce=1)
         cw.write_worker_input(worker_dir, wi)
         out = cw.run_worker(worker_dir)
         got = _read_json(os.path.join(
@@ -224,10 +279,11 @@ class TestWorkerLauncher(unittest.TestCase):
                "campaign_state": {"status": "s"}, "charter": CHARTER}
         wi = cw.build_worker_input(
             campaign_id=CID, units_dir=worker_units, charter=CHARTER, plan=PLAN,
-            requirement_context=ctx, clock=CLOCK_FIXED,
+            requirement_context=ctx, clock=CLOCK_FIXED, dispatch_epoch="H",
             run_loop_entrypoint="_worker_canary_support:run_loop_blocking",
             extra_sys_path=[_TESTS_DIR],
-            dispatch={"subsprint_id": "s1", "milestone_id": "m1"}, attempt_nonce=1)
+            dispatch={"subsprint_id": "s1", "milestone_id": "m1",
+                      "subsprint_sequence": ["s1"]}, attempt_nonce=1)
         cw.write_worker_input(worker_dir, wi)
 
         self.assertFalse(cw.worker_lock_held(worker_dir))   # no worker yet
@@ -256,6 +312,33 @@ class TestWorkerLauncher(unittest.TestCase):
         self.assertTrue(os.path.exists(cw.lease_path(worker_dir, 1)))
         lease = _read_json(cw.lease_path(worker_dir, 1))
         self.assertNotEqual(lease["pid"], os.getpid())      # a DIFFERENT (child) process
+
+    def test_worker_exception_writes_error_result_echoing_identity(self):
+        # A worker whose run_loop RAISES must write an OBSERVABLE error result that echoes the
+        # SAME fold identity as a success result (Codex C2 B-2), and exit non-zero.
+        tmp = tempfile.mkdtemp()
+        worker_dir = os.path.join(tmp, "wk")
+        worker_units = os.path.join(worker_dir, "units")
+        ctx = {"plan": PLAN, "ledger": {"requirements": []},
+               "campaign_state": {"status": "s"}, "charter": CHARTER}
+        wi = cw.build_worker_input(
+            campaign_id=CID, units_dir=worker_units, charter=CHARTER, plan=PLAN,
+            requirement_context=ctx, clock=CLOCK_FIXED, dispatch_epoch="H7",
+            run_loop_entrypoint="_worker_canary_support:run_loop_raises",
+            extra_sys_path=[_TESTS_DIR],
+            dispatch={"subsprint_id": "s1", "milestone_id": "m1",
+                      "subsprint_sequence": ["s1"]}, attempt_nonce=3)
+        cw.write_worker_input(worker_dir, wi)
+        proc = cw.launch_worker(worker_dir)
+        self.assertEqual(proc.wait(timeout=30), 1)          # non-zero exit
+        out = _read_json(cw.result_path(worker_dir, 3))
+        self.assertIsNone(out["result"])
+        self.assertIn("error", out)
+        self.assertEqual(out["attempt_nonce"], 3)
+        self.assertEqual(out["milestone_id"], "m1")
+        self.assertEqual(out["subsprint_id"], "s1")
+        self.assertEqual(out["dispatch_epoch"], "H7")       # full fold identity echoed
+        self.assertFalse(cw.worker_lock_held(worker_dir))   # lock released on exit
 
 
 if __name__ == "__main__":

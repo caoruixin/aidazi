@@ -20,6 +20,7 @@ POSIX-only (``flock``, ``fork``/fd-inheritance). The coordinator dispatch loop t
 ``launch_worker`` lands in Cluster 3; this module is the reusable worker + launcher, proven
 by the N=1 fold-identity canary that one worker folds identically to the serial runner.
 """
+import errno
 import fcntl
 import importlib
 import json
@@ -107,6 +108,43 @@ def _resolve_run_loop(entrypoint: str) -> Callable:
 # --------------------------------------------------------------------------- #
 # Worker-input contract (§5.1) — full enumeration incl. clock + the WHOLE sidecar
 # --------------------------------------------------------------------------- #
+def _validate_worker_input(wi: dict) -> None:
+    """Fail-closed guard on a worker-input (Codex C2 B-1). A WORKER dispatch is a real parallel
+    sub-sprint, so its input MUST be complete AND must NEVER be able to fall into ``run_unit``'s
+    serial self-read of the live campaign-state.json. Enforced:
+      * ``dispatch.subsprint_id`` + ``dispatch.milestone_id`` present;
+      * ``dispatch.subsprint_sequence`` is a non-empty list CONTAINING ``subsprint_id`` — this is
+        what makes ``run_unit`` take the derived-context branch that PINS
+        ``loop_mode=delivery_only`` and anchors this milestone's Acceptance gate (skipping it
+        would mis-anchor terminality);
+      * ``attempt_nonce`` is an integer (the fold key component, §5.3);
+      * ``dispatch_epoch`` is non-empty (the signed-scope epoch re-checked on every fold, §5.6);
+      * ``requirement_context`` is present for a LEDGER-WIRED campaign (``plan`` + ``ledger_path``)
+        so the worker never self-reads campaign-state (§5.2). A genuinely non-ledger campaign
+        legitimately carries ``None`` — serial writes no sidecar either ⇒ byte-identical."""
+    d = wi.get("dispatch") or {}
+    sid = d.get("subsprint_id")
+    errs: List[str] = []
+    if not sid:
+        errs.append("dispatch.subsprint_id is required")
+    if not d.get("milestone_id"):
+        errs.append("dispatch.milestone_id is required")
+    seq = d.get("subsprint_sequence")
+    if not isinstance(seq, list) or not seq or sid not in seq:
+        errs.append("dispatch.subsprint_sequence must be a non-empty list containing "
+                    "subsprint_id (pins loop_mode=delivery_only + anchors the Acceptance gate)")
+    if not isinstance(wi.get("attempt_nonce"), int):
+        errs.append("attempt_nonce must be an integer (the fold key component, §5.3)")
+    if not wi.get("dispatch_epoch"):
+        errs.append("dispatch_epoch is required (the signed-scope epoch re-checked on fold, §5.6)")
+    if wi.get("plan") is not None and wi.get("ledger_path") \
+            and wi.get("requirement_context") is None:
+        errs.append("requirement_context is required for a ledger-wired worker so it never "
+                    "self-reads campaign-state.json (§5.2)")
+    if errs:
+        raise ValueError("invalid worker-input (fail-closed): " + "; ".join(errs))
+
+
 def build_worker_input(*, campaign_id: str, units_dir: str, charter: dict,
                        dispatch: dict, attempt_nonce: Any,
                        plan: Optional[dict] = None, ledger_path: Optional[str] = None,
@@ -120,12 +158,11 @@ def build_worker_input(*, campaign_id: str, units_dir: str, charter: dict,
     ``make_run_unit``/``run_unit`` input is carried explicitly — including the ``clock`` policy,
     the ``attempt_nonce``, the ``dispatch_epoch``, and the coordinator-produced WHOLE
     ``requirement_context`` sidecar (the worker does NOT build it from state). ``dispatch`` holds
-    the per-sub-sprint call args (subsprint_id required; milestone_id / subsprint_sequence /
+    the per-sub-sprint call args (subsprint_id + milestone_id + subsprint_sequence required;
     resume / functional_acceptance / repo_dir / covered_req_ids / gap_followup_spec /
-    milestone_signals optional). Pure — no I/O."""
-    if not dispatch.get("subsprint_id"):
-        raise ValueError("worker-input dispatch requires a subsprint_id (fail-closed)")
-    return {
+    milestone_signals optional). Fail-closed via ``_validate_worker_input`` (Codex C2 B-1) so an
+    incomplete dispatch can never reach a worker. Pure — no I/O."""
+    wi = {
         "campaign_id": campaign_id,
         "units_dir": units_dir,
         "charter": charter,
@@ -140,6 +177,8 @@ def build_worker_input(*, campaign_id: str, units_dir: str, charter: dict,
         "attempt_nonce": attempt_nonce,
         "dispatch_epoch": dispatch_epoch,
     }
+    _validate_worker_input(wi)
+    return wi
 
 
 def _atomic_write_json(path: str, obj: Any) -> None:
@@ -185,6 +224,7 @@ def run_worker(worker_dir: str) -> dict:
     import campaign  # after sys.path setup
 
     wi = read_worker_input(worker_dir)
+    _validate_worker_input(wi)   # defense-in-depth: also validated at build time (C2 B-1)
     for p in (wi.get("extra_sys_path") or []):
         if p and p not in sys.path:
             sys.path.insert(0, p)
@@ -270,11 +310,17 @@ def worker_lock_held(worker_dir: str, *, lock_name: str = LOCK_FILENAME) -> bool
         return False
     fd = os.open(lp, os.O_RDWR)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return False
-    except OSError:
-        return True
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                return False   # acquired ⇒ NO live holder (fence/redispatch)
+            except OSError as exc:
+                if exc.errno == errno.EINTR:
+                    continue   # interrupted syscall — retry, do not misread as "held"
+                if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                    return True   # a LIVE worker holds it (adopt)
+                raise   # unexpected (EBADF/EIO/…) — fail closed, never GUESS "live" (Codex C2 B-3)
     finally:
         os.close(fd)
 
@@ -297,10 +343,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             wi = read_worker_input(worker_dir)
             nonce = wi.get("attempt_nonce")
             if nonce is not None:
+                # Echo the SAME fold-key identity as a success result (Codex C2 B-2) so the
+                # Cluster-3 fold/surface logic can bind a worker EXCEPTION to its attempt.
+                d = wi.get("dispatch") or {}
                 _atomic_write_json(
                     result_path(worker_dir, nonce),
-                    {"attempt_nonce": nonce, "error": f"{type(exc).__name__}: {exc}",
-                     "result": None})
+                    {"attempt_nonce": nonce, "milestone_id": d.get("milestone_id"),
+                     "subsprint_id": d.get("subsprint_id"),
+                     "dispatch_epoch": wi.get("dispatch_epoch"),
+                     "error": f"{type(exc).__name__}: {exc}", "result": None})
         except Exception:  # noqa: BLE001
             pass
         import traceback
