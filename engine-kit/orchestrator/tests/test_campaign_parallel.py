@@ -171,22 +171,60 @@ class TestPhase4Scheduler(unittest.TestCase):
               "m2": {"phase": "merged"}}
         self.assertEqual(cp.parallel_ready_set(ms, rt), ["m3"])
 
+    # Disjoint-lock milestones so capacity/budget (not locks) is the binding constraint here;
+    # the lock-serialization behaviour has its own tests below.
+    _DISJOINT = [_ms("m1", ["s1"], module_locks=["a"]),
+                 _ms("m2", ["s2"], module_locks=["b"]),
+                 _ms("m3", ["s3"], module_locks=["c"])]
+
     def test_admit_respects_max_concurrent(self):
         ready = ["m1", "m2", "m3"]
         self.assertEqual(
-            cp.parallel_admit(ready, {}, max_concurrent=2, subsprints_run=0,
-                              max_subsprints=None), ["m1", "m2"])
-        # one already in flight ⇒ only one more slot.
-        rt = {"mX": {"inflight": {"attempt_nonce": 1, "subsprint_id": "s"}}}
+            cp.parallel_admit(ready, {}, milestones=self._DISJOINT, max_concurrent=2,
+                              subsprints_run=0, max_subsprints=None), ["m1", "m2"])
+        # one already in flight (disjoint lock) ⇒ only one more slot.
+        ms = self._DISJOINT + [_ms("mX", ["sx"], module_locks=["x"])]
+        rt = {"mX": {"phase": "running",
+                     "inflight": {"attempt_nonce": 1, "subsprint_id": "sx"}}}
         self.assertEqual(
-            cp.parallel_admit(ready, rt, max_concurrent=2, subsprints_run=0,
-                              max_subsprints=None), ["m1"])
+            cp.parallel_admit(ready, rt, milestones=ms, max_concurrent=2,
+                              subsprints_run=0, max_subsprints=None), ["m1"])
 
     def test_admit_respects_signed_max_subsprints(self):
         # spent 1, 0 in flight, cap 2 ⇒ only 1 more may be admitted.
         self.assertEqual(
-            cp.parallel_admit(["m1", "m2", "m3"], {}, max_concurrent=5, subsprints_run=1,
-                              max_subsprints=2), ["m1"])
+            cp.parallel_admit(["m1", "m2", "m3"], {}, milestones=self._DISJOINT,
+                              max_concurrent=5, subsprints_run=1, max_subsprints=2), ["m1"])
+
+    def test_admit_serializes_lockless_ready_milestones(self):
+        # Two LOCKLESS ready milestones must NOT co-admit (empty locks conflict with everything,
+        # design §4 / Codex R1 B-2) — only the first is admitted this batch.
+        ms = [_ms("m1", ["s1"]), _ms("m2", ["s2"])]
+        self.assertEqual(
+            cp.parallel_admit(["m1", "m2"], {}, milestones=ms, max_concurrent=2,
+                              subsprints_run=0, max_subsprints=None), ["m1"])
+
+    def test_admit_serializes_overlapping_locks(self):
+        # Two ready milestones both locking 'a' must NOT co-admit (Codex R1 B-2).
+        ms = [_ms("m1", ["s1"], module_locks=["a"]),
+              _ms("m2", ["s2"], module_locks=["a", "b"])]
+        self.assertEqual(
+            cp.parallel_admit(["m1", "m2"], {}, milestones=ms, max_concurrent=2,
+                              subsprints_run=0, max_subsprints=None), ["m1"])
+
+    def test_admit_co_admits_disjoint_locks(self):
+        ms = [_ms("m1", ["s1"], module_locks=["a"]),
+              _ms("m2", ["s2"], module_locks=["b"])]
+        self.assertEqual(
+            cp.parallel_admit(["m1", "m2"], {}, milestones=ms, max_concurrent=2,
+                              subsprints_run=0, max_subsprints=None), ["m1", "m2"])
+
+    def test_admit_lockless_candidate_blocked_when_a_lock_is_reserved(self):
+        # A lockless candidate cannot co-run once a locked milestone is admitted first.
+        ms = [_ms("m1", ["s1"], module_locks=["a"]), _ms("m2", ["s2"])]  # m2 lockless
+        self.assertEqual(
+            cp.parallel_admit(["m1", "m2"], {}, milestones=ms, max_concurrent=2,
+                              subsprints_run=0, max_subsprints=None), ["m1"])
 
     def test_merge_order_fifo_vs_human_order(self):
         ms = [_ms("m1", ["s1"]), _ms("m2", ["s2"]), _ms("m3", ["s3"])]
@@ -292,6 +330,120 @@ class TestPhase4StateConsistency(unittest.TestCase):
         s["cursor"]["milestone_index"] = 1
         with self.assertRaises(ValueError):
             self._camp()._check_parallel_state_consistency(s)
+
+    # ----- Codex R1 B-3: running milestone needs a COMPLETE inflight record ------------- #
+    def test_rejects_running_with_empty_inflight(self):
+        s = self._valid_state()
+        s["milestone_runtime"]["m2"]["inflight"] = {}
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+    def test_rejects_running_inflight_missing_subsprint_id(self):
+        s = self._valid_state()
+        s["milestone_runtime"]["m2"]["inflight"] = {"attempt_nonce": 1}
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+    def test_rejects_running_without_current_attempt_nonce(self):
+        s = self._valid_state()
+        s["milestone_runtime"]["m2"].pop("current_attempt_nonce")
+        s["milestone_runtime"]["m2"]["inflight"].pop("attempt_nonce", None)
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+    # ----- Codex R1 B-4: a present-empty milestone_runtime is corrupted parallel state -- #
+    def test_rejects_empty_milestone_runtime_map(self):
+        s = self._valid_state()
+        s["milestone_runtime"] = {}
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+    def test_empty_milestone_runtime_present_routes_to_parallel_and_fails(self):
+        # This state would PASS the serial validator (cursor (0,0), no units); the PRESENT-but-
+        # empty milestone_runtime must route it to the parallel validator, which fails closed.
+        camp = self._camp()
+        s = {"campaign_id": "camp-1", "status": "running",
+             "cursor": {"milestone_index": 0, "subsprint_index": 0},
+             "spent": {"subsprints_run": 0, "total_spawns": 0, "wall_clock_minutes": 0},
+             "units": [], "milestone_runtime": {}}
+        # Sanity: identical state WITHOUT the key validates as serial (no raise).
+        camp._check_state_consistency({k: v for k, v in s.items()
+                                       if k != "milestone_runtime"})
+        with self.assertRaises(ValueError):
+            camp._check_state_consistency(s)
+
+    # ----- Codex R1 B-5: top-level singletons mirror the OLDEST outstanding pause -------- #
+    def _paused_state(self):
+        # m1 paused (oldest = topo index 0), m2 running; top-level singleton mirrors m1's pause.
+        return {
+            "campaign_id": "camp-1", "status": "paused",
+            "cursor": {"milestone_index": 0, "subsprint_index": 0},
+            "spent": {"subsprints_run": 0, "total_spawns": 0, "wall_clock_minutes": 0},
+            "units": [],
+            "pause_reason": "gate_hard_fail", "pause_checkpoint": "/cp/m1",
+            "milestone_runtime": {
+                "m1": {"phase": "paused", "subsprint_index": 0, "current_attempt_nonce": 0,
+                       "pause_reason": "gate_hard_fail", "pause_checkpoint": "/cp/m1",
+                       "folded": []},
+                "m2": {"phase": "running", "subsprint_index": 0, "current_attempt_nonce": 1,
+                       "inflight": {"attempt_nonce": 1, "subsprint_id": "s2"}, "folded": []},
+            },
+        }
+
+    def test_paused_mirror_match_passes(self):
+        self._camp()._check_parallel_state_consistency(self._paused_state())
+
+    def test_rejects_missing_pause_mirror(self):
+        s = self._paused_state()
+        s["pause_reason"] = None
+        s["pause_checkpoint"] = None
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+    def test_rejects_wrong_pause_mirror(self):
+        s = self._paused_state()
+        s["pause_reason"] = "completeness_gap_review"
+        with self.assertRaises(ValueError):
+            self._camp()._check_parallel_state_consistency(s)
+
+
+class TestPhase4StateSchema(unittest.TestCase):
+    """The campaign-state schema must be valid Draft 2020-12 AND actually validate a parallel
+    state carrying `folded` fold-keys (Codex R1 B-1: the legacy tuple-form `items: [...]` made
+    the schema invalid and crashed _load's Draft202012Validator before semantic validation)."""
+
+    def test_state_schema_is_valid_draft202012(self):
+        from jsonschema import Draft202012Validator
+        Draft202012Validator.check_schema(
+            cp._campaign_schema("campaign-state.schema.json"))
+
+    def test_parallel_state_with_folded_validates(self):
+        state = {
+            "campaign_id": "camp-1", "status": "running",
+            "cursor": {"milestone_index": 0, "subsprint_index": 0},
+            "spent": {"subsprints_run": 1, "total_spawns": 0, "wall_clock_minutes": 0},
+            "units": [{"milestone_id": "m1", "subsprint_id": "s1", "status": "done",
+                       "loop_id": "u_m1s1", "attempt_nonce": 1}],
+            "milestone_runtime": {
+                "m1": {"phase": "done", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "folded": [["u_m1s1", 1]]},
+                "m2": {"phase": "running", "subsprint_index": 0, "current_attempt_nonce": 2,
+                       "inflight": {"attempt_nonce": 2, "subsprint_id": "s2"}, "folded": []},
+            },
+        }
+        cp._validate_or_raise(state, "campaign-state.schema.json", "state")  # must NOT raise
+
+    def test_schema_rejects_inflight_missing_required_fields(self):
+        # A present (non-null) inflight MUST carry attempt_nonce + subsprint_id (Codex R1 B-3).
+        state = {
+            "campaign_id": "camp-1", "status": "running",
+            "cursor": {"milestone_index": 0, "subsprint_index": 0},
+            "spent": {"subsprints_run": 0, "total_spawns": 0, "wall_clock_minutes": 0},
+            "units": [],
+            "milestone_runtime": {"m1": {"phase": "running", "inflight": {}}},
+        }
+        with self.assertRaises(ValueError):
+            cp._validate_or_raise(state, "campaign-state.schema.json", "state")
 
 
 if __name__ == "__main__":

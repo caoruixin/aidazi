@@ -217,7 +217,8 @@
           "inflight": {
             "type": ["object", "null"],
             "additionalProperties": false,
-            "description": "The ONE in-flight sub-sprint, written by a SINGLE pre-spawn _save() so everything the fold needs is durable BEFORE fork (§5.5). No pid/worker here — liveness is the parent-held-then-inherited flock + a worker-owned lease sidecar.",
+            "required": ["attempt_nonce", "subsprint_id"],
+            "description": "The ONE in-flight sub-sprint, written by a SINGLE pre-spawn _save() so everything the fold needs is durable BEFORE fork (§5.5). No pid/worker here — liveness is the parent-held-then-inherited flock + a worker-owned lease sidecar. A present (non-null) inflight MUST carry attempt_nonce + subsprint_id (the durable fold inputs); null ⇒ no sub-sprint in flight.",
             "properties": {
               "attempt_nonce": {"type": "integer", "minimum": 0},
               "loop_id": {"type": ["string", "null"]},
@@ -227,7 +228,7 @@
               "dispatch_freshness_slice": {"type": ["object", "null"], "description": "Canonical dispatch-time freshness snapshot: H wrapper + this milestone's _envelope_milestone entry + authority + the two *_digest fields (§5.6)."}
             }
           },
-          "folded": {"type": "array", "items": {"type": "array", "items": [{"type": ["string", "null"]}, {"type": "integer"}], "minItems": 2, "maxItems": 2}, "description": "Fold keys [loop_id, attempt_nonce] already folded (idempotent re-delivery guard, §5.3)."},
+          "folded": {"type": "array", "items": {"type": "array", "prefixItems": [{"type": ["string", "null"]}, {"type": "integer"}], "items": false, "minItems": 2, "maxItems": 2}, "description": "Fold keys [loop_id, attempt_nonce] already folded (idempotent re-delivery guard, §5.3). Draft 2020-12 tuple validation uses prefixItems (NOT the legacy array-form items)."},
           "epoch_drift": {"type": ["object", "null"], "description": "Durable per-milestone drift gate {dispatch_freshness_slice, observed_freshness_slice}; clears ONLY on an exact freshness-slice equality re-check, never merely because the plan is signed (§5.6)."}
         }
       }
