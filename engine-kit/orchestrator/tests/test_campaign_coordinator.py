@@ -125,6 +125,66 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
         self.assertEqual(st.status, "done")
         self.assertEqual(st.subsprints_run, 2)
 
+    def test_empty_subsprint_sequence_pauses_at_decompose_no_livelock(self):
+        # Codex C3 B-1: an empty-sequence milestone is 'ready' but has nothing to dispatch —
+        # it must PAUSE at milestone_decompose_required (like serial), NOT livelock; the other
+        # milestone still runs to done concurrently.
+        ms = [_ms("m1", [], module_locks=["a"]),
+              _ms("m2", ["s2"], module_locks=["b"])]
+        camp, st, d = self._run(_parallel_plan(ms))
+        self.assertEqual(st.status, "paused")
+        rt = st.milestone_runtime
+        self.assertEqual(rt["m1"]["phase"], "paused")
+        self.assertEqual(rt["m1"]["pause_reason"], "milestone_decompose_required")
+        self.assertEqual(rt["m2"]["phase"], "done")           # no livelock — m2 completed
+        self.assertEqual(st.pause_reason, "milestone_decompose_required")  # mirror
+
+    def test_fold_with_stale_plan_blocks_atomically(self):
+        # Codex C3 B-2/B-3: a fold that finds the plan STALE folds the unit AND parks the WHOLE
+        # campaign for a re-sign in ONE save (no crash window with an unblocked stale fold), and
+        # the resulting global-overlay state validates.
+        import campaign_worker as cw
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
+        d = tempfile.mkdtemp()
+        camp = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=None, ledger_path=None)
+        camp._worker_mod = cw
+        camp._worker_procs = {}
+        camp._base_wall = 0.0
+        camp._invocation_start = camp.clock()
+        camp._init_milestone_runtime()
+        r = camp.state.milestone_runtime["m1"]
+        r["current_attempt_nonce"] = 1
+        r["phase"] = "running"
+        r["inflight"] = {"attempt_nonce": 1, "loop_id": "u1", "subsprint_id": "s1",
+                         "work_dir": None,
+                         "dispatch_epoch": camp._live_signed_scope_hash(),
+                         "dispatch_freshness_slice": camp._dispatch_freshness_slice(ms[0])}
+        wdir = camp._worker_dir("m1")
+        camp._worker_procs["m1"] = {"proc": None, "worker_dir": wdir,
+                                    "units_dir": os.path.join(wdir, "units"),
+                                    "attempt_nonce": 1}
+        cw._atomic_write_json(cw.result_path(wdir, 1), {
+            "attempt_nonce": 1, "milestone_id": "m1", "subsprint_id": "s1",
+            "dispatch_epoch": r["inflight"]["dispatch_epoch"],
+            "result": {"final_state": "advance", "spawn_count": 1, "loop_id": "u1",
+                       "pause_reason": None, "checkpoint_path": None}})
+        # Post-dispatch tamper: the plan goes stale WHILE the unit ran.
+        camp.plan["signoff"]["signed_by_human"] = False
+        camp._fold_ready("m1")
+
+        self.assertEqual(camp.state.status, "paused")
+        self.assertEqual(camp.state.pause_reason, "campaign_plan_signoff")
+        self.assertIsNotNone(camp.state.freshness_block)          # durable re-sign overlay
+        self.assertEqual(len(camp.state.units), 1)                # the unit WAS folded
+        self.assertEqual(camp.state.subsprints_run, 1)            # accounted
+        self.assertIsNone(camp.state.milestone_runtime["m1"]["inflight"])  # inflight cleared
+        # The global-overlay state validates (Codex C3 B-3 accepts the null-checkpoint block).
+        cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(), charter=CHARTER,
+                    repo_dir=None, ledger_path=None)._check_state_consistency(
+                        camp.state.to_dict())
+
 
 class TestParallelCoordinatorGit(unittest.TestCase):
     """N=2 disjoint-lock canary in REAL git worktrees (design §7): two milestones run

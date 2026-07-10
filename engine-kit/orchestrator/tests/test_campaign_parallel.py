@@ -434,11 +434,36 @@ class TestPhase4StateConsistency(unittest.TestCase):
         }
         self._camp()._check_parallel_state_consistency(s)
 
-    def test_rejects_global_pause_without_checkpoint(self):
-        s = self._valid_state()
+    def test_accepts_signoff_resign_overlay_null_checkpoint(self):
+        # A coordinator-GLOBAL campaign_plan_signoff re-sign block (Codex C3 B-3) legitimately has
+        # a NULL checkpoint and OVERRIDES the per-milestone mirror — it may coexist with a running
+        # milestone (a fold found the plan stale mid-flight and parked the whole campaign).
+        s = self._valid_state()      # m1 done, m2 running
         s["status"] = "paused"
         s["pause_reason"] = "campaign_plan_signoff"
         s["pause_checkpoint"] = None
+        s["freshness_block"] = {"original_pause_reason": None,
+                                "original_pause_checkpoint": None}
+        self._camp()._check_parallel_state_consistency(s)   # accepted (fail-safe re-sign block)
+
+    def test_rejects_gap_review_without_checkpoint(self):
+        # completeness_gap_review IS a real global gate ⇒ it MUST carry its checkpoint (unlike the
+        # checkpoint-less campaign_plan_signoff re-sign block above). Quiescent but no checkpoint.
+        s = {
+            "campaign_id": "camp-1", "status": "paused",
+            "cursor": {"milestone_index": 0, "subsprint_index": 0},
+            "spent": {"subsprints_run": 2, "total_spawns": 0, "wall_clock_minutes": 0},
+            "units": [
+                {"milestone_id": "m1", "subsprint_id": "s1", "status": "done",
+                 "loop_id": "u1", "attempt_nonce": 1},
+                {"milestone_id": "m2", "subsprint_id": "s2", "status": "done",
+                 "loop_id": "u2", "attempt_nonce": 1}],
+            "pause_reason": "completeness_gap_review", "pause_checkpoint": None,
+            "milestone_runtime": {
+                "m1": {"phase": "merged", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "folded": [["u1", 1]]},
+                "m2": {"phase": "done", "subsprint_index": 1, "current_attempt_nonce": 1,
+                       "folded": [["u2", 1]]}}}
         with self.assertRaises(ValueError):
             self._camp()._check_parallel_state_consistency(s)
 

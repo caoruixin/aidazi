@@ -1156,7 +1156,17 @@ class Campaign:
             (mid for mid, r in rt.items()
              if isinstance(r, dict) and r.get("phase") == "paused"),
             key=lambda x: order.get(x, len(self.milestones)))
-        if paused_mids:
+        # A coordinator-GLOBAL campaign_plan_signoff re-sign block (Codex C3 B-3; design §5.6) —
+        # a mid-drive freshness_block or a genesis F1 re-sign — OVERRIDES the per-milestone pause
+        # mirror: it legitimately carries a NULL checkpoint and may coexist with running/paused
+        # milestones (the whole campaign is parked for a re-sign; per-milestone pauses resolve
+        # separately on resume). Accepted here and short-circuits the mirror-tie below. This is
+        # fail-SAFE — a campaign_plan_signoff state can only re-drive after a VALID signed plan.
+        global_resign = (status == STATUS_PAUSED
+                         and data.get("pause_reason") == "campaign_plan_signoff")
+        if global_resign:
+            pass
+        elif paused_mids:
             # A per-milestone pause ⇒ the top-level singleton pause_reason/pause_checkpoint MUST
             # mirror the OLDEST outstanding milestone pause — the smallest topological (plan)
             # index, the only deterministic total order in state (there is no per-pause timestamp).
@@ -3207,14 +3217,33 @@ class Campaign:
         seq = list(milestone.get("subsprint_sequence") or [])
         si = r.get("subsprint_index", 0)
         if si >= len(seq):
-            return None   # nothing to dispatch (milestone sequence exhausted)
+            # Nothing dispatchable — but this milestone is 'ready', so returning None would
+            # re-admit it forever (Codex C3 B-1). Resolve it: an EMPTY sequence surfaces the
+            # per-milestone decompose (a Deliver step this core never auto-authors — exactly the
+            # serial milestone_decompose_required pause, campaign.py:2926); an exhausted non-empty
+            # sequence completes the milestone (the normal path completes on the last fold; this
+            # is the defensive close so a resumed/edge state can never livelock).
+            if not seq:
+                r["phase"] = "paused"
+                r["pause_reason"] = "milestone_decompose_required"
+                r["pause_checkpoint"] = None
+                self._mirror_from_runtime()
+                self._save()
+                self._audit("campaign_milestone_decompose_required", {"milestone_id": mid})
+            else:
+                self._complete_milestone_parallel(mid, milestone)
+                self._mirror_from_runtime()
+                self._save()
+            return None
         subsprint_id = seq[si]
 
         # Freshness — UNCONDITIONAL before the irreversible dispatch (T2-A B5). A stale edit
         # blocks the WHOLE campaign for a re-sign (coordinator-global, serial-identical).
         if not self._authority_fresh():
-            self._block_for_resign(self.state.pause_reason)
-            return self.state
+            return self._pause_campaign_global(
+                "campaign_plan_signoff", None, "campaign_freshness_block",
+                {"signoff_status": self._signoff_status(), "drift": self._drift_field_hint()},
+                freshness_block=True)
         # Halt-conditions (Phase-3 EP-pre, §3.4) — per-milestone; NO-OP when none declared.
         halt = self._eval_halt_conditions_parallel(mid, milestone, subsprint_id)
         if halt is not None:
@@ -3447,11 +3476,14 @@ class Campaign:
             r["pause_checkpoint"] = result.get("checkpoint_path")
 
         if primary_stale:
-            # The fold is committed; now block the WHOLE campaign for a re-sign (serial-identical
-            # fail-closed path). Persists the freshness_block overlay + campaign_plan_signoff.
-            self._mirror_from_runtime()
-            self._save()
-            self._block_for_resign(self.state.pause_reason)
+            # Fold + the durable re-sign block are ONE _save() barrier (Codex C3 B-2): a crash
+            # must NEVER leave a folded/accounted stale unit WITHOUT the durable block (which would
+            # let a resume reach DONE without a re-sign). The above fold mutations are in-memory;
+            # _pause_campaign_global persists them together with the campaign_plan_signoff block.
+            self._pause_campaign_global(
+                "campaign_plan_signoff", None, "campaign_freshness_block",
+                {"signoff_status": self._signoff_status(), "drift": self._drift_field_hint()},
+                freshness_block=True)
             return
         self._mirror_from_runtime()
         self._save()
@@ -3583,20 +3615,39 @@ class Campaign:
             if not admit and self._parallel_inflight_count() > 0:
                 self._await_any_worker(poll)
 
-    def _pause_parallel_needs_human(self) -> "CampaignState":
+    def _pause_campaign_global(self, reason: str, checkpoint: Optional[str], audit_type: str,
+                               extra: Optional[dict] = None, *,
+                               freshness_block: bool = False) -> "CampaignState":
+        """The SANCTIONED coordinator-GLOBAL pause writer for the parallel path (Codex C3 B-4;
+        design §3.2/§5.6). A campaign-tier pause — the campaign_plan_signoff re-sign block, the
+        budget-exhausted drain, the dependency-target needs-human stall — is NOT per-milestone; it
+        legitimately projects onto the top-level singleton status/pause + the (0,0) cursor mirror
+        (it OVERRIDES the per-milestone pause mirror). This is the ONE place the parallel path
+        writes a global pause (all PER-MILESTONE state lives on milestone_runtime[mid]); the C4
+        AST guard exempts this writer + _mirror_from_runtime as the deliberate §3.2 projection.
+        Callers persist the fold/dispatch mutations in the SAME _save() (one atomic barrier)."""
+        if freshness_block and self.state.freshness_block is None:
+            self.state.freshness_block = {
+                "original_pause_reason": None, "original_pause_checkpoint": None}
+        self.state.milestone_index = 0
+        self.state.subsprint_index = 0
         self.state.status = STATUS_PAUSED
-        self.state.pause_reason = "milestone_merge"
-        self._audit("campaign_parallel_needs_human",
-                    {"why": "a dependency-target is done-unmerged; its dependents are blocked"})
+        self.state.pause_reason = reason
+        self.state.pause_checkpoint = checkpoint
+        self._audit(audit_type,
+                    {"pause_reason": reason, "checkpoint": checkpoint, **(extra or {})})
         self._save()
         return self.state
 
+    def _pause_parallel_needs_human(self) -> "CampaignState":
+        return self._pause_campaign_global(
+            "milestone_merge", None, "campaign_parallel_needs_human",
+            {"why": "a dependency-target is done-unmerged; its dependents are blocked"})
+
     def _pause_parallel_budget(self) -> "CampaignState":
-        self.state.status = STATUS_PAUSED
-        self.state.pause_reason = "campaign_budget_exhausted"
-        self._audit("campaign_budget_exhausted", {"dimension": self._over_budget()})
-        self._save()
-        return self.state
+        return self._pause_campaign_global(
+            "campaign_budget_exhausted", None, "campaign_budget_exhausted",
+            {"dimension": self._over_budget()})
 
     def _await_any_worker(self, poll: float) -> None:
         """Block until at least one in-flight worker has written its live-attempt result (or its
