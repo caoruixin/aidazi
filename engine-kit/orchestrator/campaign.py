@@ -3486,10 +3486,20 @@ class Campaign:
             # re-validation and must NOT auto-clear on 'signed' (Codex C3 B-5). Record the durable
             # gate AND park the milestone (never 'ready'/'done'/'merged'), so this invocation can
             # neither continue stale-scope work nor reach DONE until the epoch_drift resolution path
-            # clears it (Cluster 4). A halt outcome keeps its own reason (the drift field also
-            # blocks resume); an advance/complete outcome is overridden to an epoch_drift hold.
-            r["epoch_drift"] = drift
-            if r.get("phase") != "paused":
+            # clears it (Cluster 4). An ADVANCE/COMPLETE outcome — INCLUDING a completion that just
+            # opened the merge gate — MUST be held by the drift gate (Codex C3 B-7): a
+            # milestone_merge pause would let stale scope MERGE without re-validation. Only a genuine
+            # HALT outcome keeps its own pause_reason (the drift field ALSO blocks its resume).
+            r["epoch_drift"] = dict(drift)
+            halted_outcome = (final_state not in _ADVANCE_STATES
+                              and final_state not in _MILESTONE_DONE_STATES)
+            if not halted_outcome:
+                if r.get("pause_reason") == "milestone_merge":
+                    # Preserve the displaced merge gate so C4 restores it AFTER drift resolution.
+                    r["epoch_drift"]["displaced_merge_checkpoint"] = r.get("pause_checkpoint")
+                    r["epoch_drift"]["displaced_pending_milestone_advance"] = \
+                        bool(r.get("pending_milestone_advance"))
+                    r["pending_milestone_advance"] = False
                 r["phase"] = "paused"
                 r["pause_reason"] = "epoch_drift"
                 r["pause_checkpoint"] = None

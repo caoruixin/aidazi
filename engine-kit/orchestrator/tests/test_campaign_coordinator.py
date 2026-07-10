@@ -232,6 +232,53 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
             camp._parallel_first_nonterminal(camp.state.milestone_runtime))
         camp._check_state_consistency(camp.state.to_dict())   # round-trips clean
 
+    def test_epoch_drift_overrides_completion_merge_gate(self):
+        # Codex C3 B-7: a slice-different-but-signed COMPLETION that opens the merge gate must be
+        # HELD at epoch_drift, NOT left actively paused at milestone_merge (else stale scope could
+        # merge on resume without re-validation). The displaced merge checkpoint is preserved.
+        import campaign_worker as cw
+        rd = tempfile.mkdtemp()
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]   # single sub-sprint ⇒ 'advance' completes
+        signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
+        d = os.path.join(rd, "run")
+        camp = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=rd, ledger_path=None)   # ingress ENABLED
+        camp._worker_mod = cw
+        camp._worker_procs = {}
+        camp._base_wall = 0.0
+        camp._invocation_start = camp.clock()
+        camp._init_milestone_runtime()
+        r = camp.state.milestone_runtime["m1"]
+        r["current_attempt_nonce"] = 1
+        r["phase"] = "running"
+        # a milestone context (branch != trunk) so the completion opens the merge gate.
+        r["context"] = {"milestone_id": "m1", "strategy": "new_worktree",
+                        "branch": "milestone/camp-1/m1", "work_dir": rd, "worktree": rd,
+                        "base_ref": "main", "repo_dir": rd}
+        tampered = json.loads(json.dumps(camp._dispatch_freshness_slice(ms[0])))
+        tampered["wrapper"]["goal"] = "DIFFERENT"
+        epoch0 = camp._live_signed_scope_hash()
+        r["inflight"] = {"attempt_nonce": 1, "loop_id": "u1", "subsprint_id": "s1",
+                         "work_dir": rd, "dispatch_epoch": "STALE_" + str(epoch0),
+                         "dispatch_freshness_slice": tampered}
+        wdir = camp._worker_dir("m1")
+        camp._worker_procs["m1"] = {"proc": None, "worker_dir": wdir,
+                                    "units_dir": os.path.join(wdir, "units"),
+                                    "attempt_nonce": 1}
+        cw._atomic_write_json(cw.result_path(wdir, 1), {
+            "attempt_nonce": 1, "milestone_id": "m1", "subsprint_id": "s1",
+            "dispatch_epoch": r["inflight"]["dispatch_epoch"],
+            "result": {"final_state": "advance", "spawn_count": 1, "loop_id": "u1",
+                       "pause_reason": None, "checkpoint_path": None}})
+        camp._fold_ready("m1")
+
+        r = camp.state.milestone_runtime["m1"]
+        self.assertEqual(r["phase"], "paused")
+        self.assertEqual(r["pause_reason"], "epoch_drift")    # NOT milestone_merge
+        self.assertIn("displaced_merge_checkpoint", r["epoch_drift"])  # preserved for C4
+        self.assertIsNotNone(r["epoch_drift"]["displaced_merge_checkpoint"])
+        camp._check_state_consistency(camp.state.to_dict())
+
     def test_budget_exhausted_state_validates(self):
         # Codex C3 B-6: campaign_budget_exhausted is a validator-accepted coordinator-global
         # null-checkpoint pause (may coexist with a done milestone).
