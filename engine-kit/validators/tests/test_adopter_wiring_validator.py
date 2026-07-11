@@ -300,15 +300,65 @@ class CodexTests(_RootBuilder):
         self.assertIn("codex_missing_agents_md", r.rules_fired)
 
 
+class CursorTests(_RootBuilder):
+    _MDC = "---\ndescription: aidazi governance\nalwaysApply: true\n---\nLoad AGENTS.md.\n"
+
+    def test_cursor_single_file_rules_passes(self):
+        # legacy single-file .cursor/rules, non-empty => PASS.
+        root = self._mk({"AGENTS.md": "# chain\n", ".cursor/rules": "load AGENTS.md\n"})
+        r = awv.validate_root(root, harness="cursor")
+        self.assertTrue(r.ok, msg=r.render())
+        self.assertEqual(r.targets, ["cursor"])
+
+    def test_cursor_mdc_dir_passes(self):
+        # modern .cursor/rules/ directory with a non-empty *.mdc rule => PASS.
+        root = self._mk({"AGENTS.md": "# chain\n", ".cursor/rules/00-gov.mdc": self._MDC})
+        r = awv.validate_root(root, harness="cursor")
+        self.assertTrue(r.ok, msg=r.render())
+
+    def test_cursor_missing_rules_fails(self):
+        root = self._mk({"AGENTS.md": "# chain\n"})  # no .cursor/rules
+        r = awv.validate_root(root, harness="cursor")
+        self.assertFalse(r.ok)
+        self.assertIn("cursor_missing_rules", r.rules_fired)
+
+    def test_cursor_empty_file_rules_fails(self):
+        root = self._mk({"AGENTS.md": "# chain\n", ".cursor/rules": "   \n"})
+        r = awv.validate_root(root, harness="cursor")
+        self.assertFalse(r.ok)
+        self.assertIn("cursor_rules_invalid", r.rules_fired)
+
+    def test_cursor_dir_without_nonempty_mdc_fails(self):
+        # an empty *.mdc plus a non-.mdc file => no valid rule => FAIL.
+        root = self._mk(
+            {"AGENTS.md": "# chain\n", ".cursor/rules/00-gov.mdc": "  \n",
+             ".cursor/rules/README.txt": "not a rule\n"}
+        )
+        r = awv.validate_root(root, harness="cursor")
+        self.assertFalse(r.ok)
+        self.assertIn("cursor_rules_invalid", r.rules_fired)
+
+    def test_cursor_rules_symlink_escape_fails(self):
+        # .cursor/rules is a symlink pointing outside the root => redirect, rejected.
+        outside = tempfile.mkdtemp(prefix="awv-outside-")
+        self.addCleanup(self._rmtree, outside)
+        target = os.path.join(outside, "rules")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("load AGENTS.md\n")
+        root = self._mk({"AGENTS.md": "# chain\n"}, links={".cursor/rules": target})
+        r = awv.validate_root(root, harness="cursor")
+        self.assertFalse(r.ok)
+        self.assertIn("cursor_rules_invalid", r.rules_fired)
+
+
 class CursorAndUnspecifiedWarnTests(_RootBuilder):
-    def test_cursor_target_is_warn_not_pass(self):
+    def test_cursor_target_without_rules_fails(self):
+        # A bare AGENTS.md is NOT Cursor wiring: a cursor target with no .cursor/rules now FAILs
+        # (blocking) rather than WARNs, so "validators green" actually proves Cursor wiring.
         root = self._mk({"AGENTS.md": "# chain\n"})
         r = awv.validate_root(root, harness="cursor")
-        self.assertTrue(r.ok)  # WARN => exit 0
-        self.assertIn("cursor_not_applicable", r.rules_fired)
-        self.assertEqual(r.errors, [])  # a bare AGENTS.md must NOT be a PASS *error*-wise...
-        # ...and must not be reported as a clean wiring pass: a warning is present.
-        self.assertTrue(r.warnings)
+        self.assertFalse(r.ok)  # FAIL => exit non-zero
+        self.assertIn("cursor_missing_rules", r.rules_fired)
 
     def test_unspecified_harness_warns_exit0(self):
         root = self._mk({"AGENTS.md": "# chain\n"})  # no charter, no pin, no --harness
@@ -430,10 +480,12 @@ class ConflictTests(_RootBuilder):
 
     def test_partial_overlap_is_not_conflict(self):
         # charter {codex} and pin {codex, cursor} share 'codex' => NOT a contradiction.
-        # The union is validated: codex PASSes (AGENTS.md present), cursor WARNs => exit 0.
+        # The union is validated: codex PASSes (AGENTS.md present), cursor PASSes (valid
+        # .cursor/rules present) => exit 0.
         root = self._mk(
             {
                 "AGENTS.md": "# chain\n",
+                ".cursor/rules": "load AGENTS.md\n",
                 "charter.yaml": "tooling:\n  dev:\n    harness: codex\n",
                 "docs/current/adoption-state.md": (
                     "<!-- adopter-root-harness: codex, cursor -->\n"
@@ -443,7 +495,7 @@ class ConflictTests(_RootBuilder):
         r = awv.validate_root(root)
         self.assertNotIn("harness_conflict", r.rules_fired)
         self.assertEqual(r.targets, ["codex", "cursor"])
-        self.assertTrue(r.ok, msg=r.render())  # codex PASS + cursor WARN => exit 0
+        self.assertTrue(r.ok, msg=r.render())  # codex PASS + cursor PASS => exit 0
 
 
 class RootAndCliTests(_RootBuilder):
@@ -455,10 +507,12 @@ class RootAndCliTests(_RootBuilder):
     def test_main_exit_codes(self):
         good = self._mk({"CLAUDE.md": "@AGENTS.md\n", "AGENTS.md": "# chain\n"})
         bad = self._mk({"AGENTS.md": "# chain\n"})
-        warn = self._mk({"AGENTS.md": "# chain\n"})
+        cursor_ok = self._mk({"AGENTS.md": "# chain\n", ".cursor/rules": "load AGENTS.md\n"})
+        cursor_bad = self._mk({"AGENTS.md": "# chain\n"})  # no .cursor/rules
         self.assertEqual(awv.main([good, "--harness", "claude_code"]), 0)
         self.assertEqual(awv.main([bad, "--harness", "claude_code"]), 1)
-        self.assertEqual(awv.main([warn, "--harness", "cursor"]), 0)  # WARN => 0
+        self.assertEqual(awv.main([cursor_ok, "--harness", "cursor"]), 0)  # valid rules => 0
+        self.assertEqual(awv.main([cursor_bad, "--harness", "cursor"]), 1)  # no rules => FAIL
 
 
 if __name__ == "__main__":

@@ -44,9 +44,10 @@ persistent-source contradiction.
 
 Verdict semantics (CLI):
     PASS  -> exit 0, no findings.
-    WARN  -> exit 0 (harness unspecified; Cursor target; non-root-file harness). Never blocks.
+    WARN  -> exit 0 (harness unspecified; non-root-file/headless harness). Never blocks.
     FAIL  -> exit non-zero (any error: missing/broken Claude wiring, missing Codex AGENTS.md,
-             persistent-source conflict, unreadable input, missing root).
+             missing/invalid Cursor .cursor/rules, persistent-source conflict, unreadable
+             input, missing root).
 
 Determinism contract: pure function over the adopter tree (root files + optional charter +
 optional adoption-state). No network, no LLM, no clock/random dependence. Same tree => same
@@ -486,14 +487,80 @@ def check_codex(root: str, report: Report) -> None:
     # PASS: a Codex target does NOT require CLAUDE.md.
 
 
+def _mdc_dir_has_valid_rule(root: str, rules_dir: str, report: Report) -> None:
+    """A `.cursor/rules/` DIRECTORY is valid iff it holds >=1 non-empty ``*.mdc`` rule file
+    that is a real file inside the root (not a symlink escaping it). Emits a blocking error
+    otherwise."""
+    try:
+        names = sorted(os.listdir(rules_dir))
+    except OSError as exc:
+        report.error("cursor_rules_invalid", f"could not read .cursor/rules/: {exc}", rules_dir)
+        return
+    for name in names:
+        if not name.endswith(".mdc"):
+            continue
+        mdc = os.path.join(rules_dir, name)
+        if not os.path.isfile(mdc) or _is_symlink_redirect(root, mdc):
+            continue
+        try:
+            with open(mdc, "r", encoding="utf-8") as fh:
+                if fh.read().strip():
+                    return  # PASS: a real, non-empty .mdc rule file.
+        except OSError:
+            continue
+    report.error(
+        "cursor_rules_invalid",
+        ".cursor/rules/ contains no non-empty *.mdc rule file; add a real Cursor rules entry "
+        "(a bare AGENTS.md is NOT Cursor wiring — context_briefing.md §1.1).",
+        rules_dir,
+    )
+
+
 def check_cursor(root: str, report: Report) -> None:
-    # This round does not implement a full Cursor .cursor/rules check. A bare AGENTS.md
-    # must NOT be reported as Cursor wiring PASS, so we emit a non-blocking WARN.
-    report.warn(
-        "cursor_not_applicable",
-        "Cursor wiring is not validated this round; a bare AGENTS.md is NOT Cursor wiring — "
-        "add a real .cursor/rules entry (context_briefing.md §1.1).",
-        root,
+    # A Cursor adopter's root-file wiring is Cursor's own rules mechanism: EITHER a legacy
+    # single-file `.cursor/rules` OR the modern `.cursor/rules/` directory of `*.mdc` rule
+    # files (governance/context_briefing.md §1.1). A bare AGENTS.md is NOT Cursor wiring, so a
+    # missing/empty entry FAILs (blocking) — "validators green" then actually proves Cursor
+    # wiring. The repo codifies no content contract, so validity = a real, non-empty entry.
+    rules_path = os.path.join(root, ".cursor", "rules")
+    if not os.path.exists(rules_path):
+        report.error(
+            "cursor_missing_rules",
+            "Cursor target requires a real .cursor/rules entry (a bare AGENTS.md is NOT Cursor "
+            "wiring — context_briefing.md §1.1); none found.",
+            rules_path,
+        )
+        return
+    if _is_symlink_redirect(root, rules_path):
+        report.error(
+            "cursor_rules_invalid",
+            ".cursor/rules is a symlink / resolves outside the repo; it must be a real file or "
+            "directory at the adopter root.",
+            rules_path,
+        )
+        return
+    if os.path.isdir(rules_path):
+        _mdc_dir_has_valid_rule(root, rules_path, report)
+        return
+    if os.path.isfile(rules_path):
+        try:
+            with open(rules_path, "r", encoding="utf-8") as fh:
+                content = fh.read()
+        except OSError as exc:
+            report.error("cursor_rules_invalid", f"could not read .cursor/rules: {exc}", rules_path)
+            return
+        if not content.strip():
+            report.error(
+                "cursor_rules_invalid",
+                ".cursor/rules is empty; an empty rules file is not Cursor wiring.",
+                rules_path,
+            )
+        # PASS: a non-empty single-file .cursor/rules.
+        return
+    report.error(
+        "cursor_rules_invalid",
+        ".cursor/rules is neither a regular file nor a directory of *.mdc rules.",
+        rules_path,
     )
 
 

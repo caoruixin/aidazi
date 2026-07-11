@@ -708,9 +708,12 @@ until this is green.**
    `@AGENTS.md` imports the same-root `AGENTS.md`. **FAIL** (exit non-zero) ⇒ a Claude-Code
    target with `AGENTS.md` but no `CLAUDE.md`; a `CLAUDE.md` with no valid import, an escaping
    import (`..`, absolute, subdir, symlink redirect), or one that re-copies the chain instead of
-   importing only `@AGENTS.md`; or **contradicting** persistent harness declarations (charter vs
-   adoption-state pin declaring disjoint harnesses) — fix and re-run. **WARN** (exit 0) ⇒ harness
-   unspecified, or a Cursor target (a bare `AGENTS.md` is not Cursor wiring); WARN does not block.
+   importing only `@AGENTS.md`; **contradicting** persistent harness declarations (charter vs
+   adoption-state pin declaring disjoint harnesses); or a **Cursor** target lacking a real
+   `.cursor/rules` (a non-empty single-file `.cursor/rules`, or a `.cursor/rules/` directory with
+   ≥1 non-empty `*.mdc` rule — a bare `AGENTS.md` is not Cursor wiring) — fix and re-run.
+   **WARN** (exit 0) ⇒ harness unspecified, or a headless/API role (no root-file requirement);
+   WARN does not block.
    Omit `--harness` to validate against the charter's declared harness(es) instead; for a
    Codex-only adopter the bare `AGENTS.md` PASSes and no `CLAUDE.md` is required.
 3. **`control_plane_validator`** — confirm the default session stays lightweight and
