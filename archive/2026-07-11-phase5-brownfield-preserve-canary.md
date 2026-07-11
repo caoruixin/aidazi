@@ -82,6 +82,24 @@ findings unchanged and cleanly attributable to airplat, not Phase-5.
 - `test_real_adopter_copy_zero_governed_drift` — env-gated (`AIDAZI_E2E_ADOPTER_BROWNFIELD_SRC`)
   version of the airplat-copy canary above (skipped offline).
 
+## Gate history (Codex gpt-5.5 xhigh, whole-scope)
+
+- **R1 → REVISE** (3 blocking): [B-1] `docs/current/adoption-readiness.md` refreshed every run with
+  no `--overwrite` check — a silent second exception to the preserve contract; [B-2] `.gitignore`
+  merged before the `overwrite` check, so `--overwrite` never regenerated it, contradicting the
+  help text; [B-3] env-gated canary ignored `adopter_init`'s `rc`, so an exit-3 refusal could pass
+  vacuously.
+- **R2 fold** (`523d139`): [B-1] readiness snapshot made an explicit, documented, tested tool-owned
+  exception (module contract + `run_exit_validators` comment + `test_readiness_snapshot_is_tool_
+  owned_and_refreshed`); `materialize()` still never writes it. [B-2] `.gitignore` is intentionally
+  always append-merged (never clobbered, even under `--overwrite` — dropping ignore patterns is a
+  footgun); help/docstring corrected, `--overwrite` test extended to prove a custom ignore line
+  survives. [B-3] canary now asserts `rc in (0, 2)`.
+- **R2 → APPROVE** (findings: none): "R1 folds are resolved … preserve branches run after the
+  target containment guard, overwrite remains explicit, incompatible preserved wiring exits
+  non-green, report categories are coherent, and the canary distinguishes pre-existing
+  control-plane findings from Phase-5 drift."
+
 ## Note — uncommitted alternative in the validate worktree
 
 `~/projects/aidazi-phase5-validate` (branch `validate/phase5-adoption`, base `2062062`) carries an
