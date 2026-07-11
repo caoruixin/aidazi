@@ -377,5 +377,55 @@ class InteractiveTests(unittest.TestCase):
         self.assertEqual(ai._ask_int(lambda: next(it), lambda s: None, "n", 5), 7)
 
 
+class BrownfieldCanaryTests(unittest.TestCase):
+    def test_brownfield_force_is_green_and_non_destructive(self):
+        # design §6.2: --force over a pre-existing repo => four validators green, pre-existing
+        # files untouched, and the partial .gitignore MERGED (not clobbered).
+        with tempfile.TemporaryDirectory(prefix="ai-brown-") as tmp:
+            dest = os.path.join(tmp, "existing-repo")
+            os.makedirs(os.path.join(dest, "src"))
+            with open(os.path.join(dest, "src", "app.py"), "w", encoding="utf-8") as fh:
+                fh.write("print('hello')\n")
+            with open(os.path.join(dest, "README.md"), "w", encoding="utf-8") as fh:
+                fh.write("# Existing project\n")
+            with open(os.path.join(dest, ".gitignore"), "w", encoding="utf-8") as fh:
+                fh.write("*.pyc\nbuild/\n")  # pre-existing partial .gitignore
+            rc = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc, 0)
+            self.assertTrue(adoption_status.validate_adoption(dest).ok)
+            # pre-existing files untouched
+            self.assertEqual(ai._read_text(os.path.join(dest, "src", "app.py")), "print('hello')\n")
+            self.assertEqual(ai._read_text(os.path.join(dest, "README.md")), "# Existing project\n")
+            # existing .gitignore lines preserved AND aidazi patterns merged in
+            gi = ai._read_text(os.path.join(dest, ".gitignore"))
+            for pat in ("*.pyc", "build/", ".runs/", ".env.local", ".orchestrator/"):
+                self.assertIn(pat, gi, msg=f"{pat} missing from merged .gitignore")
+
+
+class LiveProbeCanaryTests(unittest.TestCase):
+    """Env-gated real live-probe canary (design §6.3). Skipped offline; when enabled it probes a
+    real headless endpoint named by AIDAZI_E2E_HEADLESS_ENDPOINT + AIDAZI_E2E_HEADLESS_KEY_ENV."""
+
+    @unittest.skipUnless(os.environ.get("AIDAZI_E2E_ADOPTER_INIT_LIVE") == "1",
+                         "set AIDAZI_E2E_ADOPTER_INIT_LIVE=1 (+ endpoint/key env) to run")
+    def test_live_probe_reachable_and_bad_key_warn(self):
+        endpoint = os.environ["AIDAZI_E2E_HEADLESS_ENDPOINT"]
+        key_env = os.environ.get("AIDAZI_E2E_HEADLESS_KEY_ENV", "AIDAZI_E2E_HEADLESS_KEY")
+        data = json.load(open(_CANARY_ANSWERS))
+        data["llm_roles"]["review"] = {"harness": "headless", "provider": "openai_compatible",
+                                       "model": "gpt-4o-mini", "endpoint": endpoint,
+                                       "api_key_env": key_env}
+        with tempfile.TemporaryDirectory(prefix="ai-live-") as tmp:
+            apath = os.path.join(tmp, "a.json")
+            json.dump(data, open(apath, "w"))
+            plan = ai.load_answers(apath, _FRAMEWORK_ROOT)
+            live_env = dict(os.environ, AIDAZI_ADOPTER_INIT_LIVE_PROBE="1")
+            good = ai.run_reachability_probe(plan, "live", env=live_env)
+            self.assertEqual(next(r for r in good if r.role == "review").status, "reachable")
+            bad_env = dict(live_env); bad_env[key_env] = "sk-deliberately-bad"
+            bad = ai.run_reachability_probe(plan, "live", env=bad_env)
+            self.assertEqual(next(r for r in bad if r.role == "review").status, "warn")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

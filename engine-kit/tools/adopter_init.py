@@ -567,13 +567,32 @@ def materialize(artifacts: dict, dest: str, framework_root: str, *, force: bool 
     _HUMAN_EDITABLE = ("charter.yaml", os.path.join("docs", "research-briefs") + os.sep)
     for rel, content in sorted(artifacts.items()):
         target = os.path.join(dest, rel)
+        if rel == ".gitignore" and os.path.exists(target):
+            # brownfield: MERGE (append missing required patterns), never clobber the adopter's
+            # existing .gitignore.
+            _merge_gitignore(target, content)
+            continue
         if os.path.exists(target) and rel.startswith(_HUMAN_EDITABLE) and not overwrite:
-            continue  # idempotent: preserve a human-edited charter unless --overwrite
+            continue  # idempotent: preserve a human-edited charter/brief unless --overwrite
         if os.path.exists(target) and _read_text(target) == content:
             continue  # idempotent: no spurious rewrite
         _atomic_write(target, content)
 
     _mount_framework(dest, framework_root)
+
+
+def _merge_gitignore(target: str, required: str) -> None:
+    """Append any required ignore pattern not already present, preserving the adopter's existing
+    .gitignore lines (brownfield non-destructiveness, design §6.2)."""
+    existing = _read_text(target)
+    have = {ln.strip() for ln in existing.splitlines()}
+    additions = [ln for ln in required.splitlines()
+                 if ln.strip() and not ln.strip().startswith("#") and ln.strip() not in have]
+    if not additions:
+        return
+    body = existing.rstrip("\n") + "\n\n# --- added by adopter_init.py ---\n" + \
+        "\n".join(additions) + "\n"
+    _atomic_write(target, body)
 
 
 def _mount_framework(dest: str, framework_root: str) -> None:

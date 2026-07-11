@@ -152,6 +152,31 @@ follows property 5: **one decision at a time**.
 
 ---
 
+## Fast path — one command: `adopter_init.py`
+
+**`python engine-kit/tools/adopter_init.py <dest>`** does **Steps 0–8 in one sitting.** It
+scaffolds every derivable artifact — `charter.yaml`, `AGENTS.md` + `CLAUDE.md` wiring,
+`.cursor/rules` when a role uses Cursor, `docs/current/*`, the requirement-ledger seed, the
+`.orchestrator/` runtime dirs, and the framework mounted under `aidazi/` — and prompts you for
+**only the genuine choices**: the intent-contract triple + an explicit gate-1 sign-off, autonomy
+level + budgets + approved scope, the eval command, and each role's harness/provider/model. It
+runs an **offline capability check** (model registry + harness-name denylist) at answer time and
+an optional **Facet-A reachability probe** (`--probe binary|live`; `live` is env-gated by
+`AIDAZI_ADOPTER_INIT_LIVE_PROBE=1` and is the only tier that makes a network call). It exits with
+the **four validators green** (or a printed remediation list) and writes `adoption-readiness.md`.
+
+- **Non-interactive:** `--answers answers.json` (schema `schemas/adopter-init-answers.schema.json`).
+- **Record an interactive run:** `--emit-answers answers.json` (for reuse / CI).
+- **Brownfield:** `--force` (pre-existing files are preserved; `.gitignore` is merged, not
+  overwritten). The tool refuses to write into the framework repo itself.
+- It never signs on your behalf: the intent confirmation and the gate-1 brief sign-off are set
+  true only when you say yes.
+
+The numbered **Step 0–9** below remain the **reference narrative and the manual fallback** — they
+explain every choice the tool asks about. **The tool is the path; the steps are the map.**
+
+---
+
 ## Step 0a — Confirm workspace (fail-fast; always before Step 0 writes)
 
 **Action (read-only):** verify this session's **cwd is the adopter repo root**,
