@@ -137,19 +137,74 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(os.listdir(outside), [])
 
     def test_tmp_symlink_escape_write_refused(self):
-        # [R3.2 B-1] a pre-planted <file>.tmp symlink escaping dest must not be written through.
+        # [R3.2 B-1] a pre-planted <file>.tmp symlink escaping dest must not be written through the
+        # atomic-write path. The create-missing path now writes create-only (O_EXCL, NO .tmp), so
+        # this exercises the REGENERATE (--overwrite) path where _atomic_write (+ its .tmp) is still
+        # used. (The create path's own symlink safety is covered by
+        # test_create_missing_symlink_target_escape_refused + test_atomic_write_refuses_symlinked_tmp.)
         with tempfile.TemporaryDirectory(prefix="ai-tmpesc-") as tmp:
             dest = os.path.join(tmp, "dest")
             outside = os.path.join(tmp, "outside")
             os.makedirs(dest)
             os.makedirs(outside)
             leak = os.path.join(outside, "leak")
+            with open(os.path.join(dest, "AGENTS.md"), "w", encoding="utf-8") as fh:
+                fh.write("existing\n")  # exists -> --overwrite takes the _atomic_write branch
             os.symlink(leak, os.path.join(dest, "AGENTS.md.tmp"))  # pre-plant the tmp symlink
             plan = _load_plan()
             artifacts = ai.build_artifacts(plan, ai.load_templates(_FRAMEWORK_ROOT))
             with self.assertRaises(ai.InitError):
-                ai.materialize(artifacts, dest, _FRAMEWORK_ROOT, force=True)
+                ai.materialize(artifacts, dest, _FRAMEWORK_ROOT, force=True, overwrite=True)
             self.assertFalse(os.path.exists(leak))  # never written through the symlink
+
+    def test_readiness_symlink_escape_surfaces_as_exit_3_not_crash(self):
+        # [consolidate B1] run_exit_validators is a write site that can raise InitError (the readiness
+        # target escapes dest via a pre-planted symlink that materialize PRESERVES). The CLI must
+        # surface that as the documented exit-3 refusal, not an uncaught crash / exit 1.
+        with tempfile.TemporaryDirectory(prefix="ai-rdysym-") as tmp:
+            dest = os.path.join(tmp, "acme")
+            self.assertEqual(ai.main([dest, "--answers", _CANARY_ANSWERS]), 0)  # greenfield GREEN
+            outside = os.path.join(tmp, "outside")
+            os.makedirs(outside)
+            readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
+            os.remove(readiness)
+            os.symlink(os.path.join(outside, "leak"), readiness)  # readiness now escapes dest
+            rc = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc, 3, "readiness symlink-escape must surface as exit 3, not a crash")
+            self.assertFalse(os.path.exists(os.path.join(outside, "leak")))  # never written through
+
+    def test_readiness_symlink_to_in_dest_governed_doc_refused(self):
+        # [consolidate B1] readiness planted as an IN-DEST symlink to a governed doc passes
+        # _assert_target_within_dest (it resolves inside dest) but the open("w") refresh would FOLLOW
+        # it and clobber the referent. The tool must refuse fail-closed (exit 3); AGENTS.md unchanged.
+        with tempfile.TemporaryDirectory(prefix="ai-rdylink-") as tmp:
+            dest = os.path.join(tmp, "acme")
+            self.assertEqual(ai.main([dest, "--answers", _CANARY_ANSWERS]), 0)  # greenfield GREEN
+            agents = os.path.join(dest, "AGENTS.md")
+            agents_before = ai._read_text(agents)
+            readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
+            os.remove(readiness)
+            os.symlink(os.path.join("..", "..", "AGENTS.md"), readiness)  # -> dest/AGENTS.md (in dest)
+            rc = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc, 3, "an in-dest readiness symlink must be refused (exit 3), not followed")
+            self.assertEqual(ai._read_text(agents), agents_before, "AGENTS.md must not be clobbered")
+
+    def test_create_missing_symlink_target_escape_refused(self):
+        # [R3 B-2] the create-missing path is still symlink-guarded: a pre-planted target that is a
+        # symlink escaping dest is refused by materialize's resolved-target check BEFORE the
+        # create-only write — nothing is created through the symlink.
+        with tempfile.TemporaryDirectory(prefix="ai-cesc-") as tmp:
+            dest = os.path.join(tmp, "dest")
+            outside = os.path.join(tmp, "outside")
+            os.makedirs(dest)
+            os.makedirs(outside)
+            leak = os.path.join(outside, "leak")
+            os.symlink(leak, os.path.join(dest, "AGENTS.md"))  # the target itself escapes dest
+            plan = _load_plan()
+            artifacts = ai.build_artifacts(plan, ai.load_templates(_FRAMEWORK_ROOT))
+            with self.assertRaises(ai.InitError):
+                ai.materialize(artifacts, dest, _FRAMEWORK_ROOT, force=True)
+            self.assertFalse(os.path.exists(leak))  # never created through the symlink
 
     def test_atomic_write_refuses_symlinked_tmp(self):
         # [R3.2 B-1] direct _atomic_write unit: a symlinked <target>.tmp is refused (O_NOFOLLOW).
@@ -676,6 +731,44 @@ class BrownfieldGovernedDocsTests(unittest.TestCase):
             self.assertEqual(r2.created, [])
             self.assertEqual(r2.overwritten, [])
             self.assertIn("charter.yaml", r2.unchanged)
+
+    def test_create_only_write_never_clobbers_existing(self):
+        # [create-path TOCTOU] the create-missing helper is atomic O_EXCL: it creates an ABSENT
+        # file and reports True, but refuses to overwrite an existing one (reports False, content
+        # untouched) — so a file that appears in the exists→write window is preserved, not clobbered.
+        with tempfile.TemporaryDirectory(prefix="ai-cow-") as tmp:
+            path = os.path.join(tmp, "sub", "f.txt")
+            self.assertTrue(ai._create_only_write(path, "fresh\n"))   # absent -> created
+            self.assertEqual(ai._read_text(path), "fresh\n")
+            self.assertFalse(ai._create_only_write(path, "REPLACED\n"))  # exists -> refuse
+            self.assertEqual(ai._read_text(path), "fresh\n", "create-only must not clobber")
+
+    def test_create_missing_preserves_file_that_appears_after_exists_check(self):
+        # [create-path TOCTOU] a governed file classified MISSING by materialize's exists-check but
+        # created by a concurrent/human writer before the write must be PRESERVED byte-for-byte
+        # (recorded as preserved, not created), never clobbered by the bootstrap create.
+        plan = ai.load_answers(_CANARY_ANSWERS, _FRAMEWORK_ROOT)
+        artifacts = ai.build_artifacts(plan, ai.load_templates(_FRAMEWORK_ROOT))
+        with tempfile.TemporaryDirectory(prefix="ai-cow-toctou-") as tmp:
+            dest = os.path.join(tmp, "acme")
+            self.assertEqual(ai.main([dest, "--answers", _CANARY_ANSWERS]), 0)  # greenfield GREEN
+            agents = os.path.join(dest, "AGENTS.md")
+            os.remove(agents)  # now MISSING at the exists-check
+            real_cow = ai._create_only_write
+
+            def hooked(path, content, *a, **k):
+                if os.path.basename(path) == "AGENTS.md" and not os.path.exists(path):
+                    # simulate a writer that lands in the exists→create window
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write("CONCURRENT-CREATE KEEP-ME\n")
+                return real_cow(path, content, *a, **k)  # O_EXCL now sees it -> returns False
+
+            with unittest.mock.patch.object(ai, "_create_only_write", side_effect=hooked):
+                report = ai.materialize(artifacts, dest, _FRAMEWORK_ROOT, force=True)
+            self.assertIn("AGENTS.md", report.preserved, "raced create must be preserved")
+            self.assertNotIn("AGENTS.md", report.created)
+            self.assertEqual(ai._read_text(agents), "CONCURRENT-CREATE KEEP-ME\n",
+                             "the concurrently-created file must survive byte-for-byte")
 
     @unittest.skipUnless(os.environ.get("AIDAZI_E2E_ADOPTER_BROWNFIELD_SRC"),
                          "set AIDAZI_E2E_ADOPTER_BROWNFIELD_SRC=<real adopter root> to run")

@@ -658,8 +658,18 @@ def materialize(artifacts: dict, dest: str, framework_root: str, *, force: bool 
             # not by a silent rewrite here ([brownfield-preserve]).
             report.preserved.append(rel)
             continue
-        _atomic_write(target, content)
-        (report.overwritten if exists else report.created).append(rel)
+        if not exists:
+            # create-only-missing via an ATOMIC O_EXCL write: if a concurrent/human writer created
+            # this file in the exists→write window, the create fails and we PRESERVE their content
+            # byte-for-byte rather than clobbering it (closes the create-path TOCTOU; keeps the
+            # brownfield contract even under a race).
+            if _create_only_write(target, content):
+                report.created.append(rel)
+            else:
+                report.preserved.append(rel)
+            continue
+        _atomic_write(target, content)   # exists and --overwrite: the explicit regenerate hatch
+        report.overwritten.append(rel)
 
     _mount_framework(dest, framework_root)
     return report
@@ -720,6 +730,27 @@ def _atomic_write(target: str, content: str) -> None:
     os.replace(tmp, target)
 
 
+def _create_only_write(path: str, content: str) -> bool:
+    """Atomically create `path` with `content` — O_EXCL, NEVER overwrite. Returns True if THIS call
+    created the file, False if it ALREADY EXISTED (a concurrent/human writer created it in the
+    check→write window; the caller must NOT clobber it). This closes a TOCTOU on the create-only
+    path: `materialize` decides "missing → create" from an `os.path.exists()` check, but a file
+    landing before the write would be clobbered by a plain `os.replace`. O_EXCL makes the create
+    atomic — a lost race becomes a PRESERVE, honouring the brownfield contract. O_NOFOLLOW refuses
+    to create through a symlink."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o644)
+    except FileExistsError:
+        return False
+    except OSError as exc:
+        raise InitError(f"refusing: cannot safely create {path!r} (symlink / {exc})")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    return True
+
+
 def _read_text(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -756,6 +787,16 @@ def run_exit_validators(dest: str, framework_root: str) -> dict:
     # a hand edit to this file is not preserved. See the module docstring's brownfield contract.
     readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
     _assert_target_within_dest(os.path.realpath(dest), readiness)  # [R3 B-2]
+    # [consolidate B1] the readiness snapshot is written with open(path, "w"), which FOLLOWS a
+    # symlink. `_assert_target_within_dest` only proves the RESOLVED path is within dest — a
+    # brownfield dest could plant `adoption-readiness.md` as a symlink to a governed file (e.g.
+    # `-> ../../AGENTS.md`, resolving IN dest) and the refresh would clobber the referent, breaking
+    # the preserve contract. A symlink at this tool-owned path is anomalous; refuse fail-closed
+    # (exit 3) rather than write THROUGH it.
+    if os.path.islink(readiness):
+        raise InitError(f"refusing: {readiness!r} is a symlink; the readiness snapshot is a "
+                        f"tool-owned regular file and must never be written through a symlink "
+                        f"(it would clobber the symlink's target)")
     pre = adoption_status.validate_adoption(dest)
     adoption_status.write_readiness_snapshot(pre, readiness)   # create the required file
     status = adoption_status.validate_adoption(dest)           # re-validate with it present
@@ -1135,11 +1176,15 @@ def main(argv=None) -> int:
         assert_writable_dest(args.dest, framework_root)
         report = materialize(artifacts, args.dest, framework_root,
                              force=args.force, overwrite=args.overwrite)
+        # run_exit_validators is a write site too (the readiness snapshot) and can raise InitError
+        # via the resolved-target guard — e.g. a brownfield dest that PRESERVES a pre-existing
+        # readiness symlink escaping dest. Keep it inside the guarded block so that refusal surfaces
+        # as the documented exit 3, not an uncaught crash (exit-code contract 0/2/3).
+        outcome = run_exit_validators(args.dest, framework_root)
     except InitError as exc:
         sys.stderr.write(f"[adopter_init] REFUSED: {exc}\n")
         return 3
 
-    outcome = run_exit_validators(args.dest, framework_root)
     sys.stdout.write(f"\nadopter_init: scaffolded {args.dest}\n\n")
     materialize_render = report.render()
     if materialize_render:
