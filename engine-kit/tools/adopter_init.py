@@ -652,12 +652,42 @@ class ProbeRow:
     detail: str
 
 
-def run_reachability_probe(plan: AdopterPlan, depth: str, *, env=None, writer=None) -> list:
+def _load_local_env(root: str, filenames=(".env.local", ".env")) -> dict:
+    """Minimal KEY=VALUE loader for a gitignored .env.local/.env under `root` (zero deps).
+    Returns a DICT; does NOT mutate os.environ. Mirrors run_loop.load_local_env, which is NOT
+    imported here — a leaf tool must not import the runtime/scheduler (I7). Secret VALUES stay
+    out of any committed file; this only surfaces them from the gitignored file to the probe."""
+    out: dict = {}
+    for name in filenames:
+        path = os.path.join(root, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    if key.startswith("export "):
+                        key = key[len("export "):].strip()
+                    val = val.strip().strip('"').strip("'")
+                    if key and key not in out:
+                        out[key] = val
+        except OSError:
+            continue
+    return out
+
+
+def run_reachability_probe(plan: AdopterPlan, depth: str, *, env=None, writer=None,
+                           dotenv_roots=None) -> list:
     """Advisory Facet-A reachability probe. NEVER crashes the bootstrap and NEVER makes a
     network call unless depth == 'live' AND the env flag is set (I4). off => []; binary =>
     local `<cli> --version` / shutil.which (no network, no key); live (env-gated) => a bounded
     zero-cost GET <base_url>/models for headless roles (the only tier that can detect a dead
-    HTTP key — [R0 N-2])."""
+    HTTP key — [R0 N-2]). For the live tier, keys/endpoints are resolved from `.env.local`
+    files under `dotenv_roots` (exported vars still win) — [C3 B-1]."""
     env = os.environ if env is None else env
     writer = writer or (lambda s: None)
     if depth == "off":
@@ -667,6 +697,12 @@ def run_reachability_probe(plan: AdopterPlan, depth: str, *, env=None, writer=No
         writer(f"[probe] --probe live requires {LIVE_PROBE_ENV}=1; running the binary tier "
                f"(no network) instead.\n")
         depth = "binary"
+    if depth == "live" and dotenv_roots:
+        merged: dict = {}
+        for r in dotenv_roots:
+            merged.update(_load_local_env(r))
+        merged.update(env)  # an already-exported var always wins over the file
+        env = merged
     rows = []
     for role, b in plan.llm_roles.items():
         if b.harness == "headless":
@@ -728,6 +764,12 @@ def _probe_headless_live(role: str, b: "LLMRole", env) -> "ProbeRow":
     if not base:
         return ProbeRow(role, b.harness, "warn", "no base_url (endpoint/endpoint_env unset)")
     api_key = env.get(b.api_key_env or "", "")
+    if b.api_key_env and not api_key:
+        # [C3 B-1] never fabricate 'reachable' from an unauthenticated request — a named key that
+        # resolves empty (env + .env.local) cannot be proven; report a truthful warn.
+        return ProbeRow(role, b.harness, "warn",
+                        f"api_key_env {b.api_key_env!r} unset (checked env + .env.local) — "
+                        f"cannot prove the key")
     url = base.rstrip("/") + "/models"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
@@ -781,12 +823,12 @@ def collect_answers_interactive(framework_root: str, *, reader=None, writer=None
                        ["prompt_projection", "skill_state", "semantic_planner"])
     modules = _ask_list(reader, _w, "  Modules in scope (repo paths)", ["src"])
     out_of_scope = _ask_list(reader, _w, "  Explicitly out of scope (optional)", [])
-    fix_rounds = int(ask("  Budget: max fix rounds total", "3") or 3)
-    wall = int(ask("  Budget: max wall-clock minutes", "240") or 240)
+    fix_rounds = _ask_int(reader, _w, "  Budget: max fix rounds total", 3)
+    wall = _ask_int(reader, _w, "  Budget: max wall-clock minutes", 240)
 
     _w("\nEval command (orchestrator runs it for F5 evidence):\n")
     eval_cmd = ask("  Eval cmd", "python -m pytest -q")
-    eval_to = int(ask("  Eval timeout seconds", "600") or 600)
+    eval_to = _ask_int(reader, _w, "  Eval timeout seconds", 600)
 
     scope = {"subsprint_sequence": subsprints, "layers_allowed": layers,
              "modules_in_scope": modules}
@@ -884,6 +926,18 @@ def _ask_list(reader, writer, label: str, default: list) -> list:
     return [x.strip() for x in ans.split(",") if x.strip()]
 
 
+def _ask_int(reader, writer, label: str, default: int) -> int:
+    # [C3 B-3] a controlled bounded re-prompt so a typo (int('abc')) never crashes the bootstrap
+    # into an uncaught traceback — it stays a controlled refusal.
+    for _ in range(3):
+        raw = _ask(reader, writer, label, str(default))
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            writer(f"  {raw!r} is not an integer; enter a whole number.\n")
+    raise InitError(f"invalid integer for {label!r} after 3 attempts")
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -920,8 +974,9 @@ def main(argv=None) -> int:
     probe_depth = args.probe or ("binary" if interactive else "off")
     try:
         if interactive:
-            if not sys.stdin.isatty() and args.emit_answers is None:
-                # non-TTY with no answers and no emit target => nothing to read; guide the user.
+            # [C3 B-2] interactive requires a TTY to read prompts; --emit-answers does NOT make
+            # a non-TTY no-answers invocation interactive.
+            if not sys.stdin.isatty():
                 raise InitError("no --answers and stdin is not a TTY; pass --answers <file.json>")
             data = collect_answers_interactive(framework_root)
             if args.emit_answers:
@@ -934,7 +989,8 @@ def main(argv=None) -> int:
 
         templates = load_templates(framework_root)
         probe_rows = [] if args.dry_run else run_reachability_probe(
-            plan, probe_depth, writer=sys.stdout.write)
+            plan, probe_depth, writer=sys.stdout.write,
+            dotenv_roots=[os.getcwd(), os.path.abspath(args.dest)])
         artifacts = build_artifacts(plan, templates, probe_rows)
         if args.dry_run:
             sys.stdout.write("Artifact manifest (dry-run; nothing written):\n")

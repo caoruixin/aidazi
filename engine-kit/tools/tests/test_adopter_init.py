@@ -274,9 +274,32 @@ class ReachabilityProbeTests(unittest.TestCase):
         plan = _headless_plan()
         err = urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
         with unittest.mock.patch.object(urllib.request, "urlopen", side_effect=err):
-            rows = ai.run_reachability_probe(plan, "live", env={"AIDAZI_ADOPTER_INIT_LIVE_PROBE": "1"})
+            rows = ai.run_reachability_probe(
+                plan, "live", env={"AIDAZI_ADOPTER_INIT_LIVE_PROBE": "1", "DS_KEY": "sk-bad"})
         review = next(r for r in rows if r.role == "review")
-        self.assertEqual(review.status, "warn")  # dead key => advisory warn, never a crash
+        self.assertEqual(review.status, "warn")  # dead key (401) => advisory warn, never a crash
+
+    def test_live_unset_key_is_warn_without_request(self):
+        # [C3 B-1] a named api_key_env that resolves empty must NOT be probed as reachable —
+        # never fabricate a pass from an unauthenticated request.
+        import urllib.request
+        plan = _headless_plan()  # api_key_env=DS_KEY, not provided in env
+        with unittest.mock.patch.object(urllib.request, "urlopen",
+                                        side_effect=AssertionError("must not request")) as m:
+            rows = ai.run_reachability_probe(plan, "live", env={"AIDAZI_ADOPTER_INIT_LIVE_PROBE": "1"})
+        m.assert_not_called()
+        review = next(r for r in rows if r.role == "review")
+        self.assertEqual(review.status, "warn")
+        self.assertIn("DS_KEY", review.detail)
+
+    def test_load_local_env_reads_dotenv(self):
+        # [C3 B-1] .env.local keys are surfaced to the live probe (mirrors run_loop.load_local_env).
+        with tempfile.TemporaryDirectory(prefix="ai-env-") as d:
+            with open(os.path.join(d, ".env.local"), "w", encoding="utf-8") as fh:
+                fh.write("# secret\nexport DS_KEY='sk-from-file'\nDS_URL=https://x/v1\n")
+            loaded = ai._load_local_env(d)
+            self.assertEqual(loaded["DS_KEY"], "sk-from-file")
+            self.assertEqual(loaded["DS_URL"], "https://x/v1")
 
 
 class InteractiveTests(unittest.TestCase):
@@ -335,6 +358,23 @@ class InteractiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="ai-notty-") as d:
             rc = ai.main([os.path.join(d, "acme")])  # no --answers
             self.assertEqual(rc, 3)
+
+    def test_non_tty_with_emit_answers_still_refused(self):
+        # [C3 B-2] --emit-answers must NOT make a non-TTY no-answers invocation interactive.
+        with tempfile.TemporaryDirectory(prefix="ai-emit-notty-") as d:
+            rc = ai.main([os.path.join(d, "acme"), "--emit-answers", os.path.join(d, "a.json")])
+            self.assertEqual(rc, 3)
+            self.assertFalse(os.path.exists(os.path.join(d, "a.json")))
+
+    def test_ask_int_reprompts_then_raises_on_garbage(self):
+        # [C3 B-3] invalid numeric input is a controlled refusal, never an uncaught traceback.
+        it = iter(["abc", "not-a-number", "still-bad", "9"])
+        with self.assertRaises(ai.InitError):
+            ai._ask_int(lambda: next(it), lambda s: None, "n", 5)
+
+    def test_ask_int_accepts_valid_after_retry(self):
+        it = iter(["oops", "7"])
+        self.assertEqual(ai._ask_int(lambda: next(it), lambda s: None, "n", 5), 7)
 
 
 if __name__ == "__main__":
