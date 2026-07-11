@@ -309,6 +309,37 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
         self.assertEqual(r["current_attempt_nonce"], 2)      # bumped
         self.assertEqual(r["phase"], "ready")                # re-dispatchable
 
+    def test_resume_from_global_pause_reconciles_inflight_worker(self):
+        # Codex R3 B-14: a campaign_plan_signoff paused state that still has a milestone inflight
+        # (a worker from before the fold-time block) must be reconciled on resume (fence the dead
+        # one + re-dispatch) — NOT stranded (the fresh process's _worker_procs is empty).
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
+        d = tempfile.mkdtemp()
+        camp0 = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                            charter=CHARTER, repo_dir=None, ledger_path=None)
+        camp0._init_milestone_runtime()
+        r = camp0.state.milestone_runtime["m1"]
+        r["current_attempt_nonce"] = 1
+        r["phase"] = "running"
+        r["inflight"] = {"attempt_nonce": 1, "loop_id": "u1", "subsprint_id": "s1",
+                         "work_dir": None, "dispatch_epoch": camp0._live_signed_scope_hash(),
+                         "dispatch_freshness_slice": {}}
+        camp0.state.status = "paused"
+        camp0.state.pause_reason = "campaign_plan_signoff"
+        camp0.state.freshness_block = {"original_pause_reason": None,
+                                       "original_pause_checkpoint": None}
+        camp0._save()
+
+        camp = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=None, ledger_path=None)
+        camp.worker_exec = {"run_loop_entrypoint": "_worker_canary_support:run_loop",
+                            "extra_sys_path": [_TESTS_DIR], "clock_policy": CLOCK_FIXED}
+        st = camp.run(resume=True)
+        self.assertEqual(st.status, "done")   # reconciled + re-dispatched → NOT stranded
+        self.assertEqual(st.milestone_runtime["m1"]["phase"], "done")
+        self.assertIsNone(st.milestone_runtime["m1"]["inflight"])
+
     def test_reap_fences_dead_adopted_worker(self):
         # Codex R3 B-11: an ADOPTED worker (proc=None) that died — no result + no live flock —
         # is fenced + re-dispatched IN-LOOP (not left as a stale inflight forever).

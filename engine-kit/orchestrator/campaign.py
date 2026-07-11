@@ -3906,6 +3906,10 @@ class Campaign:
         self._gap_review_decision = None
         if resume and self._load():
             self._reapply_engine_restamp()
+            # Wall-clock accounting base set BEFORE any crash-recovery fold (which computes
+            # wall_clock_minutes) — a resumed fold must not read an unset _base_wall.
+            self._base_wall = self.state.wall_clock_minutes
+            self._invocation_start = self.clock()
             self._audit("campaign_resume",
                         {"from_status": self.state.status,
                          "pause_reason": self.state.pause_reason})
@@ -3915,6 +3919,13 @@ class Campaign:
                 outcome = self._handle_resume_parallel(decision_resolver)
                 if outcome in ("paused", "ended"):
                     return self.state
+                # A paused resume that PROCEEDS may still have in-flight workers from BEFORE the
+                # pause (a fold-time global re-sign block persists the durable inflight while other
+                # workers run). The fresh process's _worker_procs is empty, so reap/wait can't see
+                # them — reconcile (fold/adopt/fence) BEFORE re-driving (Codex R3 B-14).
+                if any(isinstance(r, dict) and r.get("inflight")
+                       for r in self._rt().values()):
+                    self._crash_recover_parallel()
             elif self.state.status == STATUS_RUNNING:
                 # §5.5 crash recovery: reconcile every durable pre-spawn inflight (fold a completed
                 # result, adopt a live child, or fence a dead one + re-dispatch) BEFORE re-driving.
@@ -3927,8 +3938,8 @@ class Campaign:
             if status != "signed":
                 return self._pause("campaign_plan_signoff", None, "campaign_plan_signoff",
                                    {"goal": self.plan.get("goal"), "signoff_status": status})
-        self._base_wall = self.state.wall_clock_minutes
-        self._invocation_start = self.clock()
+            self._base_wall = self.state.wall_clock_minutes
+            self._invocation_start = self.clock()
         self._init_milestone_runtime()
         while True:
             paused = self._drive_parallel()
