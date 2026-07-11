@@ -1,15 +1,16 @@
 ---
 name: 2026-07-11-phase5-adopter-bootstrap-design
 doc_category: intermediate
-status: design-draft (pre-Codex-gate)
+status: codex-approved (design settled; Cluster-1 implementation next)
 created: 2026-07-11
 base_commit: f6d2730 (origin/main HEAD = PR #15 merge, Phase-4 parallel runner landed)
 reviewer: >
   codex gpt-5.5 xhigh — R0 REVISE (6 blocking + 3 nits) → folded → R0.2 REVISE (3 blocking
   B-1..B-3 fold-consistency + 1 nit; B-1/B-3/B-5/N-1..N-3 VERIFIED sound, 2026-07-11) → ALL
   folded → R0.3 REVISE (1 blocking B-1: headless endpoint/api_key_env under-modeled; all R0.2
-  folds VERIFIED, 2026-07-11) → folded (tagged `[R0.3 B-1]` inline + §12) → R0.4 PENDING. This
-  doc reviews an UNIMPLEMENTED plan; the gate judges design soundness, not code presence.
+  folds VERIFIED, 2026-07-11) → folded (tagged `[R0.3 B-1]` inline + §12) → R0.4 APPROVE
+  (0 findings, 2026-07-11: headless fold closed, charter-completeness walked, four-validator
+  green path closed, no governance weakening). Design settled; implement in clusters C1→C4.
 supersedes_roadmap: archive/2026-07-09-autonomy-roadmap-campaign-unblock.md §6 (Phase-5)
 user_decisions_locked_2026-07-11:
   - target = Phase-5 (new-adopter bootstrap); Phases 1-4 done + merged to main
