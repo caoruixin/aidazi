@@ -7,8 +7,9 @@ base_commit: f6d2730 (origin/main HEAD = PR #15 merge, Phase-4 parallel runner l
 reviewer: >
   codex gpt-5.5 xhigh — R0 REVISE (6 blocking + 3 nits) → folded → R0.2 REVISE (3 blocking
   B-1..B-3 fold-consistency + 1 nit; B-1/B-3/B-5/N-1..N-3 VERIFIED sound, 2026-07-11) → ALL
-  folded (tagged `[R0.2 B-#]` inline + §12 fold-log) → R0.3 PENDING. This doc reviews an
-  UNIMPLEMENTED plan; the gate judges design soundness, not code presence.
+  folded → R0.3 REVISE (1 blocking B-1: headless endpoint/api_key_env under-modeled; all R0.2
+  folds VERIFIED, 2026-07-11) → folded (tagged `[R0.3 B-1]` inline + §12) → R0.4 PENDING. This
+  doc reviews an UNIMPLEMENTED plan; the gate judges design soundness, not code presence.
 supersedes_roadmap: archive/2026-07-09-autonomy-roadmap-campaign-unblock.md §6 (Phase-5)
 user_decisions_locked_2026-07-11:
   - target = Phase-5 (new-adopter bootstrap); Phases 1-4 done + merged to main
@@ -338,9 +339,10 @@ printed); `3` refused (dest is framework repo / non-empty without `--force` / an
   `autonomy{level, approved_scope{subsprint_sequence,layers_allowed,modules_in_scope,
   explicitly_out_of_scope?}, budget{max_fix_rounds_total,max_wall_clock_minutes,max_api_usd?}}`
   [R0 B-1], `llm_roles{research,deliver,dev,review,acceptance:
-  {harness,provider,model,capability_ref?,api_key_env?}}` + separate `eval{cmd,timeout_seconds}`
-  (NOT a harness role — [R0 B-3]), `research_brief{title,summary,...,confirmed_by_human}` (the
-  brief's gate-1 marker — [R0 B-2]).
+  {harness,provider,model,capability_ref?,endpoint?,endpoint_env?,api_key_env?}}` (headless roles
+  require `api_key_env` + `endpoint`/`endpoint_env` — [R0.3 B-1]) + separate
+  `eval{cmd,timeout_seconds}` (NOT a harness role — [R0 B-3]),
+  `research_brief{title,summary,...,confirmed_by_human}` (the brief's gate-1 marker — [R0 B-2]).
 - `load_answers(path) -> AdopterPlan` — parse + validate the answers JSON against
   `schemas/adopter-init-answers.schema.json` (§7.1); reject on schema error (exit 3).
 - `build_artifacts(plan, framework_root) -> dict[relpath, content]` — PURE. Emits every
@@ -364,14 +366,22 @@ printed); `3` refused (dest is framework repo / non-empty without `--force` / an
 ### §4.3 Artifact manifest (what `build_artifacts` emits)
 All required by `adoption_status` (§1.2) unless noted:
 1. `charter.yaml` — from `templates/mission-charter.yaml` (the schema-clean source, NOT
-   minimal-greenfield's charter which carries invalid `mission.brief` — [R0 B-5]), with the
-   human choices substituted: `mission.{id,goal}` (NO `mission.brief` — schema-invalid, [R0
+   minimal-greenfield's charter which carries invalid `mission.brief` — [R0 B-5]). **Method:
+   load the FULL template (which validates cleanly — R0.2-verified) and OVERWRITE only the
+   human-choice fields below, PRESERVING every other required sub-block verbatim — closing the
+   "required-field-omitted" class fail-closed. Preserved-from-template: `autonomy.auto_pass_rules`
+   ([R0.2 N-1]), `acceptance.{mode,on_fix_required.human_confirm_required,route_options,
+   judge_calibration}`, and each LLM role's legacy-required `agent_kind` (`agent_tooling.required`
+   `mission-charter.schema.json:415`) set to MIRROR its chosen `harness`.** Overwritten from the
+   human choices: `mission.{id,goal}` (NO `mission.brief` — schema-invalid, [R0
    B-2]); `autonomy.level`; `autonomy.approved_scope.{subsprint_sequence,layers_allowed,
    modules_in_scope}` (each non-empty — [R0 B-1]); `autonomy.auto_pass_rules` PRESERVED
    verbatim from the template (schema-required `mission-charter.schema.json:40`; sensible
    `human_on_the_loop` default — the human tunes it later — [R0.2 N-1]);
    `budget.{max_fix_rounds_total,max_wall_clock_minutes,max_api_usd?}`; the 5 LLM roles `tooling.<role>.{harness,provider,
-   model,capability_ref}`; `tooling.eval.{cmd,timeout_seconds}` from `plan.eval` ([R0 B-3]); and
+   model,capability_ref}` PLUS `endpoint`/`endpoint_env`/`api_key_env` (NAMES only) for any
+   headless role so the charter is runnable — [R0.3 B-1]; `tooling.eval.{cmd,timeout_seconds}`
+   from `plan.eval` ([R0 B-3]); and
    a synthesized top-level `intent_contract` block (I3 — confirmed flag from `plan` only, no
    `brief` sub-key). The charter carries NO brief pointer; the signed brief is found via the
    `docs/research-briefs/` dir-scan (§4.3.9).
@@ -451,7 +461,8 @@ choices (recommend-then-confirm, matching ONBOARDING's tone):
   non-empty (the first milestone's signed scope envelope — a genuine human choice, [R0 B-1]);
 - the 5 LLM roles' harness/provider/model/capability_ref, each validated at answer time against
   the registry + denylist via `_check_capability_gate` (offline) so a bogus model is rejected
-  before the human moves on;
+  before the human moves on; **for a `headless` role, also prompt for `endpoint` (or
+  `endpoint_env`) + `api_key_env` — env-var NAMES only, never secret values — [R0.3 B-1]**;
 - `tooling.eval` — the adopter's test/build `cmd` + `timeout_seconds` (a command the
   orchestrator runs, NOT a harness binding — [R0 B-3]);
 - track (Type A/B/C), greenfield/brownfield.
@@ -468,8 +479,10 @@ Three depths (I4):
   timeout, fail-closed on non-zero exit — rather than re-implementing subprocess/timeout
   handling [R0 N-3].
 - `live` — env-gated: runs ONLY when `--probe live` AND `AIDAZI_ADOPTER_INIT_LIVE_PROBE=1`.
-  For `headless`/HTTP roles: a bounded zero-cost `GET <endpoint>/models` using `api_key_env`
-  (loads `.env.local`); for CLI harnesses: a minimal bounded real dry-invoke (e.g.
+  For `headless`/HTTP roles: a bounded zero-cost `GET <base_url>/models` using `api_key_env`,
+  where `base_url` is resolved exactly as `run_loop.build_adapters` does — literal `endpoint`
+  wins, else `endpoint_env` from the environment (`run_loop.py:455-461`); loads `.env.local`
+  ([R0.3 B-1]); for CLI harnesses: a minimal bounded real dry-invoke (e.g.
   `codex --version`/account probe). Every live call is timeout-bounded, its outcome audited as
   an `onboarding-record.md` row, and a failure becomes a WARN + remediation row surfaced at
   answer time — NEVER a crash, NEVER a fabricated validator pass. The human may proceed and
@@ -549,7 +562,15 @@ signed-brief path honestly gated? Is there any write path that bypasses I2?
   `budget:{max_fix_rounds_total:int, max_wall_clock_minutes:int, max_api_usd?:number}}`.
 - `llm_roles`: object with EXACTLY the five LLM roles
   `[research,deliver,dev,review,acceptance]`; each
-  `{harness: <ADAPTER_REGISTRY key>, provider, model, capability_ref?, api_key_env?}`. **`eval`
+  `{harness: <ADAPTER_REGISTRY key>, provider, model, capability_ref?, endpoint?, endpoint_env?,
+  api_key_env?}`. **Conditional headless requirement [R0.3 B-1]:** if `harness == "headless"`,
+  the role MUST carry `api_key_env` AND at least one of `endpoint` / `endpoint_env` — otherwise
+  the generated charter is unrunnable (`HeadlessAdapter` hard-fails without `base_url`,
+  `engine-kit/adapters/headless.py:118`; `build_adapters` reads `endpoint`/`endpoint_env`/
+  `api_key_env`, `run_loop.py:450-461`; contract `process/role-configuration-contract.md:77-90`).
+  A JSON-Schema `if/then` (harness const headless ⇒ required) enforces this fail-closed.
+  **Credentials are by-NAME only:** the answers carry `endpoint_env`/`api_key_env` (env-var
+  NAMES) — never secret values; the values live in the adopter's gitignored `.env.local`. **`eval`
   is NOT here** — it is a separate top-level required key [R0 B-3].
 - `eval`: `{cmd: non-empty string, timeout_seconds: int≥1}` — the orchestrator-run command,
   mirroring `tooling.eval` (`mission-charter.schema.json:198-205`).
@@ -720,3 +741,22 @@ by codex, incl. `charter_validator templates/mission-charter.yaml` passing).** A
   after the row flip, NO sha refresh.
 - **[R0.2 N-1]** `autonomy.auto_pass_rules` (schema-required `:40`) was omitted from the
   §4.3.1 substitution list → now explicitly PRESERVED from the template.
+
+**R0.3 = REVISE (1 blocking; all R0.2 folds VERIFIED sound by codex).** Folded:
+- **[R0.3 B-1]** The headless/HTTP Facet-A path was under-modeled: the answers/charter contract
+  carried `api_key_env?` but no `endpoint`/`endpoint_env`, so a generated headless charter would
+  be unrunnable (`HeadlessAdapter` hard-fails without `base_url`, `headless.py:118`;
+  `build_adapters` reads `endpoint`/`endpoint_env`/`api_key_env`, `run_loop.py:450-461`;
+  contract `role-configuration-contract.md:77-90`) and the C3 headless live-probe was
+  unimplementable. Folded: added `endpoint?`/`endpoint_env?`/`api_key_env?` to the `llm_roles`
+  role shape with a fail-closed `if harness==headless then require api_key_env + (endpoint|
+  endpoint_env)` rule (§7.1); propagated them into the charter substitution for headless roles
+  (§4.3.1); added headless prompts (§5.1, NAMES only); and pinned the live-probe `base_url`
+  resolution to `build_adapters` semantics (literal `endpoint` wins, else `endpoint_env`) (§5.2).
+  Credentials stay by-NAME (values in gitignored `.env.local`). The offline scratch canary uses
+  only claude_code + cursor roles, so it needs no endpoint/key (CLI harnesses self-authenticate).
+- **Proactive hardening (not a gate finding):** to close the recurring "required charter field
+  omitted" class (approved_scope/eval/endpoint were three instances), §4.3.1 now specifies the
+  charter is built by FILLING the full template in-place and PRESERVING every required sub-block
+  (`auto_pass_rules`, `acceptance.on_fix_required`/`route_options`, per-role legacy-required
+  `agent_kind`=harness mirror), overwriting only human-choice fields.
