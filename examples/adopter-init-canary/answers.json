@@ -1,0 +1,38 @@
+{
+  "adopter_name": "acme-widgets",
+  "track": "type_a",
+  "greenfield": true,
+  "mission_id": "M1",
+  "intent_contract": {
+    "goal": "Determine widget-order refund eligibility and explain the decision.",
+    "standard": "Every eligibility decision cites the concrete governing policy rule; no unexplained denials.",
+    "proof_of_done": "A user submits an order id and receives an eligibility verdict naming the governing rule.",
+    "confirmed_by_human": true,
+    "confirmed_at": "2026-07-11"
+  },
+  "autonomy": {
+    "level": "human_on_the_loop",
+    "approved_scope": {
+      "subsprint_sequence": ["S1-eligibility-core", "S2-explanation"],
+      "layers_allowed": ["prompt_projection", "skill_state", "semantic_planner"],
+      "modules_in_scope": ["src/eligibility", "src/explain"],
+      "explicitly_out_of_scope": ["src/payments"]
+    },
+    "budget": {"max_fix_rounds_total": 3, "max_wall_clock_minutes": 240, "max_api_usd": 0}
+  },
+  "llm_roles": {
+    "research": {"harness": "claude_code", "provider": "anthropic", "model": "claude-opus-4-8", "capability_ref": "anthropic-opus-judge"},
+    "deliver": {"harness": "claude_code", "provider": "anthropic", "model": "claude-opus-4-8", "capability_ref": "anthropic-opus-judge"},
+    "dev": {"harness": "cursor", "provider": "anysphere", "model": "auto", "capability_ref": "cursor-agent-dev"},
+    "review": {"harness": "codex", "provider": "openai", "model": "gpt-5.5", "capability_ref": "openai-gpt5-codex"},
+    "acceptance": {"harness": "codex", "provider": "openai", "model": "gpt-5.5", "capability_ref": "openai-gpt5-codex"}
+  },
+  "eval": {"cmd": "python -m pytest -q", "timeout_seconds": 600},
+  "research_brief": {
+    "title": "Widget refund eligibility",
+    "summary": "Determine refund eligibility for a widget order per the refund policy, explaining the governing rule.",
+    "confirmed_by_human": true,
+    "customer_signed": true,
+    "sign_off_date": "2026-07-11"
+  }
+}

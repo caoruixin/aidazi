@@ -73,7 +73,10 @@ import load_sizer as ls  # noqa: E402
 REPO = ls.REPO_ROOT_DEFAULT
 
 # Frozen / historical trees: not current docs -- never rewritten (the follow-up's allow-list).
-_SKIP_DIRS = {".git", "archive", ".specstory", ".runs", "node_modules", "__pycache__", "compact"}
+# `.gate` = gitignored, ephemeral Codex-gate prompts/verdicts (like `.runs`) — not committed,
+# not current docs, and gate prompts legitimately quote the always-load lexeme when describing
+# THIS gate; skip them.
+_SKIP_DIRS = {".git", "archive", ".specstory", ".runs", ".gate", "node_modules", "__pycache__", "compact"}
 # The always-load projection kernels: they legitimately self-describe as always-load and carry the
 # source-hash-gated derived_from / source_of_truth contract that names the canonical by token.
 _KERNEL_SELF_PROJECTION = {"governance/constitution-core.md", "governance/authoring-kernel.md"}
