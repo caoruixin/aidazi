@@ -523,19 +523,22 @@ def check_cursor(root: str, report: Report) -> None:
     # missing/empty entry FAILs (blocking) — "validators green" then actually proves Cursor
     # wiring. The repo codifies no content contract, so validity = a real, non-empty entry.
     rules_path = os.path.join(root, ".cursor", "rules")
-    if not os.path.exists(rules_path):
-        report.error(
-            "cursor_missing_rules",
-            "Cursor target requires a real .cursor/rules entry (a bare AGENTS.md is NOT Cursor "
-            "wiring — context_briefing.md §1.1); none found.",
-            rules_path,
-        )
-        return
+    # Symlink/redirect FIRST: any symlink (incl. a BROKEN one, whose os.path.exists is False)
+    # is a redirect, not an absent entry — it must be cursor_rules_invalid, not
+    # cursor_missing_rules ([C1 B-1]). _is_symlink_redirect short-circuits on os.path.islink.
     if _is_symlink_redirect(root, rules_path):
         report.error(
             "cursor_rules_invalid",
             ".cursor/rules is a symlink / resolves outside the repo; it must be a real file or "
             "directory at the adopter root.",
+            rules_path,
+        )
+        return
+    if not os.path.exists(rules_path):
+        report.error(
+            "cursor_missing_rules",
+            "Cursor target requires a real .cursor/rules entry (a bare AGENTS.md is NOT Cursor "
+            "wiring — context_briefing.md §1.1); none found.",
             rules_path,
         )
         return

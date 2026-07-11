@@ -350,6 +350,31 @@ class CursorTests(_RootBuilder):
         self.assertFalse(r.ok)
         self.assertIn("cursor_rules_invalid", r.rules_fired)
 
+    def test_cursor_rules_broken_symlink_is_invalid_not_missing(self):
+        # A BROKEN symlink (target absent) is present-but-invalid, NOT missing ([C1 B-1]).
+        root = self._mk(
+            {"AGENTS.md": "# chain\n"},
+            links={".cursor/rules": os.path.join(tempfile.gettempdir(), "awv-nope-xyz")},
+        )
+        r = awv.validate_root(root, harness="cursor")
+        self.assertFalse(r.ok)
+        self.assertIn("cursor_rules_invalid", r.rules_fired)
+        self.assertNotIn("cursor_missing_rules", r.rules_fired)
+
+    def test_cursor_dir_mdc_symlink_escape_is_skipped(self):
+        # The only *.mdc in .cursor/rules/ is a symlink escaping root => not counted => FAIL.
+        outside = tempfile.mkdtemp(prefix="awv-outside-")
+        self.addCleanup(self._rmtree, outside)
+        target = os.path.join(outside, "rule.mdc")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(self._MDC)
+        root = self._mk(
+            {"AGENTS.md": "# chain\n"}, links={".cursor/rules/00-gov.mdc": target}
+        )
+        r = awv.validate_root(root, harness="cursor")
+        self.assertFalse(r.ok)
+        self.assertIn("cursor_rules_invalid", r.rules_fired)
+
 
 class CursorAndUnspecifiedWarnTests(_RootBuilder):
     def test_cursor_target_without_rules_fails(self):
