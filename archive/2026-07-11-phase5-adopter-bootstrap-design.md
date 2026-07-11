@@ -5,8 +5,9 @@ status: design-draft (pre-Codex-gate)
 created: 2026-07-11
 base_commit: f6d2730 (origin/main HEAD = PR #15 merge, Phase-4 parallel runner landed)
 reviewer: >
-  codex gpt-5.5 xhigh — PENDING (design gate R0). This doc reviews an UNIMPLEMENTED plan;
-  the gate must judge design soundness, not code presence.
+  codex gpt-5.5 xhigh — R0 REVISE (6 blocking B-1..B-6 + 3 non-blocking N-1..N-3, 2026-07-11)
+  → ALL folded (tagged `[R0 B-#]`/`[R0 N-#]` inline + §12 fold-log) → R0.2 PENDING. This doc
+  reviews an UNIMPLEMENTED plan; the gate judges design soundness, not code presence.
 supersedes_roadmap: archive/2026-07-09-autonomy-roadmap-campaign-unblock.md §6 (Phase-5)
 user_decisions_locked_2026-07-11:
   - target = Phase-5 (new-adopter bootstrap); Phases 1-4 done + merged to main
@@ -102,11 +103,18 @@ a **signed research brief** `:420-425`, and `.gitignore` covering `.runs/` + `.e
 by `adoption_status.py --write-readiness` (`:417-418`). So the bootstrap must run
 `adoption_status --write-readiness` to produce it, THEN the aggregate is green.
 
-**Signed-brief predicate** `_brief_confirmed` (`adoption_status.py:253-286`): green when
-`mission.brief`/`intent_contract.brief` points to a brief carrying `confirmed_by_human`/
-`customer_signed: true`, OR (fallback) any brief in `docs/research-briefs/` carries the
-confirmed marker (`:273-285`). This is a **constitutional gate-1 signature** — the tool must
-NEVER auto-set it.
+**Signed-brief predicate** `_brief_confirmed` (`adoption_status.py:253-286`) — CORRECTED
+[R0 B-2]: the `mission.brief` / `intent_contract.brief` pointers it CAN read (`:255-261`) are
+**schema-INVALID** — `mission` has `additionalProperties:false` with only `[id,goal]`
+(`schemas/mission-charter.schema.json:9-17`) and `intent_contract` has
+`additionalProperties:false` with no `brief` property (`:366-377`), so a charter carrying
+either would fail `charter_validator`. The ONLY schema-clean green path is therefore the
+directory-scan fallback (`adoption_status.py:273-285`): a brief file in
+`docs/research-briefs/*.md` whose body matches the regex **`confirmed_by_human:\s*true`**
+(`:282`, case-insensitive) — NOT `customer_signed`. So the bootstrap must (a) emit the seed
+brief under `docs/research-briefs/`, (b) put a literal `confirmed_by_human: true` line in its
+body ONLY when the human/answers confirms, and (c) leave the charter with NO brief pointer.
+This is a **constitutional gate-1 signature** — the tool must NEVER auto-set it (I3).
 
 ### §1.3 The cursor-wiring gap (roadmap R0 N-6 / R0.2 B-1)
 `check_cursor` (`adopter_wiring_validator.py:489-497`) emits a non-blocking WARN
@@ -133,7 +141,9 @@ must DEFINE cursor validity (§7.2).
 
 ### §1.4 Charter & registry facts
 - `schemas/mission-charter.schema.json`: root `required=["mission","autonomy","budget","tooling"]`
-  (`:7`). `intent_contract` is an OPTIONAL top-level block (`:366-377`) — NOT in
+  (`:7`). `mission` has `additionalProperties:false` + `required=[id,goal]` (`:9-17`) ⇒ NO
+  `mission.brief` key is schema-valid [R0 B-2]. `intent_contract` is an OPTIONAL top-level
+  block (`:366-377`, `additionalProperties:false`, no `brief` property) — NOT in
   `templates/mission-charter.yaml`; the tool synthesizes it. `confirmed_by_human` is a plain
   boolean (`:374`, no `const`). `autonomy.level` enum
   `[human_in_the_loop|human_on_the_loop|fully_autonomous_within_budget]` (`:47`);
@@ -143,7 +153,9 @@ must DEFINE cursor validity (§7.2).
   "eval","acceptance"]` (`:157`). Per-role `$defs/agent_tooling` requires only `agent_kind`
   (`:415`); `harness/provider/model/capability_ref/api_key_env` optional.
   `acceptance.on_fix_required` requires `human_confirm_required` (`const:true` `:304-307`) +
-  `route_options` (enum, `minItems:1` `:309-313`).
+  `route_options` (enum, `minItems:1` `:309-313`). **`tooling.eval` is `{cmd,timeout_seconds}`,
+  `additionalProperties:false` (`:198-205`) — NOT an LLM/harness role;
+  `charter_validator._iter_roles` skips it (`charter_validator.py:986-995`) [R0 B-3].**
 - `templates/mission-charter.yaml`: `autonomy.level: human_on_the_loop` (`:38`); roles under
   `tooling.<role>` carry `agent_kind/harness/provider/model/capability_ref` (`:95-99`); budgets
   in top-level `budget:` (`:83-86`). No `intent_contract`, no `max_concurrent`.
@@ -178,20 +190,30 @@ cursor-rules template is safe **iff** no new line names `constitution`/`doc_gove
 always-load lexeme and no `on-demand` marker. The scaffolded cursor rule references `AGENTS.md`
 only — lockstep-safe by construction (§7.2).
 
-### §1.7 Feasibility anchor — `examples/minimal-greenfield/` is a proven-green skeleton
-`examples/minimal-greenfield/` is a SHIPPED reference adopter already exercised by
-`test_control_plane_validator.py`, `test_adopter_wiring_validator.py`, and
-`test_adoption_status.py`. It ships `AGENTS.md` (with the fenced ` ```control-plane-load ` block
-at `:34`), `CLAUDE.md` (=`@AGENTS.md`), `charter.yaml`, `docs/current/{adoption-state,
-agent_context_guide,domain_taxonomy,implementation-stack,runtime_invariants}.md`, and a signed
-`docs/research-briefs/RB-001-refund-eligibility.md`. **So "make four validators green" is NOT
-speculative — a green skeleton already exists.** The bootstrap = copy that skeleton's
-wiring/control-plane/charter shape, fill the `<adopter-name>` placeholders, synthesize
-`charter.yaml`+`intent_contract`+seed brief from the human's answers, and ADD the artifacts
-minimal-greenfield lacks that `adoption_status` still requires:
-`docs/current/onboarding-record.md`, `docs/current/adoption-config.md`, and
-`docs/current/adoption-readiness.md` (the last via `--write-readiness`). This bounds C2's work
-to a known-reachable target.
+### §1.7 Feasibility anchor — `examples/minimal-greenfield/` proves the WIRING subset (not full green) [R0 B-5]
+`examples/minimal-greenfield/` is a SHIPPED reference adopter. Its tests prove a BOUNDED
+subset: `test_adopter_wiring_validator.py` and `test_control_plane_validator.py` exercise it
+for harness-wiring + control-plane greenness, and `test_adoption_status.py:91-107` checks only
+adopter DETECTION + wiring + control-plane status — **NOT** the full `adoption_status` REQUIRED
+set (which additionally demands `engine-kit/` presence, the readiness snapshot, a signed brief,
+and `.gitignore` coverage — `adoption_status.py:383-441`). Moreover **its `charter.yaml` is
+itself schema-INVALID**: it carries `mission.brief:` (`examples/minimal-greenfield/charter.yaml:30`)
+which `mission.additionalProperties:false` forbids [R0 B-2/B-5]. So minimal-greenfield is
+**not** a proven-full-green tree and **not** a valid charter source.
+
+**What it legitimately anchors:** the `AGENTS.md` (fenced ` ```control-plane-load ` block at
+`:34`) + `CLAUDE.md`(=`@AGENTS.md`) wiring shape is proven-green by those two validator tests,
+de-risking the `adopter_wiring` + `control_plane` validators. **What the bootstrap must NOT
+reuse:** its charter — the charter comes from `templates/mission-charter.yaml` (schema-clean:
+`mission={id,goal}` only, fillable `autonomy.approved_scope`, NO `mission.brief`). **What the
+bootstrap must independently satisfy (the full `adoption_status` REQUIRED set, `:336-441`),
+NOT a 3-file delta:** a schema-valid `charter.yaml`; a filled `AGENTS.md` §1 (no
+`<adopter-name>` placeholder); `docs/current/{adoption-state,implementation-stack,
+runtime_invariants,domain_taxonomy,agent_context_guide,onboarding-record,adoption-config,
+adoption-readiness}.md`; `engine-kit/` present; harness wiring green (incl. cursor per C1);
+control-plane green; a `docs/research-briefs/*.md` with `confirmed_by_human: true`; and
+`.gitignore` covering `.runs/`+`.env.local`. C2's done-test re-runs all four validators against
+the produced tree (not the minimal-greenfield tests) to prove full green.
 
 ---
 
@@ -203,14 +225,22 @@ to a known-reachable target.
   shell (`collect_answers_*`, `materialize`, `run_reachability_probe`,
   `run_exit_validators`). This mirrors Phase-4's pure-fold discipline and makes the scratch
   canary a fast offline unit test. (Analog of the Phase-4 single-writer rule.)
-- **I2 — Single writer, never the framework repo.** `materialize()` is the ONLY function that
-  writes to disk, and it REFUSES when `dest` is (or is inside) the framework repo — reuse
-  `adoption_status.is_framework_repo`. Exit 3. A structural test proves no write path bypasses
-  this guard (the Phase-5 analog of the Phase-4 AST guard, §10).
+- **I2 — Guarded dest, never the framework repo (hardened [R0 B-4]).** BEFORE any write, the
+  tool runs a single `assert_writable_dest(dest, framework_root)` guard that refuses (exit 3)
+  when EITHER (a) `adoption_status.is_framework_repo(dest)` is true (`:148-163`), OR (b)
+  `os.path.realpath(dest)` is `framework_root` or nested inside `os.path.realpath(framework_root)`
+  — because `is_framework_repo` inspects only the candidate root's own markers and does NOT
+  detect a dest nested inside the framework checkout. This guard runs as the tool's first
+  action, so EVERY subsequent write path is covered — including
+  `adoption_status.write_readiness_snapshot()` (`adoption_status.py:519-550`), which writes via
+  `open(path,'w')` OUTSIDE `materialize()`; the design routes its `path` under the
+  already-guarded `dest`, and the structural test (§10) asserts every write target in
+  `adopter_init.py` (incl. the readiness call and the `engine-kit/` copy) resolves under the
+  guarded `dest`. Phase-5 analog of the Phase-4 AST guard.
 - **I3 — Never auto-confirm.** The tool NEVER sets `intent_contract.confirmed_by_human=true`
-  or a research brief `customer_signed=true` on its own. Those come ONLY from the human
-  (interactive) or from an explicit `confirmed_by_human` in the answers file (the canary
-  author's recorded signature). If absent/false, the tool writes the field false and reports
+  or emits a research brief's `confirmed_by_human: true` marker on its own. Those come ONLY from
+  the human (interactive) or from an explicit `confirmed_by_human` in the answers file (the
+  canary author's recorded signature). If absent/false, the tool omits the marker and reports
   the signed-brief check as an outstanding remediation row — it does not fabricate a signature.
 - **I4 — Offline-deterministic gate; env-gated live I/O.** The HARD exit gate is the four
   validators, which are 100% offline/deterministic. The live reachability probe is ADVISORY
@@ -249,15 +279,24 @@ validator that already enforces real cursor wiring.
 3. `_CHECKS` dispatch (`:576-580`) unchanged (already routes cursor).
 4. **Constraint-inventory:** flip
    `constraint-inventory/04-context-briefing.yaml:76-82` `cb-1.1-cursor-rules-entry`
-   `current_enforcement: none-judgment` → `validator:check_cursor` (or the repo's enforcement
-   vocabulary — verify against a sibling `validator:*` entry). **GOTCHA (memory
-   [[acceptance-auto-proposal-design]]):** editing a constraint-inventory file trips the
-   `_sources.yaml` source-hash gate (kernel-coverage exit 1) → recompute the sha256 in
-   `constraint-inventory/_sources.yaml` after the edit; run the kernel-coverage gate to confirm.
+   `current_enforcement: none-judgment` → `validator:check_cursor` (the exact vocabulary of the
+   sibling `cb-1.1-codex-root-agents-md`, which uses `validator:check_codex`), and update its
+   `notes:` line (no longer "WARN only"). **CORRECTED [R0 B-6]:** editing THIS inventory-row
+   file does NOT trip a `_sources.yaml` source-hash gate — `_sources.yaml` binds each *source
+   document* (e.g. `governance/context_briefing.md`) to its sha, and `kernel_equivalence.py`
+   loads inventory rows SEPARATELY (`:119-130`) and hashes only manifest sources (`:249-270`).
+   So the required check after an inventory-row edit is the inventory wellformedness /
+   enforcement-resolution check (run `--kernel-coverage`), NOT a sha256 refresh. A sha refresh
+   is needed ONLY if step 6 edits the *source doc* `context_briefing.md` (see step 6).
 5. `ONBOARDING.md:712-713` Step-8 text: cursor moves from the WARN list to the FAIL list;
    add a one-line pointer to the `.cursor/rules` requirement (lockstep-safe wording).
-6. Optionally tighten `context_briefing.md:74` §1.1 wording to name the validity contract
-   (non-normative-preserving; defer if it risks the reconciliation gate).
+6. **`README.md:18-26`** of `engine-kit/validators/` currently narrates a Cursor target as
+   "reported not-applicable … exit 0" [R0 N-1] — update that paragraph to the new FAIL
+   behavior. **Optionally** also tighten `context_briefing.md:74` §1.1 wording to name the
+   validity contract; **IF** `context_briefing.md` is edited it IS a source doc, so its sha256
+   in `constraint-inventory/_sources.yaml` MUST be recomputed and `--kernel-coverage` re-run
+   (this is the ONLY step here that touches the source-hash gate). Defer this optional edit if
+   it risks the reconciliation gate (§1.6).
 
 **Test migration (§3.4):** the three WARN-asserting tests flip to error assertions or gain a
 valid `.cursor/rules` fixture; add PASS fixtures (single-file and dir-of-`.mdc`) and FAIL
@@ -267,8 +306,9 @@ shape. Extend the `_RootBuilder` fixture helper to write `.cursor/rules` files/d
 **Cluster-1 Codex gate obligations:** (a) the new error truly blocks (exit 1) for a cursor
 target lacking valid `.cursor/rules`; (b) claude_code/codex/headless exit codes byte-identical
 to base; (c) the validity contract is neither over-strict (rejects a legitimate single-file
-`.cursor/rules`) nor under-strict (accepts an empty file); (d) constraint-inventory sha
-refreshed so kernel-coverage stays green; (e) no reconciliation-lockstep regression.
+`.cursor/rules`) nor under-strict (accepts an empty file); (d) `--kernel-coverage` green after
+the inventory-row flip (sha refresh only if `context_briefing.md` was edited — [R0 B-6]); (e)
+no reconciliation-lockstep regression; (f) `README.md` cursor paragraph updated [R0 N-1].
 
 ---
 
@@ -294,17 +334,22 @@ printed); `3` refused (dest is framework repo / non-empty without `--force` / an
 ### §4.2 Architecture (I1/I2)
 - `AdopterPlan` dataclass — the fully-resolved answers (§7.1 schema): `adopter_name`, `track`,
   `greenfield`, `intent_contract{goal,standard,proof_of_done,confirmed_by_human,confirmed_at}`,
-  `autonomy{level,budget{...}}`, `roles{research,deliver,dev,review,eval,acceptance:
-  {harness,provider,model,capability_ref,api_key_env?}}`, optional `research_brief{...,
-  customer_signed}`.
+  `autonomy{level, approved_scope{subsprint_sequence,layers_allowed,modules_in_scope,
+  explicitly_out_of_scope?}, budget{max_fix_rounds_total,max_wall_clock_minutes,max_api_usd?}}`
+  [R0 B-1], `llm_roles{research,deliver,dev,review,acceptance:
+  {harness,provider,model,capability_ref?,api_key_env?}}` + separate `eval{cmd,timeout_seconds}`
+  (NOT a harness role — [R0 B-3]), `research_brief{title,summary,...,confirmed_by_human}` (the
+  brief's gate-1 marker — [R0 B-2]).
 - `load_answers(path) -> AdopterPlan` — parse + validate the answers JSON against
   `schemas/adopter-init-answers.schema.json` (§7.1); reject on schema error (exit 3).
 - `build_artifacts(plan, framework_root) -> dict[relpath, content]` — PURE. Emits every
   derivable artifact (§4.3). No writes, no network.
+- `assert_writable_dest(dest, framework_root)` — the I2 guard (§2); called BEFORE any write.
 - `materialize(artifacts, dest, framework_root, *, force, overwrite) -> None` — the ONLY
-  writer. Refuses framework-repo dest (I2). Writes each file tmp+rename; copies the
-  `engine-kit/` + `schemas/` + `templates/` trees; vendors default skills (reuse the Step-6.6
-  vendoring path / `skills/registry.yaml`+`skills.lock`). Idempotent (I6).
+  writer; calls `assert_writable_dest` first (I2 [R0 B-4]). Writes each file tmp+rename; copies
+  the `engine-kit/` + `schemas/` + `templates/` trees; vendors default skills (reuse
+  `engine-kit/skill-vendor/skill_vendor.py` + `skills/registry.yaml`/`skills.lock`).
+  Idempotent (I6).
 - `run_exit_validators(dest, plan) -> GreenReport` — imports and runs, in order:
   `charter_validator.validate_file`, `adopter_wiring_validator.validate_root`,
   `control_plane_validator.validate_root`, then `adoption_status` WITH `--write-readiness`
@@ -313,10 +358,16 @@ printed); `3` refused (dest is framework repo / non-empty without `--force` / an
 
 ### §4.3 Artifact manifest (what `build_artifacts` emits)
 All required by `adoption_status` (§1.2) unless noted:
-1. `charter.yaml` — from `templates/mission-charter.yaml`, with the human choices substituted:
-   `mission.id/goal`, `autonomy.level`, `budget.*`, per-role `tooling.<role>.{harness,provider,
-   model,capability_ref}`, and a synthesized top-level `intent_contract` block (I3 — confirmed
-   flag from `plan` only). `mission.brief` points at the seed brief (§4.3.9).
+1. `charter.yaml` — from `templates/mission-charter.yaml` (the schema-clean source, NOT
+   minimal-greenfield's charter which carries invalid `mission.brief` — [R0 B-5]), with the
+   human choices substituted: `mission.{id,goal}` (NO `mission.brief` — schema-invalid, [R0
+   B-2]); `autonomy.level`; `autonomy.approved_scope.{subsprint_sequence,layers_allowed,
+   modules_in_scope}` (each non-empty — [R0 B-1]); `budget.{max_fix_rounds_total,
+   max_wall_clock_minutes,max_api_usd?}`; the 5 LLM roles `tooling.<role>.{harness,provider,
+   model,capability_ref}`; `tooling.eval.{cmd,timeout_seconds}` from `plan.eval` ([R0 B-3]); and
+   a synthesized top-level `intent_contract` block (I3 — confirmed flag from `plan` only, no
+   `brief` sub-key). The charter carries NO brief pointer; the signed brief is found via the
+   `docs/research-briefs/` dir-scan (§4.3.9).
 2. `AGENTS.md` — from the root consumer template with `<adopter-name>` filled (else
    `adoption_status._agents_has_placeholder` blocks `:377-379`); MUST contain the
    control-plane-load block `control_plane_validator` requires (`:478-479`).
@@ -335,9 +386,14 @@ All required by `adoption_status` (§1.2) unless noted:
 8. `docs/requirements-ledger.json` — from `templates/requirements-ledger.example.json` (seed;
    OW-2/OW-3 default-on). Not itself an `adoption_status` REQUIRED file but part of the
    default-on ledger surface; emitted for a complete adopter.
-9. `docs/research-briefs/<id>.md` — a seed research brief synthesized from the intent contract,
-   carrying `customer_signed` = `plan.research_brief.customer_signed` (I3; NEVER forced true).
-   This is what `_brief_confirmed` (`:253-286`) reads. Charter `mission.brief` references it.
+9. `docs/research-briefs/<id>.md` — a seed research brief synthesized from the intent contract.
+   Its body carries the literal line **`confirmed_by_human: true`** ONLY when
+   `plan.research_brief.confirmed_by_human` is true (I3; NEVER forced) — that exact token is
+   what `_brief_confirmed`'s dir-scan regex matches (`adoption_status.py:282`) [R0 B-2]. The
+   charter does NOT point at it (no schema-valid `mission.brief`/`intent_contract.brief`); the
+   dir-scan (`:273-285`) finds it. (For downstream acceptance-time use the brief also carries a
+   `customer_signed` field per `research-brief.schema.json`, but the Phase-5 green bar depends
+   only on the `confirmed_by_human` token that `adoption_status` actually checks.)
 10. `.gitignore` — ensure it covers `.orchestrator/`, `.runs/`, `.env.local`/`*.local`
     (`adoption_status` `:427-441`).
 11. `.orchestrator/control/` + `.orchestrator/audit/` scaffolding (Step-6.7 shape).
@@ -348,20 +404,25 @@ All required by `adoption_status` (§1.2) unless noted:
 from `framework_root` (not returned by the pure generator — they are trees, not text).
 
 ### §4.4 The intent-contract / signed-brief handling (I3 restated concretely)
-`plan.intent_contract.confirmed_by_human` and `plan.research_brief.customer_signed` MUST be
-supplied by the human/answers. `build_artifacts` copies them verbatim. If either is not true,
-`run_exit_validators` will report `signed research brief` as `partial` (blocks) — a truthful
-remediation, not a fabricated pass. The canary answers file carries `true` as the canary
+`plan.intent_contract.confirmed_by_human` and `plan.research_brief.confirmed_by_human` (the
+brief's gate-1 marker — [R0 B-2], NOT `customer_signed`, which `adoption_status` does not check)
+MUST be supplied by the human/answers. `build_artifacts` copies them verbatim; a false/absent
+value means the `confirmed_by_human: true` line is simply NOT emitted into the brief body. If
+either is not true, `run_exit_validators` will report `signed research brief` as `partial`
+(blocks) — a truthful remediation, not a fabricated pass. The canary answers file carries `true` as the canary
 author's recorded signature (evidence doc), exactly as the Phase-1 real-campaign canary signed
 its intent contract (roadmap §2.D).
 
 **Cluster-2 Codex gate obligations:** (a) `materialize` into an empty tmp dest → all four
-validators exit 0; (b) I2 framework-repo refusal proven (no write when `dest` is the framework
-repo); (c) `build_artifacts` is pure (same input → byte-identical map; no I/O — provable by
-running it with the filesystem/network unavailable or by a no-fd test); (d) I3 — with
-`confirmed_by_human:false` in answers the tool does NOT emit a green signed brief; (e) a cursor
-role yields a `.cursor/rules` that passes the C1 validator; (f) idempotent `--force` re-run
-(no spurious diffs).
+validators exit 0 (re-run against the produced tree, NOT the minimal-greenfield tests — [R0
+B-5]); (b) I2 refusal proven for BOTH a framework-repo dest AND a dest NESTED inside
+`framework_root`, with NO write on refusal including the `--write-readiness` path ([R0 B-4]);
+(c) `build_artifacts` is pure (same input → byte-identical map; no I/O); (d) I3 — with
+`confirmed_by_human:false` in answers the brief body omits the token and the tool reports
+`signed research brief` as `partial`, never green ([R0 B-2]); (e) the emitted `charter.yaml` is
+schema-valid (has `approved_scope`, no `mission.brief`, `eval` as `{cmd,timeout_seconds}` — [R0
+B-1/B-2/B-3]); (f) a cursor role yields a `.cursor/rules` that passes the C1 validator; (g)
+idempotent `--force` re-run (no spurious diffs).
 
 ---
 
@@ -373,9 +434,13 @@ choices (recommend-then-confirm, matching ONBOARDING's tone):
 - intent triple (goal/standard/proof_of_done) + an EXPLICIT confirm step that sets
   `confirmed_by_human` (I3 — the human types confirmation; the tool never defaults it);
 - autonomy level (default `human_on_the_loop`) + budgets;
-- per-role harness/provider/model/capability_ref, each validated at answer time against the
-  registry + denylist via `_check_capability_gate` (offline) so a bogus model is rejected
+- `approved_scope` — `subsprint_sequence` / `layers_allowed` / `modules_in_scope`, each
+  non-empty (the first milestone's signed scope envelope — a genuine human choice, [R0 B-1]);
+- the 5 LLM roles' harness/provider/model/capability_ref, each validated at answer time against
+  the registry + denylist via `_check_capability_gate` (offline) so a bogus model is rejected
   before the human moves on;
+- `tooling.eval` — the adopter's test/build `cmd` + `timeout_seconds` (a command the
+  orchestrator runs, NOT a harness binding — [R0 B-3]);
 - track (Type A/B/C), greenfield/brownfield.
 Everything else is derived. `--emit-answers <path>` dumps the collected `AdopterPlan` as a
 canonical answers.json (for reuse / canary authoring). Non-TTY stdin → error directing the user
@@ -385,8 +450,10 @@ to `--answers`.
 Three depths (I4):
 - `off` — no probe; offline capability validation still runs. Default for `--answers`.
 - `binary` — for CLI harnesses, a bounded `<cli> --version` (proves the binary is on PATH; NO
-  network, NO key). Default for interactive. Uses the same bounded-subprocess discipline as the
-  adapters (timeout; never unbounded).
+  network, NO key). Default for interactive. **REUSE the existing bounded probe
+  `engine-kit/quickfix/adapters/base.py::probe_version` (`:217-248`)** — process-group kill on
+  timeout, fail-closed on non-zero exit — rather than re-implementing subprocess/timeout
+  handling [R0 N-3].
 - `live` — env-gated: runs ONLY when `--probe live` AND `AIDAZI_ADOPTER_INIT_LIVE_PROBE=1`.
   For `headless`/HTTP roles: a bounded zero-cost `GET <endpoint>/models` using `api_key_env`
   (loads `.env.local`); for CLI harnesses: a minimal bounded real dry-invoke (e.g.
@@ -397,6 +464,12 @@ Three depths (I4):
 
 **Why advisory, not blocking:** the hard gate is Step 8's offline validators (I4). The probe's
 job is EARLY surfacing ("dead key at answer time, not Step 8" — roadmap §6), not a new gate.
+**Scope qualification [R0 N-2]:** only the `live` tier can detect a bad HTTP key or a dead
+account — `off`/`binary` (the defaults) prove at most binary-on-PATH, NOT key validity. So the
+"dead key surfaces at answer time" promise holds only when the human opts into `--probe live`
+(env-gated); the tool states this explicitly at answer time so the guarantee is not oversold.
+The roadmap (`archive/2026-07-09-...campaign-unblock.md:304-309`) does not require the probe to
+BLOCK — advisory early-surfacing satisfies it.
 
 **Cluster-3 Codex gate obligations:** (a) live probe NEVER runs without the env flag (proven by
 a test that asserts no network call when the flag is unset); (b) probe failure never crashes
@@ -448,19 +521,26 @@ signed-brief path honestly gated? Is there any write path that bypasses I2?
 ## §7 Data contracts
 
 ### §7.1 `schemas/adopter-init-answers.schema.json` (NEW; the only new schema)
-`additionalProperties:false`, `required=["adopter_name","track","intent_contract","autonomy",
-"roles"]`.
+`additionalProperties:false`,
+`required=["adopter_name","track","intent_contract","autonomy","llm_roles","eval"]`.
 - `adopter_name`: non-empty string.
 - `track`: enum `[type_a,type_b,type_c,type_a_b_hybrid]`.
 - `greenfield`: boolean (default true).
 - `intent_contract`: `{goal,standard,proof_of_done: non-empty string; confirmed_by_human:
   boolean; confirmed_at: string|null}` — mirrors `mission-charter.schema.json:366-377`.
-- `autonomy`: `{level: <the charter enum>; budget:{max_fix_rounds_total:int,
-  max_wall_clock_minutes:int, max_api_usd?:number}}`.
-- `roles`: object with all six charter roles; each
-  `{harness: <ADAPTER_REGISTRY key>, provider, model, capability_ref?, api_key_env?}`.
-- `research_brief`: optional `{title,summary,closure_contract?,customer_signed:boolean,
-  sign_off_date?:string|null}`.
+- `autonomy`: `{level: <the charter enum>; approved_scope:{subsprint_sequence:[str≥1],
+  layers_allowed:[str≥1], modules_in_scope:[str≥1], explicitly_out_of_scope?:[str]}` (required,
+  each array `minItems:1` — mirrors `mission-charter.schema.json:49-70`, [R0 B-1]);
+  `budget:{max_fix_rounds_total:int, max_wall_clock_minutes:int, max_api_usd?:number}}`.
+- `llm_roles`: object with EXACTLY the five LLM roles
+  `[research,deliver,dev,review,acceptance]`; each
+  `{harness: <ADAPTER_REGISTRY key>, provider, model, capability_ref?, api_key_env?}`. **`eval`
+  is NOT here** — it is a separate top-level required key [R0 B-3].
+- `eval`: `{cmd: non-empty string, timeout_seconds: int≥1}` — the orchestrator-run command,
+  mirroring `tooling.eval` (`mission-charter.schema.json:198-205`).
+- `research_brief`: optional `{title,summary,closure_contract?, confirmed_by_human:boolean,
+  customer_signed?:boolean, sign_off_date?:string|null}` — `confirmed_by_human` is the marker
+  `adoption_status` checks (§4.3.9, [R0 B-2]).
 The tool validates answers against this schema BEFORE building (fail-closed, exit 3). Being the
 tool's own contract, it adds no runtime-path schema surface (§0.2).
 
@@ -489,9 +569,10 @@ The scaffold body is an inline string constant in `adopter_init.py` (NOT a track
 template file) — so it can never be walked by the reconciliation test (§1.6) and there is no
 risk of an in-repo template accidentally counting as maintainer cursor wiring. (Rationale: the
 one existing `.mdc` in the repo is maintainer-only; a `templates/cursor-rules.*` file would be
-a tracked doc subject to the always-load walk. An inline constant sidesteps both.) VERIFY
-during C1 whether `_iter_markdown` globs `*.mdc` (if it only globs `*.md`, this is belt-and-
-suspenders; keep the inline constant regardless.)
+a tracked doc subject to the always-load walk. An inline constant sidesteps both.) Doubly safe:
+the SCAFFOLDED `.cursor/rules/*.mdc` is written into the ADOPTER tree (a separate repo / the
+canary's `tmp_path`), never into the framework repo, so the framework's reconciliation test
+never walks it regardless of the glob. The inline constant is kept regardless.
 
 ---
 
@@ -501,9 +582,12 @@ suspenders; keep the inline constant regardless.)
   `templates/` trees; the offline canary pays that once into `tmp_path` (~seconds). Acceptable;
   note it so the gate doesn't flag test slowness. Alternative (symlink) rejected —
   `adoption_status` only checks presence, but a copy is what a real adopter gets and is safest.
-- **G2 — constraint-inventory sha gate (C1).** Editing `04-context-briefing.yaml` REQUIRES
-  refreshing `_sources.yaml` sha256 or `--kernel-coverage` exits 1. Non-obvious; called out in
-  §3.4.
+- **G2 — constraint-inventory gate (C1), CORRECTED [R0 B-6].** Editing the inventory ROW file
+  `04-context-briefing.yaml` does NOT require a `_sources.yaml` sha refresh — that manifest
+  binds SOURCE documents, not inventory rows (`kernel_equivalence.py:119-130,249-270`). Run
+  `--kernel-coverage` for wellformedness/enforcement-resolution after the row flip. A sha
+  refresh is required ONLY if the optional step-6 edit touches the source doc
+  `context_briefing.md`. Called out in §3.4.
 - **G3 — signed-brief honesty (I3).** The single biggest correctness trap: making the canary
   green must NOT tempt an auto-confirm. The design routes the signature exclusively through
   `plan` and treats a false/absent flag as a truthful `partial`. The gate must confirm no code
@@ -561,3 +645,37 @@ No runtime-gate change; no MANDATORY_CHECKPOINT change; no acceptance-mode chang
 migration of existing adopters; no auto-signing; no campaign auto-decompose (Phase-2, already
 shipped); no charter/campaign-plan runtime-schema change. The ONLY behavioral tightening is
 cursor WARN→FAIL, which no current adopter trips.
+
+## §12 R0 gate fold-log (codex gpt-5.5 xhigh, 2026-07-11)
+R0 = REVISE (6 blocking, 3 non-blocking). All folded; verified against base `f6d2730`.
+- **[R0 B-1]** `autonomy.approved_scope` (3 non-empty arrays,
+  `mission-charter.schema.json:49-70`) was absent from the answers contract → charter would
+  fail `charter_validator`. Folded: added to the answers schema (§7.1), the interactive prompts
+  (§5.1), the `AdopterPlan` (§4.2), and the charter substitution (§4.3.1) as a genuine human
+  choice.
+- **[R0 B-2]** `mission.brief`/`intent_contract.brief` are schema-INVALID (both blocks are
+  `additionalProperties:false`), and `_brief_confirmed` matches only `confirmed_by_human:\s*true`
+  via the `docs/research-briefs/` dir-scan (`adoption_status.py:273-285`). Folded: charter
+  carries NO brief pointer; the seed brief lives under `docs/research-briefs/` with a
+  `confirmed_by_human: true` line emitted ONLY on human/answers confirmation (§1.2, §4.3.1,
+  §4.3.9, §4.4, §7.1).
+- **[R0 B-3]** `tooling.eval` is `{cmd,timeout_seconds}` (non-LLM; skipped by `_iter_roles`,
+  `charter_validator.py:986-995`), not a harness role. Folded: `eval` is a separate answers key;
+  `llm_roles` holds exactly the 5 LLM roles (§1.4, §4.2, §4.3.1, §5.1, §7.1).
+- **[R0 B-4]** I2 was not guaranteed: `write_readiness_snapshot` writes outside `materialize`,
+  and `is_framework_repo` misses a nested dest. Folded: an `assert_writable_dest(dest,
+  framework_root)` guard (marker check + realpath-containment) runs before ANY write; §10
+  structural test covers every write path incl. the readiness call (§2 I2, §4.2, C2 obligation b).
+- **[R0 B-5]** `minimal-greenfield` feasibility anchor overstated (its test only checks
+  detection/wiring/control-plane; its charter carries invalid `mission.brief`). Folded: §1.7
+  rewritten to claim only the wiring subset; charter source is `templates/mission-charter.yaml`;
+  the full `adoption_status` REQUIRED set is satisfied independently and re-tested by C2.
+- **[R0 B-6]** The `_sources.yaml` hash-gate instruction was wrong (it binds source docs, not
+  inventory rows). Folded: §3.4 step 4 + G2 corrected — inventory-row flip needs
+  `--kernel-coverage` wellformedness only; sha refresh only if `context_briefing.md` is edited.
+- **[R0 N-1]** `engine-kit/validators/README.md:18-26` still documents cursor as WARN/exit-0 →
+  added to C1 collateral (§3 step 6 + obligation f).
+- **[R0 N-2]** Qualified "dead key at answer time": only the `live` tier detects a bad HTTP key;
+  `off`/`binary` prove at most binary-on-PATH (§5.2).
+- **[R0 N-3]** Reuse `engine-kit/quickfix/adapters/base.py::probe_version` (`:217-248`) for the
+  binary tier instead of re-implementing bounded subprocess handling (§5.2).
