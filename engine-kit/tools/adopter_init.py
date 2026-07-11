@@ -635,8 +635,24 @@ def _mount_framework(dest: str, framework_root: str) -> None:
 def _atomic_write(target: str, content: str) -> None:
     os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
     tmp = target + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(content)
+    # [R3.2 B-1] O_NOFOLLOW refuses to write THROUGH a symlink at the tmp path — a brownfield
+    # dest could pre-plant `AGENTS.md.tmp` -> outside/framework and open("w") would follow it.
+    # Combined with materialize's resolved-target check on parent components, this closes the
+    # symlink-escape write hole for BOTH artifact writes and --emit-answers.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(tmp, flags, 0o644)
+    except OSError as exc:
+        raise InitError(f"refusing: cannot safely open {tmp!r} for write (symlink / {exc})")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     os.replace(tmp, target)
 
 

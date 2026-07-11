@@ -135,6 +135,31 @@ class GuardTests(unittest.TestCase):
             # nothing leaked into the symlinked-out dir
             self.assertEqual(os.listdir(outside), [])
 
+    def test_tmp_symlink_escape_write_refused(self):
+        # [R3.2 B-1] a pre-planted <file>.tmp symlink escaping dest must not be written through.
+        with tempfile.TemporaryDirectory(prefix="ai-tmpesc-") as tmp:
+            dest = os.path.join(tmp, "dest")
+            outside = os.path.join(tmp, "outside")
+            os.makedirs(dest)
+            os.makedirs(outside)
+            leak = os.path.join(outside, "leak")
+            os.symlink(leak, os.path.join(dest, "AGENTS.md.tmp"))  # pre-plant the tmp symlink
+            plan = _load_plan()
+            artifacts = ai.build_artifacts(plan, ai.load_templates(_FRAMEWORK_ROOT))
+            with self.assertRaises(ai.InitError):
+                ai.materialize(artifacts, dest, _FRAMEWORK_ROOT, force=True)
+            self.assertFalse(os.path.exists(leak))  # never written through the symlink
+
+    def test_atomic_write_refuses_symlinked_tmp(self):
+        # [R3.2 B-1] direct _atomic_write unit: a symlinked <target>.tmp is refused (O_NOFOLLOW).
+        with tempfile.TemporaryDirectory(prefix="ai-aw-") as tmp:
+            outside = os.path.join(tmp, "outside")
+            target = os.path.join(tmp, "f.txt")
+            os.symlink(outside, target + ".tmp")
+            with self.assertRaises(ai.InitError):
+                ai._atomic_write(target, "content")
+            self.assertFalse(os.path.exists(outside))
+
 
 class ScaffoldGreenTests(unittest.TestCase):
     def _scaffold(self, tmp, answers=_CANARY_ANSWERS, force=False):
