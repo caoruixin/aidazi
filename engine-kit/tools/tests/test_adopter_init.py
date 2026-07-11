@@ -195,17 +195,23 @@ class CliContractTests(unittest.TestCase):
         rc = ai.main([_FRAMEWORK_ROOT, "--answers", _CANARY_ANSWERS])
         self.assertEqual(rc, 3)
 
-    def test_headless_empty_api_key_env_refused(self):
-        # [C2 B-1] an empty routing NAME must be rejected (minLength) so no unrunnable charter.
-        data = json.load(open(_CANARY_ANSWERS))
-        data["llm_roles"]["review"] = {
-            "harness": "headless", "provider": "deepseek", "model": "deepseek-v4-pro",
-            "endpoint": "https://api.deepseek.com/v1", "api_key_env": ""}
-        with tempfile.TemporaryDirectory(prefix="ai-hl-") as tmp:
-            apath = os.path.join(tmp, "a.json")
-            json.dump(data, open(apath, "w"))
-            with self.assertRaises(ai.InitError):
-                ai.load_answers(apath, _FRAMEWORK_ROOT)
+    def test_headless_empty_routing_name_refused(self):
+        # [C2 B-1 / C2.2 N-1] every empty routing NAME must be rejected (minLength) so no
+        # field is silently dropped into an unrunnable headless charter.
+        base = {"harness": "headless", "provider": "deepseek", "model": "deepseek-v4-pro",
+                "endpoint": "https://api.deepseek.com/v1", "endpoint_env": "DS_URL",
+                "api_key_env": "DS_KEY"}
+        for field_name in ("api_key_env", "endpoint", "endpoint_env"):
+            with self.subTest(field=field_name):
+                data = json.load(open(_CANARY_ANSWERS))
+                role = dict(base)
+                role[field_name] = ""
+                data["llm_roles"]["review"] = role
+                with tempfile.TemporaryDirectory(prefix="ai-hl-") as tmp:
+                    apath = os.path.join(tmp, "a.json")
+                    json.dump(data, open(apath, "w"))
+                    with self.assertRaises(ai.InitError):
+                        ai.load_answers(apath, _FRAMEWORK_ROOT)
 
 
 if __name__ == "__main__":
