@@ -6,6 +6,7 @@ framework repo), I3 (never auto-confirm the gate-1 signature).
 """
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -520,6 +521,163 @@ class LiveProbeCanaryTests(unittest.TestCase):
             bad_env = dict(live_env); bad_env[key_env] = "sk-deliberately-bad"
             bad = ai.run_reachability_probe(plan, "live", env=bad_env)
             self.assertEqual(next(r for r in bad if r.role == "review").status, "warn")
+
+
+# --------------------------------------------------------------------------- #
+# Brownfield governed-doc preservation (brownfield-preserve): --force is a BOOTSTRAP, not a
+# migrator — create only MISSING files, keep existing governed/wiring/human content byte-for-byte.
+# --------------------------------------------------------------------------- #
+_SNAPSHOT_EXCLUDE_DIRS = {".git", "aidazi", "__pycache__", ".pytest_cache", ".gate", ".runs",
+                          "node_modules", "target", ".venv", "venv"}
+# Copy KEEPS the adopter's own aidazi/ framework mount (so control_plane validates identically
+# before/after — adopter_init's re-mount is then an idempotent skip); it only drops VCS + heavy
+# build/cache dirs.
+_COPY_IGNORE_DIRS = {".git", "__pycache__", ".pytest_cache", ".gate", ".runs",
+                     "node_modules", "target", ".venv", "venv"}
+_SNAPSHOT_EXCLUDE_RELS = {
+    os.path.join("docs", "current", "adoption-readiness.md"),  # validator-regenerated snapshot
+    ".gitignore",                                              # append-merged by design
+}
+
+
+def _snapshot_governed(dest):
+    """Byte snapshot of every adopter-authored file under ``dest``, EXCLUDING the framework mount
+    (``aidazi/``), VCS/cache/build dirs, the validator-regenerated readiness snapshot, and
+    ``.gitignore`` (which adopter_init append-merges). Used to assert ZERO governed-doc drift
+    across a brownfield ``--force`` re-run."""
+    snap = {}
+    for root, dirs, files in os.walk(dest):
+        dirs[:] = [d for d in dirs if d not in _SNAPSHOT_EXCLUDE_DIRS]
+        for fn in files:
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, dest)
+            if rel in _SNAPSHOT_EXCLUDE_RELS:
+                continue
+            with open(full, "rb") as fh:
+                snap[rel] = fh.read()
+    return snap
+
+
+def _render_errs(rep):
+    return [getattr(e, "render", lambda: str(e))() for e in rep.errors]
+
+
+class BrownfieldGovernedDocsTests(unittest.TestCase):
+    """The brownfield-preserve contract (design §6.2): ``--force`` is a BOOTSTRAP, not a
+    migrator — it creates only the files that are ABSENT and preserves existing governed / wiring
+    / human content byte-for-byte; an incompatible kept file fails the exit validators with
+    actionable remediation instead of being silently rewritten. (Closes the C4 gap: the prior
+    brownfield canary only used non-governed files, so it never exercised the clobber path.)"""
+
+    def test_force_preserves_governed_docs_byte_for_byte_and_stays_green(self):
+        with tempfile.TemporaryDirectory(prefix="ai-govdrift-") as tmp:
+            dest = os.path.join(tmp, "acme")
+            self.assertEqual(ai.main([dest, "--answers", _CANARY_ANSWERS]), 0)  # greenfield GREEN
+            # A live adopter evolves its governed docs. Edit a representative set the way a human
+            # would (kept valid): markdown gets a marker comment; the JSON ledger is reserialised
+            # to valid-but-different bytes (indent 4 vs the generator's indent 2) so a regenerate
+            # would be detectable.
+            md_edits = {
+                "AGENTS.md": "\n<!-- adopter-local marker KEEP-7f3 -->\n",
+                os.path.join("docs", "current", "adoption-config.md"): "\n<!-- KEEP-cfg -->\n",
+                os.path.join("docs", "current", "domain_taxonomy.md"): "\n<!-- KEEP-tax -->\n",
+            }
+            for rel, extra in md_edits.items():
+                with open(os.path.join(dest, rel), "a", encoding="utf-8") as fh:
+                    fh.write(extra)
+            ledger_path = os.path.join(dest, "docs", "requirements-ledger.json")
+            ledger = json.load(open(ledger_path))
+            with open(ledger_path, "w", encoding="utf-8") as fh:
+                json.dump(ledger, fh, indent=4)   # valid JSON, but != generator's indent-2 bytes
+                fh.write("\n")
+            before = _snapshot_governed(dest)
+            # Re-run brownfield --force (NO --overwrite).
+            rc = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc, 0, "brownfield --force must stay GREEN")
+            after = _snapshot_governed(dest)
+            self.assertEqual(after, before, "a governed doc drifted on brownfield --force")
+            # the human markers + reserialised ledger survived => PRESERVE, not regenerate.
+            for rel, extra in md_edits.items():
+                self.assertIn(extra.strip(), ai._read_text(os.path.join(dest, rel)))
+            self.assertIn("\n    ", ai._read_text(ledger_path))  # still indent-4 (not regenerated)
+
+    def test_incompatible_existing_wiring_preserved_and_fails_not_rewritten(self):
+        # design: "if existing wiring is incompatible, FAIL with an actionable validation result
+        # rather than rewriting it." A brownfield CLAUDE.md lacking the @AGENTS.md import must be
+        # kept byte-for-byte AND make the tool report NOT green (exit 2), never auto-fixed.
+        with tempfile.TemporaryDirectory(prefix="ai-badwire-") as tmp:
+            dest = os.path.join(tmp, "acme")
+            os.makedirs(dest)
+            incompatible = "# my own project rules — no aidazi wiring\n"
+            with open(os.path.join(dest, "CLAUDE.md"), "w", encoding="utf-8") as fh:
+                fh.write(incompatible)
+            rc = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc, 2, "incompatible wiring must be NOT green, not auto-fixed")
+            # preserved byte-for-byte (NOT rewritten to '@AGENTS.md\n')
+            self.assertEqual(ai._read_text(os.path.join(dest, "CLAUDE.md")), incompatible)
+            # the wiring validator independently reports the breach (actionable remediation) ...
+            self.assertFalse(awv.validate_root(dest).ok)
+            # ... while the genuinely MISSING wiring file WAS bootstrapped (create-only-missing).
+            self.assertTrue(os.path.isfile(os.path.join(dest, "AGENTS.md")))
+
+    def test_overwrite_is_the_explicit_regenerate_escape_hatch(self):
+        # --overwrite (the explicit human opt-in) DOES regenerate an existing governed doc — the
+        # counterpart that proves default-preserve is a real, distinct behaviour.
+        with tempfile.TemporaryDirectory(prefix="ai-ovw-") as tmp:
+            dest = os.path.join(tmp, "acme")
+            self.assertEqual(ai.main([dest, "--answers", _CANARY_ANSWERS]), 0)
+            agents = os.path.join(dest, "AGENTS.md")
+            with open(agents, "a", encoding="utf-8") as fh:
+                fh.write("\n<!-- marker DROP-ME -->\n")
+            rc = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force", "--overwrite"])
+            self.assertEqual(rc, 0)
+            self.assertNotIn("DROP-ME", ai._read_text(agents))  # regenerated (marker gone)
+
+    def test_materialize_report_created_then_preserved(self):
+        plan = ai.load_answers(_CANARY_ANSWERS, _FRAMEWORK_ROOT)
+        artifacts = ai.build_artifacts(plan, ai.load_templates(_FRAMEWORK_ROOT))
+        with tempfile.TemporaryDirectory(prefix="ai-report-") as tmp:
+            dest = os.path.join(tmp, "acme")
+            r1 = ai.materialize(artifacts, dest, _FRAMEWORK_ROOT)
+            self.assertIsInstance(r1, ai.MaterializeReport)
+            self.assertIn("AGENTS.md", r1.created)
+            self.assertEqual(r1.preserved, [])
+            # hand-edit one artifact, then a brownfield re-materialize: it is PRESERVED, the rest
+            # are byte-identical (unchanged), nothing is created or overwritten.
+            with open(os.path.join(dest, "AGENTS.md"), "a", encoding="utf-8") as fh:
+                fh.write("\n<!-- edit -->\n")
+            r2 = ai.materialize(artifacts, dest, _FRAMEWORK_ROOT, force=True)
+            self.assertIn("AGENTS.md", r2.preserved)
+            self.assertEqual(r2.created, [])
+            self.assertEqual(r2.overwritten, [])
+            self.assertIn("charter.yaml", r2.unchanged)
+
+    @unittest.skipUnless(os.environ.get("AIDAZI_E2E_ADOPTER_BROWNFIELD_SRC"),
+                         "set AIDAZI_E2E_ADOPTER_BROWNFIELD_SRC=<real adopter root> to run")
+    def test_real_adopter_copy_zero_governed_drift(self):
+        """Env-gated REAL-adopter brownfield canary (design §6.3): copy a real adopter root to a
+        disposable dir, run ``--force``, and prove (a) ZERO governed-doc drift and (b) the
+        adopter's pre-existing ``control_plane`` findings are UNCHANGED — i.e. distinct from
+        anything Phase-5 introduces. Operates on the copy only; never touches the source."""
+        src = os.environ["AIDAZI_E2E_ADOPTER_BROWNFIELD_SRC"]
+        answers = os.environ.get("AIDAZI_E2E_ADOPTER_BROWNFIELD_ANSWERS", _CANARY_ANSWERS)
+        with tempfile.TemporaryDirectory(prefix="ai-realbrown-") as tmp:
+            dest = os.path.join(tmp, "adopter-copy")
+            shutil.copytree(src, dest, symlinks=True,
+                            ignore=shutil.ignore_patterns(*_COPY_IGNORE_DIRS, "*.pyc"))
+            before = _snapshot_governed(dest)
+            cp_before = _render_errs(control_plane_validator.validate_root(dest))
+            ai.main([dest, "--answers", answers, "--force"])  # rc may be 2 on a real adopter
+            after = _snapshot_governed(dest)
+            cp_after = _render_errs(control_plane_validator.validate_root(dest))
+            # DRIFT = mutating/removing a file the adopter already had. Creating a genuinely
+            # MISSING bootstrap file is NOT drift, so assert the pre-existing set is byte-identical
+            # (a subset check) rather than exact tree equality.
+            for rel, content in before.items():
+                self.assertEqual(after.get(rel), content, f"governed doc drifted: {rel}")
+            # the adopter's pre-existing control_plane findings are its OWN — unchanged by Phase-5.
+            self.assertEqual(cp_before, cp_after,
+                             "adopter_init changed the adopter's pre-existing control_plane findings")
 
 
 if __name__ == "__main__":

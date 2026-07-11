@@ -27,6 +27,14 @@ CLI:
   Omit --answers for interactive prompts. --probe live is env-gated by
   AIDAZI_ADOPTER_INIT_LIVE_PROBE=1 (the only tier that makes a network call).
 
+Brownfield contract (design §6.2): the tool is a BOOTSTRAP, not a migrator. On a non-empty dest
+(``--force``) it CREATES only the files that are absent and PRESERVES every existing adopter file
+byte-for-byte (``.gitignore`` is the one exception: required patterns are append-merged, existing
+lines kept). It never rewrites governed/wiring/human content that is already present; if a kept
+file is incompatible with adoption the exit validators report it (exit 2, remediation printed)
+rather than the tool silently overwriting it. ``--overwrite`` is the explicit human escape hatch
+to regenerate existing files.
+
 Exit codes: 0 all four validators green; 2 validation failed (remediation printed);
 3 refused (dest is/inside the framework repo, non-empty dest without --force, or invalid
 answers).
@@ -553,6 +561,38 @@ def assert_writable_dest(dest: str, framework_root: str) -> None:
                         "(would copy into itself)")
 
 
+@dataclass
+class MaterializeReport:
+    """What materialize() did to each artifact — so the caller can tell the human EXACTLY what
+    was written vs kept byte-for-byte (brownfield transparency). ``preserved`` is the load-bearing
+    one: existing adopter files whose content differs from what we would generate and that we
+    deliberately DID NOT rewrite. If any of those are incompatible, the exit validators fail with
+    actionable remediation — the tool never silently overwrites governed content."""
+    created: list = field(default_factory=list)      # was missing -> written
+    preserved: list = field(default_factory=list)    # existed, differs, kept (never clobbered)
+    unchanged: list = field(default_factory=list)    # existed, byte-identical -> no-op
+    merged: list = field(default_factory=list)       # .gitignore: required patterns appended
+    overwritten: list = field(default_factory=list)  # existed, differs, --overwrite forced rewrite
+
+    def render(self) -> str:
+        lines = []
+        if self.created:
+            lines.append(f"  created {len(self.created)} missing file(s): "
+                         + ", ".join(sorted(self.created)))
+        if self.merged:
+            lines.append("  merged .gitignore (appended missing patterns; existing lines kept)")
+        if self.preserved:
+            lines.append(f"  PRESERVED {len(self.preserved)} existing file(s) byte-for-byte "
+                         "(not rewritten): " + ", ".join(sorted(self.preserved)))
+            lines.append("    (adopter_init is not a migrator; if a preserved file is incompatible "
+                         "the validators below will report it — remediate it by hand or re-run "
+                         "with --overwrite to regenerate.)")
+        if self.overwritten:
+            lines.append(f"  OVERWROTE {len(self.overwritten)} existing file(s) (--overwrite): "
+                         + ", ".join(sorted(self.overwritten)))
+        return "\n".join(lines)
+
+
 def _realpath_within(path: str, root_real: str) -> bool:
     real = os.path.realpath(path)
     return real == root_real or real.startswith(root_real + os.sep)
@@ -574,47 +614,62 @@ def _assert_not_in_framework(path: str, framework_root: str) -> None:
 
 
 def materialize(artifacts: dict, dest: str, framework_root: str, *, force: bool = False,
-                overwrite: bool = False) -> None:
-    """The ONLY writer of the artifact tree. Guards the dest first (I2), writes each artifact
-    (tmp+rename), and mounts the framework tree under <dest>/aidazi/."""
+                overwrite: bool = False) -> MaterializeReport:
+    """The ONLY writer of the artifact tree. Guards the dest first (I2), then for each artifact
+    CREATES it if missing, or PRESERVES an existing adopter file byte-for-byte — brownfield
+    non-destructiveness (design §6.2 / brownfield-preserve). adopter_init is a BOOTSTRAP, not a
+    migrator: on a non-empty (``--force``) dest it fills in only the files that are ABSENT and
+    never rewrites governed/wiring/human content that is already there. If a preserved file is
+    incompatible with adoption, the exit validators fail with actionable remediation rather than
+    the tool silently overwriting it. ``--overwrite`` is the explicit, human-driven escape hatch
+    that regenerates existing files. Returns a MaterializeReport of what was created vs kept."""
     assert_writable_dest(dest, framework_root)
     if os.path.isdir(dest) and os.listdir(dest) and not force:
         raise InitError(f"dest {dest!r} is non-empty; pass --force for a brownfield adopter")
     os.makedirs(dest, exist_ok=True)
 
-    # never clobber a human-edited charter OR a signed research brief without --overwrite
-    # ([C2 B-3]).
     dest_real = os.path.realpath(dest)
-    _HUMAN_EDITABLE = ("charter.yaml", os.path.join("docs", "research-briefs") + os.sep)
+    report = MaterializeReport()
     for rel, content in sorted(artifacts.items()):
         target = os.path.join(dest, rel)
         _assert_target_within_dest(dest_real, target)  # [R3 B-2] no symlink-escape write
-        if rel == ".gitignore" and os.path.exists(target):
-            # brownfield: MERGE (append missing required patterns), never clobber the adopter's
-            # existing .gitignore.
-            _merge_gitignore(target, content)
+        exists = os.path.exists(target)
+        if rel == ".gitignore" and exists:
+            # brownfield: MERGE (append-only; adds missing required patterns), never clobber the
+            # adopter's existing .gitignore.
+            (report.merged if _merge_gitignore(target, content) else report.unchanged).append(rel)
             continue
-        if os.path.exists(target) and rel.startswith(_HUMAN_EDITABLE) and not overwrite:
-            continue  # idempotent: preserve a human-edited charter/brief unless --overwrite
-        if os.path.exists(target) and _read_text(target) == content:
-            continue  # idempotent: no spurious rewrite
+        if exists and _read_text(target) == content:
+            report.unchanged.append(rel)
+            continue  # idempotent: byte-identical, no spurious rewrite
+        if exists and not overwrite:
+            # brownfield non-destructiveness: NEVER clobber an existing adopter file. Create only
+            # what is MISSING; keep existing governed/wiring/human content byte-for-byte. A stale
+            # or incompatible kept file surfaces via the exit validators (actionable remediation),
+            # not by a silent rewrite here ([brownfield-preserve]).
+            report.preserved.append(rel)
+            continue
         _atomic_write(target, content)
+        (report.overwritten if exists else report.created).append(rel)
 
     _mount_framework(dest, framework_root)
+    return report
 
 
-def _merge_gitignore(target: str, required: str) -> None:
+def _merge_gitignore(target: str, required: str) -> bool:
     """Append any required ignore pattern not already present, preserving the adopter's existing
-    .gitignore lines (brownfield non-destructiveness, design §6.2)."""
+    .gitignore lines (brownfield non-destructiveness, design §6.2). Returns True iff it appended
+    (so materialize can report merged vs unchanged)."""
     existing = _read_text(target)
     have = {ln.strip() for ln in existing.splitlines()}
     additions = [ln for ln in required.splitlines()
                  if ln.strip() and not ln.strip().startswith("#") and ln.strip() not in have]
     if not additions:
-        return
+        return False
     body = existing.rstrip("\n") + "\n\n# --- added by adopter_init.py ---\n" + \
         "\n".join(additions) + "\n"
     _atomic_write(target, body)
+    return True
 
 
 def _mount_framework(dest: str, framework_root: str) -> None:
@@ -1018,9 +1073,11 @@ def main(argv=None) -> int:
     parser.add_argument("--framework-root", default=None,
                         help="framework source root (default: derived from this file's location)")
     parser.add_argument("--force", action="store_true",
-                        help="allow a non-empty dest (brownfield)")
+                        help="allow a non-empty dest (brownfield): create only missing files, "
+                             "preserve every existing file byte-for-byte")
     parser.add_argument("--overwrite", action="store_true",
-                        help="allow replacing an existing human-editable artifact (charter/brief)")
+                        help="explicit escape hatch: regenerate (clobber) existing artifacts "
+                             "instead of preserving them — off by default")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the artifact manifest and exit; write nothing")
     parser.add_argument("--probe", choices=["off", "binary", "live"], default=None,
@@ -1061,13 +1118,17 @@ def main(argv=None) -> int:
             return 0
         # Guard BEFORE any write (I2).
         assert_writable_dest(args.dest, framework_root)
-        materialize(artifacts, args.dest, framework_root, force=args.force, overwrite=args.overwrite)
+        report = materialize(artifacts, args.dest, framework_root,
+                             force=args.force, overwrite=args.overwrite)
     except InitError as exc:
         sys.stderr.write(f"[adopter_init] REFUSED: {exc}\n")
         return 3
 
     outcome = run_exit_validators(args.dest, framework_root)
     sys.stdout.write(f"\nadopter_init: scaffolded {args.dest}\n\n")
+    materialize_render = report.render()
+    if materialize_render:
+        sys.stdout.write(materialize_render + "\n\n")
     for name, (ok, detail) in outcome["results"].items():
         sys.stdout.write(f"  [{'PASS' if ok else 'FAIL'}] {name}  {detail}\n")
     # [R3 B-3] the four validators do not check the INTENT-contract signature (only the brief
