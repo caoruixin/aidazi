@@ -3958,10 +3958,28 @@ class Campaign:
             self._consume_freshness_block_parallel()
             self._clear_pause_parallel()
             return "proceed"
-        # Coordinator-GLOBAL budget drain (§8): re-drive; _drive_parallel re-checks _over_budget.
+        # Coordinator-GLOBAL budget gate (§8) — serial-equivalent (Codex R3 B-9): REQUIRE a
+        # decision; raise_cap re-reads the (raised) signed budget + gates freshness (a budget cap
+        # is inside H, so it needs a re-sign) then re-drives; abort ends. No decision ⇒ re-pause.
         if reason == "campaign_budget_exhausted":
-            self._clear_pause_parallel()
-            return "proceed"
+            decision = (decision_resolver(reason, self.state.pause_checkpoint)
+                        if decision_resolver is not None else None)
+            if not decision:
+                return self._repause_parallel(reason, "decision_pending")
+            if decision.get("choice") == "raise_cap":
+                self.budget = self.plan.get("budget") or {}   # re-read the raised budget
+                if not self._authority_fresh():
+                    self._pause_campaign_global(
+                        "campaign_plan_signoff", None, "campaign_freshness_block",
+                        {"signoff_status": self._signoff_status(),
+                         "drift": self._drift_field_hint()}, freshness_block=True)
+                    return "paused"
+                self._clear_pause_parallel()
+                self._audit("campaign_resume_dispatch",
+                            {"pause_reason": reason, "action": "raise_cap"})
+                return "proceed"
+            self._end_parallel("campaign_budget_aborted")
+            return "ended"
         # CAMPAIGN-TIER completeness gate (§1.7-F): STASH the human's adjust_scope decision so the
         # OUTER-loop _gap_followup_round (called from _run_parallel at quiescence) consumes it once
         # — the SAME remediate/accept_gap/abort handling as serial (Codex R3 B-7). No decision ⇒

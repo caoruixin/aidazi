@@ -609,10 +609,12 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
         except (OSError, ValueError):
             _state = {}
         _rt = _state.get("milestone_runtime")
-        # CAMPAIGN-TIER gates (completeness_gap_review) are NOT per-milestone even under a
-        # parallel state — they fall through to the serial campaign-tier handling below (Codex R3
-        # B-7 round 2). Only PER-MILESTONE gates use the milestone_runtime binding.
-        if isinstance(_rt, dict) and _rt and pause_reason != "completeness_gap_review":
+        # CAMPAIGN-TIER gates (completeness_gap_review, campaign_budget_exhausted) are NOT
+        # per-milestone even under a parallel state — they fall through to the serial campaign-tier
+        # handling below (Codex R3 B-7/B-9). Only PER-MILESTONE gates use the milestone_runtime
+        # binding.
+        _campaign_tier = ("completeness_gap_review", "campaign_budget_exhausted")
+        if isinstance(_rt, dict) and _rt and pause_reason not in _campaign_tier:
             d_mid = decision.get("milestone_id")
             entry = _rt.get(d_mid) if d_mid else None
             if not isinstance(entry, dict) or entry.get("phase") != "paused":
@@ -950,66 +952,78 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     except Exception:
         signoff_status = None
 
-    # Phase-3 push-not-poll (design §4.3): on EVERY campaign pause (exit 10), fire the
-    # charter's notifications.on_pause hook AFTER the pause is durably persisted (the campaign
-    # already _saved it) and the exit-10 result is computed. FAIL-SAFE: the notifier can never
-    # affect the pause or exit code. Default-OFF ⇒ a complete no-op (byte-identical).
-    # Phase-3: a halt_condition_met pause is campaign-tier (NOT a unit), so paused_unit is empty
-    # — surface the milestone_id from halt_condition_pending (needed for the identity-bound
-    # decision). subsprint_id is DELIBERATELY NOT surfaced for this gate (R2.2 NB): the decision
-    # forbids subsprint_id, so exposing it would mislead a machine/human consumer into authoring
-    # a decision the resolver refuses.
-    _hcp = getattr(st, "halt_condition_pending", None) or {}
-    _pause_milestone_id = paused_unit.get("milestone_id") or _hcp.get("milestone_id")
-    _pause_subsprint_id = paused_unit.get("subsprint_id")
-    if exit_code == CAMPAIGN_EXIT_PAUSED:
-        try:
-            import pause_notifier as _pn
-            pause_ctx = {
-                "campaign_id": campaign_id,
-                "reason": st.pause_reason,
-                "checkpoint": (os.path.basename(st.pause_checkpoint)
-                               if st.pause_checkpoint else None),
-                "milestone_id": _pause_milestone_id,
-                "subsprint_id": _pause_subsprint_id,
-            }
-            _ledger = audit.audit_path(campaign_id, os.path.join(home, "audit"))
-
-            def _emit_notif(evtype: str, payload: dict) -> None:
-                audit.append_event(campaign_id, evtype, payload,
-                                   ts=clock(), path=_ledger)
-
-            _pn.notify_on_pause(charter, pause_ctx, _emit_notif)
-        except Exception:
-            pass  # the notifier path must NEVER break the pause / exit-10 return
-
-    # Phase-4 (design §3.2.1/§6.3): a PARALLEL run reports per-milestone PHASE + ALL parked
-    # pauses; the scalar milestone_index stays the fail-closed (0,0) legacy mirror. A serial run
-    # (no milestone_runtime) omits both keys ⇒ byte-identical output.
+    # Phase-4 (design §3.2.1/§6.3): build the PARALLEL per-milestone phase + ALL parked pauses
+    # FIRST (before the notifier + scalar derivation, Codex R3 B-10), so the notifier fires PER
+    # parked pause and the pause_* scalars are PHASE-DERIVED. A serial run (no milestone_runtime)
+    # omits these keys ⇒ byte-identical output.
     _rt = getattr(st, "milestone_runtime", None) or {}
     parallel_extra: dict = {}
+    _parallel_pauses: List[dict] = []
     if _rt:
         _order = {m["id"]: i for i, m in enumerate(plan.get("milestones") or [])}
         _mids = sorted(_rt, key=lambda x: _order.get(x, len(_order)))
+        _parallel_pauses = [
+            {"milestone_id": mid,
+             "subsprint_id": (_rt[mid].get("inflight") or {}).get("subsprint_id"),
+             "pause_reason": _rt[mid].get("pause_reason"),
+             "checkpoint": (os.path.basename(_rt[mid]["pause_checkpoint"])
+                            if _rt[mid].get("pause_checkpoint") else None),
+             "condition_id": (_rt[mid].get("halt_condition_pending")
+                              or {}).get("condition_id"),
+             "loop_id": (_rt[mid].get("inflight") or {}).get("loop_id")}
+            for mid in _mids if _rt[mid].get("phase") == "paused"]
         parallel_extra = {
             "milestones": [
                 {"milestone_id": mid, "phase": _rt[mid].get("phase"),
                  "pause_reason": _rt[mid].get("pause_reason"),
                  "pause_checkpoint": _rt[mid].get("pause_checkpoint")}
                 for mid in _mids],
-            "pauses": [
-                {"milestone_id": mid,
-                 "subsprint_id": (_rt[mid].get("inflight") or {}).get("subsprint_id"),
-                 "pause_reason": _rt[mid].get("pause_reason"),
-                 "checkpoint": (os.path.basename(_rt[mid]["pause_checkpoint"])
-                                if _rt[mid].get("pause_checkpoint") else None),
-                 "condition_id": (_rt[mid].get("halt_condition_pending")
-                                  or {}).get("condition_id"),
-                 "loop_id": (_rt[mid].get("inflight") or {}).get("loop_id")}
-                for mid in _mids if _rt[mid].get("phase") == "paused"],
+            "pauses": _parallel_pauses,
             "milestones_complete": sum(
                 1 for mid in _mids if _rt[mid].get("phase") in ("done", "merged")),
         }
+
+    # Phase-3 push-not-poll (design §4.3): on EVERY campaign pause (exit 10), fire the
+    # charter's notifications.on_pause hook AFTER the pause is durably persisted, FAIL-SAFE +
+    # default-OFF. A halt_condition_met pause is campaign-tier (paused_unit empty). Phase-4
+    # (§6.3): under parallelism the pause_* scalars mirror the OLDEST parked pause (incl.
+    # condition_id — the top-level halt_condition_pending is intentionally unused in parallel),
+    # and the notifier fires ONCE PER parked pause.
+    _hcp = getattr(st, "halt_condition_pending", None) or {}
+    if _parallel_pauses:
+        _oldest = _parallel_pauses[0]
+        _pause_milestone_id = _oldest.get("milestone_id")
+        _pause_subsprint_id = _oldest.get("subsprint_id")
+        _pause_condition_id = _oldest.get("condition_id")
+    else:
+        _pause_milestone_id = paused_unit.get("milestone_id") or _hcp.get("milestone_id")
+        _pause_subsprint_id = paused_unit.get("subsprint_id")
+        _pause_condition_id = _hcp.get("condition_id")
+    if exit_code == CAMPAIGN_EXIT_PAUSED:
+        try:
+            import pause_notifier as _pn
+            _ledger = audit.audit_path(campaign_id, os.path.join(home, "audit"))
+
+            def _emit_notif(evtype: str, payload: dict) -> None:
+                audit.append_event(campaign_id, evtype, payload,
+                                   ts=clock(), path=_ledger)
+
+            # Serial (or a parallel GLOBAL pause with no paused milestone) fires once from the
+            # top-level mirror; a parallel run with parked per-milestone pauses fires per pause.
+            _notif_pauses = _parallel_pauses or [{
+                "milestone_id": _pause_milestone_id, "subsprint_id": _pause_subsprint_id,
+                "pause_reason": st.pause_reason,
+                "checkpoint": (os.path.basename(st.pause_checkpoint)
+                               if st.pause_checkpoint else None)}]
+            for _p in _notif_pauses:
+                _pn.notify_on_pause(charter, {
+                    "campaign_id": campaign_id, "reason": _p.get("pause_reason"),
+                    "checkpoint": _p.get("checkpoint"),
+                    "milestone_id": _p.get("milestone_id"),
+                    "subsprint_id": _p.get("subsprint_id"),
+                }, _emit_notif)
+        except Exception:
+            pass  # the notifier path must NEVER break the pause / exit-10 return
     return {
         **base,
         "status": st.status,
@@ -1017,8 +1031,9 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         "pause_checkpoint": st.pause_checkpoint,
         "pause_milestone_id": _pause_milestone_id,
         "pause_subsprint_id": _pause_subsprint_id,
-        "pause_condition_id": _hcp.get("condition_id"),   # Phase-3 halt_condition_met identity
-        "pause_loop_id": paused_unit.get("loop_id"),
+        "pause_condition_id": _pause_condition_id,   # halt identity (phase-derived under parallel)
+        "pause_loop_id": (_parallel_pauses[0].get("loop_id") if _parallel_pauses
+                          else paused_unit.get("loop_id")),
         "milestone_index": st.milestone_index,
         "milestones_total": len(plan.get("milestones") or []),
         "subsprints_run": st.subsprints_run,

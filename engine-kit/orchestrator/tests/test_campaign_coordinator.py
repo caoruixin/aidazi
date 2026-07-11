@@ -332,6 +332,37 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
         self.assertEqual(r["phase"], "done")                 # single sub-sprint → complete
         self.assertEqual(len(camp.state.units), 1)
 
+    def test_budget_resume_requires_decision_raise_cap_or_abort(self):
+        # Codex R3 B-9: parallel campaign_budget_exhausted is serial-equivalent — it REQUIRES a
+        # decision (no decision ⇒ re-pause), raise_cap re-reads the signed budget + proceeds,
+        # abort ends.
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        signed = cp.stamp_signoff(_parallel_plan(ms, max_subsprints=1), CHARTER)
+        d = tempfile.mkdtemp()
+        camp = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=None, ledger_path=None)
+        import campaign_worker as cw
+        camp._worker_mod = cw
+        camp._worker_procs = {}
+        camp._base_wall = 0.0
+        camp._invocation_start = camp.clock()
+        camp._init_milestone_runtime()
+
+        def _budget(status="paused"):
+            camp.state.status = status
+            camp.state.pause_reason = "campaign_budget_exhausted"
+            camp.state.pause_checkpoint = None
+
+        _budget()
+        self.assertEqual(camp._handle_resume_parallel(None), "paused")   # no decision → re-pause
+        _budget()
+        self.assertEqual(
+            camp._handle_resume_parallel(lambda r, c: {"choice": "raise_cap"}), "proceed")
+        _budget()
+        self.assertEqual(
+            camp._handle_resume_parallel(lambda r, c: {"choice": "abort"}), "ended")
+        self.assertEqual(camp.state.status, "ended")
+
     def test_halt_resume_adds_provisional_then_commits_at_fold(self):
         # Codex R3 B-8: proceed adds the ack PROVISIONALLY (not permanent); the fold commit
         # promotes it → GLOBAL permanent.
