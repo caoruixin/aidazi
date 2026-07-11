@@ -553,6 +553,26 @@ def assert_writable_dest(dest: str, framework_root: str) -> None:
                         "(would copy into itself)")
 
 
+def _realpath_within(path: str, root_real: str) -> bool:
+    real = os.path.realpath(path)
+    return real == root_real or real.startswith(root_real + os.sep)
+
+
+def _assert_target_within_dest(dest_real: str, target: str) -> None:
+    """Refuse a write whose RESOLVED path escapes `dest` — a brownfield dest whose `docs/` or
+    `aidazi/` is a symlink pointing outside would otherwise let a child write escape dest / land
+    in the framework checkout ([R3 B-2])."""
+    if not _realpath_within(target, dest_real):
+        raise InitError(f"refusing: write target {target!r} escapes dest via a symlink "
+                        f"(resolves to {os.path.realpath(target)!r})")
+
+
+def _assert_not_in_framework(path: str, framework_root: str) -> None:
+    """Refuse writing an auxiliary output (e.g. --emit-answers) INTO the framework tree ([R3 B-1])."""
+    if _realpath_within(path, os.path.realpath(framework_root)):
+        raise InitError(f"refusing: {path!r} is inside the framework tree")
+
+
 def materialize(artifacts: dict, dest: str, framework_root: str, *, force: bool = False,
                 overwrite: bool = False) -> None:
     """The ONLY writer of the artifact tree. Guards the dest first (I2), writes each artifact
@@ -564,9 +584,11 @@ def materialize(artifacts: dict, dest: str, framework_root: str, *, force: bool 
 
     # never clobber a human-edited charter OR a signed research brief without --overwrite
     # ([C2 B-3]).
+    dest_real = os.path.realpath(dest)
     _HUMAN_EDITABLE = ("charter.yaml", os.path.join("docs", "research-briefs") + os.sep)
     for rel, content in sorted(artifacts.items()):
         target = os.path.join(dest, rel)
+        _assert_target_within_dest(dest_real, target)  # [R3 B-2] no symlink-escape write
         if rel == ".gitignore" and os.path.exists(target):
             # brownfield: MERGE (append missing required patterns), never clobber the adopter's
             # existing .gitignore.
@@ -596,12 +618,15 @@ def _merge_gitignore(target: str, required: str) -> None:
 
 
 def _mount_framework(dest: str, framework_root: str) -> None:
+    dest_real = os.path.realpath(dest)
     aidazi_dir = os.path.join(dest, "aidazi")
+    _assert_target_within_dest(dest_real, aidazi_dir)  # [R3 B-2] aidazi/ must not symlink out
     for sub in FRAMEWORK_MOUNT_DIRS:
         src = os.path.join(framework_root, sub)
         if not os.path.isdir(src):
             continue
         dst = os.path.join(aidazi_dir, sub)
+        _assert_target_within_dest(dest_real, dst)
         if os.path.isdir(dst):
             continue  # idempotent: already mounted
         shutil.copytree(src, dst, ignore=_COPY_IGNORE)
@@ -646,9 +671,13 @@ def run_exit_validators(dest: str, framework_root: str) -> dict:
     # write the readiness snapshot (a REQUIRED file produced by --write-readiness), then
     # re-run the aggregate so the snapshot is counted.
     readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
+    _assert_target_within_dest(os.path.realpath(dest), readiness)  # [R3 B-2]
     pre = adoption_status.validate_adoption(dest)
-    adoption_status.write_readiness_snapshot(pre, readiness)
-    status = adoption_status.validate_adoption(dest)
+    adoption_status.write_readiness_snapshot(pre, readiness)   # create the required file
+    status = adoption_status.validate_adoption(dest)           # re-validate with it present
+    # [R3 B-4] re-render the snapshot from the FINAL report so its content reflects the actual
+    # (green) state, not the stale pre-readiness report that recorded readiness as missing.
+    adoption_status.write_readiness_snapshot(status, readiness)
     results["adoption_status"] = (status.ok, "" if status.ok else "see remediation below")
 
     green = status.ok
@@ -911,15 +940,10 @@ def _capability_preflight(data: dict, framework_root: str) -> list:
     except InitError as exc:
         return [str(exc)]
     plan = _plan_from_data(data)
-    charter_text = _build_charter(plan, load_templates(framework_root)["charter"])
-    import tempfile
-    tf = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
-    try:
-        tf.write(charter_text)
-        tf.close()
-        rep = charter_validator.validate_file(tf.name)
-    finally:
-        os.unlink(tf.name)
+    # [R3 B-1] validate the charter IN-MEMORY (validate_charter is pure) — no temp-file write,
+    # so the interactive preflight has no write site at all.
+    charter = yaml.safe_load(_build_charter(plan, load_templates(framework_root)["charter"]))
+    rep = charter_validator.validate_charter(charter)
     if rep.ok:
         return []
     return [getattr(e, "render", lambda: str(e))() for e in rep.errors]
@@ -1002,8 +1026,9 @@ def main(argv=None) -> int:
                 raise InitError("no --answers and stdin is not a TTY; pass --answers <file.json>")
             data = collect_answers_interactive(framework_root)
             if args.emit_answers:
-                _atomic_write(os.path.abspath(args.emit_answers),
-                              json.dumps(data, indent=2) + "\n")
+                emit_path = os.path.abspath(args.emit_answers)
+                _assert_not_in_framework(emit_path, framework_root)  # [R3 B-1] never write into framework
+                _atomic_write(emit_path, json.dumps(data, indent=2) + "\n")
                 sys.stdout.write(f"[adopter_init] wrote answers -> {args.emit_answers}\n")
             plan = _plan_from_data(data)
         else:
@@ -1029,11 +1054,22 @@ def main(argv=None) -> int:
     sys.stdout.write(f"\nadopter_init: scaffolded {args.dest}\n\n")
     for name, (ok, detail) in outcome["results"].items():
         sys.stdout.write(f"  [{'PASS' if ok else 'FAIL'}] {name}  {detail}\n")
-    if outcome["green"]:
-        sys.stdout.write("\nAll four validators GREEN. Next: review charter.yaml + sign the "
-                         "research brief, then run the first loop.\n")
+    # [R3 B-3] the four validators do not check the INTENT-contract signature (only the brief
+    # token); enforce it end-to-end here so the tool never reports GREEN with an unconfirmed
+    # intent contract. I3-consistent: this is a truthful gate, never an auto-confirm.
+    intent_ok = plan.intent_confirmed
+    if not intent_ok:
+        sys.stdout.write("  [FAIL] intent contract  confirmed_by_human is false\n")
+    if outcome["green"] and intent_ok:
+        sys.stdout.write("\nAll checks GREEN (four validators + intent confirmation). Next: "
+                         "review charter.yaml, then run the first loop.\n")
         return 0
-    sys.stdout.write("\nNOT green — remediation:\n" + outcome["status_render"] + "\n")
+    sys.stdout.write("\nNOT green — remediation:\n")
+    if not intent_ok:
+        sys.stdout.write("  - intent contract is not confirmed (confirmed_by_human: false) — the "
+                         "authorized human must confirm the intent contract.\n")
+    if not outcome["green"]:
+        sys.stdout.write(outcome["status_render"] + "\n")
     return 2
 
 

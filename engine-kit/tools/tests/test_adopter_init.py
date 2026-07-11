@@ -113,6 +113,28 @@ class GuardTests(unittest.TestCase):
         with self.assertRaises(ai.InitError):
             ai.run_exit_validators(_FRAMEWORK_ROOT, _FRAMEWORK_ROOT)
 
+    def test_emit_answers_into_framework_refused(self):
+        # [R3 B-1] --emit-answers must never write INTO the framework tree.
+        with self.assertRaises(ai.InitError):
+            ai._assert_not_in_framework(os.path.join(_FRAMEWORK_ROOT, "leak.json"), _FRAMEWORK_ROOT)
+        with tempfile.TemporaryDirectory(prefix="ai-emit-ok-") as d:
+            ai._assert_not_in_framework(os.path.join(d, "ok.json"), _FRAMEWORK_ROOT)  # no raise
+
+    def test_symlink_escape_child_write_refused(self):
+        # [R3 B-2] a brownfield dest whose child dir symlinks outside must not let a write escape.
+        with tempfile.TemporaryDirectory(prefix="ai-esc-") as tmp:
+            dest = os.path.join(tmp, "dest")
+            outside = os.path.join(tmp, "outside")
+            os.makedirs(dest)
+            os.makedirs(outside)
+            os.symlink(outside, os.path.join(dest, "docs"))  # docs/ -> outside dest
+            plan = _load_plan()
+            artifacts = ai.build_artifacts(plan, ai.load_templates(_FRAMEWORK_ROOT))
+            with self.assertRaises(ai.InitError):
+                ai.materialize(artifacts, dest, _FRAMEWORK_ROOT, force=True)
+            # nothing leaked into the symlinked-out dir
+            self.assertEqual(os.listdir(outside), [])
+
 
 class ScaffoldGreenTests(unittest.TestCase):
     def _scaffold(self, tmp, answers=_CANARY_ANSWERS, force=False):
@@ -164,6 +186,28 @@ class ScaffoldGreenTests(unittest.TestCase):
             rc2 = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
             self.assertEqual(rc2, 0)
             self.assertIn("# human edit", ai._read_text(charter_path))
+
+    def test_intent_unconfirmed_is_not_green_even_with_signed_brief(self):
+        # [R3 B-3] the four validators only check the brief token; an unconfirmed INTENT contract
+        # must still make the tool report NOT green (the intent signature is enforced end-to-end).
+        data = json.load(open(_CANARY_ANSWERS))
+        data["intent_contract"]["confirmed_by_human"] = False  # intent NOT confirmed
+        # research_brief stays confirmed => adoption_status alone would be green
+        with tempfile.TemporaryDirectory(prefix="ai-intent-") as tmp:
+            apath = os.path.join(tmp, "a.json")
+            json.dump(data, open(apath, "w"))
+            rc = ai.main([os.path.join(tmp, "acme"), "--answers", apath, "--probe", "off"])
+            self.assertEqual(rc, 2, "unconfirmed intent contract must NOT be green")
+
+    def test_readiness_snapshot_reflects_final_green_state(self):
+        # [R3 B-4] the readiness snapshot must record the FINAL state, not the pre-readiness
+        # report that shows adoption-readiness.md as still-missing.
+        with tempfile.TemporaryDirectory(prefix="ai-rdy-") as tmp:
+            dest = os.path.join(tmp, "acme")
+            self.assertEqual(ai.main([dest, "--answers", _CANARY_ANSWERS, "--probe", "off"]), 0)
+            readiness = ai._read_text(os.path.join(dest, "docs", "current", "adoption-readiness.md"))
+            self.assertNotIn("--write-readiness after Step 8", readiness)  # not recorded missing
+            self.assertNotIn("missing", readiness.lower())
 
     def test_unsigned_brief_scaffolds_but_not_green(self):
         data = json.load(open(_CANARY_ANSWERS))
