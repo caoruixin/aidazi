@@ -155,13 +155,14 @@ follows property 5: **one decision at a time**.
 ## Fast path — one command: `adopter_init.py`
 
 **`python engine-kit/tools/adopter_init.py <dest>`** does **Steps 0–8 in one sitting.** It
-scaffolds every derivable artifact — `charter.yaml`, `AGENTS.md` + `CLAUDE.md` wiring,
-`.cursor/rules` when a role uses Cursor, `docs/current/*`, the requirement-ledger seed, the
+scaffolds every derivable artifact — `charter.yaml`, `AGENTS.md` (plus a `CLAUDE.md` `@AGENTS.md`
+import when a role uses Claude Code), `.cursor/rules` when a role uses Cursor, `docs/current/*`,
+the requirement-ledger seed, the
 `.orchestrator/` runtime dirs, and the framework mounted under `aidazi/` — and prompts you for
 **only the genuine choices**: the intent-contract triple + an explicit gate-1 sign-off, autonomy
 level + budgets + approved scope, the eval command, and each role's harness/provider/model. It
 runs an **offline capability check** (model registry + harness-name denylist) at answer time and
-an optional **Facet-A reachability probe** (`--probe binary|live`; `live` is env-gated by
+an optional **Facet-A reachability probe** (`--probe off|binary|live`; `live` is env-gated by
 `AIDAZI_ADOPTER_INIT_LIVE_PROBE=1` and is the only tier that makes a network call). It exits with
 the **four validators green** (or a printed remediation list) and writes `adoption-readiness.md`.
 

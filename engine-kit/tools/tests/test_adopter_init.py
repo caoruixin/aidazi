@@ -400,6 +400,32 @@ class BrownfieldCanaryTests(unittest.TestCase):
             gi = ai._read_text(os.path.join(dest, ".gitignore"))
             for pat in ("*.pyc", "build/", ".runs/", ".env.local", ".orchestrator/"):
                 self.assertIn(pat, gi, msg=f"{pat} missing from merged .gitignore")
+            gi_lines = [ln.strip() for ln in gi.splitlines()
+                        if ln.strip() and not ln.strip().startswith("#")]
+            self.assertEqual(len(gi_lines), len(set(gi_lines)), "duplicate .gitignore lines")
+
+    def test_merge_gitignore_edge_cases(self):
+        # [C4 N-1] no-trailing-newline + already-present pattern => merge without duplicating;
+        # empty existing => gets the required patterns.
+        with tempfile.TemporaryDirectory(prefix="ai-gi-") as tmp:
+            gi = os.path.join(tmp, ".gitignore")
+            with open(gi, "w", encoding="utf-8") as fh:
+                fh.write("*.pyc\n.runs/")  # .runs/ already present; NO trailing newline
+            ai._merge_gitignore(gi, ai._GITIGNORE)
+            lines = [ln.strip() for ln in ai._read_text(gi).splitlines()
+                     if ln.strip() and not ln.strip().startswith("#")]
+            self.assertEqual(lines.count(".runs/"), 1)  # not duplicated
+            self.assertIn("*.pyc", lines)               # preserved
+            self.assertIn(".env.local", lines)          # merged
+            # empty existing gets the required patterns
+            gi2 = os.path.join(tmp, "gi2")
+            open(gi2, "w").close()
+            ai._merge_gitignore(gi2, ai._GITIGNORE)
+            self.assertIn(".runs/", ai._read_text(gi2))
+            # a fully-covered existing file is left unchanged (no additions)
+            before = ai._read_text(gi)
+            ai._merge_gitignore(gi, ai._GITIGNORE)
+            self.assertEqual(ai._read_text(gi), before)
 
 
 class LiveProbeCanaryTests(unittest.TestCase):
