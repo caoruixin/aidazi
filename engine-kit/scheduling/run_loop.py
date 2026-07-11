@@ -626,14 +626,29 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
                      if entry.get("pause_checkpoint") else None)
             if decision.get("checkpoint") != m_cpt:
                 return _reject("checkpoint", decision.get("checkpoint"), m_cpt)
-            if m_reason == "halt_condition_met":
-                pend = entry.get("halt_condition_pending") or {}
-                if decision.get("condition_id") != pend.get("condition_id"):
-                    return _reject("condition_id", decision.get("condition_id"),
-                                   pend.get("condition_id"))
+            # Campaign-tier per-milestone gates forbid subsprint_id; a checkpoint-bearing UNIT
+            # pause (a halted sub-sprint) is IDENTITY-BOUND to its unit's subsprint_id (Codex R3
+            # B-10 round 5 — the serial unit binding, applied under parallel state). The folded
+            # halted unit is matched by milestone_id + the FULL checkpoint_path.
+            _unit_gates = {"milestone_merge", "halt_condition_met", "epoch_drift",
+                           "deliver_followup_required", "milestone_decompose_required"}
+            if m_reason in ("milestone_merge", "halt_condition_met"):
+                if decision.get("subsprint_id") is not None:
+                    sys.stderr.write(f"campaign decision: {m_reason} must not carry "
+                                     f"subsprint_id — refusing (fail-closed)\n")
+                    return None
+            elif m_reason not in _unit_gates and entry.get("pause_checkpoint"):
+                _u = next((u for u in reversed(_state.get("units") or [])
+                           if isinstance(u, dict) and u.get("milestone_id") == d_mid
+                           and u.get("checkpoint_path") == entry.get("pause_checkpoint")), None)
+                if _u is None:
+                    return _reject("paused unit lookup", d_mid, "a folded halted unit")
+                if decision.get("subsprint_id") != _u.get("subsprint_id"):
+                    return _reject("subsprint_id", decision.get("subsprint_id"),
+                                   _u.get("subsprint_id"))
             out = {k: decision[k] for k in
-                   ("milestone_id", "choice", "condition_id", "confirm", "route", "note",
-                    "residue", "rationale", "evidence", "waiver", "waiver_id")
+                   ("milestone_id", "subsprint_id", "choice", "condition_id", "confirm",
+                    "route", "note", "residue", "rationale", "evidence", "waiver", "waiver_id")
                    if k in decision}
             return out or None
         if decision.get("pause_reason") != pause_reason:

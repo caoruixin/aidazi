@@ -309,6 +309,53 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
         self.assertEqual(r["current_attempt_nonce"], 2)      # bumped
         self.assertEqual(r["phase"], "ready")                # re-dispatchable
 
+    def test_reap_fences_dead_adopted_worker(self):
+        # Codex R3 B-11: an ADOPTED worker (proc=None) that died — no result + no live flock —
+        # is fenced + re-dispatched IN-LOOP (not left as a stale inflight forever).
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        camp, cw = self._crash_camp(ms)
+        r = camp.state.milestone_runtime["m1"]
+        r["current_attempt_nonce"] = 1
+        r["phase"] = "running"
+        r["inflight"] = {"attempt_nonce": 1, "loop_id": "u1", "subsprint_id": "s1",
+                         "work_dir": None, "dispatch_epoch": "H",
+                         "dispatch_freshness_slice": {}}
+        wdir = camp._worker_dir("m1")
+        camp._worker_procs["m1"] = {"proc": None, "worker_dir": wdir,
+                                    "units_dir": os.path.join(wdir, "units"), "attempt_nonce": 1}
+        camp._reap_crashed_workers()                 # no result + no lock ⇒ dead ⇒ fence
+        r = camp.state.milestone_runtime["m1"]
+        self.assertIsNone(r["inflight"])
+        self.assertEqual(r["current_attempt_nonce"], 2)   # bumped → re-dispatch
+        self.assertEqual(r["phase"], "ready")
+
+    def test_reap_leaves_live_adopted_worker_holding_lock(self):
+        # An adopted worker STILL HOLDING its flock is alive — the reaper must NOT fence it.
+        import fcntl
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        camp, cw = self._crash_camp(ms)
+        r = camp.state.milestone_runtime["m1"]
+        r["current_attempt_nonce"] = 1
+        r["phase"] = "running"
+        r["inflight"] = {"attempt_nonce": 1, "loop_id": "u1", "subsprint_id": "s1",
+                         "work_dir": None, "dispatch_epoch": "H",
+                         "dispatch_freshness_slice": {}}
+        wdir = camp._worker_dir("m1")
+        camp._worker_procs["m1"] = {"proc": None, "worker_dir": wdir,
+                                    "units_dir": os.path.join(wdir, "units"), "attempt_nonce": 1}
+        fd = os.open(cw.lock_path(wdir), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)           # simulate a live adopted worker
+            camp._reap_crashed_workers()
+            self.assertIsNotNone(camp.state.milestone_runtime["m1"]["inflight"])   # NOT fenced
+            self.assertEqual(camp.state.milestone_runtime["m1"]["current_attempt_nonce"], 1)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        camp._reap_crashed_workers()                 # lock released ⇒ now fenced
+        self.assertIsNone(camp.state.milestone_runtime["m1"]["inflight"])
+        self.assertEqual(camp.state.milestone_runtime["m1"]["current_attempt_nonce"], 2)
+
     def test_crash_recover_folds_completed_result(self):
         # §5.5: a durable inflight whose live-attempt result already landed ⇒ FOLD it on recovery.
         ms = [_ms("m1", ["s1"], module_locks=["a"])]
@@ -647,6 +694,42 @@ class TestParallelResolver(unittest.TestCase):
                        "choice": "merge_now"}, fh)
         resolver = rl.make_campaign_decision_resolver("camp-1", dec, home)
         self.assertIsNone(resolver("milestone_merge", self._CP1))
+
+    _UCP = "/cp/20260711-000000__gate_hard_fail__m1.md"
+
+    def _home_with_folded_halted_unit(self):
+        home = tempfile.mkdtemp()
+        with open(os.path.join(home, "campaign-state.json"), "w", encoding="utf-8") as fh:
+            json.dump({"campaign_id": "camp-1", "status": "paused",
+                       "cursor": {"milestone_index": 0, "subsprint_index": 0},
+                       "spent": {"subsprints_run": 1, "total_spawns": 0,
+                                 "wall_clock_minutes": 0},
+                       "units": [{"milestone_id": "m1", "subsprint_id": "s1",
+                                  "status": "halted", "checkpoint_path": self._UCP,
+                                  "loop_id": "u1"}],
+                       "pause_reason": "gate_hard_fail", "pause_checkpoint": self._UCP,
+                       "milestone_runtime": {"m1": {"phase": "paused",
+                                                    "pause_reason": "gate_hard_fail",
+                                                    "pause_checkpoint": self._UCP}}}, fh)
+        return home
+
+    def test_resolver_enforces_subsprint_id_for_folded_unit(self):
+        # Codex R3 B-10 round 5: a folded halted-unit pause is IDENTITY-BOUND to its
+        # subsprint_id (matched by milestone_id + checkpoint_path), even though inflight is cleared.
+        import run_loop as rl
+        home = self._home_with_folded_halted_unit()
+        dec = os.path.join(home, "dec.json")
+
+        def _resolve(subsprint_id):
+            with open(dec, "w", encoding="utf-8") as fh:
+                json.dump({"campaign_id": "camp-1", "pause_reason": "gate_hard_fail",
+                           "checkpoint": os.path.basename(self._UCP), "milestone_id": "m1",
+                           "subsprint_id": subsprint_id, "choice": "re_run"}, fh)
+            return rl.make_campaign_decision_resolver("camp-1", dec, home)(
+                "gate_hard_fail", self._UCP)
+
+        self.assertIsNotNone(_resolve("s1"))      # correct subsprint_id → bound
+        self.assertIsNone(_resolve("WRONG"))      # wrong subsprint_id → refused (fail-closed)
 
 
 class TestParallelReporting(unittest.TestCase):

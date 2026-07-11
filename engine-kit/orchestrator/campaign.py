@@ -3770,27 +3770,35 @@ class Campaign:
                 proc = rec.get("proc")
                 if proc is not None and proc.poll() is not None:
                     return   # process exited (result present, or a crash → _reap_crashed_workers)
+                if proc is None and not self._worker_mod.worker_lock_held(rec["worker_dir"]):
+                    return   # an ADOPTED worker released its flock (died) → let the reaper fence it
             time.sleep(poll)
         return
 
     def _reap_crashed_workers(self) -> None:
-        """In-loop crash reconcile (Codex R3 B-6): a tracked worker whose PROCESS EXITED without
-        writing its live-attempt result crashed hard — FENCE it (best-effort kill the stale lease)
-        + bump current_attempt_nonce (a late stale result can never mask the fresh attempt) + clear
-        inflight + re-dispatch (phase→ready). Audited (observable), never a silent livelock. Only
-        workers with a live Popen handle are checked; an adopted worker (no handle) is reaped by
-        resume-time fencing."""
+        """In-loop crash reconcile (Codex R3 B-6/B-11): a worker whose PROCESS DIED without writing
+        its live-attempt result crashed hard — FENCE it (best-effort kill the stale lease) + bump
+        current_attempt_nonce (a late stale result can never mask the fresh attempt) + clear inflight
+        + re-dispatch (phase→ready). Audited (observable), never a silent livelock. Death is: a
+        tracked child (Popen) that EXITED, OR an ADOPTED worker (no handle, from crash-resume) whose
+        FLOCK is released (Codex R3 B-11 — an adopted child that dies post-resume is now fenced too)."""
         wm = self._worker_mod
         changed = False
         for mid, rec in list(self._worker_procs.items()):
             r = self._rt().get(mid) or {}
             infl = r.get("inflight")
-            proc = rec.get("proc")
-            if not infl or proc is None or proc.poll() is None:
-                continue   # still running, or adopted (no handle) → left to the fold/await path
+            if not infl:
+                continue
             nonce = infl.get("attempt_nonce")
             if nonce is not None and os.path.isfile(wm.result_path(rec["worker_dir"], nonce)):
-                continue   # exited WITH a result → the fold loop handles it
+                continue   # completed WITH a result → the fold loop handles it
+            proc = rec.get("proc")
+            if proc is not None:
+                if proc.poll() is None:
+                    continue   # a tracked child still running
+            elif wm.worker_lock_held(rec["worker_dir"]):
+                continue       # an adopted worker still holding its flock → still alive
+            # dead without a result ⇒ fence + re-dispatch.
             self._fence_stale_lease(rec["worker_dir"], nonce)
             r["current_attempt_nonce"] = int(r.get("current_attempt_nonce", 0)) + 1
             r["inflight"] = None
