@@ -589,6 +589,23 @@ class TestParallelPhaseDerivation(unittest.TestCase):
         self.assertNotEqual(by_id["m1"], serial_by_id["m1"])  # delivered != in_progress
         self.assertNotEqual(by_id["m2"], serial_by_id["m2"])  # in_progress != not_started
 
+    def test_accepts_coordinator_sidecar_phase_string_shape(self):
+        # Codex R3 B-1: the coordinator-produced requirement-context sidecar projects
+        # milestone_runtime as {mid: "phase"} (a bare STRING), not {mid: {phase: ...}}. Both
+        # compute_coverage AND compute_requirement_coverage must accept it (no .get() on a str).
+        plan = _plan([_ms("m1", ["s1"])])
+        sidecar_state = {"campaign_id": "camp-1", "status": "paused",
+                         "cursor": {"milestone_index": 0, "subsprint_index": 0},
+                         "milestone_outcomes": [], "units": [],
+                         "milestone_runtime": {"m1": "merged"}}   # bare string shape
+        by_id = {r["id"]: r["status"]
+                 for r in sr.compute_coverage(plan, sidecar_state)["milestones"]}
+        self.assertEqual(by_id["m1"], "delivered")
+        ledger = {"version": "v1", "requirements": [
+            {"id": "R1", "statement": "s", "covered_by": "m1"}]}
+        rc = sr.compute_requirement_coverage(plan, sidecar_state, ledger)   # must NOT crash
+        self.assertIsInstance(rc, dict)
+
 
 if __name__ == "__main__":
     unittest.main()

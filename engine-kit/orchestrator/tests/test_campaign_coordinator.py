@@ -447,19 +447,93 @@ class TestParallelCoordinatorGit(unittest.TestCase):
         signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
         camp = cp.Campaign(signed, os.path.join(rd, "run"), _dummy_run_unit, clock=_clock(),
                            charter=CHARTER, repo_dir=rd, ledger_path=None)
+        # The drift clears ONLY when the live slice re-aligns with the DISPATCH slice (Codex R3
+        # B-4). Store the current live slice as the dispatch slice so the re-check passes.
+        aligned_slice = camp._dispatch_freshness_slice(ms[0])
         camp.state.milestone_runtime["m1"] = {
             "phase": "paused", "subsprint_index": 1, "current_attempt_nonce": 1,
             "folded": [["u1", 1]], "pause_reason": "epoch_drift", "pause_checkpoint": None,
-            "epoch_drift": {"displaced_merge_checkpoint": "/cp/m1.md",
+            "epoch_drift": {"dispatch_freshness_slice": aligned_slice,
+                            "displaced_merge_checkpoint": "/cp/m1.md",
                             "displaced_pending_milestone_advance": True}}
         r = camp.state.milestone_runtime["m1"]
         out = camp._resolve_epoch_drift_parallel(
             "m1", r, {"milestone_id": "m1", "choice": "revalidate"})
         self.assertEqual(out, "proceed")
-        self.assertIsNone(r["epoch_drift"])                       # gate cleared
+        self.assertIsNone(r["epoch_drift"])                       # gate cleared (slice re-aligned)
         self.assertEqual(r["phase"], "paused")                    # merge gate RESTORED
         self.assertEqual(r["pause_reason"], "milestone_merge")
         self.assertEqual(r["pause_checkpoint"], "/cp/m1.md")
+
+    def test_epoch_drift_resume_repauses_when_still_drifted(self):
+        # Codex R3 B-4: if the live slice does NOT re-align with the dispatch slice, the drift
+        # HOLDS (re-pause) — a signed/proceed decision alone never clears it.
+        rd = tempfile.mkdtemp()
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
+        camp = cp.Campaign(signed, os.path.join(rd, "run"), _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=rd, ledger_path=None)
+        stale_slice = json.loads(json.dumps(camp._dispatch_freshness_slice(ms[0])))
+        stale_slice["wrapper"]["goal"] = "STILL DIFFERENT"        # != live slice
+        camp.state.milestone_runtime["m1"] = {
+            "phase": "paused", "subsprint_index": 1, "current_attempt_nonce": 1,
+            "folded": [["u1", 1]], "pause_reason": "epoch_drift", "pause_checkpoint": None,
+            "epoch_drift": {"dispatch_freshness_slice": stale_slice,
+                            "displaced_merge_checkpoint": "/cp/m1.md"}}
+        r = camp.state.milestone_runtime["m1"]
+        out = camp._resolve_epoch_drift_parallel(
+            "m1", r, {"milestone_id": "m1", "choice": "revalidate"})
+        self.assertEqual(out, "paused")
+        self.assertIsNotNone(r["epoch_drift"])                    # HELD — not cleared
+
+
+class TestParallelResolver(unittest.TestCase):
+    """The REAL file-based decision resolver is parallel-aware (Codex R3 B-3): it binds against
+    milestone_runtime[decision.milestone_id] and PRESERVES milestone_id so _handle_resume_parallel
+    can select the right parked milestone (not the top-level mirror)."""
+
+    _CP1 = "/cp/20260711-000000__milestone_merge__m1.md"
+    _CP2 = "/cp/20260711-000001__milestone_merge__m2.md"
+
+    def _home_with_two_merge_pauses(self):
+        home = tempfile.mkdtemp()
+        with open(os.path.join(home, "campaign-state.json"), "w", encoding="utf-8") as fh:
+            json.dump({"campaign_id": "camp-1", "status": "paused",
+                       "cursor": {"milestone_index": 0, "subsprint_index": 0},
+                       "spent": {"subsprints_run": 2, "total_spawns": 0,
+                                 "wall_clock_minutes": 0}, "units": [],
+                       "pause_reason": "milestone_merge", "pause_checkpoint": self._CP1,
+                       "milestone_runtime": {
+                           "m1": {"phase": "paused", "pause_reason": "milestone_merge",
+                                  "pause_checkpoint": self._CP1},
+                           "m2": {"phase": "paused", "pause_reason": "milestone_merge",
+                                  "pause_checkpoint": self._CP2}}}, fh)
+        return home
+
+    def test_resolver_binds_target_milestone_and_preserves_id(self):
+        import run_loop as rl
+        home = self._home_with_two_merge_pauses()
+        dec = os.path.join(home, "dec.json")
+        with open(dec, "w", encoding="utf-8") as fh:
+            json.dump({"campaign_id": "camp-1", "pause_reason": "milestone_merge",
+                       "checkpoint": os.path.basename(self._CP2), "milestone_id": "m2",
+                       "choice": "merge_now"}, fh)
+        resolver = rl.make_campaign_decision_resolver("camp-1", dec, home)
+        # The top-level mirror is m1, but the decision targets m2 — the parallel resolver binds
+        # m2 (validated against its runtime entry) and PRESERVES milestone_id.
+        self.assertEqual(resolver("milestone_merge", self._CP1),
+                         {"milestone_id": "m2", "choice": "merge_now"})
+
+    def test_resolver_refuses_unknown_or_unpaused_milestone(self):
+        import run_loop as rl
+        home = self._home_with_two_merge_pauses()
+        dec = os.path.join(home, "dec.json")
+        with open(dec, "w", encoding="utf-8") as fh:
+            json.dump({"campaign_id": "camp-1", "pause_reason": "milestone_merge",
+                       "checkpoint": os.path.basename(self._CP2), "milestone_id": "ghost",
+                       "choice": "merge_now"}, fh)
+        resolver = rl.make_campaign_decision_resolver("camp-1", dec, home)
+        self.assertIsNone(resolver("milestone_merge", self._CP1))
 
 
 class TestParallelReporting(unittest.TestCase):

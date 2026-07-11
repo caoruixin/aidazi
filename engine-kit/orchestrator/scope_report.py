@@ -143,6 +143,18 @@ def _parallel_runtime(state: dict) -> Optional[dict]:
     return rt if isinstance(rt, dict) and rt else None
 
 
+def _phase_of(rt: dict, mid: str) -> Optional[str]:
+    """This milestone's phase, tolerant of BOTH shapes (Codex R3 B-1): the FULL persisted state
+    (`{mid: {"phase": ...}}`) AND the coordinator-produced requirement-context sidecar projection
+    (`{mid: "phase"}` — a bare string). None ⇒ no entry (effective 'ready')."""
+    v = (rt or {}).get(mid)
+    if isinstance(v, dict):
+        return v.get("phase")
+    if isinstance(v, str):
+        return v
+    return None
+
+
 def compute_coverage(plan: dict, state: Optional[dict],
                      baseline: Optional[dict] = None) -> dict:
     """Project ``(plan, state[, baseline])`` -> a structured coverage report.
@@ -202,7 +214,7 @@ def compute_coverage(plan: dict, state: Optional[dict],
         drift_all.extend(drift)
 
         record = {"id": mid, "objective": milestone.get("objective"),
-                  "status": (_milestone_status_from_phase((rt.get(mid) or {}).get("phase"))
+                  "status": (_milestone_status_from_phase(_phase_of(rt, mid))
                              if rt else _milestone_status(mi, cursor_mi, started)),
                   "subsprints": ss_reports,
                   "drift_dispatched_not_in_plan": drift}
@@ -432,7 +444,7 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
         # PARALLEL state by the milestone's runtime PHASE (§3.2.1 — the cursor is the (0,0)
         # mirror), else by cursor position.
         if rt is not None:
-            ph = (rt.get(mid) or {}).get("phase")
+            ph = _phase_of(rt, mid)
             return (("in_progress" if ph in ("running", "paused") else "not_started"),
                     None, mid)
         mi = index_of.get(mid)

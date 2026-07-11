@@ -3381,9 +3381,13 @@ class Campaign:
                                    "units_dir": units_dir, "attempt_nonce": nonce}
 
     def _worker_run_loop_kwargs(self) -> dict:
-        """The ambient run_loop kwargs a worker forwards (the resolved --repo-dir / adapter
-        wiring). Best-effort from the coordinator's own run_loop_kwargs, if any."""
-        return getattr(self, "_ambient_run_loop_kwargs", {}) or {}
+        """The SERIALIZABLE run_loop kwargs a worker forwards to reconstruct the REAL Driver
+        wiring (Codex R3 B-2): repo_dir / memory_root / allow_real / allow_gitlink_drift, set by
+        run_campaign from run_campaign_entry. NON-serializable injected `adapters` are EXCLUDED
+        (they cannot cross the subprocess boundary — a real run passes allow_real and the worker
+        builds adapters; a test injects a run_loop_entrypoint via `worker_exec`). Empty ⇒ the
+        worker runs with run_loop defaults (mock)."""
+        return dict(getattr(self, "worker_run_loop_kwargs", None) or {})
 
     def _worker_dir(self, mid: str) -> str:
         d = os.path.join(self.run_dir, "milestones", _fs_safe(mid))
@@ -3608,6 +3612,11 @@ class Campaign:
                 if self.state.status == STATUS_PAUSED and self.state.pause_reason == \
                         "campaign_plan_signoff":
                     return self.state   # a fold-time freshness block (§5.6 primary) halts all
+            # 1b) a worker that EXITED without a live-attempt result CRASHED (SIGKILL/OOM/hard
+            # exit — an in-worker exception writes an error result, which folds normally). Fence
+            # it + re-dispatch IN-LOOP so the coordinator never livelocks waiting for a result
+            # that will never appear (Codex R3 B-6 — C4 fencing otherwise runs only on resume).
+            self._reap_crashed_workers()
             # 2) termination check.
             inflight = self._parallel_inflight_count()
             ready = parallel_ready_set(self.milestones, self._rt())
@@ -3712,9 +3721,39 @@ class Campaign:
                     return
                 proc = rec.get("proc")
                 if proc is not None and proc.poll() is not None:
-                    return   # process exited (result should be present, or a crash → C4 fence)
+                    return   # process exited (result present, or a crash → _reap_crashed_workers)
             time.sleep(poll)
         return
+
+    def _reap_crashed_workers(self) -> None:
+        """In-loop crash reconcile (Codex R3 B-6): a tracked worker whose PROCESS EXITED without
+        writing its live-attempt result crashed hard — FENCE it (best-effort kill the stale lease)
+        + bump current_attempt_nonce (a late stale result can never mask the fresh attempt) + clear
+        inflight + re-dispatch (phase→ready). Audited (observable), never a silent livelock. Only
+        workers with a live Popen handle are checked; an adopted worker (no handle) is reaped by
+        resume-time fencing."""
+        wm = self._worker_mod
+        changed = False
+        for mid, rec in list(self._worker_procs.items()):
+            r = self._rt().get(mid) or {}
+            infl = r.get("inflight")
+            proc = rec.get("proc")
+            if not infl or proc is None or proc.poll() is None:
+                continue   # still running, or adopted (no handle) → left to the fold/await path
+            nonce = infl.get("attempt_nonce")
+            if nonce is not None and os.path.isfile(wm.result_path(rec["worker_dir"], nonce)):
+                continue   # exited WITH a result → the fold loop handles it
+            self._fence_stale_lease(rec["worker_dir"], nonce)
+            r["current_attempt_nonce"] = int(r.get("current_attempt_nonce", 0)) + 1
+            r["inflight"] = None
+            r["phase"] = "ready"
+            self._worker_procs.pop(mid, None)
+            self._audit("campaign_parallel_worker_crash",
+                        {"milestone_id": mid, "crashed_nonce": nonce})
+            changed = True
+        if changed:
+            self._mirror_from_runtime()
+            self._save()
 
     def _crash_recover_parallel(self) -> None:
         """§5.5 crash recovery on a STATUS_RUNNING resume: for each milestone with a DURABLE
@@ -3879,6 +3918,26 @@ class Campaign:
         if reason == "campaign_budget_exhausted":
             self._clear_pause_parallel()
             return "proceed"
+        # §6 decompose recheck (Codex R3 B-5, serial-analogue at campaign.py:2590): a milestone
+        # parked at milestone_decompose_required whose subsprint_sequence was AUTHORED (now
+        # non-empty) in a re-signed plan re-enters the ready set — resolved by a plan edit + a
+        # re-sign, NOT a decision file. When the plan is fresh-signed, clear those milestones and
+        # re-drive (the plan edit's freshness is caught by the campaign_plan_signoff path above).
+        if self._authority_fresh():
+            recovered = False
+            for _mid, _r in self._rt().items():
+                if isinstance(_r, dict) and _r.get("phase") == "paused" \
+                        and _r.get("pause_reason") == "milestone_decompose_required" \
+                        and list(self._milestone_by_id(_mid).get("subsprint_sequence") or []):
+                    _r["phase"] = "ready"
+                    _r["pause_reason"] = None
+                    _r["pause_checkpoint"] = None
+                    recovered = True
+            if recovered:
+                self._clear_pause_parallel()
+                self._mirror_from_runtime()
+                self._save()
+                return "proceed"
         # Per-milestone parked pause: the decision selects ONE milestone's checkpoint (§6.1/§6.3).
         decision = (decision_resolver(reason, self.state.pause_checkpoint)
                     if decision_resolver is not None else None)
@@ -3943,16 +4002,30 @@ class Campaign:
         return "proceed"
 
     def _resolve_epoch_drift_parallel(self, mid: str, r: dict, decision: dict) -> str:
-        """Resolve an epoch_drift hold (§5.6): the human re-validated the drifted scope. Clear the
-        durable gate; RESTORE a merge gate the drift displaced (a completion) so the human still
-        merges the milestone, else the milestone re-enters its normal flow. abort ⇒ end."""
+        """Resolve an epoch_drift hold (§5.6/§6). The gate clears ONLY by a deterministic EXACT
+        freshness-slice re-check — NEVER merely by a signed/proceed decision (Codex R3 B-4): the
+        plan must be fresh-signed AND the LIVE freshness slice for this milestone must be
+        byte-exact-equal to the slice its unit was DISPATCHED under (the human has re-aligned this
+        milestone's scope). Only then clear the durable gate — restoring a merge gate the drift
+        displaced (a completion), else re-entering the normal flow. abort ⇒ end; still-drifted or
+        not-signed ⇒ re-pause (fail-closed, so a bug/tamper can never silently continue)."""
         choice = decision.get("choice")
         if choice == "abort":
             self._end_parallel("epoch_drift_aborted")
             return "ended"
         if choice not in ("revalidate", "proceed"):
             return self._repause_parallel("epoch_drift", "unrecognized_choice")
+        if not self._authority_fresh():
+            self._pause_campaign_global(
+                "campaign_plan_signoff", None, "campaign_freshness_block",
+                {"signoff_status": self._signoff_status(), "drift": self._drift_field_hint()},
+                freshness_block=True)
+            return "paused"
         drift = r.get("epoch_drift") or {}
+        stored = drift.get("dispatch_freshness_slice")
+        live = self._dispatch_freshness_slice(self._milestone_by_id(mid))
+        if _canonical_json(live) != _canonical_json(stored):
+            return self._repause_parallel("epoch_drift", "scope_still_drifted")
         r["epoch_drift"] = None
         if "displaced_merge_checkpoint" in drift:
             r["phase"] = "paused"
@@ -4002,10 +4075,25 @@ class Campaign:
         seq = list(m.get("subsprint_sequence") or [])
         action = interpret_dispatch(reason, decision)
         if action == ACT_END:
-            self._end_parallel("campaign_aborted")
+            self._end_parallel("resolved_abort")
             return "ended"
+        # A cursor-advancing / re-dispatching resolution ACTS ON SIGNED SCOPE → gate it with the
+        # SAME freshness check as serial (Codex R3 B-5, T2-A B5): a post-sign edit ⇒ stale ⇒ block
+        # the whole campaign for a re-sign (never strand a half-advanced milestone).
+        if action in (ACT_ADVANCE_SUBSPRINT, ACT_ADVANCE_MILESTONE, ACT_REDISPATCH_FRESH):
+            if not self._authority_fresh():
+                self._pause_campaign_global(
+                    "campaign_plan_signoff", None, "campaign_freshness_block",
+                    {"signoff_status": self._signoff_status(),
+                     "drift": self._drift_field_hint()}, freshness_block=True)
+                return "paused"
         if action == ACT_ADVANCE_MILESTONE:
-            # accepted ship → the milestone is complete (no further sub-sprints run).
+            # A human ship at an Acceptance gate CLOSES this milestone — stamp the RESUME terminal
+            # (delivered vs waived-with-reason, serial-identical _RESUME_ADVANCE_TERMINAL), then
+            # run the merge gate (its _stamp_milestone_outcome is a no-op — already stamped).
+            self._stamp_milestone_outcome(
+                mid, _RESUME_ADVANCE_TERMINAL.get(reason, "not_shipped"),
+                pause_reason=reason, decision_ref=r.get("pause_checkpoint"))
             r["pause_reason"] = None
             r["pause_checkpoint"] = None
             self._complete_milestone_parallel(mid, m)
@@ -4023,8 +4111,17 @@ class Campaign:
             r["phase"] = "ready"
             r["pause_reason"] = None
             r["pause_checkpoint"] = None
+        elif action == ACT_DELIVER_FOLLOWUP:
+            # A NEW unit must be authored by Deliver → park at deliver_followup_required (the
+            # parallel core never auto-authors, serial-identical). Record this milestone's baseline
+            # seq so a later resume tells a genuine insertion from a pre-existing next sub-sprint.
+            r["followup_baseline_seq"] = list(seq)
+            r["phase"] = "paused"
+            r["pause_reason"] = "deliver_followup_required"
+            self._mirror_from_runtime()
+            self._save()
+            return "paused"
         else:
-            # ACT_DELIVER_FOLLOWUP / unknown → the parallel core does not auto-author → re-pause.
             return self._repause_parallel(reason, f"unresolved_action:{action}")
         self._clear_pause_parallel()
         self._mirror_from_runtime()
@@ -4037,12 +4134,21 @@ def run_campaign(plan: dict, run_dir: str, run_unit: RunUnit, *,
                  resume: bool = False, decision_resolver=None,
                  repo_dir: Optional[str] = None,
                  charter: Optional[dict] = None,
-                 ledger_path: Optional[str] = None) -> CampaignState:
-    """Convenience entry point — construct a Campaign and run it."""
-    return Campaign(plan, run_dir, run_unit, clock=clock,
+                 ledger_path: Optional[str] = None,
+                 worker_run_loop_kwargs: Optional[dict] = None,
+                 worker_exec: Optional[dict] = None) -> CampaignState:
+    """Convenience entry point — construct a Campaign and run it. Phase-4: `worker_run_loop_kwargs`
+    is the SERIALIZABLE run_loop config the PARALLEL coordinator forwards to isolated workers so a
+    real (`--allow-real`) parallel campaign runs the real Driver, not mock adapters (Codex R3 B-2);
+    `worker_exec` overrides the worker's run_loop entrypoint/clock (tests)."""
+    camp = Campaign(plan, run_dir, run_unit, clock=clock,
                     audit_dir=audit_dir, repo_dir=repo_dir, charter=charter,
-                    ledger_path=ledger_path).run(
-                        resume=resume, decision_resolver=decision_resolver)
+                    ledger_path=ledger_path)
+    if worker_run_loop_kwargs is not None:
+        camp.worker_run_loop_kwargs = dict(worker_run_loop_kwargs)
+    if worker_exec is not None:
+        camp.worker_exec = dict(worker_exec)
+    return camp.run(resume=resume, decision_resolver=decision_resolver)
 
 
 # --------------------------------------------------------------------------- #

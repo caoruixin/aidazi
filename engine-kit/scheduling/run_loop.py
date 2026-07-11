@@ -597,6 +597,40 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
 
         if decision.get("campaign_id") != campaign_id:
             return _reject("campaign_id", decision.get("campaign_id"), campaign_id)
+        # Phase-4 (Codex R3 B-3): a PARALLEL campaign parks pauses PER MILESTONE (milestone_runtime),
+        # NOT on the singleton cursor/context. The decision selects ONE milestone by milestone_id
+        # (§6.3: one --resume per parked pause); validate it against THAT milestone's runtime entry
+        # (its pause_reason + checkpoint, condition_id for halt) and PRESERVE milestone_id so
+        # _handle_resume_parallel can bind it. Bypasses the serial top-level (mirror) validation.
+        try:
+            with open(os.path.join(campaign_home, "campaign-state.json"),
+                      encoding="utf-8") as _fh:
+                _state = json.load(_fh)
+        except (OSError, ValueError):
+            _state = {}
+        _rt = _state.get("milestone_runtime")
+        if isinstance(_rt, dict) and _rt:
+            d_mid = decision.get("milestone_id")
+            entry = _rt.get(d_mid) if d_mid else None
+            if not isinstance(entry, dict) or entry.get("phase") != "paused":
+                return _reject("milestone_id (paused)", d_mid, "a paused milestone")
+            m_reason = entry.get("pause_reason")
+            if decision.get("pause_reason") != m_reason:
+                return _reject("pause_reason", decision.get("pause_reason"), m_reason)
+            m_cpt = (os.path.basename(entry["pause_checkpoint"])
+                     if entry.get("pause_checkpoint") else None)
+            if decision.get("checkpoint") != m_cpt:
+                return _reject("checkpoint", decision.get("checkpoint"), m_cpt)
+            if m_reason == "halt_condition_met":
+                pend = entry.get("halt_condition_pending") or {}
+                if decision.get("condition_id") != pend.get("condition_id"):
+                    return _reject("condition_id", decision.get("condition_id"),
+                                   pend.get("condition_id"))
+            out = {k: decision[k] for k in
+                   ("milestone_id", "choice", "condition_id", "confirm", "route", "note",
+                    "residue", "rationale", "evidence", "waiver", "waiver_id")
+                   if k in decision}
+            return out or None
         if decision.get("pause_reason") != pause_reason:
             return _reject("pause_reason", decision.get("pause_reason"), pause_reason)
         live_cpt = os.path.basename(checkpoint_path) if checkpoint_path else None
@@ -832,10 +866,18 @@ def run_campaign_entry(plan: dict, charter: dict, *,
                                      clock=clock, plan=plan,
                                      ledger_path=ledger_path, **run_loop_kwargs)
         resolver = make_campaign_decision_resolver(campaign_id, decision_path, home)
+        # Phase-4 (Codex R3 B-2): the PARALLEL coordinator launches isolated workers that
+        # reconstruct the Driver from a SERIALIZABLE run_loop config. Forward the JSON-safe
+        # subset (repo_dir / memory_root / allow_real / allow_gitlink_drift) so a real
+        # (`--allow-real`) parallel campaign runs the REAL Driver — NOT default mock adapters.
+        # Injected `adapters` OBJECTS cannot cross the subprocess boundary and are EXCLUDED (a
+        # test that injects adapters drives serial, or overrides the worker entrypoint).
+        worker_rl_kwargs = {k: v for k, v in run_loop_kwargs.items() if k != "adapters"}
         st = _cp.run_campaign(plan, home, run_unit, clock=clock,
                               resume=resume, decision_resolver=resolver,
                               repo_dir=repo_dir, charter=charter,
-                              ledger_path=ledger_path)
+                              ledger_path=ledger_path,
+                              worker_run_loop_kwargs=worker_rl_kwargs)
     except ValueError as exc:
         # invalid plan / state / schema / mismatched campaign id / invalid ledger →
         # fail-closed.
