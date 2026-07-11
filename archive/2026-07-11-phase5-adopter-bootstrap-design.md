@@ -386,9 +386,13 @@ All required by `adoption_status` (§1.2) unless noted:
    a synthesized top-level `intent_contract` block (I3 — confirmed flag from `plan` only, no
    `brief` sub-key). The charter carries NO brief pointer; the signed brief is found via the
    `docs/research-briefs/` dir-scan (§4.3.9).
-2. `AGENTS.md` — from the root consumer template with `<adopter-name>` filled (else
-   `adoption_status._agents_has_placeholder` blocks `:377-379`); MUST contain the
-   control-plane-load block `control_plane_validator` requires (`:478-479`).
+2. `AGENTS.md` — modeled on `examples/minimal-greenfield/AGENTS.md` with `<adopter-name>`/
+   `<adopter>` placeholders filled (else `adoption_status._agents_has_placeholder` blocks
+   `:187-191`); MUST contain the fenced ` ```control-plane-load ` block `control_plane_validator`
+   requires (`control_plane_validator.py:87,192`) with the load-graph exclusions (role-cards,
+   delivery/campaign loops, audit, research-briefs forbidden). Framework references use the
+   `aidazi/` mount (above). §1 identification block filled from `plan` (project_name, track,
+   framework_version).
 3. `CLAUDE.md` — literally `@AGENTS.md` when any role uses `claude_code`
    (`adopter_wiring_validator` claude check).
 4. `.cursor/rules/00-aidazi-governance.mdc` — WHEN any role uses `cursor` (§7.2). Satisfies the
@@ -418,8 +422,20 @@ All required by `adoption_status` (§1.2) unless noted:
 12. `docs/current/adoption-readiness.md` — NOT emitted by `build_artifacts`; produced by
     `run_exit_validators` via `adoption_status --write-readiness` (§1.2 chicken-and-egg).
 
-`engine-kit/`, `schemas/`, `templates/`, and vendored `skills/` are COPIED by `materialize`
-from `framework_root` (not returned by the pure generator — they are trees, not text).
+**Framework mount — under `<dest>/aidazi/`, NOT the dest root [C1-prep discovery, folded
+pre-C2].** `materialize` mounts the framework tree (`engine-kit/`, `governance/`, `process/`,
+`role-cards/`, `schemas/`, `templates/`, vendored `skills/`) as a vendored copy under
+`<dest>/aidazi/` — NOT at the dest root. **Why it MUST be under `aidazi/`:**
+`is_framework_repo` (`adoption_status.py:141-151`) flags a framework repo when ≥2 of
+`governance/constitution.md` / `process/delivery-loop.md` / `role-cards/dev-agent.md` are at the
+ROOT; copying the framework to the dest root would make `is_framework_repo(dest)` True and
+`adoption_status` BLOCK the adopter. Mounting under `aidazi/` keeps the dest root clean while
+`_engine_kit_present` (`:242-250`) still resolves `aidazi/engine-kit/orchestrator/driver.py`
+(it accepts the `aidazi/` submodule/vendor path). The emitted `AGENTS.md` (item 2) therefore
+references `aidazi/governance/...` / `aidazi/process/...` / `aidazi/schemas/...` (modeled on
+`examples/minimal-greenfield/AGENTS.md`). These trees are copied by `materialize` (not returned
+by the pure generator — they are trees, not text); the offline canary pays a one-time
+framework-tree copy into `tmp_path/aidazi/` (G1).
 
 ### §4.4 The intent-contract / signed-brief handling (I3 restated concretely)
 `plan.intent_contract.confirmed_by_human` and `plan.research_brief.confirmed_by_human` (the
