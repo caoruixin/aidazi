@@ -5,9 +5,10 @@ status: design-draft (pre-Codex-gate)
 created: 2026-07-11
 base_commit: f6d2730 (origin/main HEAD = PR #15 merge, Phase-4 parallel runner landed)
 reviewer: >
-  codex gpt-5.5 xhigh — R0 REVISE (6 blocking B-1..B-6 + 3 non-blocking N-1..N-3, 2026-07-11)
-  → ALL folded (tagged `[R0 B-#]`/`[R0 N-#]` inline + §12 fold-log) → R0.2 PENDING. This doc
-  reviews an UNIMPLEMENTED plan; the gate judges design soundness, not code presence.
+  codex gpt-5.5 xhigh — R0 REVISE (6 blocking + 3 nits) → folded → R0.2 REVISE (3 blocking
+  B-1..B-3 fold-consistency + 1 nit; B-1/B-3/B-5/N-1..N-3 VERIFIED sound, 2026-07-11) → ALL
+  folded (tagged `[R0.2 B-#]` inline + §12 fold-log) → R0.3 PENDING. This doc reviews an
+  UNIMPLEMENTED plan; the gate judges design soundness, not code presence.
 supersedes_roadmap: archive/2026-07-09-autonomy-roadmap-campaign-unblock.md §6 (Phase-5)
 user_decisions_locked_2026-07-11:
   - target = Phase-5 (new-adopter bootstrap); Phases 1-4 done + merged to main
@@ -345,16 +346,20 @@ printed); `3` refused (dest is framework repo / non-empty without `--force` / an
 - `build_artifacts(plan, framework_root) -> dict[relpath, content]` — PURE. Emits every
   derivable artifact (§4.3). No writes, no network.
 - `assert_writable_dest(dest, framework_root)` — the I2 guard (§2); called BEFORE any write.
-- `materialize(artifacts, dest, framework_root, *, force, overwrite) -> None` — the ONLY
-  writer; calls `assert_writable_dest` first (I2 [R0 B-4]). Writes each file tmp+rename; copies
-  the `engine-kit/` + `schemas/` + `templates/` trees; vendors default skills (reuse
-  `engine-kit/skill-vendor/skill_vendor.py` + `skills/registry.yaml`/`skills.lock`).
-  Idempotent (I6).
+- `materialize(artifacts, dest, framework_root, *, force, overwrite) -> None` — the writer of
+  the artifact TREE; calls `assert_writable_dest` first (I2 [R0 B-4]). Writes each file
+  tmp+rename; copies the `engine-kit/` + `schemas/` + `templates/` trees; vendors default skills
+  (reuse `engine-kit/skill-vendor/skill_vendor.py` + `skills/registry.yaml`/`skills.lock`).
+  Idempotent (I6). **There is exactly ONE other write site — the readiness snapshot written by
+  `run_exit_validators` (below) — [R0.2 B-2];** both write sites are behind the same up-front
+  `assert_writable_dest` guard and are the only two the §10 structural test must cover.
 - `run_exit_validators(dest, plan) -> GreenReport` — imports and runs, in order:
   `charter_validator.validate_file`, `adopter_wiring_validator.validate_root`,
   `control_plane_validator.validate_root`, then `adoption_status` WITH `--write-readiness`
-  (to resolve the chicken-and-egg §1.2), and finally re-reads the aggregate. Prints a
-  consolidated PASS/FAIL table + remediation list; returns green iff `adoption_status.ok`.
+  (to resolve the chicken-and-egg §1.2) — this `write_readiness_snapshot` call is the SECOND
+  and only other write site (behind the same `assert_writable_dest` guard, [R0.2 B-2]) — and
+  finally re-reads the aggregate. Prints a consolidated PASS/FAIL table + remediation list;
+  returns green iff `adoption_status.ok`.
 
 ### §4.3 Artifact manifest (what `build_artifacts` emits)
 All required by `adoption_status` (§1.2) unless noted:
@@ -362,8 +367,10 @@ All required by `adoption_status` (§1.2) unless noted:
    minimal-greenfield's charter which carries invalid `mission.brief` — [R0 B-5]), with the
    human choices substituted: `mission.{id,goal}` (NO `mission.brief` — schema-invalid, [R0
    B-2]); `autonomy.level`; `autonomy.approved_scope.{subsprint_sequence,layers_allowed,
-   modules_in_scope}` (each non-empty — [R0 B-1]); `budget.{max_fix_rounds_total,
-   max_wall_clock_minutes,max_api_usd?}`; the 5 LLM roles `tooling.<role>.{harness,provider,
+   modules_in_scope}` (each non-empty — [R0 B-1]); `autonomy.auto_pass_rules` PRESERVED
+   verbatim from the template (schema-required `mission-charter.schema.json:40`; sensible
+   `human_on_the_loop` default — the human tunes it later — [R0.2 N-1]);
+   `budget.{max_fix_rounds_total,max_wall_clock_minutes,max_api_usd?}`; the 5 LLM roles `tooling.<role>.{harness,provider,
    model,capability_ref}`; `tooling.eval.{cmd,timeout_seconds}` from `plan.eval` ([R0 B-3]); and
    a synthesized top-level `intent_contract` block (I3 — confirmed flag from `plan` only, no
    `brief` sub-key). The charter carries NO brief pointer; the signed brief is found via the
@@ -432,7 +439,13 @@ idempotent `--force` re-run (no spurious diffs).
 `collect_answers_interactive(framework_root) -> AdopterPlan` — TTY prompts for ONLY the genuine
 choices (recommend-then-confirm, matching ONBOARDING's tone):
 - intent triple (goal/standard/proof_of_done) + an EXPLICIT confirm step that sets
-  `confirmed_by_human` (I3 — the human types confirmation; the tool never defaults it);
+  `intent_contract.confirmed_by_human` (I3 — the human types confirmation; the tool never
+  defaults it);
+- **the seed research brief's gate-1 sign-off** — a SEPARATE explicit confirmation that sets
+  `research_brief.confirmed_by_human` (= `customer_gate1_signoff`; the tool synthesizes the
+  brief FROM the intent contract but NEVER signs it — I3). This is the ONLY input that produces
+  the `confirmed_by_human: true` token `adoption_status` checks; declined ⇒ the token is omitted
+  and `signed research brief` stays a truthful `partial` [R0.2 B-1];
 - autonomy level (default `human_on_the_loop`) + budgets;
 - `approved_scope` — `subsprint_sequence` / `layers_allowed` / `modules_in_scope`, each
   non-empty (the first milestone's signed scope envelope — a genuine human choice, [R0 B-1]);
@@ -484,9 +497,11 @@ the equivalent answers file; (e) `--emit-answers` round-trips (`--emit-answers` 
 
 ### §6.1 Scratch-repo canary (OFFLINE, normal suite)
 `examples/adopter-init-canary/answers.json` — a schema-valid answers file for a small adopter:
-all roles `claude_code` EXCEPT one role bound to `cursor` (to exercise the `.cursor/rules`
-scaffold + the C1 validator on the happy path), `confirmed_by_human:true` +
-`research_brief.customer_signed:true` (canary author's recorded signature). Test
+all 5 LLM roles `claude_code` EXCEPT one bound to `cursor` (to exercise the `.cursor/rules`
+scaffold + the C1 validator on the happy path), with BOTH
+`intent_contract.confirmed_by_human: true` AND `research_brief.confirmed_by_human: true` — the
+canary author's recorded intent + gate-1 signatures; the LATTER is what drives the
+`adoption_status` brief token (§4.3.9), NOT `customer_signed` [R0.2 B-1]. Test
 (`engine-kit/tools/tests/test_adopter_init_canary.py`, NORMAL suite — no env gate, fully
 offline): create an empty `tmp_path` dest → `adopter_init --answers … --probe off <dest>` →
 assert exit 0 AND independently re-run all four validators against `dest` asserting each exits
@@ -538,9 +553,14 @@ signed-brief path honestly gated? Is there any write path that bypasses I2?
   is NOT here** — it is a separate top-level required key [R0 B-3].
 - `eval`: `{cmd: non-empty string, timeout_seconds: int≥1}` — the orchestrator-run command,
   mirroring `tooling.eval` (`mission-charter.schema.json:198-205`).
-- `research_brief`: optional `{title,summary,closure_contract?, confirmed_by_human:boolean,
-  customer_signed?:boolean, sign_off_date?:string|null}` — `confirmed_by_human` is the marker
-  `adoption_status` checks (§4.3.9, [R0 B-2]).
+- `research_brief`: `{title,summary,closure_contract?, confirmed_by_human:boolean,
+  customer_signed?:boolean, sign_off_date?:string|null}`. **`research_brief.confirmed_by_human`
+  is the SOLE driver of the `adoption_status` brief token (§4.3.9) — `customer_signed` is a
+  downstream/optional field and NEVER affects the green bar [R0.2 B-1].** The block is
+  optional-but-required-for-green: absent or `confirmed_by_human:false` ⇒ the tool synthesizes
+  the brief from the intent contract WITHOUT the token and reports `signed research brief` as a
+  truthful `partial` (I3). To reach the four-green bar the human/answers MUST provide
+  `research_brief.confirmed_by_human: true` (the gate-1 signature).
 The tool validates answers against this schema BEFORE building (fail-closed, exit 3). Being the
 tool's own contract, it adds no runtime-path schema surface (§0.2).
 
@@ -612,7 +632,7 @@ never walks it regardless of the glob. The inline constant is kept regardless.
 
 | Cluster | Done-evidence | Gate |
 |---|---|---|
-| C1 cursor-FAIL | cursor-without-`.cursor/rules` → validator exit 1; claude/codex/headless byte-identical; inventory sha refreshed; suite green | Codex impl gate C1 |
+| C1 cursor-FAIL | cursor-without-`.cursor/rules` → validator exit 1; claude/codex/headless byte-identical; `--kernel-coverage` green after inventory-row flip (no sha refresh); README updated; suite green | Codex impl gate C1 |
 | C2 scaffold core | `adopter_init --answers <empty> ` → 4 validators exit 0; I2/I3 proven; pure `build_artifacts` | Codex impl gate C2 |
 | C3 interactive+probe | scripted-stdin plan == answers plan; live probe env-gated (no-network proof); dead-key WARN at answer time | Codex impl gate C3 |
 | C4 canaries+docs | offline scratch canary green in normal suite; brownfield canary; env-gated live-probe evidence; ONBOARDING points at tool; reconciliation lockstep intact | Codex impl gate C4 |
@@ -628,7 +648,8 @@ every `[B-#]`, iterate to APPROVE) → next. After C4: whole-scope R3. Then push
 ## §10 Test plan (per cluster)
 - **C1:** migrate 3 WARN tests; add PASS (single-file, dir-of-`.mdc`) + FAIL (absent, empty,
   symlink-escape) cursor fixtures; assert exit codes; assert claude/codex/headless unchanged;
-  run `--kernel-coverage` after inventory sha refresh.
+  run `--kernel-coverage` after the inventory-row flip (wellformedness/enforcement-resolution;
+  NO `_sources.yaml` sha refresh — [R0.2 B-3]/[R0 B-6]).
 - **C2:** `build_artifacts` purity (deterministic, no I/O); `materialize`→4-validators-green in
   tmp; I2 framework-repo refusal (assert no write); I3 false-flag → partial signed-brief;
   cursor role → valid `.cursor/rules`; idempotent `--force`.
@@ -636,9 +657,11 @@ every `[B-#]`, iterate to APPROVE) → next. After C4: whole-scope R3. Then push
   probe no-network-without-flag assertion; dead-key WARN-not-crash; `--emit-answers` round-trip.
 - **C4:** offline scratch canary (normal suite); brownfield canary; env-gated live-probe
   canary; ONBOARDING reconciliation test green (except the known pre-existing red).
-- **Structural (I2 guard):** a test enumerating every `open(...,'w')`/write path in
-  `adopter_init.py` routes through `materialize` and its framework-repo guard (Phase-5 analog
-  of the Phase-4 AST guard).
+- **Structural (I2 guard):** a test enumerating the write SITES reachable from
+  `adopter_init.py` — the `materialize` artifact-tree writes AND the
+  `adoption_status.write_readiness_snapshot` call — asserting each resolves under the
+  `assert_writable_dest`-guarded `dest`, and that the guard runs before any of them [R0.2 B-2]
+  (Phase-5 analog of the Phase-4 AST guard).
 
 ## §11 What this phase deliberately does NOT do
 No runtime-gate change; no MANDATORY_CHECKPOINT change; no acceptance-mode change; no bulk
@@ -679,3 +702,21 @@ R0 = REVISE (6 blocking, 3 non-blocking). All folded; verified against base `f6d
   `off`/`binary` prove at most binary-on-PATH (§5.2).
 - **[R0 N-3]** Reuse `engine-kit/quickfix/adapters/base.py::probe_version` (`:217-248`) for the
   binary tier instead of re-implementing bounded subprocess handling (§5.2).
+
+**R0.2 = REVISE (3 blocking fold-consistency + 1 nit; R0 B-1/B-3/B-5 & N-1..N-3 VERIFIED sound
+by codex, incl. `charter_validator templates/mission-charter.yaml` passing).** All folded:
+- **[R0.2 B-1]** The brief green-path had loose ends: prompts collected only intent
+  confirmation, `research_brief` was optional, and the canary set `customer_signed`. Folded:
+  added an explicit gate-1 brief sign-off prompt setting `research_brief.confirmed_by_human`
+  (§5.1); made it the SOLE green driver, optional-but-required-for-green, `customer_signed`
+  never affecting the bar (§7.1); canary now sets `research_brief.confirmed_by_human: true`
+  explicitly (§6.1).
+- **[R0.2 B-2]** §4.2 called `materialize` "the ONLY writer" while §10 said all writes route
+  through it — contradicting the out-of-`materialize` `write_readiness_snapshot`. Folded:
+  reframed to "artifact-tree writer + exactly one other write site (readiness), both behind
+  `assert_writable_dest`"; §10 structural test now enumerates BOTH sites (§4.2, §10).
+- **[R0.2 B-3]** C1 acceptance (§9) + test-plan (§10) still said "inventory sha refreshed",
+  contradicting the corrected B-6. Folded: both now say `--kernel-coverage` wellformedness
+  after the row flip, NO sha refresh.
+- **[R0.2 N-1]** `autonomy.auto_pass_rules` (schema-required `:40`) was omitted from the
+  §4.3.1 substitution list → now explicitly PRESERVED from the template.
