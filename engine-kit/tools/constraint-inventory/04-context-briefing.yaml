@@ -78,8 +78,8 @@
   statement: On the Cursor harness the adopter MUST provide a real Cursor rules entry; a bare AGENTS.md does not count as Cursor wiring.
   roles: [all]
   condition: harness_cursor
-  current_enforcement: none-judgment
-  notes: 'check_cursor only emits a non-blocking WARN and does not validate Cursor wiring this round.'
+  current_enforcement: 'validator:check_cursor'
+  notes: 'check_cursor FAILs (blocking error cursor_missing_rules / cursor_rules_invalid) when a cursor target lacks a real .cursor/rules — a non-empty single-file .cursor/rules OR a .cursor/rules/ directory with >=1 non-empty *.mdc rule (no symlink escaping root) passes; a bare AGENTS.md does not (Phase-5).'
 - id: cb-1.1-headless-no-rootfile-requirement
   anchor: 'governance/context_briefing.md §1.1'
   statement: On a headless/API-backed harness there is no repo-root file requirement; governance is driven programmatically and a kernel MUST NOT invent a root-file rule here.

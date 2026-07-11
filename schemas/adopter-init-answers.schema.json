@@ -1,0 +1,113 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aidazi/schemas/adopter-init-answers.schema.json",
+  "title": "adopter_init answers",
+  "description": "Phase-5 (design §7.1). The genuine-human-choice inputs to engine-kit/tools/adopter_init.py. This is the tool's OWN input contract; it adds NO runtime-path schema surface. Credentials are named-only (endpoint_env / api_key_env hold env-var NAMES, never secret values).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["adopter_name", "track", "intent_contract", "autonomy", "llm_roles", "eval"],
+  "properties": {
+    "adopter_name": {"type": "string", "minLength": 1, "description": "kebab-case adopter/project name; fills AGENTS.md §1 + charter mission."},
+    "track": {"type": "string", "enum": ["type_a", "type_b", "type_c", "type_a_b_hybrid"]},
+    "greenfield": {"type": "boolean", "default": true},
+    "mission_id": {"type": "string", "minLength": 1, "description": "OPTIONAL first-milestone id (default 'M1')."},
+    "intent_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goal", "standard", "proof_of_done", "confirmed_by_human"],
+      "properties": {
+        "goal": {"type": "string", "minLength": 1},
+        "standard": {"type": "string", "minLength": 1},
+        "proof_of_done": {"type": "string", "minLength": 1},
+        "confirmed_by_human": {"type": "boolean", "description": "Set ONLY by the human/answers; the tool never auto-confirms (I3)."},
+        "confirmed_at": {"type": ["string", "null"]}
+      }
+    },
+    "autonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "approved_scope", "budget"],
+      "properties": {
+        "level": {"type": "string", "enum": ["human_in_the_loop", "human_on_the_loop", "fully_autonomous_within_budget"]},
+        "approved_scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["subsprint_sequence", "layers_allowed", "modules_in_scope"],
+          "properties": {
+            "subsprint_sequence": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+            "layers_allowed": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+            "modules_in_scope": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+            "explicitly_out_of_scope": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_fix_rounds_total", "max_wall_clock_minutes"],
+          "properties": {
+            "max_fix_rounds_total": {"type": "integer", "minimum": 0},
+            "max_wall_clock_minutes": {"type": "integer", "minimum": 1},
+            "max_api_usd": {"type": "number", "minimum": 0}
+          }
+        }
+      }
+    },
+    "llm_roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["research", "deliver", "dev", "review", "acceptance"],
+      "properties": {
+        "research": {"$ref": "#/$defs/llm_role"},
+        "deliver": {"$ref": "#/$defs/llm_role"},
+        "dev": {"$ref": "#/$defs/llm_role"},
+        "review": {"$ref": "#/$defs/llm_role"},
+        "acceptance": {"$ref": "#/$defs/llm_role"}
+      }
+    },
+    "eval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "timeout_seconds"],
+      "properties": {
+        "cmd": {"type": "string", "minLength": 1},
+        "timeout_seconds": {"type": "integer", "minimum": 1}
+      }
+    },
+    "research_brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "closure_contract": {"type": "string"},
+        "confirmed_by_human": {"type": "boolean", "description": "Gate-1 signature — the SOLE driver of the adoption_status brief token; set ONLY by the human/answers (I3)."},
+        "customer_signed": {"type": "boolean", "description": "Downstream/acceptance-time field; NEVER affects the Phase-5 green bar."},
+        "sign_off_date": {"type": ["string", "null"]}
+      }
+    }
+  },
+  "$defs": {
+    "llm_role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "provider", "model"],
+      "properties": {
+        "harness": {"type": "string", "enum": ["claude_code", "codex", "cursor", "kimi", "headless"]},
+        "provider": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "capability_ref": {"type": "string", "minLength": 1},
+        "endpoint": {"type": "string", "minLength": 1, "description": "headless base URL (literal); wins over endpoint_env."},
+        "endpoint_env": {"type": "string", "minLength": 1, "description": "NAME of the env var holding the headless base URL."},
+        "api_key_env": {"type": "string", "minLength": 1, "description": "NAME of the env var holding the provider API key (value never stored)."}
+      },
+      "if": {"properties": {"harness": {"const": "headless"}}},
+      "then": {
+        "required": ["harness", "provider", "model", "api_key_env"],
+        "anyOf": [
+          {"required": ["endpoint"]},
+          {"required": ["endpoint_env"]}
+        ]
+      }
+    }
+  }
+}

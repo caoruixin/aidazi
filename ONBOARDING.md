@@ -152,6 +152,32 @@ follows property 5: **one decision at a time**.
 
 ---
 
+## Fast path — one command: `adopter_init.py`
+
+**`python engine-kit/tools/adopter_init.py <dest>`** does **Steps 0–8 in one sitting.** It
+scaffolds every derivable artifact — `charter.yaml`, `AGENTS.md` (plus a `CLAUDE.md` `@AGENTS.md`
+import when a role uses Claude Code), `.cursor/rules` when a role uses Cursor, `docs/current/*`,
+the requirement-ledger seed, the
+`.orchestrator/` runtime dirs, and the framework mounted under `aidazi/` — and prompts you for
+**only the genuine choices**: the intent-contract triple + an explicit gate-1 sign-off, autonomy
+level + budgets + approved scope, the eval command, and each role's harness/provider/model. It
+runs an **offline capability check** (model registry + harness-name denylist) at answer time and
+an optional **Facet-A reachability probe** (`--probe off|binary|live`; `live` is env-gated by
+`AIDAZI_ADOPTER_INIT_LIVE_PROBE=1` and is the only tier that makes a network call). It exits with
+the **four validators green** (or a printed remediation list) and writes `adoption-readiness.md`.
+
+- **Non-interactive:** `--answers answers.json` (schema `schemas/adopter-init-answers.schema.json`).
+- **Record an interactive run:** `--emit-answers answers.json` (for reuse / CI).
+- **Brownfield:** `--force` (pre-existing files are preserved; `.gitignore` is merged, not
+  overwritten). The tool refuses to write into the framework repo itself.
+- It never signs on your behalf: the intent confirmation and the gate-1 brief sign-off are set
+  true only when you say yes.
+
+The numbered **Step 0–9** below remain the **reference narrative and the manual fallback** — they
+explain every choice the tool asks about. **The tool is the path; the steps are the map.**
+
+---
+
 ## Step 0a — Confirm workspace (fail-fast; always before Step 0 writes)
 
 **Action (read-only):** verify this session's **cwd is the adopter repo root**,
@@ -708,9 +734,12 @@ until this is green.**
    `@AGENTS.md` imports the same-root `AGENTS.md`. **FAIL** (exit non-zero) ⇒ a Claude-Code
    target with `AGENTS.md` but no `CLAUDE.md`; a `CLAUDE.md` with no valid import, an escaping
    import (`..`, absolute, subdir, symlink redirect), or one that re-copies the chain instead of
-   importing only `@AGENTS.md`; or **contradicting** persistent harness declarations (charter vs
-   adoption-state pin declaring disjoint harnesses) — fix and re-run. **WARN** (exit 0) ⇒ harness
-   unspecified, or a Cursor target (a bare `AGENTS.md` is not Cursor wiring); WARN does not block.
+   importing only `@AGENTS.md`; **contradicting** persistent harness declarations (charter vs
+   adoption-state pin declaring disjoint harnesses); or a **Cursor** target lacking a real
+   `.cursor/rules` (a non-empty single-file `.cursor/rules`, or a `.cursor/rules/` directory with
+   ≥1 non-empty `*.mdc` rule — a bare `AGENTS.md` is not Cursor wiring) — fix and re-run.
+   **WARN** (exit 0) ⇒ harness unspecified, or a headless/API role (no root-file requirement);
+   WARN does not block.
    Omit `--harness` to validate against the charter's declared harness(es) instead; for a
    Codex-only adopter the bare `AGENTS.md` PASSes and no `CLAUDE.md` is required.
 3. **`control_plane_validator`** — confirm the default session stays lightweight and
