@@ -279,6 +279,59 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
         self.assertIsNotNone(r["epoch_drift"]["displaced_merge_checkpoint"])
         camp._check_state_consistency(camp.state.to_dict())
 
+    def _crash_camp(self, ms):
+        import campaign_worker as cw
+        signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
+        d = tempfile.mkdtemp()
+        camp = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=None, ledger_path=None)
+        camp._worker_mod = cw
+        camp._worker_procs = {}
+        camp._base_wall = 0.0
+        camp._invocation_start = camp.clock()
+        camp._init_milestone_runtime()
+        return camp, cw
+
+    def test_crash_recover_fences_dead_worker(self):
+        # §5.5: a durable inflight with NO result + NO live flock ⇒ dead worker ⇒ fence + bump
+        # nonce + re-dispatch (a stale lower-nonce result can never mask the fresh attempt).
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        camp, cw = self._crash_camp(ms)
+        r = camp.state.milestone_runtime["m1"]
+        r["current_attempt_nonce"] = 1
+        r["phase"] = "running"
+        r["inflight"] = {"attempt_nonce": 1, "loop_id": "u1", "subsprint_id": "s1",
+                         "work_dir": None, "dispatch_epoch": "H",
+                         "dispatch_freshness_slice": {}}
+        camp._crash_recover_parallel()
+        r = camp.state.milestone_runtime["m1"]
+        self.assertIsNone(r["inflight"])
+        self.assertEqual(r["current_attempt_nonce"], 2)      # bumped
+        self.assertEqual(r["phase"], "ready")                # re-dispatchable
+
+    def test_crash_recover_folds_completed_result(self):
+        # §5.5: a durable inflight whose live-attempt result already landed ⇒ FOLD it on recovery.
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        camp, cw = self._crash_camp(ms)
+        r = camp.state.milestone_runtime["m1"]
+        r["current_attempt_nonce"] = 1
+        r["phase"] = "running"
+        r["inflight"] = {"attempt_nonce": 1, "loop_id": "u1", "subsprint_id": "s1",
+                         "work_dir": None,
+                         "dispatch_epoch": camp._live_signed_scope_hash(),
+                         "dispatch_freshness_slice": camp._dispatch_freshness_slice(ms[0])}
+        wdir = camp._worker_dir("m1")
+        cw._atomic_write_json(cw.result_path(wdir, 1), {
+            "attempt_nonce": 1, "milestone_id": "m1", "subsprint_id": "s1",
+            "dispatch_epoch": r["inflight"]["dispatch_epoch"],
+            "result": {"final_state": "advance", "spawn_count": 1, "loop_id": "u1",
+                       "pause_reason": None, "checkpoint_path": None}})
+        camp._crash_recover_parallel()
+        r = camp.state.milestone_runtime["m1"]
+        self.assertIsNone(r["inflight"])                     # folded
+        self.assertEqual(r["phase"], "done")                 # single sub-sprint → complete
+        self.assertEqual(len(camp.state.units), 1)
+
     def test_budget_exhausted_state_validates(self):
         # Codex C3 B-6: campaign_budget_exhausted is a validator-accepted coordinator-global
         # null-checkpoint pause (may coexist with a done milestone).

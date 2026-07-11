@@ -563,5 +563,32 @@ class TestRequirementSummaryAndCli(unittest.TestCase):
             self.assertEqual(rc, 2)
 
 
+class TestParallelPhaseDerivation(unittest.TestCase):
+    """Phase-4 (design §3.2.1): under a PARALLEL state (milestone_runtime present) delivery
+    position is derived from each milestone's PHASE, NOT the fail-closed (0,0) cursor mirror."""
+
+    def test_compute_coverage_classifies_by_phase(self):
+        plan = _plan([_ms("m1", ["s1"]), _ms("m2", ["s2"]), _ms("m3", ["s3"])])
+        state = {"campaign_id": "camp-1", "status": "paused",
+                 "cursor": {"milestone_index": 0, "subsprint_index": 0}, "units": [],
+                 "milestone_runtime": {"m1": {"phase": "merged"},
+                                       "m2": {"phase": "running"},
+                                       "m3": {"phase": "ready"}}}
+        by_id = {r["id"]: r["status"] for r in sr.compute_coverage(plan, state)["milestones"]}
+        self.assertEqual(by_id["m1"], "delivered")     # phase-derived, NOT the (0,0) cursor
+        self.assertEqual(by_id["m2"], "in_progress")
+        self.assertEqual(by_id["m3"], "not_started")
+        # Prove phase-derivation DIFFERS from the fail-closed (0,0) cursor (which mis-maps the
+        # cursor-0 milestone to in_progress and everything after to not_started).
+        serial = {"campaign_id": "camp-1", "status": "paused",
+                  "cursor": {"milestone_index": 0, "subsprint_index": 0}, "units": []}
+        serial_by_id = {r["id"]: r["status"]
+                        for r in sr.compute_coverage(plan, serial)["milestones"]}
+        self.assertEqual(serial_by_id["m1"], "in_progress")   # (0,0) cursor: the cursor milestone
+        self.assertEqual(serial_by_id["m2"], "not_started")   # mi 1 > cursor 0
+        self.assertNotEqual(by_id["m1"], serial_by_id["m1"])  # delivered != in_progress
+        self.assertNotEqual(by_id["m2"], serial_by_id["m2"])  # in_progress != not_started
+
+
 if __name__ == "__main__":
     unittest.main()

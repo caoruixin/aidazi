@@ -3716,6 +3716,54 @@ class Campaign:
             time.sleep(poll)
         return
 
+    def _crash_recover_parallel(self) -> None:
+        """§5.5 crash recovery on a STATUS_RUNNING resume: for each milestone with a DURABLE
+        pre-spawn inflight, reconcile so no worker double-runs a worktree —
+          (a) the live-attempt result-<nonce>.json exists ⇒ FOLD it (idempotent, §5.3);
+          (b) a live child still holds the inherited flock ⇒ ADOPT (the drive loop reaps it);
+          (c) no live child ⇒ FENCE the stale lease pid, bump current_attempt_nonce (a stale
+              lower-nonce result can never mask the fresh attempt), clear inflight, re-dispatch.
+        Reuses the proven claude_code watchdog-lease pattern."""
+        wm = self._worker_mod
+        for mid, r in list(self._rt().items()):
+            if not (isinstance(r, dict) and r.get("inflight")):
+                continue
+            nonce = r["inflight"].get("attempt_nonce")
+            worker_dir = self._worker_dir(mid)
+            if nonce is not None and os.path.isfile(wm.result_path(worker_dir, nonce)):
+                self._worker_procs[mid] = {"proc": None, "worker_dir": worker_dir,
+                                           "units_dir": os.path.join(worker_dir, "units"),
+                                           "attempt_nonce": nonce}
+                self._fold_ready(mid)
+                continue
+            if wm.worker_lock_held(worker_dir):
+                self._worker_procs[mid] = {"proc": None, "worker_dir": worker_dir,
+                                           "units_dir": os.path.join(worker_dir, "units"),
+                                           "attempt_nonce": nonce}
+                self._audit("campaign_parallel_adopt",
+                            {"milestone_id": mid, "attempt_nonce": nonce})
+                continue
+            self._fence_stale_lease(worker_dir, nonce)
+            r["current_attempt_nonce"] = int(r.get("current_attempt_nonce", 0)) + 1
+            r["inflight"] = None
+            r["phase"] = "ready"
+            self._audit("campaign_parallel_fence",
+                        {"milestone_id": mid, "stale_nonce": nonce})
+        self._mirror_from_runtime()
+        self._save()
+
+    def _fence_stale_lease(self, worker_dir: str, nonce) -> None:
+        """Best-effort SIGTERM of a stale worker lease pid (the flock is already free ⇒ the
+        process is almost certainly dead; belt-and-suspenders). Never raises."""
+        import signal
+        try:
+            with open(self._worker_mod.lease_path(worker_dir, nonce), encoding="utf-8") as fh:
+                pid = json.load(fh).get("pid")
+            if isinstance(pid, int) and pid > 0:
+                os.kill(pid, signal.SIGTERM)
+        except (OSError, ValueError):
+            pass
+
     def _run_parallel(self, *, resume: bool, decision_resolver=None) -> CampaignState:
         """The parallel entry (design §2) — the additive analogue of run(): signoff/resume/
         engine-restamp, then the _drive_parallel event loop + gap-followup + DONE. Serial run()
@@ -3737,6 +3785,10 @@ class Campaign:
                 outcome = self._handle_resume_parallel(decision_resolver)
                 if outcome in ("paused", "ended"):
                     return self.state
+            elif self.state.status == STATUS_RUNNING:
+                # §5.5 crash recovery: reconcile every durable pre-spawn inflight (fold a completed
+                # result, adopt a live child, or fence a dead one + re-dispatch) BEFORE re-driving.
+                self._crash_recover_parallel()
         else:
             self._audit("campaign_start",
                         {"campaign_id": self.campaign_id, "goal": self.plan.get("goal"),

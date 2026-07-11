@@ -125,6 +125,24 @@ def _milestone_status(milestone_index: int, cursor_milestone_index: int,
     return _NOT_STARTED
 
 
+# Phase-4 (design §3.2.1): under a PARALLEL state the top-level cursor is the fail-closed (0,0)
+# mirror, so delivery position is derived from each milestone's runtime PHASE, not the cursor.
+_PHASE_TO_COVERAGE = {"merged": _DELIVERED, "done": _DELIVERED,
+                      "running": _IN_PROGRESS, "paused": _IN_PROGRESS, "ready": _NOT_STARTED}
+
+
+def _milestone_status_from_phase(phase: Optional[str]) -> str:
+    """Per-milestone coverage class from its parallel runtime phase (a milestone with no runtime
+    entry has effective phase 'ready' ⇒ not_started)."""
+    return _PHASE_TO_COVERAGE.get(phase, _NOT_STARTED)
+
+
+def _parallel_runtime(state: dict) -> Optional[dict]:
+    """The milestone_runtime map iff this is a PARALLEL state, else None (serial uses the cursor)."""
+    rt = state.get("milestone_runtime")
+    return rt if isinstance(rt, dict) and rt else None
+
+
 def compute_coverage(plan: dict, state: Optional[dict],
                      baseline: Optional[dict] = None) -> dict:
     """Project ``(plan, state[, baseline])`` -> a structured coverage report.
@@ -147,6 +165,7 @@ def compute_coverage(plan: dict, state: Optional[dict],
     cursor_mi = (state.get("cursor") or {}).get("milestone_index", 0)
     campaign_status = state.get("status")
     started = campaign_status is not None   # a real persisted state has a status
+    rt = _parallel_runtime(state)           # §3.2.1: phase-derived under parallelism
     units = [u for u in (state.get("units") or []) if isinstance(u, dict)]
 
     # Exact original-vs-current delta is only possible against a frozen baseline.
@@ -183,7 +202,8 @@ def compute_coverage(plan: dict, state: Optional[dict],
         drift_all.extend(drift)
 
         record = {"id": mid, "objective": milestone.get("objective"),
-                  "status": _milestone_status(mi, cursor_mi, started),
+                  "status": (_milestone_status_from_phase((rt.get(mid) or {}).get("phase"))
+                             if rt else _milestone_status(mi, cursor_mi, started)),
                   "subsprints": ss_reports,
                   "drift_dispatched_not_in_plan": drift}
         if base_by_id is not None:
@@ -358,6 +378,7 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
         index_of = {m.get("id"): i for i, m in enumerate(raw_milestones)}
     cursor_mi = (state.get("cursor") or {}).get("milestone_index", 0)
     started = state.get("status") is not None
+    rt = _parallel_runtime(state)           # §3.2.1: phase-derived sub-class under parallelism
 
     # [R2.2 B-2] the SAME repo-dir-aware basis as the runner — a digest-bearing
     # signed plan must not be reported falsely stale (and must not trip the
@@ -407,7 +428,13 @@ def compute_requirement_coverage(plan: dict, state: Optional[dict], ledger: dict
         if term in _WAIVED_TERMINALS:
             return "waived", _WAIVED_TERMINALS[term], mid
         # No delivered/waived terminal recorded ⇒ NOT delivered (never read 'delivered'
-        # off the cursor — design §3.5). Sub-classify by cursor position only.
+        # off the cursor — design §3.5). Sub-classify in_progress vs not_started: under a
+        # PARALLEL state by the milestone's runtime PHASE (§3.2.1 — the cursor is the (0,0)
+        # mirror), else by cursor position.
+        if rt is not None:
+            ph = (rt.get(mid) or {}).get("phase")
+            return (("in_progress" if ph in ("running", "paused") else "not_started"),
+                    None, mid)
         mi = index_of.get(mid)
         if started and mi is not None and mi <= cursor_mi:
             return "in_progress", None, mid
