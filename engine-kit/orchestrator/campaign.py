@@ -3699,7 +3699,8 @@ class Campaign:
 
     def _pause_campaign_global(self, reason: str, checkpoint: Optional[str], audit_type: str,
                                extra: Optional[dict] = None, *,
-                               freshness_block: bool = False) -> "CampaignState":
+                               freshness_block: bool = False,
+                               original_reason: Optional[str] = None) -> "CampaignState":
         """The SANCTIONED coordinator-GLOBAL pause writer for the parallel path (Codex C3 B-4;
         design §3.2/§5.6). A campaign-tier pause — the campaign_plan_signoff re-sign block, the
         budget-exhausted drain, the dependency-target needs-human stall — is NOT per-milestone; it
@@ -3707,10 +3708,13 @@ class Campaign:
         (it OVERRIDES the per-milestone pause mirror). This is the ONE place the parallel path
         writes a global pause (all PER-MILESTONE state lives on milestone_runtime[mid]); the C4
         AST guard exempts this writer + _mirror_from_runtime as the deliberate §3.2 projection.
-        Callers persist the fold/dispatch mutations in the SAME _save() (one atomic barrier)."""
+        Callers persist the fold/dispatch mutations in the SAME _save() (one atomic barrier).
+        `original_reason` records the GLOBAL gate a stale re-sign block preserves (Codex R3 B-9,
+        serial `_block_for_resign` shape) — e.g. campaign_budget_exhausted; on re-sign the resume
+        re-drives, which re-evaluates that global gate (over-budget → re-pause budget)."""
         if freshness_block and self.state.freshness_block is None:
             self.state.freshness_block = {
-                "original_pause_reason": None, "original_pause_checkpoint": None}
+                "original_pause_reason": original_reason, "original_pause_checkpoint": None}
         self.state.milestone_index = 0
         self.state.subsprint_index = 0
         self.state.status = STATUS_PAUSED
@@ -3972,7 +3976,8 @@ class Campaign:
                     self._pause_campaign_global(
                         "campaign_plan_signoff", None, "campaign_freshness_block",
                         {"signoff_status": self._signoff_status(),
-                         "drift": self._drift_field_hint()}, freshness_block=True)
+                         "drift": self._drift_field_hint()}, freshness_block=True,
+                        original_reason="campaign_budget_exhausted")
                     return "paused"
                 self._clear_pause_parallel()
                 self._audit("campaign_resume_dispatch",

@@ -363,6 +363,29 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
             camp._handle_resume_parallel(lambda r, c: {"choice": "abort"}), "ended")
         self.assertEqual(camp.state.status, "ended")
 
+    def test_budget_raise_cap_requires_resign_when_stale(self):
+        # Codex R3 B-9: a raise_cap that raises the (H-bound) budget WITHOUT re-signing is STALE ⇒
+        # block for re-sign, and the freshness_block preserves the original budget gate.
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        signed = cp.stamp_signoff(_parallel_plan(ms, max_subsprints=1), CHARTER)
+        d = tempfile.mkdtemp()
+        camp = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=None, ledger_path=None)
+        import campaign_worker as cw
+        camp._worker_mod = cw
+        camp._worker_procs = {}
+        camp._base_wall = 0.0
+        camp._invocation_start = camp.clock()
+        camp._init_milestone_runtime()
+        camp.state.status = "paused"
+        camp.state.pause_reason = "campaign_budget_exhausted"
+        camp.plan["budget"]["max_subsprints"] = 5   # raised IN-MEMORY (H now stale, not re-signed)
+        out = camp._handle_resume_parallel(lambda r, c: {"choice": "raise_cap"})
+        self.assertEqual(out, "paused")
+        self.assertEqual(camp.state.pause_reason, "campaign_plan_signoff")   # blocked for re-sign
+        self.assertEqual((camp.state.freshness_block or {}).get("original_pause_reason"),
+                         "campaign_budget_exhausted")
+
     def test_halt_resume_adds_provisional_then_commits_at_fold(self):
         # Codex R3 B-8: proceed adds the ack PROVISIONALLY (not permanent); the fold commit
         # promotes it → GLOBAL permanent.

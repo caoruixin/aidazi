@@ -962,16 +962,33 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     if _rt:
         _order = {m["id"]: i for i, m in enumerate(plan.get("milestones") or [])}
         _mids = sorted(_rt, key=lambda x: _order.get(x, len(_order)))
-        _parallel_pauses = [
-            {"milestone_id": mid,
-             "subsprint_id": (_rt[mid].get("inflight") or {}).get("subsprint_id"),
-             "pause_reason": _rt[mid].get("pause_reason"),
-             "checkpoint": (os.path.basename(_rt[mid]["pause_checkpoint"])
-                            if _rt[mid].get("pause_checkpoint") else None),
-             "condition_id": (_rt[mid].get("halt_condition_pending")
-                              or {}).get("condition_id"),
-             "loop_id": (_rt[mid].get("inflight") or {}).get("loop_id")}
-            for mid in _mids if _rt[mid].get("phase") == "paused"]
+        _units = [u for u in (getattr(st, "units", None) or []) if isinstance(u, dict)]
+
+        def _paused_unit_of(mid, checkpoint_path):
+            """The subsprint_id + loop_id of a paused milestone's unit — from the live inflight if
+            present, else (a FOLDED halted unit, inflight cleared, Codex R3 B-10) the matching unit
+            record by milestone_id + checkpoint_path, so a --resume decision can identity-bind it."""
+            infl = _rt[mid].get("inflight") or {}
+            if infl:
+                return infl.get("subsprint_id"), infl.get("loop_id")
+            for u in reversed(_units):
+                if u.get("milestone_id") == mid and u.get("checkpoint_path") == checkpoint_path:
+                    return u.get("subsprint_id"), u.get("loop_id")
+            return None, None
+
+        _parallel_pauses = []
+        for mid in _mids:
+            if _rt[mid].get("phase") != "paused":
+                continue
+            _cpt = _rt[mid].get("pause_checkpoint")
+            _ss, _lid = _paused_unit_of(mid, _cpt)
+            _parallel_pauses.append({
+                "milestone_id": mid, "subsprint_id": _ss,
+                "pause_reason": _rt[mid].get("pause_reason"),
+                "checkpoint": os.path.basename(_cpt) if _cpt else None,
+                "condition_id": (_rt[mid].get("halt_condition_pending")
+                                 or {}).get("condition_id"),
+                "loop_id": _lid})
         parallel_extra = {
             "milestones": [
                 {"milestone_id": mid, "phase": _rt[mid].get("phase"),
@@ -1012,7 +1029,7 @@ def run_campaign_entry(plan: dict, charter: dict, *,
             # top-level mirror; a parallel run with parked per-milestone pauses fires per pause.
             _notif_pauses = _parallel_pauses or [{
                 "milestone_id": _pause_milestone_id, "subsprint_id": _pause_subsprint_id,
-                "pause_reason": st.pause_reason,
+                "pause_reason": st.pause_reason, "condition_id": _pause_condition_id,
                 "checkpoint": (os.path.basename(st.pause_checkpoint)
                                if st.pause_checkpoint else None)}]
             for _p in _notif_pauses:
@@ -1021,6 +1038,7 @@ def run_campaign_entry(plan: dict, charter: dict, *,
                     "checkpoint": _p.get("checkpoint"),
                     "milestone_id": _p.get("milestone_id"),
                     "subsprint_id": _p.get("subsprint_id"),
+                    "condition_id": _p.get("condition_id"),   # halt identity (Codex R3 B-10)
                 }, _emit_notif)
         except Exception:
             pass  # the notifier path must NEVER break the pause / exit-10 return
