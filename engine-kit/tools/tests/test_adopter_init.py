@@ -6,10 +6,10 @@ framework repo), I3 (never auto-confirm the gate-1 signature).
 """
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _TOOLS_DIR not in sys.path:
@@ -212,6 +212,129 @@ class CliContractTests(unittest.TestCase):
                     json.dump(data, open(apath, "w"))
                     with self.assertRaises(ai.InitError):
                         ai.load_answers(apath, _FRAMEWORK_ROOT)
+
+
+class _FakeResp:
+    def __init__(self, status=200):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _headless_plan():
+    data = json.load(open(_CANARY_ANSWERS))
+    data["llm_roles"]["review"] = {
+        "harness": "headless", "provider": "deepseek", "model": "deepseek-v4-pro",
+        "endpoint": "https://api.deepseek.example/v1", "api_key_env": "DS_KEY"}
+    with tempfile.TemporaryDirectory(prefix="ai-hlp-") as d:
+        apath = os.path.join(d, "a.json")
+        json.dump(data, open(apath, "w"))
+        return ai.load_answers(apath, _FRAMEWORK_ROOT)
+
+
+class ReachabilityProbeTests(unittest.TestCase):
+    def test_off_is_noop(self):
+        self.assertEqual(ai.run_reachability_probe(_load_plan(), "off"), [])
+
+    def test_binary_returns_a_row_per_role_no_crash(self):
+        rows = ai.run_reachability_probe(_load_plan(), "binary")
+        self.assertEqual({r.role for r in rows}, set(ai._INTERACTIVE_ROLES))
+        for r in rows:
+            self.assertIn(r.status, ("reachable", "warn", "skipped"))
+
+    def test_live_without_env_makes_no_network_call(self):
+        # [I4] live WITHOUT the env flag must NOT hit the network — it downgrades to binary,
+        # and the headless role becomes a 'skipped' row (never live-probed).
+        plan = _headless_plan()
+        import urllib.request
+        with unittest.mock.patch.object(urllib.request, "urlopen",
+                                        side_effect=AssertionError("network without flag!")) as m:
+            rows = ai.run_reachability_probe(plan, "live", env={})  # no flag
+        m.assert_not_called()
+        review = next(r for r in rows if r.role == "review")
+        self.assertEqual(review.status, "skipped")
+
+    def test_live_with_env_probes_headless_key(self):
+        plan = _headless_plan()
+        import urllib.request
+        with unittest.mock.patch.object(urllib.request, "urlopen", return_value=_FakeResp(200)) as m:
+            rows = ai.run_reachability_probe(plan, "live", env={"AIDAZI_ADOPTER_INIT_LIVE_PROBE": "1",
+                                                                "DS_KEY": "sk-test"})
+        m.assert_called()
+        review = next(r for r in rows if r.role == "review")
+        self.assertEqual(review.status, "reachable")
+
+    def test_live_dead_key_is_warn_not_crash(self):
+        import urllib.error
+        import urllib.request
+        plan = _headless_plan()
+        err = urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
+        with unittest.mock.patch.object(urllib.request, "urlopen", side_effect=err):
+            rows = ai.run_reachability_probe(plan, "live", env={"AIDAZI_ADOPTER_INIT_LIVE_PROBE": "1"})
+        review = next(r for r in rows if r.role == "review")
+        self.assertEqual(review.status, "warn")  # dead key => advisory warn, never a crash
+
+
+class InteractiveTests(unittest.TestCase):
+    # scripted answers reproducing the canary choices (blank => role defaults).
+    _SCRIPT = [
+        "acme-widgets", "type_a", "yes",
+        "Determine widget-order refund eligibility and explain the decision.",
+        "Every eligibility decision cites the concrete governing policy rule; no unexplained denials.",
+        "A user submits an order id and receives an eligibility verdict naming the governing rule.",
+        "yes", "yes",
+        "human_on_the_loop", "S1-eligibility-core, S2-explanation", "", "src/eligibility, src/explain",
+        "src/payments", "3", "240", "python -m pytest -q", "600",
+        "", "", "", "",                                   # research (defaults)
+        "", "", "", "",                                   # deliver
+        "cursor", "anysphere", "auto", "cursor-agent-dev",  # dev = cursor
+        "", "", "", "",                                   # review
+        "", "", "", "",                                   # acceptance
+    ]
+
+    def test_scripted_interactive_builds_a_valid_plan(self):
+        it = iter(self._SCRIPT)
+        data = ai.collect_answers_interactive(_FRAMEWORK_ROOT, reader=lambda: next(it),
+                                              writer=lambda s: None)
+        plan = ai._plan_from_data(data)
+        self.assertEqual(plan.adopter_name, "acme-widgets")
+        self.assertEqual(plan.llm_roles["dev"].harness, "cursor")
+        self.assertTrue(plan.intent_confirmed)     # I3: only because the script typed "yes"
+        self.assertTrue(plan.brief_confirmed)
+        self.assertEqual(plan.subsprint_sequence, ["S1-eligibility-core", "S2-explanation"])
+
+    def test_i3_interactive_no_confirm_leaves_flags_false(self):
+        script = list(self._SCRIPT)
+        script[6] = "no"   # confirm intent
+        script[7] = "no"   # sign brief
+        it = iter(script)
+        data = ai.collect_answers_interactive(_FRAMEWORK_ROOT, reader=lambda: next(it),
+                                              writer=lambda s: None)
+        self.assertFalse(data["intent_contract"]["confirmed_by_human"])
+        self.assertFalse(data["research_brief"]["confirmed_by_human"])
+
+    def test_emit_answers_round_trips(self):
+        it = iter(self._SCRIPT)
+        data = ai.collect_answers_interactive(_FRAMEWORK_ROOT, reader=lambda: next(it),
+                                              writer=lambda s: None)
+        with tempfile.TemporaryDirectory(prefix="ai-emit-") as d:
+            emit = os.path.join(d, "emitted.json")
+            ai._atomic_write(emit, json.dumps(data, indent=2) + "\n")
+            reloaded = json.load(open(emit))
+            self.assertEqual(reloaded, data)  # round-trip identity
+            # and the emitted answers scaffold to GREEN
+            rc = ai.main([os.path.join(d, "acme"), "--answers", emit, "--probe", "off"])
+            self.assertEqual(rc, 0)
+
+    def test_non_tty_without_answers_is_refused(self):
+        # pytest captures stdin (not a TTY); interactive with no --answers must refuse, not hang.
+        with tempfile.TemporaryDirectory(prefix="ai-notty-") as d:
+            rc = ai.main([os.path.join(d, "acme")])  # no --answers
+            self.assertEqual(rc, 3)
 
 
 if __name__ == "__main__":

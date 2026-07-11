@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """adopter_init.py — one-command new-adopter bootstrap (Phase-5, design §4).
 
-Scaffolds a fresh aidazi adopter from an answers file and exits with the four adoption
-validators GREEN (or a printed remediation list). Cluster 2 = the answers-driven, offline
-scaffolding CORE: no interactive prompts, no live reachability probe (those are Cluster 3).
+Scaffolds a fresh aidazi adopter (from an answers file OR interactive prompts) and exits with
+the four adoption validators GREEN (or a printed remediation list). Cluster 2 = the offline
+scaffolding CORE; Cluster 3 adds the interactive layer + the env-gated Facet-A reachability
+probe.
 
 Architecture (design §2 invariants):
   * I1  pure core / IO shell — ``build_artifacts(plan, templates)`` is a PURE function (no
@@ -20,8 +21,11 @@ Architecture (design §2 invariants):
         live reachability probe (Cluster 3) is env-gated and advisory.
 
 CLI:
-  python engine-kit/tools/adopter_init.py <dest> --answers answers.json
-    [--framework-root PATH] [--force] [--overwrite] [--dry-run] [--probe off]
+  python engine-kit/tools/adopter_init.py <dest> [--answers answers.json]
+    [--framework-root PATH] [--force] [--overwrite] [--dry-run]
+    [--probe off|binary|live] [--emit-answers PATH]
+  Omit --answers for interactive prompts. --probe live is env-gated by
+  AIDAZI_ADOPTER_INIT_LIVE_PROBE=1 (the only tier that makes a network call).
 
 Exit codes: 0 all four validators green; 2 validation failed (remediation printed);
 3 refused (dest is/inside the framework repo, non-empty dest without --force, or invalid
@@ -118,7 +122,12 @@ def load_answers(path: str, framework_root: str) -> AdopterPlan:
         raise InitError(f"could not read answers file {path!r}: {exc}")
 
     _validate_answers_schema(data, framework_root)
+    return _plan_from_data(data)
 
+
+def _plan_from_data(data: dict) -> AdopterPlan:
+    """Construct an AdopterPlan from ALREADY-VALIDATED answers data (shared by the --answers
+    and interactive paths)."""
     ic = data["intent_contract"]
     scope = data["autonomy"]["approved_scope"]
     roles = {
@@ -202,7 +211,7 @@ def load_templates(framework_root: str) -> dict:
 # --------------------------------------------------------------------------- #
 # build_artifacts — PURE (design §4.3). No I/O, no network. (plan, templates) -> {relpath: text}
 # --------------------------------------------------------------------------- #
-def build_artifacts(plan: AdopterPlan, templates: dict) -> dict:
+def build_artifacts(plan: AdopterPlan, templates: dict, probe_rows: Optional[list] = None) -> dict:
     artifacts: dict = {}
     artifacts["charter.yaml"] = _build_charter(plan, templates["charter"])
     artifacts["AGENTS.md"] = _build_agents_md(plan)
@@ -214,7 +223,7 @@ def build_artifacts(plan: AdopterPlan, templates: dict) -> dict:
         artifacts[os.path.join(".cursor", "rules", "00-aidazi-governance.mdc")] = _CURSOR_RULE
 
     artifacts["docs/current/adoption-state.md"] = _build_adoption_state(plan)
-    artifacts["docs/current/onboarding-record.md"] = _build_onboarding_record(plan)
+    artifacts["docs/current/onboarding-record.md"] = _build_onboarding_record(plan, probe_rows)
     artifacts["docs/current/adoption-config.md"] = _build_adoption_config(plan)
     artifacts["docs/current/implementation-stack.md"] = _doc_stub(
         plan, "Implementation stack",
@@ -443,7 +452,9 @@ No divergences from the §1.7 hard set. Per-Δ status is recorded here as the pr
 """
 
 
-def _build_onboarding_record(plan: AdopterPlan) -> str:
+def _build_onboarding_record(plan: AdopterPlan, probe_rows: Optional[list] = None) -> str:
+    probe_summary = "off" if not probe_rows else ", ".join(
+        f"{r.role}:{r.status}" for r in probe_rows)
     lines = [
         f"# Onboarding record — {plan.adopter_name}", "",
         "Audit ledger of the `adopter_init.py` bootstrap run.", "",
@@ -451,9 +462,13 @@ def _build_onboarding_record(plan: AdopterPlan) -> str:
         "| Scaffold artifacts | generated |",
         f"| Intent contract confirmed_by_human | {str(plan.intent_confirmed).lower()} |",
         f"| Seed brief gate-1 confirmed_by_human | {str(plan.brief_confirmed).lower()} |",
-        "| Reachability probe | off (Cluster-2 offline scaffold) |",
+        f"| Facet-A reachability probe | {probe_summary} |",
         "| Exit validators | see docs/current/adoption-readiness.md |",
     ]
+    if probe_rows:
+        lines += ["", "## Facet-A reachability probe rows", "",
+                  "| Role | Harness | Status | Detail |", "|---|---|---|---|"]
+        lines += [f"| {r.role} | {r.harness} | {r.status} | {r.detail} |" for r in probe_rows]
     return "\n".join(lines) + "\n"
 
 
@@ -622,6 +637,254 @@ def run_exit_validators(dest: str, framework_root: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Reachability probe (Cluster 3) — off | binary | live. Live is env-gated (I4).
+# --------------------------------------------------------------------------- #
+LIVE_PROBE_ENV = "AIDAZI_ADOPTER_INIT_LIVE_PROBE"
+_HARNESS_BINARY = {"claude_code": "claude", "codex": "codex", "cursor": "cursor-agent",
+                   "kimi": "kimi"}
+
+
+@dataclass(frozen=True)
+class ProbeRow:
+    role: str
+    harness: str
+    status: str   # "reachable" | "warn" | "skipped"
+    detail: str
+
+
+def run_reachability_probe(plan: AdopterPlan, depth: str, *, env=None, writer=None) -> list:
+    """Advisory Facet-A reachability probe. NEVER crashes the bootstrap and NEVER makes a
+    network call unless depth == 'live' AND the env flag is set (I4). off => []; binary =>
+    local `<cli> --version` / shutil.which (no network, no key); live (env-gated) => a bounded
+    zero-cost GET <base_url>/models for headless roles (the only tier that can detect a dead
+    HTTP key — [R0 N-2])."""
+    env = os.environ if env is None else env
+    writer = writer or (lambda s: None)
+    if depth == "off":
+        return []
+    if depth == "live" and env.get(LIVE_PROBE_ENV) != "1":
+        # I4: no network without the flag. Downgrade to binary (advisory), never abort/network.
+        writer(f"[probe] --probe live requires {LIVE_PROBE_ENV}=1; running the binary tier "
+               f"(no network) instead.\n")
+        depth = "binary"
+    rows = []
+    for role, b in plan.llm_roles.items():
+        if b.harness == "headless":
+            if depth == "live":
+                rows.append(_probe_headless_live(role, b, env))
+            else:
+                rows.append(ProbeRow(role, b.harness, "skipped",
+                                     "headless: binary tier cannot probe an HTTP endpoint/key"))
+        else:
+            rows.append(_probe_cli(role, b.harness))
+    for r in rows:
+        writer(f"[probe] {r.role:<10} {r.harness:<11} {r.status:<9} {r.detail}\n")
+    return rows
+
+
+def _probe_cli(role: str, harness: str) -> "ProbeRow":
+    exe = _HARNESS_BINARY.get(harness, harness)
+    found = shutil.which(exe)
+    if not found:
+        return ProbeRow(role, harness, "warn", f"{exe!r} not on PATH (install the harness CLI)")
+    try:
+        ver = _bounded_version_probe(found)
+        return ProbeRow(role, harness, "reachable", f"{exe} {ver[:60]}")
+    except InitError as exc:  # advisory: a failing --version never crashes the bootstrap
+        return ProbeRow(role, harness, "warn", f"{exe} on PATH but --version failed: {exc}")
+
+
+def _bounded_version_probe(executable: str, timeout_s: int = 20) -> str:
+    """Bounded `<exe> --version` in its own process group (mirrors quickfix
+    QuickfixAdapter.probe_version, which is an ABC method not callable standalone). No network.
+    Fail-closed on launch failure / timeout / non-zero exit."""
+    import signal
+    import subprocess
+    try:
+        proc = subprocess.Popen([executable, "--version"], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                start_new_session=True)
+    except OSError as exc:
+        raise InitError(f"could not launch: {exc}")
+    try:
+        out, err = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        raise InitError(f"timed out after {timeout_s}s (process group killed)")
+    if proc.returncode != 0:
+        raise InitError(f"exit {proc.returncode}: {((out or '') + (err or '')).strip()[:120]}")
+    return ((out or "") + (err or "")).strip()
+
+
+def _probe_headless_live(role: str, b: "LLMRole", env) -> "ProbeRow":
+    """Bounded zero-cost GET <base_url>/models using the named api_key_env. REAL network — only
+    reached when the env flag is set. Advisory: a dead key becomes a 'warn' row, never a crash."""
+    import urllib.error
+    import urllib.request
+    base = b.endpoint or env.get(b.endpoint_env or "", "")
+    if not base:
+        return ProbeRow(role, b.harness, "warn", "no base_url (endpoint/endpoint_env unset)")
+    api_key = env.get(b.api_key_env or "", "")
+    url = base.rstrip("/") + "/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=15) as resp:
+            return ProbeRow(role, b.harness, "reachable", f"GET {url} -> HTTP {resp.status}")
+    except urllib.error.HTTPError as exc:
+        return ProbeRow(role, b.harness, "warn", f"GET {url} -> HTTP {exc.code} (check {b.api_key_env})")
+    except Exception as exc:  # noqa: BLE001 - advisory, any network error is a warn row
+        return ProbeRow(role, b.harness, "warn", f"GET {url} failed: {exc}")
+
+
+# --------------------------------------------------------------------------- #
+# Interactive answer collection (Cluster 3) — prompts for the genuine choices only
+# --------------------------------------------------------------------------- #
+_INTERACTIVE_ROLES = ("research", "deliver", "dev", "review", "acceptance")
+_ROLE_DEFAULTS = {
+    "research": ("claude_code", "anthropic", "claude-opus-4-8", "anthropic-opus-judge"),
+    "deliver": ("claude_code", "anthropic", "claude-opus-4-8", "anthropic-opus-judge"),
+    "dev": ("claude_code", "anthropic", "claude-sonnet-4-6", "anthropic-sonnet-dev"),
+    "review": ("codex", "openai", "gpt-5.5", "openai-gpt5-codex"),
+    "acceptance": ("codex", "openai", "gpt-5.5", "openai-gpt5-codex"),
+}
+
+
+def collect_answers_interactive(framework_root: str, *, reader=None, writer=None) -> dict:
+    """Prompt for ONLY the genuine human choices; return a validated answers DICT (§5.1).
+    I3: the intent-contract confirm + the brief gate-1 sign-off are set true ONLY when the
+    human types yes; the tool never defaults them true."""
+    reader = reader or input
+    _w = writer or sys.stdout.write
+
+    def ask(label, default=None):
+        return _ask(reader, _w, label, default)
+
+    _w("aidazi adopter bootstrap — answer the project's genuine choices.\n\n")
+    name = ask("Adopter/project name (kebab-case)") or "adopter"
+    track = ask("Track [type_a|type_b|type_c|type_a_b_hybrid]", "type_a")
+    greenfield = _ask_bool(reader, _w, "Greenfield (empty repo)?", True)
+
+    _w("\nIntent contract (the customer's north star):\n")
+    goal = ask("  Goal (one line)")
+    standard = ask("  Standard (how good is good enough)")
+    proof = ask("  Proof of done (observable outcome)")
+    intent_confirmed = _ask_bool(reader, _w, "  Confirm the intent contract (you, the human)?", False)
+    brief_signed = _ask_bool(reader, _w, "  Sign the seed research brief now (gate 1)?", False)
+
+    _w("\nAutonomy + scope:\n")
+    level = ask("  Autonomy level", "human_on_the_loop")
+    subsprints = _ask_list(reader, _w, "  First milestone sub-sprint ids", ["S1"])
+    layers = _ask_list(reader, _w, "  Layers allowed",
+                       ["prompt_projection", "skill_state", "semantic_planner"])
+    modules = _ask_list(reader, _w, "  Modules in scope (repo paths)", ["src"])
+    out_of_scope = _ask_list(reader, _w, "  Explicitly out of scope (optional)", [])
+    fix_rounds = int(ask("  Budget: max fix rounds total", "3") or 3)
+    wall = int(ask("  Budget: max wall-clock minutes", "240") or 240)
+
+    _w("\nEval command (orchestrator runs it for F5 evidence):\n")
+    eval_cmd = ask("  Eval cmd", "python -m pytest -q")
+    eval_to = int(ask("  Eval timeout seconds", "600") or 600)
+
+    scope = {"subsprint_sequence": subsprints, "layers_allowed": layers,
+             "modules_in_scope": modules}
+    if out_of_scope:
+        scope["explicitly_out_of_scope"] = out_of_scope
+    data = {
+        "adopter_name": name, "track": track, "greenfield": greenfield,
+        "intent_contract": {"goal": goal, "standard": standard, "proof_of_done": proof,
+                            "confirmed_by_human": intent_confirmed, "confirmed_at": None},
+        "autonomy": {"level": level, "approved_scope": scope,
+                     "budget": {"max_fix_rounds_total": fix_rounds, "max_wall_clock_minutes": wall}},
+        "eval": {"cmd": eval_cmd, "timeout_seconds": eval_to},
+        "research_brief": {"title": f"{name} seed brief", "summary": goal,
+                           "confirmed_by_human": brief_signed, "customer_signed": brief_signed},
+    }
+
+    _w("\nRole execution bindings (validated vs the model registry + harness-name denylist):\n")
+    for _attempt in range(3):
+        data["llm_roles"] = _collect_roles(reader, _w)
+        errs = _capability_preflight(data, framework_root)
+        if not errs:
+            break
+        _w("  Role/charter validation errors — fix these:\n")
+        for e in errs:
+            _w(f"    - {e}\n")
+    else:
+        raise InitError("role bindings still invalid after 3 attempts")
+    return data
+
+
+def _collect_roles(reader, _w) -> dict:
+    roles = {}
+    for role in _INTERACTIVE_ROLES:
+        dh, dp, dm, dc = _ROLE_DEFAULTS[role]
+        _w(f"  [{role}]\n")
+        entry = {"harness": _ask(reader, _w, "    harness", dh),
+                 "provider": _ask(reader, _w, "    provider", dp),
+                 "model": _ask(reader, _w, "    model", dm)}
+        cap = _ask(reader, _w, "    capability_ref (blank = none)", dc)
+        if cap:
+            entry["capability_ref"] = cap
+        if entry["harness"] == "headless":
+            for key, label in (("endpoint", "    endpoint (base URL, blank if using endpoint_env)"),
+                               ("endpoint_env", "    endpoint_env (env var NAME)"),
+                               ("api_key_env", "    api_key_env (env var NAME)")):
+                val = _ask(reader, _w, label, "")
+                if val:
+                    entry[key] = val
+        roles[role] = entry
+    return roles
+
+
+def _capability_preflight(data: dict, framework_root: str) -> list:
+    """Offline (registry + denylist) validation of the tentative answers: schema + the charter
+    capability gate. Returns error strings, or [] if clean."""
+    try:
+        _validate_answers_schema(data, framework_root)
+    except InitError as exc:
+        return [str(exc)]
+    plan = _plan_from_data(data)
+    charter_text = _build_charter(plan, load_templates(framework_root)["charter"])
+    import tempfile
+    tf = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+    try:
+        tf.write(charter_text)
+        tf.close()
+        rep = charter_validator.validate_file(tf.name)
+    finally:
+        os.unlink(tf.name)
+    if rep.ok:
+        return []
+    return [getattr(e, "render", lambda: str(e))() for e in rep.errors]
+
+
+def _ask(reader, writer, label: str, default=None) -> str:
+    suffix = f" [{default}]" if default not in (None, "") else ""
+    writer(f"{label}{suffix}: ")
+    try:
+        val = reader()
+    except EOFError:
+        val = ""
+    val = (val or "").strip()
+    return val if val else (default if default is not None else "")
+
+
+def _ask_bool(reader, writer, label: str, default: bool) -> bool:
+    ans = _ask(reader, writer, f"{label} (yes/no)", "yes" if default else "no")
+    return ans.strip().lower() in ("y", "yes", "true", "1")
+
+
+def _ask_list(reader, writer, label: str, default: list) -> list:
+    ans = _ask(reader, writer, f"{label} (comma-separated)", ", ".join(default) if default else "")
+    if not ans:
+        return list(default)
+    return [x.strip() for x in ans.split(",") if x.strip()]
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 def _artifact_manifest(artifacts: dict) -> str:
@@ -631,26 +894,48 @@ def _artifact_manifest(artifacts: dict) -> str:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Scaffold a new aidazi adopter to four-validator GREEN from an answers file.")
+        description="Scaffold a new aidazi adopter to four-validator GREEN, from an answers file "
+                    "or interactively.")
     parser.add_argument("dest", help="target adopter directory (created if absent)")
-    parser.add_argument("--answers", required=True, help="path to answers.json (schema §7.1)")
+    parser.add_argument("--answers", default=None,
+                        help="path to answers.json (schema §7.1); omit for interactive prompts")
     parser.add_argument("--framework-root", default=None,
                         help="framework source root (default: derived from this file's location)")
     parser.add_argument("--force", action="store_true",
                         help="allow a non-empty dest (brownfield)")
     parser.add_argument("--overwrite", action="store_true",
-                        help="allow replacing an existing human-editable artifact (charter.yaml)")
+                        help="allow replacing an existing human-editable artifact (charter/brief)")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the artifact manifest and exit; write nothing")
-    parser.add_argument("--probe", choices=["off"], default="off",
-                        help="reachability probe depth (Cluster 2 supports only 'off')")
+    parser.add_argument("--probe", choices=["off", "binary", "live"], default=None,
+                        help="Facet-A reachability probe depth (default: off for --answers, "
+                             "binary for interactive; live is env-gated by "
+                             f"{LIVE_PROBE_ENV}=1)")
+    parser.add_argument("--emit-answers", default=None,
+                        help="write the resolved answers to this path (interactive: for reuse)")
     args = parser.parse_args(argv)
 
     framework_root = os.path.abspath(args.framework_root or _FRAMEWORK_ROOT_DEFAULT)
+    interactive = args.answers is None
+    probe_depth = args.probe or ("binary" if interactive else "off")
     try:
-        plan = load_answers(args.answers, framework_root)
+        if interactive:
+            if not sys.stdin.isatty() and args.emit_answers is None:
+                # non-TTY with no answers and no emit target => nothing to read; guide the user.
+                raise InitError("no --answers and stdin is not a TTY; pass --answers <file.json>")
+            data = collect_answers_interactive(framework_root)
+            if args.emit_answers:
+                _atomic_write(os.path.abspath(args.emit_answers),
+                              json.dumps(data, indent=2) + "\n")
+                sys.stdout.write(f"[adopter_init] wrote answers -> {args.emit_answers}\n")
+            plan = _plan_from_data(data)
+        else:
+            plan = load_answers(args.answers, framework_root)
+
         templates = load_templates(framework_root)
-        artifacts = build_artifacts(plan, templates)
+        probe_rows = [] if args.dry_run else run_reachability_probe(
+            plan, probe_depth, writer=sys.stdout.write)
+        artifacts = build_artifacts(plan, templates, probe_rows)
         if args.dry_run:
             sys.stdout.write("Artifact manifest (dry-run; nothing written):\n")
             sys.stdout.write(_artifact_manifest(artifacts) + "\n")
