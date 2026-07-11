@@ -621,17 +621,42 @@ class BrownfieldGovernedDocsTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(dest, "AGENTS.md")))
 
     def test_overwrite_is_the_explicit_regenerate_escape_hatch(self):
-        # --overwrite (the explicit human opt-in) DOES regenerate an existing governed doc — the
-        # counterpart that proves default-preserve is a real, distinct behaviour.
+        # --overwrite (the explicit human opt-in) DOES regenerate an existing TOOL-AUTHORED doc —
+        # the counterpart that proves default-preserve is a real, distinct behaviour. But
+        # .gitignore is ALWAYS append-merged, never clobbered, even under --overwrite ([B-2]).
         with tempfile.TemporaryDirectory(prefix="ai-ovw-") as tmp:
             dest = os.path.join(tmp, "acme")
             self.assertEqual(ai.main([dest, "--answers", _CANARY_ANSWERS]), 0)
             agents = os.path.join(dest, "AGENTS.md")
             with open(agents, "a", encoding="utf-8") as fh:
                 fh.write("\n<!-- marker DROP-ME -->\n")
+            gi = os.path.join(dest, ".gitignore")
+            with open(gi, "a", encoding="utf-8") as fh:
+                fh.write("\ncustom-adopter-secret/\n")
             rc = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force", "--overwrite"])
             self.assertEqual(rc, 0)
-            self.assertNotIn("DROP-ME", ai._read_text(agents))  # regenerated (marker gone)
+            self.assertNotIn("DROP-ME", ai._read_text(agents))            # tool doc regenerated
+            self.assertIn("custom-adopter-secret", ai._read_text(gi))     # .gitignore never clobbered
+
+    def test_readiness_snapshot_is_tool_owned_and_refreshed(self):
+        # [B-1] the exit-validator readiness snapshot is a TOOL-OWNED status output, not
+        # adopter-authored content, so it is deliberately REFRESHED every run (the documented
+        # second exception to preserve-by-default, alongside always-append-merged .gitignore). A
+        # hand-edited adopter DOC is still preserved byte-for-byte in the same run.
+        with tempfile.TemporaryDirectory(prefix="ai-rdy2-") as tmp:
+            dest = os.path.join(tmp, "acme")
+            self.assertEqual(ai.main([dest, "--answers", _CANARY_ANSWERS]), 0)
+            readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
+            agents = os.path.join(dest, "AGENTS.md")
+            with open(readiness, "a", encoding="utf-8") as fh:
+                fh.write("\n<!-- STALE-READINESS-EDIT -->\n")
+            with open(agents, "a", encoding="utf-8") as fh:
+                fh.write("\n<!-- KEEP-AGENTS -->\n")
+            self.assertEqual(ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"]), 0)
+            # readiness snapshot regenerated (tool-owned) -> the stale hand edit is gone ...
+            self.assertNotIn("STALE-READINESS-EDIT", ai._read_text(readiness))
+            # ... while the adopter-authored doc is preserved in the SAME run.
+            self.assertIn("KEEP-AGENTS", ai._read_text(agents))
 
     def test_materialize_report_created_then_preserved(self):
         plan = ai.load_answers(_CANARY_ANSWERS, _FRAMEWORK_ROOT)
@@ -667,7 +692,10 @@ class BrownfieldGovernedDocsTests(unittest.TestCase):
                             ignore=shutil.ignore_patterns(*_COPY_IGNORE_DIRS, "*.pyc"))
             before = _snapshot_governed(dest)
             cp_before = _render_errs(control_plane_validator.validate_root(dest))
-            ai.main([dest, "--answers", answers, "--force"])  # rc may be 2 on a real adopter
+            rc = ai.main([dest, "--answers", answers, "--force"])
+            # [B-3] the tool MUST have run materialize (green=0 or not-green=2); a refusal (exit 3)
+            # would leave the tree untouched and let this canary pass without exercising the path.
+            self.assertIn(rc, (0, 2), f"adopter_init refused/errored (exit {rc}) — canary vacuous")
             after = _snapshot_governed(dest)
             cp_after = _render_errs(control_plane_validator.validate_root(dest))
             # DRIFT = mutating/removing a file the adopter already had. Creating a genuinely

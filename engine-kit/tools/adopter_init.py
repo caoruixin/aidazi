@@ -29,11 +29,17 @@ CLI:
 
 Brownfield contract (design §6.2): the tool is a BOOTSTRAP, not a migrator. On a non-empty dest
 (``--force``) it CREATES only the files that are absent and PRESERVES every existing adopter file
-byte-for-byte (``.gitignore`` is the one exception: required patterns are append-merged, existing
-lines kept). It never rewrites governed/wiring/human content that is already present; if a kept
+byte-for-byte. It never rewrites governed/wiring/human content that is already present; if a kept
 file is incompatible with adoption the exit validators report it (exit 2, remediation printed)
 rather than the tool silently overwriting it. ``--overwrite`` is the explicit human escape hatch
-to regenerate existing files.
+to regenerate the tool-authored artifacts.
+
+Two files are, by design, NOT adopter-authored source and so are exempt from byte-for-byte
+preservation: (1) ``.gitignore`` — required patterns are ALWAYS append-merged (existing lines
+kept, never clobbered — even under ``--overwrite`` — because dropping an adopter's ignore patterns
+is a footgun); (2) ``docs/current/adoption-readiness.md`` — a TOOL-OWNED status snapshot the exit
+validators regenerate every run so it reflects the current adoption check (a stale snapshot would
+misreport status); it is not hand-authored content.
 
 Exit codes: 0 all four validators green; 2 validation failed (remediation printed);
 3 refused (dest is/inside the framework repo, non-empty dest without --force, or invalid
@@ -635,8 +641,11 @@ def materialize(artifacts: dict, dest: str, framework_root: str, *, force: bool 
         _assert_target_within_dest(dest_real, target)  # [R3 B-2] no symlink-escape write
         exists = os.path.exists(target)
         if rel == ".gitignore" and exists:
-            # brownfield: MERGE (append-only; adds missing required patterns), never clobber the
-            # adopter's existing .gitignore.
+            # ALWAYS append-merge (append-only; adds missing required patterns) — even under
+            # --overwrite. .gitignore is a shared file the tool only ever contributes to, never a
+            # tool-authored artifact to regenerate; clobbering it could drop an adopter's ignore
+            # patterns (a secrets/build footgun), so it is deliberately handled before the
+            # overwrite branch.
             (report.merged if _merge_gitignore(target, content) else report.unchanged).append(rel)
             continue
         if exists and _read_text(target) == content:
@@ -739,8 +748,12 @@ def run_exit_validators(dest: str, framework_root: str) -> dict:
     cp = control_plane_validator.validate_root(dest)
     results["control_plane_validator"] = (cp.ok, f"{len(cp.errors)} error(s)")
 
-    # write the readiness snapshot (a REQUIRED file produced by --write-readiness), then
-    # re-run the aggregate so the snapshot is counted.
+    # Write the readiness snapshot (a REQUIRED file produced by --write-readiness), then re-run the
+    # aggregate so the snapshot is counted. NOTE (brownfield-preserve exception): this snapshot is
+    # a TOOL-OWNED status output, NOT adopter-authored content, so it is deliberately (re)written
+    # every run — create-only would leave a stale snapshot that misreports the current adoption
+    # state. It is exempt from materialize()'s byte-for-byte preservation (which never touches it);
+    # a hand edit to this file is not preserved. See the module docstring's brownfield contract.
     readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
     _assert_target_within_dest(os.path.realpath(dest), readiness)  # [R3 B-2]
     pre = adoption_status.validate_adoption(dest)
@@ -1076,8 +1089,10 @@ def main(argv=None) -> int:
                         help="allow a non-empty dest (brownfield): create only missing files, "
                              "preserve every existing file byte-for-byte")
     parser.add_argument("--overwrite", action="store_true",
-                        help="explicit escape hatch: regenerate (clobber) existing artifacts "
-                             "instead of preserving them — off by default")
+                        help="explicit escape hatch: regenerate (clobber) existing TOOL-AUTHORED "
+                             "artifacts instead of preserving them — off by default. .gitignore is "
+                             "always append-merged (never clobbered); the adoption-readiness "
+                             "snapshot is always refreshed by the validators.")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the artifact manifest and exit; write nothing")
     parser.add_argument("--probe", choices=["off", "binary", "live"], default=None,
