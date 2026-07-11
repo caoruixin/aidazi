@@ -355,6 +355,59 @@ class TestParallelCoordinatorGit(unittest.TestCase):
         cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(), charter=CHARTER,
                     repo_dir=repo, ledger_path=None)._check_state_consistency(st.to_dict())
 
+    def test_resume_merges_both_to_done(self):
+        # Cluster 4: continue the N=2 canary — resume merge_now for each parked milestone_merge
+        # (one --resume per parked pause, §6.3) → both milestones merged → campaign DONE.
+        root = tempfile.mkdtemp()
+        repo = _make_repo(root)
+        ms = [_ms("m1", ["s1"], module_locks=["a"]),
+              _ms("m2", ["s2"], module_locks=["b"])]
+        signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
+        d = os.path.join(root, "run")
+
+        def _mk():
+            c = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                            charter=CHARTER, repo_dir=repo, ledger_path=None)
+            c.worker_exec = {"run_loop_entrypoint": "_worker_canary_support:run_loop",
+                             "extra_sys_path": [_TESTS_DIR], "clock_policy": CLOCK_FIXED}
+            return c
+
+        st = _mk().run()
+        self.assertEqual(st.status, "paused")            # both parked at milestone_merge
+
+        def _resolver(mid):
+            return lambda reason, checkpoint: {"milestone_id": mid, "choice": "merge_now"}
+
+        st2 = _mk().run(resume=True, decision_resolver=_resolver("m1"))
+        self.assertEqual(st2.milestone_runtime["m1"]["phase"], "merged")
+        self.assertEqual(st2.status, "paused")           # m2 still parked
+        st3 = _mk().run(resume=True, decision_resolver=_resolver("m2"))
+        self.assertEqual(st3.status, "done")
+        self.assertEqual(st3.milestone_runtime["m1"]["phase"], "merged")
+        self.assertEqual(st3.milestone_runtime["m2"]["phase"], "merged")
+
+    def test_resume_epoch_drift_restores_displaced_merge_gate(self):
+        # Cluster 4: resolving an epoch_drift hold that had displaced a merge gate RESTORES the
+        # milestone_merge gate (the human still merges the re-validated milestone).
+        rd = tempfile.mkdtemp()
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
+        camp = cp.Campaign(signed, os.path.join(rd, "run"), _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=rd, ledger_path=None)
+        camp.state.milestone_runtime["m1"] = {
+            "phase": "paused", "subsprint_index": 1, "current_attempt_nonce": 1,
+            "folded": [["u1", 1]], "pause_reason": "epoch_drift", "pause_checkpoint": None,
+            "epoch_drift": {"displaced_merge_checkpoint": "/cp/m1.md",
+                            "displaced_pending_milestone_advance": True}}
+        r = camp.state.milestone_runtime["m1"]
+        out = camp._resolve_epoch_drift_parallel(
+            "m1", r, {"milestone_id": "m1", "choice": "revalidate"})
+        self.assertEqual(out, "proceed")
+        self.assertIsNone(r["epoch_drift"])                       # gate cleared
+        self.assertEqual(r["phase"], "paused")                    # merge gate RESTORED
+        self.assertEqual(r["pause_reason"], "milestone_merge")
+        self.assertEqual(r["pause_checkpoint"], "/cp/m1.md")
+
 
 class TestParallelReporting(unittest.TestCase):
     """run_loop phase-derived output + pauses[] (design §3.2.1/§6.3), additive to

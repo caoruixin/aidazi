@@ -3765,22 +3765,219 @@ class Campaign:
         self._save()
         return self.state
 
+    # ----- SANCTIONED singleton writers for the parallel path (Codex C3 B-4 + R2 note) ----- #
+    # These four + _pause_campaign_global + _mirror_from_runtime are the ONLY places the parallel
+    # dispatch/resume path writes top-level singleton pause/cursor/overlay fields (the §3.2 mirror
+    # + coordinator-GLOBAL pauses). The AST guard (test_campaign_parallel_ast_guard) exempts them
+    # and PROVES no OTHER parallel-reachable method touches a singleton pause/cursor field.
+    def _clear_pause_parallel(self) -> None:
+        """After a parked pause resolves: clear the top-level pause mirror → RUNNING (re-drive)."""
+        self.state.status = STATUS_RUNNING
+        self.state.pause_reason = None
+        self.state.pause_checkpoint = None
+
+    def _consume_freshness_block_parallel(self) -> None:
+        """Clear the §5.6 freshness_block overlay (the parallel block sets original_pause_reason
+        =None, so there is no serial gate to restore — just clear the overlay)."""
+        self.state.freshness_block = None
+
+    def _end_parallel(self, reason: str) -> "CampaignState":
+        """Coordinator-GLOBAL terminal end (abort) for the parallel path."""
+        self.state.status = STATUS_ENDED
+        self.state.pause_reason = reason
+        self._audit("campaign_ended", {"reason": reason})
+        self._save()
+        return self.state
+
+    def _repause_parallel(self, reason: str, why: str) -> str:
+        """A parked pause could not be resolved (missing/invalid decision) — re-pause fail-closed.
+        The mirror re-derives the pause from milestone_runtime; only status is set here."""
+        self._mirror_from_runtime()
+        self.state.status = STATUS_PAUSED
+        self._audit("campaign_repause", {"pause_reason": reason, "why": why})
+        self._save()
+        return "paused"
+
+    def _context_handle_from(self, ctx: Optional[dict]) -> Optional["li.ContextHandle"]:
+        """Rebuild a ContextHandle from a milestone_runtime[mid].context record (the parallel
+        analogue of _milestone_context_handle, which reads the singleton milestone_context)."""
+        if not ctx:
+            return None
+        return li.ContextHandle(
+            work_dir=ctx["work_dir"], branch=ctx["branch"], strategy=ctx["strategy"],
+            repo_dir=ctx["repo_dir"],
+            created=(ctx["strategy"] != li.STRATEGY_CURRENT_BRANCH),
+            base_ref=ctx.get("base_ref"))
+
     def _handle_resume_parallel(self, decision_resolver) -> str:
-        """Parallel pause resolution (design §6). Cluster 3 handles the coordinator-global
-        campaign_plan_signoff re-sign (re-validate freshness, consume the block, re-drive); the
-        per-milestone merge / unit / halt / epoch_drift resolutions + crash-resume adopt/fence
-        land in Cluster 4. A still-unresolved pause stays paused (fail-closed)."""
-        if self.state.pause_reason == "campaign_plan_signoff":
+        """Parallel pause resolution (design §6). Resolves the ONE parked pause the decision
+        selects (§6.3: several parked pauses ⇒ several --resume calls), then re-drives. Reuses the
+        PURE decision logic; re-implements state-plumbing on milestone_runtime[mid] + the sanctioned
+        global writers (NEVER the singleton _handle_resume mutators). A still-unresolved pause stays
+        paused (fail-closed)."""
+        reason = self.state.pause_reason
+        # Coordinator-GLOBAL re-sign block (§5.6): re-validate freshness, consume the overlay, drive.
+        if reason == "campaign_plan_signoff":
             if self._signoff_status() != "signed":
                 return "paused"   # still not re-signed → stay parked
-            # consume any freshness_block overlay and re-drive from the runtime.
-            if self.state.freshness_block is not None:
-                self._consume_freshness_block()
-            self.state.status = STATUS_RUNNING
-            self.state.pause_reason = None
-            self.state.pause_checkpoint = None
+            self._consume_freshness_block_parallel()
+            self._clear_pause_parallel()
             return "proceed"
-        return "paused"   # Cluster 4: merge_now/open_pr/keep_branch/unit/halt/epoch_drift
+        # Coordinator-GLOBAL budget drain (§8): re-drive; _drive_parallel re-checks _over_budget.
+        if reason == "campaign_budget_exhausted":
+            self._clear_pause_parallel()
+            return "proceed"
+        # Per-milestone parked pause: the decision selects ONE milestone's checkpoint (§6.1/§6.3).
+        decision = (decision_resolver(reason, self.state.pause_checkpoint)
+                    if decision_resolver is not None else None)
+        if not decision:
+            return self._repause_parallel(reason, "decision_pending")
+        mid = decision.get("milestone_id")
+        r = self._rt().get(mid) if mid else None
+        if not isinstance(r, dict) or r.get("phase") != "paused":
+            return self._repause_parallel(reason, "milestone_not_paused")
+        mr = r.get("pause_reason")
+        if mr == "milestone_merge":
+            return self._resolve_milestone_merge_parallel(mid, r, decision)
+        if mr == "epoch_drift":
+            return self._resolve_epoch_drift_parallel(mid, r, decision)
+        if mr == "halt_condition_met":
+            return self._resolve_halt_parallel(mid, r, decision)
+        return self._resolve_unit_pause_parallel(mid, r, decision)
+
+    def _resolve_milestone_merge_parallel(self, mid: str, r: dict, decision: dict) -> str:
+        """Resolve a milestone_merge gate (§7.2). merge_now ⇒ protected local --no-ff merge into
+        trunk (phase→merged; conflict ⇒ re-pause at the EXISTING milestone_merge, never
+        gate_hard_fail); open_pr/keep_branch ⇒ advance without merging (phase→done, leaf terminal
+        §7.1); abort ⇒ end. Coordinator-serialized (one merge at a time)."""
+        choice = decision.get("choice")
+        if choice == "abort":
+            self._end_parallel("milestone_merge_aborted")
+            return "ended"
+        # Freshness before the IRREVERSIBLE merge (T2-A B5): a stale merge-target/gate/cleanup edit
+        # blocks the WHOLE campaign for a re-sign (the milestone stays paused at milestone_merge).
+        if not self._authority_fresh():
+            self._pause_campaign_global(
+                "campaign_plan_signoff", None, "campaign_freshness_block",
+                {"signoff_status": self._signoff_status(), "drift": self._drift_field_hint()},
+                freshness_block=True)
+            return "paused"
+        handle = self._context_handle_from(r.get("context"))
+        if choice == "merge_now" and handle is not None and handle.created:
+            try:
+                action = li.merge_into_trunk(
+                    handle, self._trunk_branch,
+                    merge_message=f"aidazi: merge milestone {mid}")
+            except li.GitOpError:
+                self._audit("campaign_milestone_merge_conflict", {"milestone_id": mid})
+                return self._repause_parallel("milestone_merge", "merge_conflict")
+            if handle.strategy == li.STRATEGY_NEW_WORKTREE:
+                li.cleanup(handle,
+                           cleanup_policy=self._milestone_isolation.get("cleanup_policy"),
+                           merged=(action == "merged"), changed=True)
+            r["phase"] = "merged"
+            self._audit("campaign_milestone_merged",
+                        {"milestone_id": mid, "action": action, "trunk": self._trunk_branch})
+        else:
+            r["phase"] = "done"   # open_pr/keep_branch → leaf done-unmerged terminal (§7.1)
+            self._audit("campaign_milestone_advanced_no_merge",
+                        {"milestone_id": mid, "choice": choice})
+        r["pause_reason"] = None
+        r["pause_checkpoint"] = None
+        r["pending_milestone_advance"] = False
+        self._clear_pause_parallel()
+        self._mirror_from_runtime()
+        self._save()
+        return "proceed"
+
+    def _resolve_epoch_drift_parallel(self, mid: str, r: dict, decision: dict) -> str:
+        """Resolve an epoch_drift hold (§5.6): the human re-validated the drifted scope. Clear the
+        durable gate; RESTORE a merge gate the drift displaced (a completion) so the human still
+        merges the milestone, else the milestone re-enters its normal flow. abort ⇒ end."""
+        choice = decision.get("choice")
+        if choice == "abort":
+            self._end_parallel("epoch_drift_aborted")
+            return "ended"
+        if choice not in ("revalidate", "proceed"):
+            return self._repause_parallel("epoch_drift", "unrecognized_choice")
+        drift = r.get("epoch_drift") or {}
+        r["epoch_drift"] = None
+        if "displaced_merge_checkpoint" in drift:
+            r["phase"] = "paused"
+            r["pause_reason"] = "milestone_merge"
+            r["pause_checkpoint"] = drift.get("displaced_merge_checkpoint")
+            r["pending_milestone_advance"] = bool(
+                drift.get("displaced_pending_milestone_advance"))
+        else:
+            r["phase"] = "ready"
+            r["pause_reason"] = None
+            r["pause_checkpoint"] = None
+        self._clear_pause_parallel()
+        self._mirror_from_runtime()
+        self._save()
+        return "proceed"
+
+    def _resolve_halt_parallel(self, mid: str, r: dict, decision: dict) -> str:
+        """Resolve a per-milestone halt_condition_met (§3.5): proceed ⇒ promote the pending ack to
+        the GLOBAL permanent acks + re-dispatch the not-yet-run sub-sprint (phase→ready); abort ⇒
+        end."""
+        choice = decision.get("choice")
+        if choice == "abort":
+            self._end_parallel("halt_condition_aborted")
+            return "ended"
+        if choice != "proceed":
+            return self._repause_parallel("halt_condition_met", "unrecognized_choice")
+        pending = r.get("halt_condition_pending") or {}
+        ack_key = pending.get("ack_key")
+        if ack_key and ack_key not in self.state.halt_condition_acks:
+            self.state.halt_condition_acks.append(ack_key)   # GLOBAL permanent ack
+        r["halt_condition_pending"] = None
+        r["phase"] = "ready"
+        r["pause_reason"] = None
+        r["pause_checkpoint"] = None
+        self._clear_pause_parallel()
+        self._mirror_from_runtime()
+        self._save()
+        return "proceed"
+
+    def _resolve_unit_pause_parallel(self, mid: str, r: dict, decision: dict) -> str:
+        """Resolve a halted SUB-SPRINT pause (a unit that HALTED at a Driver gate): interpret the
+        decision (the SAME pure interpret_dispatch/_DISPATCH_TABLE the serial path uses) and either
+        re-dispatch the milestone's cursor sub-sprint (phase→ready), advance past it, or end. Any
+        non-advancing/unknown action fail-closes to a re-pause (never a silent proceed)."""
+        reason = r.get("pause_reason") or "unknown_halt"
+        m = self._milestone_by_id(mid)
+        seq = list(m.get("subsprint_sequence") or [])
+        action = interpret_dispatch(reason, decision)
+        if action == ACT_END:
+            self._end_parallel("campaign_aborted")
+            return "ended"
+        if action == ACT_ADVANCE_MILESTONE:
+            # accepted ship → the milestone is complete (no further sub-sprints run).
+            r["pause_reason"] = None
+            r["pause_checkpoint"] = None
+            self._complete_milestone_parallel(mid, m)
+        elif action == ACT_ADVANCE_SUBSPRINT:
+            # accepted waiver (e.g. review_out_of_scope) → advance PAST the halted sub-sprint.
+            r["subsprint_index"] = int(r.get("subsprint_index", 0)) + 1
+            r["pause_reason"] = None
+            r["pause_checkpoint"] = None
+            if r["subsprint_index"] >= len(seq):
+                self._complete_milestone_parallel(mid, m)
+            else:
+                r["phase"] = "ready"
+        elif action == ACT_REDISPATCH_FRESH:
+            # blocker removed → re-run the SAME cursor sub-sprint fresh.
+            r["phase"] = "ready"
+            r["pause_reason"] = None
+            r["pause_checkpoint"] = None
+        else:
+            # ACT_DELIVER_FOLLOWUP / unknown → the parallel core does not auto-author → re-pause.
+            return self._repause_parallel(reason, f"unresolved_action:{action}")
+        self._clear_pause_parallel()
+        self._mirror_from_runtime()
+        self._save()
+        return "proceed"
 
 
 def run_campaign(plan: dict, run_dir: str, run_unit: RunUnit, *,
