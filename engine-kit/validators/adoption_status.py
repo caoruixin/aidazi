@@ -516,9 +516,10 @@ def validate_adoption(
     return report
 
 
-def write_readiness_snapshot(report: StatusReport, path: str) -> None:
-    """Write a human-readable readiness snapshot (Step 8 artifact)."""
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+def render_readiness_snapshot(report: StatusReport) -> str:
+    """Render the readiness-snapshot body (Step 8 artifact). Pure & DETERMINISTIC — no timestamps
+    or run-specific data — so a caller can compare an on-disk snapshot against the would-be content
+    before deciding whether an overwrite is destructive (see adopter_init fail-closed policy)."""
     lines = [
         "---",
         "title: Adoption readiness snapshot",
@@ -546,8 +547,14 @@ def write_readiness_snapshot(report: StatusReport, path: str) -> None:
         "```",
         "",
     ]
+    return "\n".join(lines)
+
+
+def write_readiness_snapshot(report: StatusReport, path: str) -> None:
+    """Write a human-readable readiness snapshot (Step 8 artifact)."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines))
+        fh.write(render_readiness_snapshot(report))
 
 
 # --------------------------------------------------------------------------- #

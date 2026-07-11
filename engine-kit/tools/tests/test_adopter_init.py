@@ -212,6 +212,140 @@ class ScaffoldGreenTests(unittest.TestCase):
             self.assertEqual(rc2, 0)
             self.assertIn("# human edit", ai._read_text(charter_path))
 
+    def test_existing_adopter_force_refuses_governed_clobber(self):
+        # [Finding 2 / greenfield-only] --force on an ALREADY-adopted repo whose governed docs have
+        # DIVERGED (e.g. a real requirements ledger) must be refused fail-closed (adopter_init is a
+        # scaffolder, not a migrator; design §0.2). The diverged doc must be left untouched, and
+        # --overwrite must remain the explicit regenerate escape hatch.
+        with tempfile.TemporaryDirectory(prefix="ai-migrate-") as tmp:
+            dest, rc = self._scaffold(tmp)
+            self.assertEqual(rc, 0)
+            ledger = os.path.join(dest, "docs", "requirements-ledger.json")
+            with open(ledger, "w", encoding="utf-8") as fh:
+                fh.write('{"requirements": [{"id": "R-EXISTING", "note": "real delivery state"}]}\n')
+            # --force alone must REFUSE (exit 3) without clobbering the diverged ledger.
+            rc2 = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc2, 3, "must refuse to migrate an existing adopter")
+            self.assertIn("R-EXISTING", ai._read_text(ledger), "diverged ledger left untouched")
+            # --overwrite is the explicit regenerate escape hatch (back to a green scaffold).
+            rc3 = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force", "--overwrite"])
+            self.assertEqual(rc3, 0)
+            self.assertNotIn("R-EXISTING", ai._read_text(ledger), "--overwrite regenerates")
+
+    def test_existing_adopter_force_refuses_readiness_clobber(self):
+        # [Finding 2 / B1 fold] adoption-readiness.md is a governed docs/current/* doc written by
+        # run_exit_validators AFTER materialize — it must obey the SAME fail-closed policy, or a
+        # --force run silently clobbers a diverged readiness snapshot that materialize's pre-scan
+        # (artifact-set only) never sees.
+        with tempfile.TemporaryDirectory(prefix="ai-rdy-clobber-") as tmp:
+            dest, rc = self._scaffold(tmp)
+            self.assertEqual(rc, 0)
+            readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
+            # diverge ONLY the readiness snapshot (every materialized artifact stays byte-identical,
+            # so materialize's pre-scan passes and this is the sole governed-doc divergence).
+            with open(readiness, "a", encoding="utf-8") as fh:
+                fh.write("\n<!-- HUMAN-EDIT-READINESS -->\n")
+            rc2 = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc2, 3, "must refuse to clobber a diverged readiness snapshot")
+            self.assertIn("HUMAN-EDIT-READINESS", ai._read_text(readiness), "readiness preserved")
+            # --overwrite is the explicit regenerate escape hatch.
+            rc3 = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force", "--overwrite"])
+            self.assertEqual(rc3, 0)
+            self.assertNotIn("HUMAN-EDIT-READINESS", ai._read_text(readiness), "--overwrite regenerates")
+
+    def test_materialize_clobber_refused_when_governed_doc_diverges_after_prescan(self):
+        # [R3 B1 / TOCTOU] the no-clobber rule is re-enforced at the WRITE site, not only the
+        # pre-scan. Simulate a concurrent writer diverging a not-yet-written governed doc in the
+        # window AFTER the pre-scan passed: the write loop must still refuse (exit 3) and preserve.
+        with tempfile.TemporaryDirectory(prefix="ai-toctou-mat-") as tmp:
+            dest, rc = self._scaffold(tmp)
+            self.assertEqual(rc, 0)
+            ledger = os.path.join(dest, "docs", "requirements-ledger.json")
+            # Remove AGENTS.md so the write loop actually reaches _atomic_write (a fully identical
+            # tree writes nothing); AGENTS.md sorts before docs/requirements-ledger.json.
+            os.remove(os.path.join(dest, "AGENTS.md"))
+            real_atomic = ai._atomic_write
+
+            def hooked(target, content, *a, **k):
+                if os.path.basename(target) == "AGENTS.md":
+                    with open(ledger, "w", encoding="utf-8") as fh:
+                        fh.write('{"requirements": [{"id": "R-TOCTOU"}]}\n')  # diverge post-pre-scan
+                return real_atomic(target, content, *a, **k)
+
+            with unittest.mock.patch.object(ai, "_atomic_write", side_effect=hooked):
+                rc2 = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc2, 3, "write-site guard must refuse a diverged-after-pre-scan clobber")
+            self.assertIn("R-TOCTOU", ai._read_text(ledger), "diverged ledger preserved at write site")
+
+    def test_readiness_clobber_refused_when_snapshot_diverges_after_capture(self):
+        # [R3 B1 / TOCTOU] the readiness snapshot is re-read IMMEDIATELY before the final write.
+        # Simulate a concurrent writer diverging it after the initial capture: refuse + preserve.
+        with tempfile.TemporaryDirectory(prefix="ai-toctou-rdy-") as tmp:
+            dest, rc = self._scaffold(tmp)
+            self.assertEqual(rc, 0)
+            readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
+            real_render = adoption_status.render_readiness_snapshot
+
+            def hooked_render(report, *a, **k):
+                out = real_render(report, *a, **k)
+                if "R-TOCTOU-RDY" not in ai._read_text(readiness):
+                    with open(readiness, "a", encoding="utf-8") as fh:
+                        fh.write("\n<!-- R-TOCTOU-RDY -->\n")  # diverge after the capture
+                return out
+
+            with unittest.mock.patch.object(adoption_status, "render_readiness_snapshot",
+                                            side_effect=hooked_render):
+                rc2 = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc2, 3, "readiness re-read guard must refuse a diverged-after-capture clobber")
+            self.assertIn("R-TOCTOU-RDY", ai._read_text(readiness), "diverged readiness preserved")
+
+    def test_readiness_clobber_refused_on_bootstrap_branch_diverged_after_boot(self):
+        # [R4 B1 / TOCTOU] the ABSENT-at-capture (bootstrap) branch must ALSO re-read before the
+        # final write: a concurrent writer that lands content between our bootstrap create and the
+        # final write must not be clobbered under --force without --overwrite.
+        with tempfile.TemporaryDirectory(prefix="ai-toctou-boot-") as tmp:
+            dest, rc = self._scaffold(tmp)
+            self.assertEqual(rc, 0)
+            readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
+            os.remove(readiness)  # ABSENT at capture -> bootstrap branch
+            real_cow = ai._create_only_write
+
+            def hooked_cow(path, content, *a, **k):
+                created = real_cow(path, content, *a, **k)  # perform the bootstrap create
+                if "CONCURRENT-BOOT" not in ai._read_text(path):
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write("CONCURRENT-BOOT REPLACEMENT\n")  # diverge right after bootstrap
+                return created
+
+            with unittest.mock.patch.object(ai, "_create_only_write", side_effect=hooked_cow):
+                rc2 = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc2, 3, "bootstrap-branch re-read guard must refuse the post-boot clobber")
+            self.assertIn("CONCURRENT-BOOT", ai._read_text(readiness), "post-boot content preserved")
+
+    def test_readiness_bootstrap_write_is_create_only(self):
+        # [R5 B1 / TOCTOU] the bootstrap WRITE itself must be create-only: a concurrent/human file
+        # that appears AFTER absent-capture but BEFORE the bootstrap write must NOT be clobbered —
+        # the create-only write leaves it, and the guard then refuses (exit 3, content preserved).
+        with tempfile.TemporaryDirectory(prefix="ai-toctou-preboot-") as tmp:
+            dest, rc = self._scaffold(tmp)
+            self.assertEqual(rc, 0)
+            readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
+            os.remove(readiness)  # ABSENT at capture -> bootstrap branch
+            real_render = adoption_status.render_readiness_snapshot
+
+            def hooked_render(report, *a, **k):
+                out = real_render(report, *a, **k)
+                if not os.path.exists(readiness):  # fires once: after the pre-render, pre-bootstrap
+                    with open(readiness, "w", encoding="utf-8") as fh:
+                        fh.write("CONCURRENT-PREBOOT CONTENT\n")  # a writer beats our bootstrap
+                return out
+
+            with unittest.mock.patch.object(adoption_status, "render_readiness_snapshot",
+                                            side_effect=hooked_render):
+                rc2 = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc2, 3, "create-only bootstrap must not clobber a pre-boot concurrent file")
+            self.assertIn("CONCURRENT-PREBOOT", ai._read_text(readiness), "pre-boot content preserved")
+
     def test_intent_unconfirmed_is_not_green_even_with_signed_brief(self):
         # [R3 B-3] the four validators only check the brief token; an unconfirmed INTENT contract
         # must still make the tool report NOT green (the intent signature is enforced end-to-end).

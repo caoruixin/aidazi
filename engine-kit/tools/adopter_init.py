@@ -573,6 +573,18 @@ def _assert_not_in_framework(path: str, framework_root: str) -> None:
         raise InitError(f"refusing: {path!r} is inside the framework tree")
 
 
+def _clobber_message(dest: str, rels) -> str:
+    """Shared fail-closed refusal message for the greenfield-only no-clobber policy ([Finding 2]).
+    Used by BOTH the pre-scan and every write-site re-check so the guidance is identical."""
+    rels = list(rels)
+    listed = ", ".join(rels[:6]) + (" …" if len(rels) > 6 else "")
+    return (f"dest {dest!r} is already an aidazi adopter — regenerating would overwrite "
+            f"{len(rels)} governed doc(s) with different content ({listed}). adopter_init is a "
+            f"greenfield scaffolder, not a migrator (design §0.2). Reconcile an existing adopter "
+            f"with the read-only validators (adopter_wiring / charter / control_plane / "
+            f"adoption_status); pass --overwrite to intentionally regenerate the governed tree.")
+
+
 def materialize(artifacts: dict, dest: str, framework_root: str, *, force: bool = False,
                 overwrite: bool = False) -> None:
     """The ONLY writer of the artifact tree. Guards the dest first (I2), writes each artifact
@@ -586,6 +598,27 @@ def materialize(artifacts: dict, dest: str, framework_root: str, *, force: bool 
     # ([C2 B-3]).
     dest_real = os.path.realpath(dest)
     _HUMAN_EDITABLE = ("charter.yaml", os.path.join("docs", "research-briefs") + os.sep)
+
+    # [Finding 2 / greenfield-only] adopter_init is a greenfield scaffolder, NOT a migrator
+    # (design §0.2). Fail CLOSED before writing anything: refuse if --force would clobber a
+    # pre-existing governed doc (AGENTS.md, docs/current/*, docs/requirements-ledger.json, …)
+    # whose on-disk content DIFFERS from the freshly-generated artifact. This targets exactly the
+    # destructive case — an already-adopted repo whose real delivery state would be overwritten —
+    # while staying non-breaking: byte-identical re-runs stay idempotent, the human-edited
+    # charter/briefs remain preserved, and the partial .gitignore is merged (never clobbered).
+    # --overwrite is the explicit "yes, regenerate the governed tree" escape hatch.
+    if not overwrite:
+        would_clobber = []
+        for rel, content in sorted(artifacts.items()):
+            if rel == ".gitignore" or rel.startswith(_HUMAN_EDITABLE):
+                continue  # merged / preserved — never a destructive clobber
+            target = os.path.join(dest, rel)
+            _assert_target_within_dest(dest_real, target)  # [R3 B-2] no symlink-escape read/write
+            if os.path.exists(target) and _read_text(target) != content:
+                would_clobber.append(rel)
+        if would_clobber:
+            raise InitError(_clobber_message(dest, would_clobber))
+
     for rel, content in sorted(artifacts.items()):
         target = os.path.join(dest, rel)
         _assert_target_within_dest(dest_real, target)  # [R3 B-2] no symlink-escape write
@@ -596,8 +629,15 @@ def materialize(artifacts: dict, dest: str, framework_root: str, *, force: bool 
             continue
         if os.path.exists(target) and rel.startswith(_HUMAN_EDITABLE) and not overwrite:
             continue  # idempotent: preserve a human-edited charter/brief unless --overwrite
-        if os.path.exists(target) and _read_text(target) == content:
-            continue  # idempotent: no spurious rewrite
+        if os.path.exists(target):
+            if _read_text(target) == content:
+                continue  # idempotent: no spurious rewrite
+            if not overwrite:
+                # [R3 B1 / TOCTOU close] re-enforce the no-clobber rule at the WRITE site, not only
+                # in the pre-scan: a governed doc that appeared or diverged in the window between
+                # the pre-scan and this write must still never be clobbered under --force without
+                # --overwrite. Re-read + refuse here shrinks the check→write window to nothing.
+                raise InitError(_clobber_message(dest, [rel]))
         _atomic_write(target, content)
 
     _mount_framework(dest, framework_root)
@@ -656,6 +696,25 @@ def _atomic_write(target: str, content: str) -> None:
     os.replace(tmp, target)
 
 
+def _create_only_write(path: str, content: str) -> bool:
+    """Atomically create `path` with `content` — O_EXCL, NEVER overwrite. Returns True if THIS call
+    created it, False if the file ALREADY EXISTED (a concurrent create won the race; the caller must
+    NOT clobber it). O_NOFOLLOW refuses to create through a symlink. Used for the readiness bootstrap
+    write, whose contract is "the file is absent" — if it isn't, a concurrent/human writer beat us
+    and the later fail-closed guard decides ([R5 B1])."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o644)
+    except FileExistsError:
+        return False
+    except OSError as exc:
+        raise InitError(f"refusing: cannot safely create {path!r} (symlink / {exc})")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    return True
+
+
 def _read_text(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -667,7 +726,7 @@ def _read_text(path: str) -> str:
 # --------------------------------------------------------------------------- #
 # run_exit_validators — the four validators + --write-readiness (design §4.2)
 # --------------------------------------------------------------------------- #
-def run_exit_validators(dest: str, framework_root: str) -> dict:
+def run_exit_validators(dest: str, framework_root: str, *, overwrite: bool = False) -> dict:
     """Run the four adoption validators against dest, writing the readiness snapshot (the
     chicken-and-egg §1.2). GUARDS the dest first ([C2 B-4] / I2): the `--write-readiness` call
     is a write site and MUST be behind the same guard as materialize, even on a direct/imported
@@ -688,11 +747,37 @@ def run_exit_validators(dest: str, framework_root: str) -> dict:
     # re-run the aggregate so the snapshot is counted.
     readiness = os.path.join(dest, "docs", "current", "adoption-readiness.md")
     _assert_target_within_dest(os.path.realpath(dest), readiness)  # [R3 B-2]
-    pre = adoption_status.validate_adoption(dest)
-    adoption_status.write_readiness_snapshot(pre, readiness)   # create the required file
+    # [Finding 2 / B1 fold] adoption-readiness.md is a governed docs/current/* doc written OUTSIDE
+    # materialize, so it must obey the SAME fail-closed policy: a --force run must not silently
+    # clobber a diverged pre-existing snapshot. Capture it first and only bootstrap when ABSENT, so
+    # an existing snapshot is never overwritten before the divergence check below.
+    existing_readiness = _read_text(readiness) if os.path.exists(readiness) else None
+    bootstrap_body = None
+    if existing_readiness is None:
+        pre = adoption_status.validate_adoption(dest)
+        body = adoption_status.render_readiness_snapshot(pre)
+        # [R5 B1] bootstrap the required file with a CREATE-ONLY write: if a concurrent/human writer
+        # created it in the window since our absent-capture, DO NOT clobber it — leave their content
+        # and let the fail-closed guard below refuse (their body is neither `final` nor our
+        # `bootstrap_body`). `bootstrap_body` is set ONLY when we actually created the file.
+        if _create_only_write(readiness, body):
+            bootstrap_body = body
     status = adoption_status.validate_adoption(dest)           # re-validate with it present
-    # [R3 B-4] re-render the snapshot from the FINAL report so its content reflects the actual
-    # (green) state, not the stale pre-readiness report that recorded readiness as missing.
+    # [R3 B-4] the snapshot must reflect the FINAL report (green), not the stale pre-readiness
+    # report that recorded readiness as missing. render_readiness_snapshot is deterministic.
+    final_readiness = adoption_status.render_readiness_snapshot(status)
+    # [R3 B1 / R4 B1 — TOCTOU close, BOTH branches] re-read the on-disk snapshot IMMEDIATELY before
+    # the final write and refuse under !overwrite if it diverged from content THIS run legitimately
+    # owns. Absence (a concurrent delete) is fine — we simply recreate. The only pre-existing bodies
+    # we may replace are the deterministic final render itself and, when we bootstrapped an ABSENT
+    # file this run, the exact pre-snapshot we just wrote. ANY other content means a concurrent /
+    # human edit landed between our decision and the write → fail closed, never clobber.
+    if not overwrite:
+        current = _read_text(readiness) if os.path.exists(readiness) else None
+        owned = {final_readiness} if bootstrap_body is None else {final_readiness, bootstrap_body}
+        if current is not None and current not in owned:
+            raise InitError(_clobber_message(
+                dest, [os.path.join("docs", "current", "adoption-readiness.md")]))
     adoption_status.write_readiness_snapshot(status, readiness)
     results["adoption_status"] = (status.ok, "" if status.ok else "see remediation below")
 
@@ -1062,11 +1147,13 @@ def main(argv=None) -> int:
         # Guard BEFORE any write (I2).
         assert_writable_dest(args.dest, framework_root)
         materialize(artifacts, args.dest, framework_root, force=args.force, overwrite=args.overwrite)
+        # run_exit_validators is a write site too (the readiness snapshot) — keep it inside the
+        # guarded block so its fail-closed refuse ([B1 fold]) also surfaces as exit 3.
+        outcome = run_exit_validators(args.dest, framework_root, overwrite=args.overwrite)
     except InitError as exc:
         sys.stderr.write(f"[adopter_init] REFUSED: {exc}\n")
         return 3
 
-    outcome = run_exit_validators(args.dest, framework_root)
     sys.stdout.write(f"\nadopter_init: scaffolded {args.dest}\n\n")
     for name, (ok, detail) in outcome["results"].items():
         sys.stdout.write(f"  [{'PASS' if ok else 'FAIL'}] {name}  {detail}\n")
