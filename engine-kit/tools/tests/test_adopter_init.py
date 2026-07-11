@@ -58,6 +58,19 @@ class BuildArtifactsPurityTests(unittest.TestCase):
             rep = charter_validator.validate_file(path)
             self.assertTrue(rep.ok, msg="\n".join(str(e) for e in rep.errors))
 
+    def test_omitted_capability_ref_not_inherited_from_template(self):
+        # [C2 B-2] a role that omits capability_ref must NOT keep the template's stale ref.
+        data = json.load(open(_CANARY_ANSWERS))
+        data["llm_roles"]["dev"] = {"harness": "claude_code", "provider": "anthropic",
+                                    "model": "claude-sonnet-4-6"}  # no capability_ref
+        with tempfile.TemporaryDirectory(prefix="ai-capref-") as d:
+            apath = os.path.join(d, "a.json")
+            json.dump(data, open(apath, "w"))
+            plan = ai.load_answers(apath, _FRAMEWORK_ROOT)
+            charter_text = ai.build_artifacts(plan, ai.load_templates(_FRAMEWORK_ROOT))["charter.yaml"]
+            charter = __import__("yaml").safe_load(charter_text)
+            self.assertNotIn("capability_ref", charter["tooling"]["dev"])
+
     def test_i3_unsigned_brief_omits_the_token(self):
         # I3: with confirmed_by_human false the brief body must NOT carry the confirmed token.
         data = json.load(open(_CANARY_ANSWERS))
@@ -95,6 +108,11 @@ class GuardTests(unittest.TestCase):
         with self.assertRaises(ai.InitError):
             ai.materialize(artifacts, _FRAMEWORK_ROOT, _FRAMEWORK_ROOT)
 
+    def test_run_exit_validators_guards_the_readiness_write(self):
+        # [C2 B-4] the readiness write path must be behind the I2 guard too.
+        with self.assertRaises(ai.InitError):
+            ai.run_exit_validators(_FRAMEWORK_ROOT, _FRAMEWORK_ROOT)
+
 
 class ScaffoldGreenTests(unittest.TestCase):
     def _scaffold(self, tmp, answers=_CANARY_ANSWERS, force=False):
@@ -119,6 +137,21 @@ class ScaffoldGreenTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(
                 os.path.join(dest, "aidazi", "engine-kit", "orchestrator", "driver.py")))
             self.assertFalse(adoption_status.is_framework_repo(dest))
+            # vendored skills mounted ([C2 B-5]).
+            self.assertTrue(os.path.isdir(os.path.join(dest, "aidazi", "skills")))
+
+    def test_force_preserves_human_edited_brief(self):
+        # [C2 B-3] --force without --overwrite must NOT clobber a human-edited seed brief.
+        with tempfile.TemporaryDirectory(prefix="ai-brief-") as tmp:
+            dest, rc = self._scaffold(tmp)
+            self.assertEqual(rc, 0)
+            brief = next(os.path.join(dest, "docs", "research-briefs", f)
+                         for f in os.listdir(os.path.join(dest, "docs", "research-briefs")))
+            with open(brief, "a", encoding="utf-8") as fh:
+                fh.write("\n<!-- human edit to the brief -->\n")
+            rc2 = ai.main([dest, "--answers", _CANARY_ANSWERS, "--force"])
+            self.assertEqual(rc2, 0)
+            self.assertIn("human edit to the brief", ai._read_text(brief))
 
     def test_idempotent_force_rerun_stays_green_no_clobber(self):
         with tempfile.TemporaryDirectory(prefix="ai-idem-") as tmp:
@@ -161,6 +194,18 @@ class CliContractTests(unittest.TestCase):
     def test_framework_repo_dest_refused_exit3(self):
         rc = ai.main([_FRAMEWORK_ROOT, "--answers", _CANARY_ANSWERS])
         self.assertEqual(rc, 3)
+
+    def test_headless_empty_api_key_env_refused(self):
+        # [C2 B-1] an empty routing NAME must be rejected (minLength) so no unrunnable charter.
+        data = json.load(open(_CANARY_ANSWERS))
+        data["llm_roles"]["review"] = {
+            "harness": "headless", "provider": "deepseek", "model": "deepseek-v4-pro",
+            "endpoint": "https://api.deepseek.com/v1", "api_key_env": ""}
+        with tempfile.TemporaryDirectory(prefix="ai-hl-") as tmp:
+            apath = os.path.join(tmp, "a.json")
+            json.dump(data, open(apath, "w"))
+            with self.assertRaises(ai.InitError):
+                ai.load_answers(apath, _FRAMEWORK_ROOT)
 
 
 if __name__ == "__main__":

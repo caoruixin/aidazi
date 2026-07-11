@@ -95,10 +95,10 @@
         "harness": {"type": "string", "enum": ["claude_code", "codex", "cursor", "kimi", "headless"]},
         "provider": {"type": "string", "minLength": 1},
         "model": {"type": "string", "minLength": 1},
-        "capability_ref": {"type": "string"},
-        "endpoint": {"type": "string", "description": "headless base URL (literal); wins over endpoint_env."},
-        "endpoint_env": {"type": "string", "description": "NAME of the env var holding the headless base URL."},
-        "api_key_env": {"type": "string", "description": "NAME of the env var holding the provider API key (value never stored)."}
+        "capability_ref": {"type": "string", "minLength": 1},
+        "endpoint": {"type": "string", "minLength": 1, "description": "headless base URL (literal); wins over endpoint_env."},
+        "endpoint_env": {"type": "string", "minLength": 1, "description": "NAME of the env var holding the headless base URL."},
+        "api_key_env": {"type": "string", "minLength": 1, "description": "NAME of the env var holding the provider API key (value never stored)."}
       },
       "if": {"properties": {"harness": {"const": "headless"}}},
       "then": {

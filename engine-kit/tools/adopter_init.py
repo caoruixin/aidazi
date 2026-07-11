@@ -55,7 +55,8 @@ FRAMEWORK_VERSION = "v4.0.0"
 # Framework subtrees mounted under <dest>/aidazi/ (design §4.3). engine-kit gives
 # _engine_kit_present its aidazi/engine-kit/orchestrator/driver.py; the rest resolve the
 # governance/process/role-card/schema references in the emitted AGENTS.md.
-FRAMEWORK_MOUNT_DIRS = ("engine-kit", "governance", "process", "role-cards", "schemas", "templates")
+FRAMEWORK_MOUNT_DIRS = ("engine-kit", "governance", "process", "role-cards", "schemas",
+                        "templates", "skills")
 _COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", ".gate", ".git")
 
 
@@ -263,8 +264,13 @@ def _build_charter(plan: AdopterPlan, template_text: str) -> str:
         cfg["harness"] = binding.harness
         cfg["provider"] = binding.provider
         cfg["model"] = binding.model
+        # [C2 B-2] set-or-POP capability_ref so a role whose harness/binding changed can NEVER
+        # inherit a stale template ref (which would trip the capability gate on answers that did
+        # not name it). Without a ref the gate resolves by (provider, model) instead.
         if binding.capability_ref:
             cfg["capability_ref"] = binding.capability_ref
+        else:
+            cfg.pop("capability_ref", None)
         # headless routing (NAMES only; values live in the adopter's .env.local)
         for key, val in (("endpoint", binding.endpoint), ("endpoint_env", binding.endpoint_env),
                          ("api_key_env", binding.api_key_env)):
@@ -541,7 +547,9 @@ def materialize(artifacts: dict, dest: str, framework_root: str, *, force: bool 
         raise InitError(f"dest {dest!r} is non-empty; pass --force for a brownfield adopter")
     os.makedirs(dest, exist_ok=True)
 
-    _HUMAN_EDITABLE = ("charter.yaml",)  # never clobber without --overwrite
+    # never clobber a human-edited charter OR a signed research brief without --overwrite
+    # ([C2 B-3]).
+    _HUMAN_EDITABLE = ("charter.yaml", os.path.join("docs", "research-briefs") + os.sep)
     for rel, content in sorted(artifacts.items()):
         target = os.path.join(dest, rel)
         if os.path.exists(target) and rel.startswith(_HUMAN_EDITABLE) and not overwrite:
@@ -584,9 +592,12 @@ def _read_text(path: str) -> str:
 # --------------------------------------------------------------------------- #
 # run_exit_validators — the four validators + --write-readiness (design §4.2)
 # --------------------------------------------------------------------------- #
-def run_exit_validators(dest: str) -> dict:
+def run_exit_validators(dest: str, framework_root: str) -> dict:
     """Run the four adoption validators against dest, writing the readiness snapshot (the
-    chicken-and-egg §1.2). Returns {name: (ok, detail)} + an aggregate 'green' bool."""
+    chicken-and-egg §1.2). GUARDS the dest first ([C2 B-4] / I2): the `--write-readiness` call
+    is a write site and MUST be behind the same guard as materialize, even on a direct/imported
+    call. Returns {name: (ok, detail)} + an aggregate 'green' bool."""
+    assert_writable_dest(dest, framework_root)
     results = {}
     charter_path = os.path.join(dest, "charter.yaml")
     cr = charter_validator.validate_file(charter_path)
@@ -651,7 +662,7 @@ def main(argv=None) -> int:
         sys.stderr.write(f"[adopter_init] REFUSED: {exc}\n")
         return 3
 
-    outcome = run_exit_validators(args.dest)
+    outcome = run_exit_validators(args.dest, framework_root)
     sys.stdout.write(f"\nadopter_init: scaffolded {args.dest}\n\n")
     for name, (ok, detail) in outcome["results"].items():
         sys.stdout.write(f"  [{'PASS' if ok else 'FAIL'}] {name}  {detail}\n")
