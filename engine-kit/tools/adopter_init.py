@@ -672,7 +672,10 @@ def _load_local_env(root: str, filenames=(".env.local", ".env")) -> dict:
                     key = key.strip()
                     if key.startswith("export "):
                         key = key[len("export "):].strip()
-                    val = val.strip().strip('"').strip("'")
+                    val = val.strip()
+                    # strip only MATCHED surrounding quotes (mirror run_loop.load_local_env — [C3.2 N-1])
+                    if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                        val = val[1:-1]
                     if key and key not in out:
                         out[key] = val
         except OSError:
