@@ -632,10 +632,22 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
             # halted unit is matched by milestone_id + the FULL checkpoint_path.
             _unit_gates = {"milestone_merge", "halt_condition_met", "epoch_drift",
                            "deliver_followup_required", "milestone_decompose_required"}
-            if m_reason in ("milestone_merge", "halt_condition_met"):
+            if m_reason == "halt_condition_met":
+                # Restore the condition_id binding (Codex R3 B-12 — the B-10 fold dropped it):
+                # a decision with the right milestone/checkpoint but the WRONG condition must not
+                # acknowledge the live pending halt. subsprint_id stays forbidden.
+                pend = entry.get("halt_condition_pending") or {}
+                if decision.get("condition_id") != pend.get("condition_id"):
+                    return _reject("condition_id", decision.get("condition_id"),
+                                   pend.get("condition_id"))
                 if decision.get("subsprint_id") is not None:
-                    sys.stderr.write(f"campaign decision: {m_reason} must not carry "
-                                     f"subsprint_id — refusing (fail-closed)\n")
+                    sys.stderr.write("campaign decision: halt_condition_met must not carry "
+                                     "subsprint_id — refusing (fail-closed)\n")
+                    return None
+            elif m_reason == "milestone_merge":
+                if decision.get("subsprint_id") is not None:
+                    sys.stderr.write("campaign decision: milestone_merge must not carry "
+                                     "subsprint_id — refusing (fail-closed)\n")
                     return None
             elif m_reason not in _unit_gates and entry.get("pause_checkpoint"):
                 _u = next((u for u in reversed(_state.get("units") or [])

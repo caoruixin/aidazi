@@ -245,13 +245,14 @@ class TestPhase4StateConsistency(unittest.TestCase):
         return cp.Campaign(plan, d, _fake_run_unit(), clock=_clock())
 
     def _valid_state(self):
-        # m1 done (s1 folded), m2 running (s2 in flight).
+        # m1 done (s1 folded + outcome), m2 running (s2 in flight).
         return {
             "campaign_id": "camp-1", "status": "running",
             "cursor": {"milestone_index": 0, "subsprint_index": 0},
             "spent": {"subsprints_run": 1, "total_spawns": 0, "wall_clock_minutes": 0},
             "units": [{"milestone_id": "m1", "subsprint_id": "s1", "status": "done",
                        "loop_id": "u_m1s1", "attempt_nonce": 1}],
+            "milestone_outcomes": [{"milestone_id": "m1", "terminal": "acceptance_off"}],
             "milestone_runtime": {
                 "m1": {"phase": "done", "subsprint_index": 1, "current_attempt_nonce": 1,
                        "folded": [["u_m1s1", 1]]},
@@ -485,6 +486,9 @@ class TestPhase4StateConsistency(unittest.TestCase):
                 {"milestone_id": "m2", "subsprint_id": "s2", "status": "done",
                  "loop_id": "u2", "attempt_nonce": 1},
             ],
+            "milestone_outcomes": [
+                {"milestone_id": "m1", "terminal": "acceptance_pass_authoritative"},
+                {"milestone_id": "m2", "terminal": "acceptance_off"}],
             "milestone_runtime": {
                 "m1": {"phase": "merged", "subsprint_index": 1, "current_attempt_nonce": 1,
                        "folded": [["u1", 1]]},
@@ -566,6 +570,9 @@ class TestPhase4StateConsistency(unittest.TestCase):
                  "loop_id": "u2", "attempt_nonce": 1},
             ],
             "pause_reason": "completeness_gap_review", "pause_checkpoint": "/cp/gap",
+            "milestone_outcomes": [
+                {"milestone_id": "m1", "terminal": "acceptance_pass_authoritative"},
+                {"milestone_id": "m2", "terminal": "acceptance_off"}],
             "milestone_runtime": {
                 "m1": {"phase": "merged", "subsprint_index": 1, "current_attempt_nonce": 1,
                        "folded": [["u1", 1]]},

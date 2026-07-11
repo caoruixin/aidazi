@@ -1071,9 +1071,19 @@ class Campaign:
         by_id = {m["id"]: m for m in self.milestones}
         budget = self.budget or {}
         units = data.get("units") or []
+        outcomes = data.get("milestone_outcomes") or []
         spent = data.get("spent") or {}
         subsprints_run = spent.get("subsprints_run", 0)
         inflight_count = 0
+        # Every plan milestone MUST have a runtime entry once milestone_runtime is present (Codex
+        # R3 B-13): to_dict emits the map only when populated (i.e. all milestones seeded), so a
+        # MISSING entry is corrupt — on resume _init_milestone_runtime would recreate it as 'ready'
+        # and DUPLICATE-dispatch a milestone that already ran.
+        for m in self.milestones:
+            if m["id"] not in rt:
+                raise ValueError(
+                    f"parallel milestone_runtime is missing an entry for milestone "
+                    f"{m['id']!r} (fail-closed, design §3.3 B-13)")
         for mid, r in rt.items():
             if mid not in by_id:
                 raise ValueError(
@@ -1140,6 +1150,31 @@ class Campaign:
                     raise ValueError(
                         f"milestone_runtime[{mid!r}] folded key {key!r} has no matching unit "
                         f"record (fail-closed)")
+            # A TERMINAL phase must have a recorded milestone_outcome AND ≥1 folded unit (Codex
+            # R3 B-13): a done/merged milestone with no outcome/no folded unit is a false terminal
+            # the coordinator could not have persisted (it would skip that milestone's work).
+            if phase in ("done", "merged"):
+                if not any(isinstance(o, dict) and o.get("milestone_id") == mid
+                           for o in outcomes):
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] is terminal ({phase}) but has NO recorded "
+                        f"milestone_outcome (fail-closed, design §3.3 B-13)")
+                if not (r.get("folded") or []):
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] is terminal ({phase}) with NO folded unit "
+                        f"(fail-closed, design §3.3 B-13)")
+        # Two-way fold tie (Codex R3 B-13): every parallel UNIT record (carrying attempt_nonce)
+        # must appear in ITS milestone's folded list — a unit can never exist without its fold key
+        # (the fold appends the unit + the [loop_id, attempt_nonce] key in ONE _save).
+        for u in units:
+            if not isinstance(u, dict) or u.get("attempt_nonce") is None:
+                continue   # a serial-shaped unit (no attempt_nonce) is not a parallel fold
+            _fkeys = (rt.get(u.get("milestone_id")) or {}).get("folded") or []
+            if [u.get("loop_id"), u.get("attempt_nonce")] not in _fkeys:
+                raise ValueError(
+                    f"parallel unit {u.get('loop_id')!r}/{u.get('attempt_nonce')} for milestone "
+                    f"{u.get('milestone_id')!r} is not in that milestone's folded list "
+                    f"(fail-closed, design §3.3 B-13)")
         max_conc = budget.get("max_concurrent")
         if isinstance(max_conc, int) and inflight_count > max_conc:
             raise ValueError(
@@ -4180,6 +4215,10 @@ class Campaign:
         if choice != "proceed":
             return self._repause_parallel("halt_condition_met", "unrecognized_choice")
         pending = r.get("halt_condition_pending") or {}
+        # Defense-in-depth (Codex R3 B-12): re-bind condition_id to the live pending record so a
+        # decision that slipped a wrong condition can never ack this halt.
+        if decision.get("condition_id") != pending.get("condition_id"):
+            return self._repause_parallel("halt_condition_met", "condition_id_mismatch")
         ack_key = list(pending.get("ack_key") or [])
         prov = list(r.get("halt_condition_provisional") or [])
         if ack_key and ack_key not in prov:

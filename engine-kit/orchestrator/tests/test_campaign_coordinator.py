@@ -443,7 +443,8 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
         r["pause_reason"] = "halt_condition_met"
         r["halt_condition_pending"] = {"ack_key": ["c1", "dig", "m1"], "condition_id": "c1",
                                        "signed_scope_hash": camp._live_signed_scope_hash()}
-        out = camp._resolve_halt_parallel("m1", r, {"milestone_id": "m1", "choice": "proceed"})
+        out = camp._resolve_halt_parallel(
+            "m1", r, {"milestone_id": "m1", "choice": "proceed", "condition_id": "c1"})
         self.assertEqual(out, "proceed")
         self.assertEqual(r["halt_condition_provisional"], [["c1", "dig", "m1"]])  # PROVISIONAL
         self.assertEqual(camp.state.halt_condition_acks, [])                      # NOT permanent
@@ -502,6 +503,7 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
              "spent": {"subsprints_run": 1, "total_spawns": 0, "wall_clock_minutes": 0},
              "units": [{"milestone_id": "m1", "subsprint_id": "s1", "status": "done",
                         "loop_id": "u1", "attempt_nonce": 1}],
+             "milestone_outcomes": [{"milestone_id": "m1", "terminal": "acceptance_off"}],
              "pause_reason": "campaign_budget_exhausted", "pause_checkpoint": None,
              "milestone_runtime": {
                  "m1": {"phase": "done", "subsprint_index": 1, "current_attempt_nonce": 1,
