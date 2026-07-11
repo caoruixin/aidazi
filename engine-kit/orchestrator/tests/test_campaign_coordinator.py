@@ -332,6 +332,65 @@ class TestParallelCoordinatorOffline(unittest.TestCase):
         self.assertEqual(r["phase"], "done")                 # single sub-sprint → complete
         self.assertEqual(len(camp.state.units), 1)
 
+    def test_halt_resume_adds_provisional_then_commits_at_fold(self):
+        # Codex R3 B-8: proceed adds the ack PROVISIONALLY (not permanent); the fold commit
+        # promotes it → GLOBAL permanent.
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        camp, _cw = self._crash_camp(ms)
+        r = camp.state.milestone_runtime["m1"]
+        r["phase"] = "paused"
+        r["pause_reason"] = "halt_condition_met"
+        r["halt_condition_pending"] = {"ack_key": ["c1", "dig", "m1"], "condition_id": "c1",
+                                       "signed_scope_hash": camp._live_signed_scope_hash()}
+        out = camp._resolve_halt_parallel("m1", r, {"milestone_id": "m1", "choice": "proceed"})
+        self.assertEqual(out, "proceed")
+        self.assertEqual(r["halt_condition_provisional"], [["c1", "dig", "m1"]])  # PROVISIONAL
+        self.assertEqual(camp.state.halt_condition_acks, [])                      # NOT permanent
+        self.assertEqual(r["phase"], "ready")                                    # re-dispatch
+        camp._halt_commit_cascade_parallel(r)                                    # (at fold)
+        self.assertIn(["c1", "dig", "m1"], camp.state.halt_condition_acks)       # promoted
+        self.assertEqual(r["halt_condition_provisional"], [])
+
+    def test_halt_epoch_rearm_flushes_stale_provisional(self):
+        # Codex R3 B-8: a re-sign between halt and proceed re-arms the cascade — a stale-epoch
+        # provisional ack is FLUSHED so it cannot suppress a condition in the new epoch.
+        ms = [_ms("m1", ["s1"], module_locks=["a"])]
+        camp, _cw = self._crash_camp(ms)
+        r = camp.state.milestone_runtime["m1"]
+        r["halt_condition_provisional"] = [["c1", "dig", "m1"]]
+        r["halt_condition_pending"] = {"signed_scope_hash": "STALE_EPOCH",
+                                       "milestone_id": "m1", "condition_id": "c1"}
+        camp._halt_epoch_recheck_parallel(r)     # live epoch != STALE_EPOCH ⇒ flush
+        self.assertEqual(r["halt_condition_provisional"], [])
+        self.assertIsNone(r["halt_condition_pending"])
+
+    def test_deliver_followup_resume_advances_on_insertion(self):
+        # Codex R3 B-5: a milestone parked at deliver_followup_required with an inserted sub-sprint
+        # at subsprint_index+1 (not in the paused-time baseline) advances (fresh-signed plan).
+        ms = [_ms("m1", ["s1", "s1-gapfix-1"], module_locks=["a"])]
+        signed = cp.stamp_signoff(_parallel_plan(ms), CHARTER)
+        d = tempfile.mkdtemp()
+        camp = cp.Campaign(signed, d, _dummy_run_unit, clock=_clock(),
+                           charter=CHARTER, repo_dir=None, ledger_path=None)
+        import campaign_worker as cw
+        camp._worker_mod = cw
+        camp._worker_procs = {}
+        camp._base_wall = 0.0
+        camp._invocation_start = camp.clock()
+        camp._init_milestone_runtime()
+        r = camp.state.milestone_runtime["m1"]
+        r["phase"] = "paused"
+        r["pause_reason"] = "deliver_followup_required"
+        r["subsprint_index"] = 0
+        r["followup_baseline_seq"] = ["s1"]   # baseline BEFORE the insertion
+        camp.state.status = "paused"
+        camp.state.pause_reason = "deliver_followup_required"
+        out = camp._handle_resume_parallel(None)   # plan-edit resolved (no decision file)
+        self.assertEqual(out, "proceed")
+        self.assertEqual(r["subsprint_index"], 1)     # advanced to the inserted follow-up
+        self.assertEqual(r["phase"], "ready")
+        self.assertIsNone(r["followup_baseline_seq"])
+
     def test_budget_exhausted_state_validates(self):
         # Codex C3 B-6: campaign_budget_exhausted is a validator-accepted coordinator-global
         # null-checkpoint pause (may coexist with a done milestone).

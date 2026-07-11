@@ -3317,6 +3317,42 @@ class Campaign:
                      "base_ref": handle.base_ref})
         return r["context"]
 
+    def _halt_acked_keys_parallel(self, r: dict) -> list:
+        """Per-milestone acked keys for EP-pre (§3.4): the GLOBAL permanent halt_condition_acks +
+        THIS milestone's PROVISIONAL acks (this-cascade, not yet committed) — the parallel analogue
+        of _halt_acked_keys (which reads the singleton provisional set)."""
+        return list(self.state.halt_condition_acks) + list(
+            r.get("halt_condition_provisional") or [])
+
+    def _halt_epoch_recheck_parallel(self, r: dict) -> None:
+        """Per-milestone drift flush (§3.4 [R0.6 B-1]): when this milestone's outstanding cascade
+        was signed at an epoch that has since been re-signed (pending.signed_scope_hash != live),
+        drop its PROVISIONAL set + discard pending so every cascade condition re-arms in the current
+        epoch — closing the re-sign-between-halt-and-proceed stale-ack hole (Codex R3 B-8). Writes
+        only milestone_runtime[mid] (AST-safe)."""
+        pending = r.get("halt_condition_pending")
+        if not pending:
+            return
+        if pending.get("signed_scope_hash") != self._live_signed_scope_hash():
+            r["halt_condition_provisional"] = []
+            r["halt_condition_pending"] = None
+            self._audit("campaign_halt_condition_epoch_rearm",
+                        {"milestone_id": pending.get("milestone_id"),
+                         "condition_id": pending.get("condition_id")})
+
+    def _halt_commit_cascade_parallel(self, r: dict) -> None:
+        """Promote THIS milestone's PROVISIONAL acks → the GLOBAL permanent halt_condition_acks +
+        clear its pending, once its re-dispatched unit records an outcome (fold) — the parallel
+        analogue of _halt_commit_cascade (Codex R3 B-8). No-op when no cascade is outstanding."""
+        prov = list(r.get("halt_condition_provisional") or [])
+        if not prov and not r.get("halt_condition_pending"):
+            return
+        for key in prov:
+            if key not in self.state.halt_condition_acks:
+                self.state.halt_condition_acks.append(key)   # GLOBAL permanent (allowed)
+        r["halt_condition_provisional"] = []
+        r["halt_condition_pending"] = None
+
     def _eval_halt_conditions_parallel(self, mid: str, milestone: dict,
                                        subsprint_id: str) -> Optional[dict]:
         """Per-milestone EP-pre halt-condition evaluation (§3.4) — the PURE hm.evaluate, with
@@ -3325,8 +3361,12 @@ class Campaign:
         conditions = self._halt_conditions()
         if not conditions:
             return None
+        r = self._rt()[mid]
+        # Re-arm a stale-epoch cascade for THIS milestone before evaluating (§3.4 / Codex R3 B-8),
+        # then evaluate against the GLOBAL permanent acks + this milestone's provisional acks.
+        self._halt_epoch_recheck_parallel(r)
         ctx = self._halt_ctx(milestone, subsprint_id)
-        match = hm.evaluate(conditions, ctx, self._halt_acked_keys())
+        match = hm.evaluate(conditions, ctx, self._halt_acked_keys_parallel(r))
         if match is None:
             return None
         checkpoint_path = self._write_halt_condition_checkpoint(match, mid)
@@ -3451,6 +3491,10 @@ class Campaign:
         r["folded"] = list(r.get("folded") or []) + [[loop_id, nonce]]
         r["inflight"] = None
         self._worker_procs.pop(mid, None)
+        # The re-dispatched unit RETURNED ⇒ commit THIS milestone's pre-dispatch halt cascade:
+        # promote its PROVISIONAL acks → GLOBAL permanent + clear pending (§3.4 / Codex R3 B-8),
+        # persisted atomically with this fold's outcome save below. No-op when no cascade is out.
+        self._halt_commit_cascade_parallel(r)
 
         if final_state in _ADVANCE_STATES:
             unit["status"] = "done"
@@ -3918,6 +3962,20 @@ class Campaign:
         if reason == "campaign_budget_exhausted":
             self._clear_pause_parallel()
             return "proceed"
+        # CAMPAIGN-TIER completeness gate (§1.7-F): STASH the human's adjust_scope decision so the
+        # OUTER-loop _gap_followup_round (called from _run_parallel at quiescence) consumes it once
+        # — the SAME remediate/accept_gap/abort handling as serial (Codex R3 B-7). No decision ⇒
+        # re-pause (the gap is unresolved). Resolved via the serial campaign-tier resolver path.
+        if reason == GAP_REVIEW_CHECKPOINT:
+            decision = (decision_resolver(reason, self.state.pause_checkpoint)
+                        if decision_resolver is not None else None)
+            if not decision:
+                return self._repause_parallel(reason, "decision_pending")
+            self._gap_review_decision = decision
+            self._clear_pause_parallel()   # sanctioned singleton resume-clear
+            self._audit("campaign_resume_dispatch",
+                        {"pause_reason": reason, "choice": decision.get("choice")})
+            return "proceed"
         # §6 decompose recheck (Codex R3 B-5, serial-analogue at campaign.py:2590): a milestone
         # parked at milestone_decompose_required whose subsprint_sequence was AUTHORED (now
         # non-empty) in a re-signed plan re-enters the ready set — resolved by a plan edit + a
@@ -3937,6 +3995,39 @@ class Campaign:
                 self._clear_pause_parallel()
                 self._mirror_from_runtime()
                 self._save()
+                return "proceed"
+        # §6 deliver_followup resume (Codex R3 B-5, serial-analogue at campaign.py:2683): Deliver
+        # INSERTS the follow-up sub-sprint at THIS milestone's subsprint_index+1; advance PAST a
+        # genuine insertion (an id NOT in the paused-time followup_baseline_seq). Resolved by a
+        # plan edit, NOT a decision file. The parallel path requires the grown plan to be
+        # FRESH-SIGNED to advance (a human re-sign is always safe; the serial engine AUTO-restamp
+        # of the single follow-up delta is a deferred optimization, since the parallel (0,0) mirror
+        # makes the cursor-bound restamp helper unsafe to reuse). Stale ⇒ block for re-sign.
+        for _mid, _r in self._rt().items():
+            if not (isinstance(_r, dict) and _r.get("phase") == "paused"
+                    and _r.get("pause_reason") == "deliver_followup_required"):
+                continue
+            _seq = list(self._milestone_by_id(_mid).get("subsprint_sequence") or [])
+            _baseline = _r.get("followup_baseline_seq") or []
+            _nxt = int(_r.get("subsprint_index", 0)) + 1
+            if _nxt < len(_seq) and _seq[_nxt] not in _baseline:
+                if f1_required(self.plan) and not self._authority_fresh():
+                    self._pause_campaign_global(
+                        "campaign_plan_signoff", None, "campaign_freshness_block",
+                        {"signoff_status": self._signoff_status(),
+                         "drift": self._drift_field_hint()}, freshness_block=True)
+                    return "paused"
+                _r["subsprint_index"] = _nxt
+                _r["followup_baseline_seq"] = None
+                _r["phase"] = "ready"
+                _r["pause_reason"] = None
+                _r["pause_checkpoint"] = None
+                self._clear_pause_parallel()
+                self._mirror_from_runtime()
+                self._save()
+                self._audit("campaign_resume_dispatch",
+                            {"pause_reason": "deliver_followup_required",
+                             "milestone_id": _mid, "followup": _seq[_nxt]})
                 return "proceed"
         # Per-milestone parked pause: the decision selects ONE milestone's checkpoint (§6.1/§6.3).
         decision = (decision_resolver(reason, self.state.pause_checkpoint)
@@ -4043,20 +4134,28 @@ class Campaign:
         return "proceed"
 
     def _resolve_halt_parallel(self, mid: str, r: dict, decision: dict) -> str:
-        """Resolve a per-milestone halt_condition_met (§3.5): proceed ⇒ promote the pending ack to
-        the GLOBAL permanent acks + re-dispatch the not-yet-run sub-sprint (phase→ready); abort ⇒
-        end."""
+        """Resolve a per-milestone halt_condition_met (§3.5, serial-equivalent — Codex R3 B-8):
+        proceed ⇒ add the ack PROVISIONALLY (NOT permanent), mark pending resolved, re-dispatch the
+        not-yet-run sub-sprint (phase→ready). On the re-dispatch EP-pre re-arms a stale-epoch
+        cascade (_halt_epoch_recheck_parallel) so a re-sign between halt and proceed can NEVER
+        suppress a stale ack; the fold then PROMOTES the provisional acks → permanent
+        (_halt_commit_cascade_parallel). abort ⇒ end."""
         choice = decision.get("choice")
         if choice == "abort":
+            r["halt_condition_pending"] = None
+            r["halt_condition_provisional"] = []
             self._end_parallel("halt_condition_aborted")
             return "ended"
         if choice != "proceed":
             return self._repause_parallel("halt_condition_met", "unrecognized_choice")
         pending = r.get("halt_condition_pending") or {}
-        ack_key = pending.get("ack_key")
-        if ack_key and ack_key not in self.state.halt_condition_acks:
-            self.state.halt_condition_acks.append(ack_key)   # GLOBAL permanent ack
-        r["halt_condition_pending"] = None
+        ack_key = list(pending.get("ack_key") or [])
+        prov = list(r.get("halt_condition_provisional") or [])
+        if ack_key and ack_key not in prov:
+            prov.append(ack_key)                              # PROVISIONAL (committed at fold)
+        r["halt_condition_provisional"] = prov
+        if pending:
+            pending["resolved"] = True
         r["phase"] = "ready"
         r["pause_reason"] = None
         r["pause_checkpoint"] = None

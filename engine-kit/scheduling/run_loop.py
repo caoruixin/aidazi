@@ -609,7 +609,10 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
         except (OSError, ValueError):
             _state = {}
         _rt = _state.get("milestone_runtime")
-        if isinstance(_rt, dict) and _rt:
+        # CAMPAIGN-TIER gates (completeness_gap_review) are NOT per-milestone even under a
+        # parallel state — they fall through to the serial campaign-tier handling below (Codex R3
+        # B-7 round 2). Only PER-MILESTONE gates use the milestone_runtime binding.
+        if isinstance(_rt, dict) and _rt and pause_reason != "completeness_gap_review":
             d_mid = decision.get("milestone_id")
             entry = _rt.get(d_mid) if d_mid else None
             if not isinstance(entry, dict) or entry.get("phase") != "paused":
@@ -873,6 +876,18 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         # Injected `adapters` OBJECTS cannot cross the subprocess boundary and are EXCLUDED (a
         # test that injects adapters drives serial, or overrides the worker entrypoint).
         worker_rl_kwargs = {k: v for k, v in run_loop_kwargs.items() if k != "adapters"}
+        # Codex R3 B-2 (round 2): a PARALLEL plan launches isolated WORKER subprocesses that
+        # cannot receive in-process `adapters` OBJECTS. If adapters were injected AND the plan is
+        # parallel, the workers would silently fall back to DEFAULT MOCK adapters. Fail closed —
+        # a real parallel run passes `allow_real` (serializable); a test drives serial or uses
+        # run_campaign(worker_exec=...) directly.
+        _mc = (plan.get("budget") or {}).get("max_concurrent") if isinstance(plan, dict) else None
+        if adapters is not None and isinstance(_mc, int) and _mc > 1:
+            return {**base, "status": "invalid",
+                    "error": "budget.max_concurrent>1 with injected in-process adapters: "
+                             "parallel workers are subprocesses and cannot receive adapter "
+                             "objects — pass allow_real (real run) or drive serially (fail-closed)",
+                    "exit_code": CAMPAIGN_EXIT_INVALID}
         st = _cp.run_campaign(plan, home, run_unit, clock=clock,
                               resume=resume, decision_resolver=resolver,
                               repo_dir=repo_dir, charter=charter,
