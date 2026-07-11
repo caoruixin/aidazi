@@ -43,3 +43,6 @@ eval/runs/
 .env
 .env.local
 .env.*.local
+
+# Codex design/impl gate artifacts (prompts + verdicts + large JSON output)
+.gate/

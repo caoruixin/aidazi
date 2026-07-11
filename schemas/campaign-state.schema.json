@@ -160,7 +160,8 @@
           "final_state": {"type": ["string", "null"], "description": "The Driver final_state the run returned (advance|done|halted|gate1_pending|...)."},
           "loop_id": {"type": ["string", "null"], "description": "The Driver loop_id, for cross-referencing the per-sub-sprint audit ledger."},
           "pause_reason": {"type": ["string", "null"], "description": "When this unit HALTED: the pause checkpoint_id, persisted INTO the record so a §3.5c STATUS_RUNNING crash-recovery REPLAY re-pauses from the recorded unit WITHOUT re-running it (no duplicate execution/Acceptance)."},
-          "checkpoint_path": {"type": ["string", "null"], "description": "When this unit HALTED: the checkpoint file path, persisted alongside pause_reason for the same §3.5c crash-recovery replay (the human resolves it on resume)."}
+          "checkpoint_path": {"type": ["string", "null"], "description": "When this unit HALTED: the checkpoint file path, persisted alongside pause_reason for the same §3.5c crash-recovery replay (the human resolves it on resume)."},
+          "attempt_nonce": {"type": ["integer", "null"], "minimum": 0, "description": "Phase-4 (design §5.3). The per-(milestone,subsprint) monotonic dispatch counter this unit was folded under, so the exactly-once fold key is [loop_id, attempt_nonce] (a legit re-dispatch reuses loop_id but bumps the nonce; a crash re-delivery of the same nonce is a no-op). Absent on serial units (byte-identical); present only when the parallel coordinator folds a worker result."}
         }
       }
     },
@@ -193,6 +194,44 @@
         "resolved": {"type": "boolean"}
       }
     },
-    "halt_condition_seq": {"type": "integer", "minimum": 0, "description": "Phase-3 (design §3.5). Monotonic per-pause halt_condition_met NONCE counter (the checkpoint basename suffix). Additive; absent/0 ⇒ no halt_condition_met pause has been emitted."}
+    "halt_condition_seq": {"type": "integer", "minimum": 0, "description": "Phase-3 (design §3.5). Monotonic per-pause halt_condition_met NONCE counter (the checkpoint basename suffix). Additive; absent/0 ⇒ no halt_condition_met pause has been emitted."},
+    "milestone_runtime": {
+      "type": "object",
+      "description": "Phase-4 (design §3.1). The PER-MILESTONE runtime map, keyed by milestone_id — the parallel runner's generalization of the singleton cursor/pause/overlay fields. Emitted ONLY when the parallel path is active (budget.max_concurrent>1); a serial campaign never populates it ⇒ byte-identical state.json. The top-level singleton fields mirror the OLDEST outstanding milestone pause for one deprecation cycle; the top-level cursor is the fail-closed (0,0) mirror (§3.2). engine_restamp, halt_condition_seq, halt_condition_acks, spent, units, gap_followup_state stay GLOBAL (coordinator-owned).",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase"],
+        "properties": {
+          "phase": {"type": "string", "enum": ["ready", "running", "paused", "done", "merged"], "description": "ready=admissible; running=one sub-sprint in flight; paused=at a human gate; done=milestone accepted (branch NOT merged — a leaf may terminate here); merged=integrated into trunk (required for a dependency-target)."},
+          "subsprint_index": {"type": "integer", "minimum": 0},
+          "pause_reason": {"type": ["string", "null"]},
+          "pause_checkpoint": {"type": ["string", "null"]},
+          "context": {"type": ["object", "null"], "description": "This milestone's git isolation context (milestone_context shape)."},
+          "pending_milestone_advance": {"type": "boolean", "default": false},
+          "freshness_block": {"type": ["object", "null"]},
+          "halt_condition_pending": {"type": ["object", "null"]},
+          "halt_condition_provisional": {"type": "array", "items": {"type": "array", "items": {"type": "string"}, "minItems": 3}},
+          "followup_baseline_seq": {"type": ["array", "null"], "items": {"type": "string"}},
+          "current_attempt_nonce": {"type": "integer", "minimum": 0, "description": "Monotonic per-milestone dispatch counter (§5.3)."},
+          "inflight": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["attempt_nonce", "subsprint_id"],
+            "description": "The ONE in-flight sub-sprint, written by a SINGLE pre-spawn _save() so everything the fold needs is durable BEFORE fork (§5.5). No pid/worker here — liveness is the parent-held-then-inherited flock + a worker-owned lease sidecar. A present (non-null) inflight MUST carry attempt_nonce + subsprint_id (the durable fold inputs); null ⇒ no sub-sprint in flight.",
+            "properties": {
+              "attempt_nonce": {"type": "integer", "minimum": 0},
+              "loop_id": {"type": ["string", "null"]},
+              "subsprint_id": {"type": "string"},
+              "work_dir": {"type": ["string", "null"]},
+              "dispatch_epoch": {"type": ["string", "null"], "description": "The live signed_scope_hash at admission (§5.6)."},
+              "dispatch_freshness_slice": {"type": ["object", "null"], "description": "Canonical dispatch-time freshness snapshot: H wrapper + this milestone's _envelope_milestone entry + authority + the two *_digest fields (§5.6)."}
+            }
+          },
+          "folded": {"type": "array", "items": {"type": "array", "prefixItems": [{"type": ["string", "null"]}, {"type": "integer"}], "items": false, "minItems": 2, "maxItems": 2}, "description": "Fold keys [loop_id, attempt_nonce] already folded (idempotent re-delivery guard, §5.3). Draft 2020-12 tuple validation uses prefixItems (NOT the legacy array-form items)."},
+          "epoch_drift": {"type": ["object", "null"], "description": "Durable per-milestone drift gate {dispatch_freshness_slice, observed_freshness_slice}; clears ONLY on an exact freshness-slice equality re-check, never merely because the plan is signed (§5.6)."}
+        }
+      }
+    }
   }
 }

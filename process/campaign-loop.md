@@ -329,12 +329,48 @@ replayed. It carries `choice` for a dispatch-table gate, or `confirm`(+`route`) 
 presence-/crash-recovery guarantees). CLI coverage:
 `engine-kit/scheduling/tests/test_run_loop_campaign.py`.
 
-**Deferred (Tier-1 boundary).** **Parallel execution of dependency-independent
-milestones is NOT implemented**: the sequential runner enforces deterministic
-topological order and rejects duplicate/cyclic/unknown deps, but lock contention
-(`module_locks`) and parallel execution are forward-compat schema seams only. The
-per-milestone `full_chain_guided` decompose of an empty `subsprint_sequence` is
+The per-milestone `full_chain_guided` decompose of an empty `subsprint_sequence` is
 surfaced (`milestone_decompose_required`), not yet auto-driven.
+
+## §6.5 Parallel milestone execution (Phase-4 — default-OFF)
+
+Set `budget.max_concurrent > 1` to run **N dependency-independent milestones
+concurrently**, each in its OWN git worktree, folding results into the single-writer
+campaign state — ~N× throughput without weakening any gate. **Absent or `== 1` ⇒ the
+serial runner above runs byte-for-byte the same (default-OFF is byte-identical).**
+
+- **Opt-in requirements (fail-closed at plan ingress).** A `max_concurrent > 1` plan
+  MUST resolve every milestone to `new_worktree` isolation AND keep
+  `merge_prompt_at_close: true` (§7.1). Declare disjoint `module_locks` per milestone to
+  actually parallelize — an **empty** lock set conflicts with everything (conservative), so
+  a legacy no-locks plan runs serially even at `max_concurrent > 1`. `max_concurrent` is
+  bound into the signed authority H, so a parallel plan is always F1-active (re-sign with a
+  `signoff` block).
+- **Execution model.** One coordinator (sole writer) + isolated **worker child processes**;
+  exactly **one sub-sprint per milestone in flight at a time**, so freshness / halt / budget
+  are enforced per-dispatch = serial-identical. A worker executes one sub-sprint in its
+  worktree and writes an atomic attempt-scoped `result-<nonce>.json`; the coordinator folds
+  exactly once by `(loop_id, attempt_nonce)`, re-checks signed-scope freshness on **every**
+  fold (a mid-flight scope drift parks that milestone at `epoch_drift` for human
+  re-validation), then dispatches its next sub-sprint. A crash-resume adopts a live worker
+  (inherited `flock`) or fences a dead one and re-dispatches — never double-runs a worktree.
+- **Merges are human-gated + coordinator-serialized (§1.7-D).** Each completed milestone
+  parks at `milestone_merge`; the CLI reports EVERY parked pause (`pauses[]` /
+  `CAMPAIGN_MILESTONES=`), each resolved by its own `--resume --decision` (`merge_now` runs a
+  protected local `--no-ff` merge; a conflict re-pauses at `milestone_merge`, never
+  force-merges). A dependency-target must reach `merged` before its dependents start.
+- **Reporting.** Under parallelism the scalar `milestone_index` is a fail-closed `(0,0)`
+  legacy mirror; progress + coverage are **phase-derived** from `milestone_runtime`
+  (`merged`/`done` ⇒ delivered).
+- **Bounds (§8).** The signed `max_subsprints` cap is never exceeded (admission counts
+  in-flight); `max_total_spawns`/`max_wall_clock` are post-unit, so **up to `max_concurrent`
+  units may be in flight when a cap is crossed** — a unit-grain bound, then the coordinator
+  drains to quiescence and pauses `campaign_budget_exhausted`.
+- **N-1 caveat (§7.3).** A **semantic** (non-file) cross-milestone conflict that git can't
+  see is a plan-authoring problem — declare `depends_on` or a shared `module_lock`.
+- Code: `campaign.py` (`_drive_parallel`/`_handle_resume_parallel`) +
+  `campaign_worker.py`. Coverage: `orchestrator/tests/test_campaign_coordinator.py`,
+  `test_campaign_parallel*.py`. Design: `archive/2026-07-10-phase4-parallel-campaign-runner-design.md`.
 
 ## §7 Editing this doc
 Process-tier; edits at fold-back cadence (Constitution §8). The code in

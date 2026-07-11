@@ -401,6 +401,15 @@ class CampaignState:
     halt_condition_provisional: List[list] = field(default_factory=list)
     halt_condition_pending: Optional[dict] = None
     halt_condition_seq: int = 0
+    # Phase-4 (design §3.1): the PER-MILESTONE runtime map, keyed by milestone_id — the
+    # parallel runner's generalization of the singleton cursor/pause/overlay fields (phase,
+    # subsprint_index, pause, context, freshness_block, halt pending/provisional, inflight,
+    # current_attempt_nonce, folded, epoch_drift). Default-empty and emitted ONLY when
+    # non-empty, so a serial campaign (max_concurrent absent/1) persists a byte-identical
+    # state.json. engine_restamp + halt_condition_seq + halt_condition_acks + spent + units +
+    # gap_followup_state stay GLOBAL (coordinator-owned; a whole-plan re-stamp / collision-free
+    # nonce / disambiguated ack key don't decompose per-milestone).
+    milestone_runtime: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         d = {
@@ -440,6 +449,9 @@ class CampaignState:
             d["halt_condition_pending"] = self.halt_condition_pending
         if self.halt_condition_seq:
             d["halt_condition_seq"] = self.halt_condition_seq
+        # Phase-4: emit the per-milestone runtime ONLY when active (byte-identical when absent).
+        if self.milestone_runtime:
+            d["milestone_runtime"] = self.milestone_runtime
         return d
 
     @classmethod
@@ -466,7 +478,8 @@ class CampaignState:
             halt_condition_acks=[list(k) for k in (d.get("halt_condition_acks") or [])],
             halt_condition_provisional=[list(k) for k in (d.get("halt_condition_provisional") or [])],
             halt_condition_pending=d.get("halt_condition_pending"),
-            halt_condition_seq=int(d.get("halt_condition_seq") or 0))
+            halt_condition_seq=int(d.get("halt_condition_seq") or 0),
+            milestone_runtime=dict(d.get("milestone_runtime") or {}))
 
 
 # --------------------------------------------------------------------------- #
@@ -502,6 +515,132 @@ def topological_order(milestones: List[dict]) -> List[dict]:
     for m in milestones:  # iterate in declared order for determinism
         visit(m["id"], ())
     return order
+
+
+# --------------------------------------------------------------------------- #
+# Phase-4 parallel scheduler — PURE functions (design §4/§7.2). Defined + unit-tested in
+# Cluster 1; the coordinator (_drive_parallel) consumes them in Cluster 3. No execution
+# change here. `runtime` is the milestone_runtime map ({mid: {phase, inflight, ...}}); a
+# milestone with NO runtime entry has effective phase 'ready' (never started).
+# --------------------------------------------------------------------------- #
+MERGE_POLICY_FIFO = "fifo"
+MERGE_POLICY_HUMAN_ORDER = "human_order"
+
+
+def parallel_effective_phase(runtime: dict, mid: str) -> str:
+    """The milestone's phase, defaulting to 'ready' when it has no runtime entry (never
+    started). Phases: ready | running | paused | done | merged (design §3.1)."""
+    r = (runtime or {}).get(mid)
+    return r.get("phase", "ready") if isinstance(r, dict) else "ready"
+
+
+def parallel_ready_set(milestones: List[dict], runtime: dict) -> List[str]:
+    """Milestone ids admissible for a fresh sub-sprint dispatch (design §4), in deterministic
+    (topological/backlog) order. A milestone is ready iff: effective phase == 'ready', it has no
+    in-flight sub-sprint, ALL its depends_on are 'merged', AND its module_locks do not conflict
+    with any RUNNING milestone — where EMPTY locks conflict with EVERYTHING (a lockless milestone
+    runs only in isolation, and a lockless running milestone blocks all others: the conservative
+    fail-closed default that makes parallelism strictly opt-in via disjoint locks). Pure."""
+    by_id = {m["id"]: m for m in milestones}
+
+    def locks(mid: str) -> frozenset:
+        return frozenset(by_id[mid].get("module_locks") or [])
+
+    running = [m["id"] for m in milestones
+               if isinstance((runtime or {}).get(m["id"]), dict)
+               and runtime[m["id"]].get("inflight")]
+    running_locks: set = set()
+    any_running_lockless = False
+    for r in running:
+        rl = locks(r)
+        if not rl:
+            any_running_lockless = True
+        running_locks |= rl
+
+    ready: List[str] = []
+    for m in milestones:
+        mid = m["id"]
+        if parallel_effective_phase(runtime, mid) != "ready":
+            continue
+        rec = (runtime or {}).get(mid)
+        if isinstance(rec, dict) and rec.get("inflight"):
+            continue
+        deps = by_id[mid].get("depends_on") or []
+        if not all(parallel_effective_phase(runtime, d) == "merged" for d in deps):
+            continue
+        if running:
+            ml = locks(mid)
+            if any_running_lockless or not ml or (ml & running_locks):
+                continue  # conservative empty-lock conflict, or an actual lock overlap
+        ready.append(mid)
+    return ready
+
+
+def parallel_admit(ready: List[str], runtime: dict, *, milestones: List[dict],
+                   max_concurrent: Optional[int], subsprints_run: int,
+                   max_subsprints: Optional[int]) -> List[str]:
+    """From `ready`, the ids the coordinator may dispatch NOW without (a) exceeding
+    `max_concurrent`, (b) exceeding the signed `max_subsprints` (design §4/§8 — admission counts
+    in-flight, so N workers can never collectively pass a signed sub-sprint cap), OR (c) holding
+    OVERLAPPING module_locks. `parallel_ready_set` only screens each candidate against the RUNNING
+    set; admission must ALSO serialize candidates against EACH OTHER (Codex R1 B-2), so it greedily
+    reserves each admitted milestone's locks, where EMPTY locks conflict with EVERYTHING (design §4
+    conservative default — a lockless milestone runs only in isolation). Two lockless-or-overlapping
+    ready milestones are therefore serialized (only the first is admitted this batch). Returns a
+    lock-disjoint sub-selection of `ready` in deterministic order. Pure."""
+    by_id = {m["id"]: m for m in milestones}
+
+    def locks(mid: str) -> frozenset:
+        return frozenset((by_id.get(mid) or {}).get("module_locks") or [])
+
+    inflight = sum(1 for r in (runtime or {}).values()
+                   if isinstance(r, dict) and r.get("inflight"))
+    slots = (max_concurrent - inflight) if isinstance(max_concurrent, int) else len(ready)
+    # Seed the reservation with the locks the RUNNING milestones already hold; a lockless running
+    # milestone reserves EVERYTHING (design §4). `ready` is already screened against running by
+    # parallel_ready_set, so this is belt-and-suspenders — but it keeps admission self-contained.
+    reserved: set = set()
+    reserved_all = False  # a lockless milestone (running or admitted) blocks every other
+    for mid, r in (runtime or {}).items():
+        if isinstance(r, dict) and r.get("inflight"):
+            rl = locks(mid)
+            if not rl:
+                reserved_all = True
+            reserved |= rl
+    admitted: List[str] = []
+    for mid in ready:
+        if len(admitted) >= slots:
+            break
+        if isinstance(max_subsprints, int) and (
+                subsprints_run + inflight + len(admitted) + 1 > max_subsprints):
+            break  # would exceed the signed countable cap
+        if reserved_all:
+            break  # a lockless milestone holds every module ⇒ nothing else may co-run
+        ml = locks(mid)
+        if not ml:
+            # A lockless candidate may run ONLY in isolation: nothing reserved, nothing admitted.
+            if reserved or admitted:
+                continue
+            admitted.append(mid)
+            reserved_all = True
+            continue
+        if ml & reserved:
+            continue  # module-lock overlap ⇒ serialize (admit in a later batch)
+        admitted.append(mid)
+        reserved |= ml
+    return admitted
+
+
+def parallel_merge_order(done_mids: List[str], milestones: List[dict],
+                         merge_policy: Optional[str]) -> List[str]:
+    """The order to merge DONE-pending-merge milestones (design §7.2, first consumption of
+    merge_policy): 'human_order' = plan/backlog (topological) order; 'fifo' (default) = the given
+    completion order. Pure; merges are coordinator-serialized (loop_ingress.merge_into_trunk
+    mutates the shared admin worktree)."""
+    if merge_policy == MERGE_POLICY_HUMAN_ORDER:
+        idx = {m["id"]: i for i, m in enumerate(milestones)}
+        return sorted(done_mids, key=lambda d: idx.get(d, len(milestones)))
+    return list(done_mids)
 
 
 def _iso_minutes(start_iso: str, now_iso: str) -> float:
@@ -561,6 +700,20 @@ GAP_ENDED = "gap_ended"        # the human aborted at completeness_gap_review
 # (distinguished by the audit/extra `gap_status`); both are resolved by the SAME
 # adjust_scope decision (remediate|accept_gap|abort).
 GAP_REVIEW_CHECKPOINT = "completeness_gap_review"
+
+# Phase-4 (design §3.2/§3.4): the coordinator-GLOBAL pause reasons — the only pauses that
+# legitimately set the top-level status to 'paused' WITHOUT any per-milestone pause. A
+# campaign_plan_signoff (F1 re-sign at genesis) or a completeness_gap_review (gap-followup at
+# quiescence) is coordinator-scoped, not milestone-scoped; any OTHER top-level pause_reason with
+# no paused milestone is a stale-gate hole (_check_parallel_state_consistency fail-closes on it).
+_GLOBAL_PAUSE_REASONS: frozenset = frozenset({"campaign_plan_signoff", GAP_REVIEW_CHECKPOINT})
+# Coordinator-GLOBAL pauses that legitimately carry a NULL checkpoint AND override the
+# per-milestone mirror (they may coexist with running/paused milestones): the campaign_plan_signoff
+# re-sign block (§5.6) and the campaign_budget_exhausted drain (§8). Both are EXISTING campaign
+# pause reasons (no new checkpoint kind, §9). completeness_gap_review is NOT here — it is a real
+# gated global pause that REQUIRES its checkpoint + quiescence (Codex C3 B-6).
+_GLOBAL_NULL_CHECKPOINT_REASONS: frozenset = frozenset(
+    {"campaign_plan_signoff", "campaign_budget_exhausted"})
 
 # Schema defaults (campaign-plan.schema.json gap_followup) — mirrored so an ABSENT
 # gap_followup block uses conservative engine defaults, never an unbounded value.
@@ -694,6 +847,29 @@ class Campaign:
             "cleanup_policy": iso.get("cleanup_policy") or li.CLEANUP_KEEP,
         }
         self._trunk_branch = plan.get("trunk_branch") or "main"
+        # Phase-4 (design §7.1): a parallel plan (budget.max_concurrent>1) is fail-closed at
+        # ingress — every milestone MUST resolve to new_worktree isolation (current_branch/
+        # new_branch share the admin working tree, unsafe to run concurrently) AND the merge
+        # gate MUST stay on (a dependency-target has to merge into trunk before its dependents
+        # start, §7.2 B-14). Mirrored in charter_validator (the runtime enforcement point).
+        # Serial (absent/1) skips this entirely (byte-identical). No execution change (Cluster 1).
+        _max_conc = (self.budget or {}).get("max_concurrent")
+        if isinstance(_max_conc, int) and _max_conc > 1:
+            if not self._milestone_isolation.get("merge_prompt_at_close", True):
+                raise ValueError(
+                    "campaign plan sets budget.max_concurrent>1 but "
+                    "milestone_isolation.merge_prompt_at_close is false — a parallel plan MUST "
+                    "keep the milestone_merge gate on so a dependency-target merges into trunk "
+                    "before its dependents start (design §7.1/§7.2, fail-closed)")
+            for m in self.milestones:
+                strat = self._resolve_milestone_strategy(m)
+                if strat != li.STRATEGY_NEW_WORKTREE:
+                    raise ValueError(
+                        f"campaign plan sets budget.max_concurrent>1 but milestone {m['id']!r} "
+                        f"resolves to isolation strategy {strat!r}, not "
+                        f"{li.STRATEGY_NEW_WORKTREE!r} — parallel milestones REQUIRE their own "
+                        f"worktree (current_branch/new_branch share the admin working tree); "
+                        f"design §7.1, fail-closed")
         os.makedirs(run_dir, exist_ok=True)
         self.state_path = os.path.join(run_dir, "campaign-state.json")
         self.audit_ledger = audit.audit_path(
@@ -780,6 +956,17 @@ class Campaign:
                 f"campaign state campaign_id {sid!r} does not match the plan's "
                 f"{self.campaign_id!r} — refusing to resume a different campaign's "
                 f"state against this plan (fail-closed)")
+        # Phase-4 (design §3.3): a PARALLEL state (milestone_runtime present) is validated by
+        # per-milestone analogues + the mirror/cross-field ties — the single-cursor serial
+        # invariants below do NOT hold under parallelism. Serial state (milestone_runtime
+        # absent) falls through and runs the existing single-cursor checks VERBATIM. Branch on
+        # PRESENCE, not truthiness (Codex R1 B-4): to_dict emits milestone_runtime ONLY when
+        # non-empty, so a present-but-empty map is a corrupted parallel state, NOT serial — it
+        # must reach the parallel validator (which fail-closes on the empty map), never silently
+        # fall through to the serial single-cursor checks.
+        if "milestone_runtime" in data:
+            self._check_parallel_state_consistency(data)
+            return
         status = data.get("status")
         cur = data.get("cursor") or {}
         mi = cur.get("milestone_index", 0)
@@ -856,6 +1043,243 @@ class Campaign:
                 f"campaign state is paused at milestone {ms['id']!r}'s completed "
                 f"boundary (subsprint_index {si} == {len(seq)}) — a pause lands on a "
                 f"halted sub-sprint inside the sequence (fail-closed)")
+
+    def _check_parallel_state_consistency(self, data: dict) -> None:
+        """Phase-4 (design §3.3): fail-closed semantic gate for a PARALLEL resumed state
+        (milestone_runtime present). The single-cursor serial invariants do not hold; instead
+        each per-milestone runtime AND the coordinator-global cross-field ties must be a
+        configuration the parallel coordinator could have persisted. Enforced:
+          * every milestone_runtime key names a real plan milestone;
+          * per milestone: 0 <= subsprint_index <= len(seq); PREFIX (each passed sub-sprint has
+            a recorded unit); phase coherence (paused ⇒ pause_reason; running ⇒ inflight with
+            attempt_nonce == current_attempt_nonce); fold keys [loop_id, attempt_nonce] each map
+            to a recorded unit and nonce <= current_attempt_nonce;
+          * budget ties (R0.3 B-11): in-flight count <= max_concurrent; spent.subsprints_run +
+            in-flight <= max_subsprints; spent.subsprints_run == len(units) (no undercount);
+          * the top-level cursor is the fail-closed (0,0) mirror (§3.2)."""
+        rt = data.get("milestone_runtime")
+        if not isinstance(rt, dict):
+            raise ValueError("campaign milestone_runtime is not an object (fail-closed)")
+        # A present-but-EMPTY runtime map is corrupted parallel state (Codex R1 B-4): to_dict
+        # emits the field only when non-empty, so an empty map cannot be a state the coordinator
+        # persisted. Fail closed rather than treat it as (or silently pass it as) serial.
+        if not rt:
+            raise ValueError(
+                "parallel campaign state has an EMPTY milestone_runtime map — the runner emits "
+                "the field only when populated, so a present-empty map is a corrupted/tampered "
+                "parallel state (fail-closed, design §3.3/§3.5)")
+        by_id = {m["id"]: m for m in self.milestones}
+        budget = self.budget or {}
+        units = data.get("units") or []
+        outcomes = data.get("milestone_outcomes") or []
+        spent = data.get("spent") or {}
+        subsprints_run = spent.get("subsprints_run", 0)
+        inflight_count = 0
+        # Every plan milestone MUST have a runtime entry once milestone_runtime is present (Codex
+        # R3 B-13): to_dict emits the map only when populated (i.e. all milestones seeded), so a
+        # MISSING entry is corrupt — on resume _init_milestone_runtime would recreate it as 'ready'
+        # and DUPLICATE-dispatch a milestone that already ran.
+        for m in self.milestones:
+            if m["id"] not in rt:
+                raise ValueError(
+                    f"parallel milestone_runtime is missing an entry for milestone "
+                    f"{m['id']!r} (fail-closed, design §3.3 B-13)")
+        for mid, r in rt.items():
+            if mid not in by_id:
+                raise ValueError(
+                    f"milestone_runtime names unknown milestone {mid!r} (fail-closed)")
+            if not isinstance(r, dict):
+                raise ValueError(
+                    f"milestone_runtime[{mid!r}] is not an object (fail-closed)")
+            seq = list(by_id[mid].get("subsprint_sequence") or [])
+            si = r.get("subsprint_index", 0)
+            if not isinstance(si, int) or si < 0 or si > len(seq):
+                raise ValueError(
+                    f"milestone_runtime[{mid!r}].subsprint_index {si!r} out of range "
+                    f"[0,{len(seq)}] (fail-closed)")
+            for k in range(si):
+                if not self._has_unit(units, mid, seq[k]):
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] passed sub-sprint {seq[k]!r} with NO "
+                        f"recorded unit (fail-closed)")
+            phase = r.get("phase")
+            if phase == "paused" and not r.get("pause_reason"):
+                raise ValueError(
+                    f"milestone_runtime[{mid!r}] is paused with no pause_reason (fail-closed)")
+            inflight = r.get("inflight")
+            if phase == "running":
+                # A running milestone MUST carry a COMPLETE durable pre-spawn inflight record
+                # (Codex R1 B-3): an empty/partial `inflight: {}` must not pass by comparing two
+                # absent values (None == None). The fold key + resume adopt/fence (§5.3/§5.5) need
+                # inflight.attempt_nonce (int) + subsprint_id (non-empty str) + the record's own
+                # current_attempt_nonce (int), and the two nonces must agree.
+                if not isinstance(inflight, dict) or not inflight:
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] is running with no inflight record "
+                        f"(fail-closed)")
+                _an = inflight.get("attempt_nonce")
+                _ss = inflight.get("subsprint_id")
+                _cn = r.get("current_attempt_nonce")
+                if not isinstance(_an, int) or not isinstance(_ss, str) or not _ss \
+                        or not isinstance(_cn, int):
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] is running but its durable pre-spawn fold "
+                        f"inputs are incomplete: need integer inflight.attempt_nonce (got "
+                        f"{_an!r}), non-empty inflight.subsprint_id (got {_ss!r}), and integer "
+                        f"current_attempt_nonce (got {_cn!r}) — design §5.5 fail-closed")
+                if _an != _cn:
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] inflight.attempt_nonce {_an!r} != "
+                        f"current_attempt_nonce {_cn!r} (fail-closed)")
+            if isinstance(inflight, dict):
+                inflight_count += 1
+            cur_nonce = r.get("current_attempt_nonce", 0)
+            for key in (r.get("folded") or []):
+                if not isinstance(key, list) or len(key) != 2:
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] folded key {key!r} malformed (fail-closed)")
+                loop_id, nonce = key
+                if isinstance(nonce, int) and isinstance(cur_nonce, int) and nonce > cur_nonce:
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] folded nonce {nonce} > "
+                        f"current_attempt_nonce {cur_nonce} (fail-closed)")
+                if not any(isinstance(u, dict) and u.get("milestone_id") == mid
+                           and u.get("loop_id") == loop_id
+                           and u.get("attempt_nonce") == nonce
+                           for u in units):
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] folded key {key!r} has no matching unit "
+                        f"record (fail-closed)")
+            # A TERMINAL phase must have a recorded milestone_outcome AND ≥1 folded unit (Codex
+            # R3 B-13): a done/merged milestone with no outcome/no folded unit is a false terminal
+            # the coordinator could not have persisted (it would skip that milestone's work).
+            if phase in ("done", "merged"):
+                if not any(isinstance(o, dict) and o.get("milestone_id") == mid
+                           for o in outcomes):
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] is terminal ({phase}) but has NO recorded "
+                        f"milestone_outcome (fail-closed, design §3.3 B-13)")
+                if not (r.get("folded") or []):
+                    raise ValueError(
+                        f"milestone_runtime[{mid!r}] is terminal ({phase}) with NO folded unit "
+                        f"(fail-closed, design §3.3 B-13)")
+        # Two-way fold tie (Codex R3 B-13): every parallel UNIT record (carrying attempt_nonce)
+        # must appear in ITS milestone's folded list — a unit can never exist without its fold key
+        # (the fold appends the unit + the [loop_id, attempt_nonce] key in ONE _save).
+        for u in units:
+            if not isinstance(u, dict) or u.get("attempt_nonce") is None:
+                continue   # a serial-shaped unit (no attempt_nonce) is not a parallel fold
+            _fkeys = (rt.get(u.get("milestone_id")) or {}).get("folded") or []
+            if [u.get("loop_id"), u.get("attempt_nonce")] not in _fkeys:
+                raise ValueError(
+                    f"parallel unit {u.get('loop_id')!r}/{u.get('attempt_nonce')} for milestone "
+                    f"{u.get('milestone_id')!r} is not in that milestone's folded list "
+                    f"(fail-closed, design §3.3 B-13)")
+        max_conc = budget.get("max_concurrent")
+        if isinstance(max_conc, int) and inflight_count > max_conc:
+            raise ValueError(
+                f"{inflight_count} in-flight milestone(s) exceed max_concurrent {max_conc} "
+                f"(fail-closed)")
+        max_ss = budget.get("max_subsprints")
+        if isinstance(max_ss, int) and subsprints_run + inflight_count > max_ss:
+            raise ValueError(
+                f"spent.subsprints_run {subsprints_run} + in-flight {inflight_count} exceeds "
+                f"max_subsprints {max_ss} (fail-closed)")
+        if subsprints_run != len(units):
+            raise ValueError(
+                f"spent.subsprints_run {subsprints_run} != recorded unit count {len(units)} — "
+                f"a crash-resume budget undercount (fail-closed, design §3.3 B-11)")
+        # Top-level status ↔ milestone-phase coherence + the oldest-pause mirror tie
+        # (Codex R1 B-5; design §3.2/§3.3/§3.4). The top-level singletons mirror per-milestone
+        # phase; a tampered/bug-written combination must not slip through.
+        status = data.get("status")
+        order = {m["id"]: i for i, m in enumerate(self.milestones)}
+        paused_mids = sorted(
+            (mid for mid, r in rt.items()
+             if isinstance(r, dict) and r.get("phase") == "paused"),
+            key=lambda x: order.get(x, len(self.milestones)))
+        if status == STATUS_PAUSED:
+            pr = data.get("pause_reason")
+            if pr in _GLOBAL_NULL_CHECKPOINT_REASONS:
+                # A coordinator-GLOBAL null-checkpoint pause (Codex C3 B-3/B-6): the
+                # campaign_plan_signoff re-sign block (§5.6) or the campaign_budget_exhausted
+                # drain (§8). It OVERRIDES the per-milestone mirror (may coexist with running/
+                # paused milestones) and is fail-SAFE — it can only re-drive after the block
+                # clears (a valid signed plan / budget resolution). No further coherence.
+                pass
+            elif pr == GAP_REVIEW_CHECKPOINT:
+                # A REAL gated global pause: it REQUIRES its checkpoint AND fires ONLY at
+                # QUIESCENCE (§3.4 — every milestone terminal AND zero in-flight). No paused-
+                # milestone mirror applies (it is a whole-campaign gate at backlog exhaustion).
+                if not data.get("pause_checkpoint"):
+                    raise ValueError(
+                        "parallel campaign is paused at completeness_gap_review with no "
+                        "checkpoint — the gated global pause REQUIRES it (fail-closed, §3.4)")
+                nonterm = self._parallel_first_nonterminal(rt)
+                if nonterm is not None or inflight_count:
+                    raise ValueError(
+                        f"parallel campaign is paused at completeness_gap_review but is NOT "
+                        f"quiescent (needs every milestone terminal AND zero in-flight; found "
+                        f"non-terminal milestone {nonterm!r}, {inflight_count} in-flight) — "
+                        f"gap-followup fires only at backlog exhaustion (fail-closed, §3.4)")
+            elif paused_mids:
+                # A per-milestone pause ⇒ the top-level singleton pause_reason/pause_checkpoint
+                # MUST mirror the OLDEST outstanding milestone pause — the smallest topological
+                # (plan) index, the only deterministic total order (no per-pause timestamp).
+                oldest = rt[paused_mids[0]]
+                if data.get("pause_reason") != oldest.get("pause_reason") or \
+                        data.get("pause_checkpoint") != oldest.get("pause_checkpoint"):
+                    raise ValueError(
+                        f"parallel campaign top-level pause mirror "
+                        f"({data.get('pause_reason')!r}/{data.get('pause_checkpoint')!r}) does "
+                        f"not match the OLDEST outstanding milestone pause {paused_mids[0]!r} "
+                        f"({oldest.get('pause_reason')!r}/{oldest.get('pause_checkpoint')!r}) — "
+                        f"the top-level singletons must mirror it (fail-closed, design §3.2)")
+            else:
+                # status=='paused' with NO paused milestone and a non-global pause_reason (e.g.
+                # gate_hard_fail) is a stale-gate hole (Codex R1 B-5) — fail closed.
+                raise ValueError(
+                    f"parallel campaign status is 'paused' but NO milestone is paused and the "
+                    f"top-level pause_reason {pr!r} is not a coordinator-global pause — a "
+                    f"milestone-scoped pause with no paused milestone is a stale gate "
+                    f"(fail-closed, §3.2/§3.4)")
+        # status=='done' ⇒ a QUIESCENT TERMINAL state (design §3.4/§4/§7.1): EVERY milestone
+        # terminal (a dependency-target at 'merged', a leaf at 'done' or 'merged') AND zero workers
+        # in flight. A running/ready/paused milestone, a dependency-target stuck at 'done'-unmerged
+        # (an exit-10 needs-human, not 'done'), or any lingering inflight ⇒ NOT done.
+        if status == STATUS_DONE:
+            nonterm = self._parallel_first_nonterminal(rt)
+            if nonterm is not None:
+                raise ValueError(
+                    f"parallel campaign status is 'done' but milestone {nonterm!r} is in phase "
+                    f"{parallel_effective_phase(rt, nonterm)!r} — 'done' requires every milestone "
+                    f"terminal (a dependency-target at 'merged', a leaf at 'done' or 'merged'); "
+                    f"fail-closed, design §3.4/§4")
+            if inflight_count:
+                raise ValueError(
+                    f"parallel campaign status is 'done' but {inflight_count} milestone(s) still "
+                    f"carry an in-flight sub-sprint — 'done' requires quiescence (zero workers) "
+                    f"(fail-closed, design §3.4)")
+        cur = data.get("cursor") or {}
+        if cur.get("milestone_index", 0) != 0 or cur.get("subsprint_index", 0) != 0:
+            raise ValueError(
+                f"parallel campaign state must pin the top-level cursor mirror to (0,0), got "
+                f"{cur!r} (fail-closed, design §3.2)")
+
+    def _parallel_first_nonterminal(self, rt: dict) -> Optional[str]:
+        """The first milestone (plan order) that is NOT terminal, or None if ALL are terminal
+        (the design §3.4/§4/§7.1 `all_terminal` predicate): a dependency-target (some other
+        milestone `depends_on` it) is terminal ONLY at 'merged'; a leaf may terminate at 'done'
+        or 'merged'. A milestone with no runtime entry has effective phase 'ready' ⇒ NOT terminal.
+        Pure w.r.t. `rt`; used for the status=='done' and completeness_gap_review quiescence gates."""
+        dep_targets = {d for m in self.milestones for d in (m.get("depends_on") or [])}
+        for m in self.milestones:
+            mid = m["id"]
+            ph = parallel_effective_phase(rt, mid)
+            if ph == "merged" or (ph == "done" and mid not in dep_targets):
+                continue
+            return mid
+        return None
 
     # ----- budget (countable proxies; design §5.4a) ---------------------- #
     def _over_budget(self) -> Optional[str]:
@@ -2459,6 +2883,11 @@ class Campaign:
         `decision_resolver(pause_reason, checkpoint_path) -> Optional[dict]` is the
         human's voice on resume for Mechanism-B gates (injected, like the Driver's
         gate_resolver); None / a None return ⇒ the pause stays (re-pause)."""
+        # Phase-4 (design §2): a parallel plan (budget.max_concurrent>1, ingress-verified
+        # eligible) is driven by the ADDITIVE coordinator. A serial plan (absent/==1) skips this
+        # branch entirely ⇒ the serial run() body below is byte-identical.
+        if self._parallel_active():
+            return self._run_parallel(resume=resume, decision_resolver=decision_resolver)
         self._pending_driver_resume = False
         self._crash_recovery = False  # §3.5c: set True only on STATUS_RUNNING recovery
         self._gap_review_decision = None  # §1.7-F: a human adjust_scope decision, consumed once
@@ -2696,18 +3125,1210 @@ class Campaign:
         # backlog exhausted → run()'s outer loop handles the §1.7-F gap-followup decision.
         return None
 
+    # ==================================================================== #
+    # Phase-4 parallel coordinator (design §2/§4/§5/§7) — ADDITIVE. Reached ONLY when
+    # max_concurrent>1 (the serial _drive_milestones / _handle_resume / run() paths are
+    # byte-identical). The coordinator is the SOLE writer of campaign-state + the SOLE
+    # appender of the campaign ledger; it operates on self.state.milestone_runtime, reuses
+    # the PURE decision helpers + the parallel scheduler, and launches ISOLATED worker child
+    # processes (campaign_worker). It NEVER calls the singleton mutators (_complete_milestone /
+    # _execute_milestone_merge / _pause / _advance_milestone_cursor) — it re-implements their
+    # state-plumbing on milestone_runtime[mid] (the C4 AST guard proves this). One sub-sprint is
+    # in flight per milestone, so freshness/halt/budget are enforced per-dispatch = serial-identical.
+    # ==================================================================== #
+    def _parallel_active(self) -> bool:
+        mc = (self.budget or {}).get("max_concurrent")
+        return isinstance(mc, int) and mc > 1
+
+    def _worker_exec_cfg(self) -> dict:
+        """Worker execution config — injectable for tests via ``self.worker_exec``, defaulting
+        to production (the real run_loop entrypoint + a wall-clock policy). The wall-clock policy
+        means the worker's clock agrees with the coordinator's in real time (§5.1)."""
+        cfg = getattr(self, "worker_exec", None) or {}
+        return {
+            "run_loop_entrypoint": cfg.get("run_loop_entrypoint") or "run_loop:run_loop",
+            "extra_sys_path": list(cfg.get("extra_sys_path") or []),
+            "clock_policy": cfg.get("clock_policy") or {"kind": "wallclock"},
+            "python_exe": cfg.get("python_exe"),
+        }
+
+    def _rt(self) -> dict:
+        return self.state.milestone_runtime
+
+    def _init_milestone_runtime(self) -> None:
+        """Seed each milestone's runtime to 'ready' (idempotent — a resume keeps existing
+        entries) and persist so the state is parallel-shaped (milestone_runtime present) from
+        the first drive. The top-level cursor is pinned to the fail-closed (0,0) mirror."""
+        rt = self.state.milestone_runtime
+        changed = False
+        for m in self.milestones:
+            if m["id"] not in rt:
+                rt[m["id"]] = {"phase": "ready", "subsprint_index": 0,
+                               "current_attempt_nonce": 0, "folded": []}
+                changed = True
+        if changed:
+            self._mirror_from_runtime()
+            self._save()
+
+    def _parallel_inflight_count(self) -> int:
+        return sum(1 for r in self._rt().values()
+                   if isinstance(r, dict) and r.get("inflight"))
+
+    def _mirror_from_runtime(self) -> None:
+        """Keep the legacy top-level singletons a fail-closed MIRROR of the parallel state
+        (design §3.2): cursor pinned to (0,0); pause_reason/checkpoint mirror the OLDEST
+        (smallest topological index) paused milestone. Never a source of truth — delivery is
+        derived from milestone_runtime.phase (§3.2.1). Only touches the pause mirror while the
+        campaign is RUNNING, so a coordinator-global pause (campaign_plan_signoff) set before
+        the runtime exists is never clobbered."""
+        self.state.milestone_index = 0
+        self.state.subsprint_index = 0
+        order = {m["id"]: i for i, m in enumerate(self.milestones)}
+        paused = sorted((mid for mid, r in self._rt().items()
+                         if isinstance(r, dict) and r.get("phase") == "paused"),
+                        key=lambda x: order.get(x, len(self.milestones)))
+        if paused:
+            r = self._rt()[paused[0]]
+            self.state.pause_reason = r.get("pause_reason")
+            self.state.pause_checkpoint = r.get("pause_checkpoint")
+        elif self.state.status == STATUS_RUNNING:
+            self.state.pause_reason = None
+            self.state.pause_checkpoint = None
+
+    # ----- coordinator-produced sidecar (§5.2) + freshness slice (§5.6) ----- #
+    def _coordinator_requirement_context(self, milestone: dict) -> Optional[dict]:
+        """Produce the WHOLE requirement-context.json a worker will write VERBATIM (§5.2 —
+        removing the worker↔state-file coupling). Built from the coordinator's authoritative
+        in-memory state, it carries every field compute_requirement_coverage reads (status,
+        cursor.milestone_index, milestone_outcomes, the GLOBAL engine_restamp) PLUS the
+        per-milestone phase map so delivery classifies from phase, not the fail-closed (0,0)
+        cursor (§3.2.1). None for a non-ledger campaign — serial writes no sidecar either ⇒
+        byte-identical."""
+        if not (self.plan is not None and self.ledger_path
+                and os.path.isfile(self.ledger_path)):
+            return None
+        try:
+            with open(self.ledger_path, encoding="utf-8") as fh:
+                ledger = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        ledger = requirement_context_ledger_projection(ledger)
+        campaign_state = {
+            "status": self.state.status,
+            "cursor": {"milestone_index": 0, "subsprint_index": 0},   # parallel (0,0) mirror
+            "milestone_outcomes": list(self.state.milestone_outcomes),
+            "engine_restamp": self.state.engine_restamp,              # GLOBAL (§5.2 B-1/B-2b)
+            "milestone_runtime": {mid: (r.get("phase") if isinstance(r, dict) else None)
+                                  for mid, r in self._rt().items()},   # phase map (§3.2.1)
+        }
+        return {"plan": self.plan, "ledger": ledger,
+                "campaign_state": campaign_state, "charter": self.charter}
+
+    def _dispatch_freshness_slice(self, milestone: dict) -> dict:
+        """The durable, canonical snapshot of EVERYTHING the freshness gate checks for THIS
+        milestone (design §5.6): the H wrapper fields + this milestone's _envelope_milestone
+        entry + the whole signed authority + the two out-of-H digest freshness inputs. Compared
+        byte-exact (canonical_json) on every fold to discriminate a per-milestone scope change
+        from another milestone's insertion / a scope-neutral re-sign."""
+        signoff = self.plan.get("signoff") or {}
+        return {
+            "wrapper": {
+                "version": "v1",
+                "campaign_id": self.plan.get("campaign_id"),
+                "goal": self.plan.get("goal"),
+                "charter_ref": signoff.get("charter_ref"),
+                "charter_hash": _canonical_sha256(self.charter or {}),
+            },
+            "milestone_envelope": _envelope_milestone(self.charter, milestone, self.ledger),
+            "authority": _resolve_plan_authority(self.plan, self.charter),
+            "milestone_signals_digest": milestone_signals_digest(self.plan),
+            "prompt_artifacts_digest": prompt_artifacts_digest(self.plan, self.repo_dir),
+        }
+
+    # ----- dispatch one milestone's next sub-sprint (gates → inflight → launch) ----- #
+    def _dispatch_one(self, mid: str) -> Optional["CampaignState"]:
+        """Run the serial per-dispatch gate sequence for milestone `mid`'s NEXT sub-sprint —
+        budget (2562 semantics) → freshness (2596) → halt-cond (2610) — pausing THIS milestone
+        (or the whole campaign, for a global re-sign) if a gate fires; else persist the durable
+        pre-spawn inflight in ONE _save() and launch a worker. Returns a paused campaign state
+        ONLY for a coordinator-global block (campaign_plan_signoff); a per-milestone pause is
+        recorded on the runtime and returns None (the drive loop keeps other milestones going)."""
+        milestone = self._milestone_by_id(mid)
+        r = self._rt()[mid]
+        seq = list(milestone.get("subsprint_sequence") or [])
+        si = r.get("subsprint_index", 0)
+        if si >= len(seq):
+            # Nothing dispatchable — but this milestone is 'ready', so returning None would
+            # re-admit it forever (Codex C3 B-1). Resolve it: an EMPTY sequence surfaces the
+            # per-milestone decompose (a Deliver step this core never auto-authors — exactly the
+            # serial milestone_decompose_required pause, campaign.py:2926); an exhausted non-empty
+            # sequence completes the milestone (the normal path completes on the last fold; this
+            # is the defensive close so a resumed/edge state can never livelock).
+            if not seq:
+                r["phase"] = "paused"
+                r["pause_reason"] = "milestone_decompose_required"
+                r["pause_checkpoint"] = None
+                self._mirror_from_runtime()
+                self._save()
+                self._audit("campaign_milestone_decompose_required", {"milestone_id": mid})
+            else:
+                self._complete_milestone_parallel(mid, milestone)
+                self._mirror_from_runtime()
+                self._save()
+            return None
+        subsprint_id = seq[si]
+
+        # Freshness — UNCONDITIONAL before the irreversible dispatch (T2-A B5). A stale edit
+        # blocks the WHOLE campaign for a re-sign (coordinator-global, serial-identical).
+        if not self._authority_fresh():
+            return self._pause_campaign_global(
+                "campaign_plan_signoff", None, "campaign_freshness_block",
+                {"signoff_status": self._signoff_status(), "drift": self._drift_field_hint()},
+                freshness_block=True)
+        # Halt-conditions (Phase-3 EP-pre, §3.4) — per-milestone; NO-OP when none declared.
+        halt = self._eval_halt_conditions_parallel(mid, milestone, subsprint_id)
+        if halt is not None:
+            return None   # milestone paused at halt_condition_met (recorded on the runtime)
+
+        # Per-milestone git isolation (once).
+        ctx = self._ensure_milestone_context_parallel(mid, milestone)
+
+        # Durable pre-spawn inflight (§5.5): everything the fold needs is durable BEFORE fork.
+        nonce = int(r.get("current_attempt_nonce", 0)) + 1
+        r["current_attempt_nonce"] = nonce
+        loop_id = "u" + hashlib.sha256(
+            f"{self.campaign_id}\x00{mid}\x00{subsprint_id}".encode()).hexdigest()[:24]
+        work_dir = (ctx or {}).get("work_dir") or self.repo_dir
+        r["inflight"] = {
+            "attempt_nonce": nonce, "loop_id": loop_id, "subsprint_id": subsprint_id,
+            "work_dir": work_dir,
+            "dispatch_epoch": self._live_signed_scope_hash(),
+            "dispatch_freshness_slice": self._dispatch_freshness_slice(milestone),
+        }
+        r["phase"] = "running"
+        self._mirror_from_runtime()
+        self._save()   # ONE pre-spawn save → a crash can never yield an unobservable worker
+
+        # Launch an isolated worker for exactly this sub-sprint.
+        self._launch_worker_for(mid, milestone, subsprint_id, seq, nonce, work_dir)
+        self._audit("campaign_parallel_dispatch",
+                    {"milestone_id": mid, "subsprint_id": subsprint_id,
+                     "attempt_nonce": nonce, "loop_id": loop_id})
+        return None
+
+    def _milestone_by_id(self, mid: str) -> dict:
+        for m in self.milestones:
+            if m["id"] == mid:
+                return m
+        raise KeyError(mid)
+
+    def _ensure_milestone_context_parallel(self, mid: str, milestone: dict) -> Optional[dict]:
+        """Set up this milestone's git isolation ONCE, recorded on milestone_runtime[mid].context
+        (the parallel analogue of _ensure_milestone_context — which writes the singleton
+        milestone_context). Worktree create/teardown is coordinator-owned + serialized (§7.4)."""
+        r = self._rt()[mid]
+        if r.get("context"):
+            return r["context"]
+        if not self._milestone_ingress_enabled():
+            return None
+        branch_name = li.render_branch_name(
+            self._milestone_isolation["branch_name_template"],
+            campaign_id=self.campaign_id, milestone_id=mid)
+        handle = li.setup_context(
+            self._resolve_milestone_strategy(milestone), repo_dir=self.repo_dir, loop_id=mid,
+            base_ref=self._trunk_branch,
+            worktree_root=self._milestone_isolation.get("worktree_root"),
+            branch_name=branch_name)
+        r["context"] = {
+            "milestone_id": mid, "strategy": handle.strategy, "branch": handle.branch,
+            "work_dir": handle.work_dir,
+            "worktree": (handle.work_dir if handle.strategy == li.STRATEGY_NEW_WORKTREE
+                         else None),
+            "base_ref": handle.base_ref, "repo_dir": handle.repo_dir,
+        }
+        self._audit("campaign_milestone_ingress",
+                    {"milestone_id": mid, "strategy": handle.strategy,
+                     "branch": handle.branch, "work_dir": handle.work_dir,
+                     "base_ref": handle.base_ref})
+        return r["context"]
+
+    def _halt_acked_keys_parallel(self, r: dict) -> list:
+        """Per-milestone acked keys for EP-pre (§3.4): the GLOBAL permanent halt_condition_acks +
+        THIS milestone's PROVISIONAL acks (this-cascade, not yet committed) — the parallel analogue
+        of _halt_acked_keys (which reads the singleton provisional set)."""
+        return list(self.state.halt_condition_acks) + list(
+            r.get("halt_condition_provisional") or [])
+
+    def _halt_epoch_recheck_parallel(self, r: dict) -> None:
+        """Per-milestone drift flush (§3.4 [R0.6 B-1]): when this milestone's outstanding cascade
+        was signed at an epoch that has since been re-signed (pending.signed_scope_hash != live),
+        drop its PROVISIONAL set + discard pending so every cascade condition re-arms in the current
+        epoch — closing the re-sign-between-halt-and-proceed stale-ack hole (Codex R3 B-8). Writes
+        only milestone_runtime[mid] (AST-safe)."""
+        pending = r.get("halt_condition_pending")
+        if not pending:
+            return
+        if pending.get("signed_scope_hash") != self._live_signed_scope_hash():
+            r["halt_condition_provisional"] = []
+            r["halt_condition_pending"] = None
+            self._audit("campaign_halt_condition_epoch_rearm",
+                        {"milestone_id": pending.get("milestone_id"),
+                         "condition_id": pending.get("condition_id")})
+
+    def _halt_commit_cascade_parallel(self, r: dict) -> None:
+        """Promote THIS milestone's PROVISIONAL acks → the GLOBAL permanent halt_condition_acks +
+        clear its pending, once its re-dispatched unit records an outcome (fold) — the parallel
+        analogue of _halt_commit_cascade (Codex R3 B-8). No-op when no cascade is outstanding."""
+        prov = list(r.get("halt_condition_provisional") or [])
+        if not prov and not r.get("halt_condition_pending"):
+            return
+        for key in prov:
+            if key not in self.state.halt_condition_acks:
+                self.state.halt_condition_acks.append(key)   # GLOBAL permanent (allowed)
+        r["halt_condition_provisional"] = []
+        r["halt_condition_pending"] = None
+
+    def _eval_halt_conditions_parallel(self, mid: str, milestone: dict,
+                                       subsprint_id: str) -> Optional[dict]:
+        """Per-milestone EP-pre halt-condition evaluation (§3.4) — the PURE hm.evaluate, with
+        the result recorded on milestone_runtime[mid] (NOT the singleton). NO-OP (returns None)
+        when no halt_conditions are declared — byte-identical to a pre-Phase-3 charter."""
+        conditions = self._halt_conditions()
+        if not conditions:
+            return None
+        r = self._rt()[mid]
+        # Re-arm a stale-epoch cascade for THIS milestone before evaluating (§3.4 / Codex R3 B-8),
+        # then evaluate against the GLOBAL permanent acks + this milestone's provisional acks.
+        self._halt_epoch_recheck_parallel(r)
+        ctx = self._halt_ctx(milestone, subsprint_id)
+        match = hm.evaluate(conditions, ctx, self._halt_acked_keys_parallel(r))
+        if match is None:
+            return None
+        checkpoint_path = self._write_halt_condition_checkpoint(match, mid)
+        r = self._rt()[mid]
+        r["halt_condition_pending"] = {
+            "condition_id": match["condition_id"],
+            "condition_digest": match["condition_digest"],
+            "metric": match["metric"], "ack_scope": match["ack_scope"],
+            "ack_key": match["ack_key"], "milestone_id": mid, "subsprint_id": subsprint_id,
+            "checkpoint_basename": os.path.basename(checkpoint_path),
+            "facts": match["facts"], "signed_scope_hash": self._live_signed_scope_hash(),
+            "resolved": False,
+        }
+        r["phase"] = "paused"
+        r["pause_reason"] = "halt_condition_met"
+        r["pause_checkpoint"] = checkpoint_path
+        self._mirror_from_runtime()
+        self._save()
+        self._audit("campaign_halt_condition",
+                    {"milestone_id": mid, "subsprint_id": subsprint_id,
+                     "condition_id": match["condition_id"], "facts": match["facts"]})
+        return r["halt_condition_pending"]
+
+    def _launch_worker_for(self, mid: str, milestone: dict, subsprint_id: str,
+                           seq: list, nonce: int, work_dir: Optional[str]) -> None:
+        """Produce the immutable worker-input (incl. the coordinator-built sidecar) and launch
+        an isolated worker child, tracking the Popen so the drive loop can reap it."""
+        wm = self._worker_mod
+        exec_cfg = self._worker_exec_cfg()
+        worker_dir = self._worker_dir(mid)
+        units_dir = os.path.join(worker_dir, "units")
+        dispatch = {
+            "subsprint_id": subsprint_id, "milestone_id": mid,
+            "subsprint_sequence": seq, "resume": False,
+            "functional_acceptance": milestone.get("functional_acceptance"),
+            "repo_dir": work_dir,
+        }
+        if "milestone_signals" in milestone:
+            dispatch["milestone_signals"] = milestone["milestone_signals"]
+        wi = wm.build_worker_input(
+            campaign_id=self.campaign_id, units_dir=units_dir, charter=self.charter,
+            plan=self.plan, ledger_path=self.ledger_path,
+            run_loop_kwargs=dict(self._worker_run_loop_kwargs()),
+            run_loop_entrypoint=exec_cfg["run_loop_entrypoint"],
+            clock=exec_cfg["clock_policy"], extra_sys_path=exec_cfg["extra_sys_path"],
+            requirement_context=self._coordinator_requirement_context(milestone),
+            dispatch=dispatch, attempt_nonce=nonce,
+            dispatch_epoch=self._rt()[mid]["inflight"]["dispatch_epoch"])
+        wm.write_worker_input(worker_dir, wi)
+        proc = wm.launch_worker(worker_dir, python_exe=exec_cfg["python_exe"])
+        self._worker_procs[mid] = {"proc": proc, "worker_dir": worker_dir,
+                                   "units_dir": units_dir, "attempt_nonce": nonce}
+
+    def _worker_run_loop_kwargs(self) -> dict:
+        """The SERIALIZABLE run_loop kwargs a worker forwards to reconstruct the REAL Driver
+        wiring (Codex R3 B-2): repo_dir / memory_root / allow_real / allow_gitlink_drift, set by
+        run_campaign from run_campaign_entry. NON-serializable injected `adapters` are EXCLUDED
+        (they cannot cross the subprocess boundary — a real run passes allow_real and the worker
+        builds adapters; a test injects a run_loop_entrypoint via `worker_exec`). Empty ⇒ the
+        worker runs with run_loop defaults (mock)."""
+        return dict(getattr(self, "worker_run_loop_kwargs", None) or {})
+
+    def _worker_dir(self, mid: str) -> str:
+        d = os.path.join(self.run_dir, "milestones", _fs_safe(mid))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    # ----- reap + exactly-once fold (§5.3/§5.4) + every-fold freshness (§5.6) ----- #
+    def _fold_ready(self, mid: str) -> None:
+        """If milestone `mid`'s LIVE-attempt worker has written its result, FOLD it exactly once
+        (§5.3): the two-part freshness re-check (§5.6), append the unit, settle budget, record
+        the fold key, advance the cursor / complete / pause — one _save() barrier."""
+        r = self._rt().get(mid)
+        if not (isinstance(r, dict) and r.get("inflight")):
+            return
+        nonce = r["inflight"]["attempt_nonce"]
+        wm = self._worker_mod
+        rec = self._worker_procs.get(mid) or {}
+        worker_dir = rec.get("worker_dir") or self._worker_dir(mid)
+        rp = wm.result_path(worker_dir, nonce)
+        if not os.path.isfile(rp):
+            return
+        try:
+            with open(rp, encoding="utf-8") as fh:
+                out = json.load(fh)
+        except (OSError, ValueError):
+            return
+        if out.get("attempt_nonce") != nonce:
+            return   # stale prior attempt — ignore (a live higher nonce is never masked)
+
+        milestone = self._milestone_by_id(mid)
+        # Two-part every-fold freshness (§5.6). PRIMARY: the existing serial gate — if not
+        # 'signed', block the whole campaign for a re-sign (catches signed_by_human flip /
+        # digest-copy tamper). The completed unit is still folded (authorized at its dispatch
+        # epoch — matching serial, where a re-sign never aborts the running unit).
+        primary_stale = not self._authority_fresh()
+        # SECONDARY: per-milestone drift discriminator — only when primary passes but the epoch
+        # moved (a re-sign to a new but valid epoch while the unit ran).
+        drift = None
+        if not primary_stale:
+            live_epoch = self._live_signed_scope_hash()
+            if r["inflight"].get("dispatch_epoch") != live_epoch:
+                live_slice = _canonical_json(self._dispatch_freshness_slice(milestone))
+                stored_slice = _canonical_json(r["inflight"].get("dispatch_freshness_slice"))
+                if live_slice != stored_slice:
+                    drift = {"dispatch_freshness_slice":
+                             r["inflight"].get("dispatch_freshness_slice"),
+                             "observed_freshness_slice":
+                             self._dispatch_freshness_slice(milestone)}
+
+        result = out.get("result") or {}
+        loop_id = result.get("loop_id") or r["inflight"].get("loop_id")
+        subsprint_id = r["inflight"]["subsprint_id"]
+        final_state = result.get("final_state")
+        # Account AFTER the fold (§8) — budget is per-dispatch/per-fold, serial-identical.
+        self.state.subsprints_run += 1
+        self.state.total_spawns += int(result.get("spawn_count") or 0)
+        self.state.wall_clock_minutes = (
+            self._base_wall + _iso_minutes(self._invocation_start, self.clock()))
+        unit = {"milestone_id": mid, "subsprint_id": subsprint_id, "status": "done",
+                "final_state": final_state, "loop_id": loop_id, "attempt_nonce": nonce}
+        r["folded"] = list(r.get("folded") or []) + [[loop_id, nonce]]
+        r["inflight"] = None
+        self._worker_procs.pop(mid, None)
+        # The re-dispatched unit RETURNED ⇒ commit THIS milestone's pre-dispatch halt cascade:
+        # promote its PROVISIONAL acks → GLOBAL permanent + clear pending (§3.4 / Codex R3 B-8),
+        # persisted atomically with this fold's outcome save below. No-op when no cascade is out.
+        self._halt_commit_cascade_parallel(r)
+
+        if final_state in _ADVANCE_STATES:
+            unit["status"] = "done"
+            self.state.units.append(unit)
+            r["subsprint_index"] = int(r.get("subsprint_index", 0)) + 1
+            self._audit("campaign_subsprint_advance",
+                        {"milestone_id": mid, "subsprint_id": subsprint_id,
+                         "loop_id": loop_id, "final_state": final_state,
+                         "attempt_nonce": nonce})
+            # Sequence exhausted ⇒ the milestone is complete (mirrors the serial inner-while
+            # exit → _complete_milestone); otherwise it is admissible for its next sub-sprint.
+            if r["subsprint_index"] >= len(list(milestone.get("subsprint_sequence") or [])):
+                self._complete_milestone_parallel(mid, milestone)
+            else:
+                r["phase"] = "ready"
+        elif final_state in _MILESTONE_DONE_STATES:
+            unit["status"] = "done"
+            self.state.units.append(unit)
+            self._audit("campaign_milestone_done",
+                        {"milestone_id": mid, "subsprint_id": subsprint_id,
+                         "loop_id": loop_id, "final_state": final_state})
+            self._complete_milestone_parallel(mid, milestone)
+        else:
+            reason = result.get("pause_reason") or final_state or "unknown_halt"
+            unit["status"] = "halted"
+            unit["pause_reason"] = reason
+            unit["checkpoint_path"] = result.get("checkpoint_path")
+            self.state.units.append(unit)
+            r["phase"] = "paused"
+            r["pause_reason"] = reason
+            r["pause_checkpoint"] = result.get("checkpoint_path")
+
+        if drift is not None:
+            # §5.6: primary-pass + slice-DIFFERENT ⇒ THIS milestone's scope changed under a valid
+            # re-sign while its unit ran. The completed unit is still folded (authorized at its
+            # dispatch epoch — matching serial), but the milestone must now HOLD for explicit human
+            # re-validation and must NOT auto-clear on 'signed' (Codex C3 B-5). Record the durable
+            # gate AND park the milestone (never 'ready'/'done'/'merged'), so this invocation can
+            # neither continue stale-scope work nor reach DONE until the epoch_drift resolution path
+            # clears it (Cluster 4). An ADVANCE/COMPLETE outcome — INCLUDING a completion that just
+            # opened the merge gate — MUST be held by the drift gate (Codex C3 B-7): a
+            # milestone_merge pause would let stale scope MERGE without re-validation. Only a genuine
+            # HALT outcome keeps its own pause_reason (the drift field ALSO blocks its resume).
+            r["epoch_drift"] = dict(drift)
+            halted_outcome = (final_state not in _ADVANCE_STATES
+                              and final_state not in _MILESTONE_DONE_STATES)
+            if not halted_outcome:
+                if r.get("pause_reason") == "milestone_merge":
+                    # Preserve the displaced merge gate so C4 restores it AFTER drift resolution.
+                    r["epoch_drift"]["displaced_merge_checkpoint"] = r.get("pause_checkpoint")
+                    r["epoch_drift"]["displaced_pending_milestone_advance"] = \
+                        bool(r.get("pending_milestone_advance"))
+                    r["pending_milestone_advance"] = False
+                r["phase"] = "paused"
+                r["pause_reason"] = "epoch_drift"
+                r["pause_checkpoint"] = None
+
+        if primary_stale:
+            # Fold + the durable re-sign block are ONE _save() barrier (Codex C3 B-2): a crash
+            # must NEVER leave a folded/accounted stale unit WITHOUT the durable block (which would
+            # let a resume reach DONE without a re-sign). The above fold mutations are in-memory;
+            # _pause_campaign_global persists them together with the campaign_plan_signoff block.
+            self._pause_campaign_global(
+                "campaign_plan_signoff", None, "campaign_freshness_block",
+                {"signoff_status": self._signoff_status(), "drift": self._drift_field_hint()},
+                freshness_block=True)
+            return
+        self._mirror_from_runtime()
+        self._save()
+
+    def _complete_milestone_parallel(self, mid: str, milestone: dict) -> None:
+        """A milestone's sub-sprint sequence is accepted (§3.5.1 terminal outcome) → the optional
+        merge gate. Re-implements _complete_milestone's plumbing on milestone_runtime: stamp the
+        GLOBAL milestone_outcome, then either PAUSE at milestone_merge (phase='paused', the human
+        §1.7-D gate — merge EXECUTION is C4 resume) or, if no merge gate is needed, terminate a
+        leaf at phase='done'. NEVER calls the singleton _complete_milestone/_pause."""
+        terminal, pr, ref = self._derive_inner_loop_terminal_parallel(mid)
+        self._stamp_milestone_outcome(mid, terminal, pause_reason=pr, decision_ref=ref)
+        r = self._rt()[mid]
+        if self._needs_milestone_merge_gate_parallel(mid, milestone):
+            path = self._write_milestone_merge_checkpoint_parallel(mid, milestone)
+            r["pending_milestone_advance"] = True
+            r["phase"] = "paused"
+            r["pause_reason"] = "milestone_merge"
+            r["pause_checkpoint"] = path
+            self._audit("campaign_milestone_merge",
+                        {"milestone_id": mid,
+                         "branch": (r.get("context") or {}).get("branch"),
+                         "trunk": self._trunk_branch})
+        else:
+            r["phase"] = "done"   # leaf, no merge gate → legitimate done-unmerged terminal (§7.1)
+
+    def _derive_inner_loop_terminal_parallel(self, mid: str):
+        """Terminal close enum for milestone `mid` from its LAST recorded unit (the parallel
+        analogue of _derive_inner_loop_terminal, scoped to this milestone's units)."""
+        last = None
+        for u in reversed(self.state.units):
+            if isinstance(u, dict) and u.get("milestone_id") == mid:
+                last = u
+                break
+        if last is None:
+            return "not_shipped", None, None
+        pr, cpt = last.get("pause_reason"), last.get("checkpoint_path")
+        if last.get("status") == "halted" and pr == "review_out_of_scope":
+            return "out_of_scope_advance", pr, cpt
+        fs = last.get("final_state")
+        if fs in _MILESTONE_DONE_STATES:
+            return "acceptance_pass_authoritative", pr, cpt
+        if fs in _ADVANCE_STATES:
+            return "acceptance_off", pr, cpt
+        return "not_shipped", pr, cpt
+
+    def _needs_milestone_merge_gate_parallel(self, mid: str, milestone: dict) -> bool:
+        if not self._milestone_ingress_enabled():
+            return False
+        if not self._milestone_isolation.get("merge_prompt_at_close", True):
+            return False
+        ctx = self._rt()[mid].get("context") or {}
+        if ctx.get("strategy") in (None, li.STRATEGY_CURRENT_BRANCH):
+            return False
+        return ctx.get("branch") != self._trunk_branch
+
+    def _write_milestone_merge_checkpoint_parallel(self, mid: str, milestone: dict) -> str:
+        """Milestone-tier merge gate file for the parallel path (mirrors
+        _write_milestone_merge_checkpoint, but reads the per-milestone context)."""
+        ctx = self._rt()[mid].get("context") or {}
+        try:
+            dt = datetime.fromisoformat(self.clock().replace("Z", "+00:00"))
+            stamp = dt.strftime("%Y%m%d-%H%M%S")
+        except (ValueError, AttributeError):
+            stamp = "00000000-000000"
+        cps_dir = os.path.join(self.run_dir, "docs", "checkpoints")
+        os.makedirs(cps_dir, exist_ok=True)
+        path = os.path.join(cps_dir, f"{stamp}__milestone_merge__{_fs_safe(mid)}.md")
+        trunk, branch = self._trunk_branch, ctx.get("branch")
+        body = (
+            f"---\ncheckpoint_id: milestone_merge\nscope: {mid}\n"
+            f"emitted_at: {self.clock()}\ndecision: pending\nresolved_at: null\n"
+            f"resolver: null\n---\n\n# Context\n"
+            f"Milestone `{mid}` is accepted. Its isolated branch `{branch}` is ready to "
+            f"integrate into `{trunk}`. Per Constitution §1.7-D the engine does NOT "
+            f"auto-merge — author a campaign-decision.json (merge_now|open_pr|keep_branch|"
+            f"abort), then `--resume`.\n")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path
+
+    # ----- the drive loop (§2) + termination (§4) -------------------------- #
+    def _drive_parallel(self) -> Optional["CampaignState"]:
+        """The coordinator event loop: reap completed workers (fold), then dispatch the admitted
+        ready set, until either a coordinator-global block fires, the campaign is quiescent-DONE
+        (all milestones terminal → None, → gap-followup), or it is parked (no ready, no inflight,
+        ≥1 paused → exit-10 needs-human). One sub-sprint per milestone in flight at a time."""
+        poll = getattr(self, "_parallel_poll_seconds", 0.02)
+        while True:
+            # 1) reap any completed workers (fold exactly-once).
+            for mid in list(self._rt().keys()):
+                self._fold_ready(mid)
+                if self.state.status == STATUS_PAUSED and self.state.pause_reason == \
+                        "campaign_plan_signoff":
+                    return self.state   # a fold-time freshness block (§5.6 primary) halts all
+            # 1b) a worker that EXITED without a live-attempt result CRASHED (SIGKILL/OOM/hard
+            # exit — an in-worker exception writes an error result, which folds normally). Fence
+            # it + re-dispatch IN-LOOP so the coordinator never livelocks waiting for a result
+            # that will never appear (Codex R3 B-6 — C4 fencing otherwise runs only on resume).
+            self._reap_crashed_workers()
+            # 2) termination check.
+            inflight = self._parallel_inflight_count()
+            ready = parallel_ready_set(self.milestones, self._rt())
+            if not ready and inflight == 0:
+                nonterm = self._parallel_first_nonterminal(self._rt())
+                paused = [mid for mid, r in self._rt().items()
+                          if isinstance(r, dict) and r.get("phase") == "paused"]
+                if nonterm is None:
+                    return None            # all terminal → run()'s gap-followup / DONE
+                if paused:
+                    self._mirror_from_runtime()
+                    self.state.status = STATUS_PAUSED
+                    self._save()
+                    return self.state      # parked at human gate(s) → exit-10 (notifier pages)
+                # no ready, no inflight, none paused, not all terminal ⇒ a dependency-target
+                # stuck at done-unmerged blocks its dependents ⇒ exit-10 needs-human (§4).
+                return self._pause_parallel_needs_human()
+            # 3) admit + dispatch the ready set.
+            admit = parallel_admit(
+                ready, self._rt(), milestones=self.milestones,
+                max_concurrent=self.budget.get("max_concurrent"),
+                subsprints_run=self.state.subsprints_run,
+                max_subsprints=self.budget.get("max_subsprints"))
+            # budget drain (§8): a global over-budget stops NEW dispatch (drain in-flight).
+            if self._over_budget():
+                admit = []
+                if inflight == 0:
+                    return self._pause_parallel_budget()
+            for mid in admit:
+                block = self._dispatch_one(mid)
+                if block is not None:
+                    return block   # coordinator-global re-sign block
+            # 4) if nothing was dispatched but workers are in flight, wait for one to finish.
+            if not admit and self._parallel_inflight_count() > 0:
+                self._await_any_worker(poll)
+
+    def _pause_campaign_global(self, reason: str, checkpoint: Optional[str], audit_type: str,
+                               extra: Optional[dict] = None, *,
+                               freshness_block: bool = False,
+                               original_reason: Optional[str] = None) -> "CampaignState":
+        """The SANCTIONED coordinator-GLOBAL pause writer for the parallel path (Codex C3 B-4;
+        design §3.2/§5.6). A campaign-tier pause — the campaign_plan_signoff re-sign block, the
+        budget-exhausted drain, the dependency-target needs-human stall — is NOT per-milestone; it
+        legitimately projects onto the top-level singleton status/pause + the (0,0) cursor mirror
+        (it OVERRIDES the per-milestone pause mirror). This is the ONE place the parallel path
+        writes a global pause (all PER-MILESTONE state lives on milestone_runtime[mid]); the C4
+        AST guard exempts this writer + _mirror_from_runtime as the deliberate §3.2 projection.
+        Callers persist the fold/dispatch mutations in the SAME _save() (one atomic barrier).
+        `original_reason` records the GLOBAL gate a stale re-sign block preserves (Codex R3 B-9,
+        serial `_block_for_resign` shape) — e.g. campaign_budget_exhausted; on re-sign the resume
+        re-drives, which re-evaluates that global gate (over-budget → re-pause budget)."""
+        if freshness_block and self.state.freshness_block is None:
+            self.state.freshness_block = {
+                "original_pause_reason": original_reason, "original_pause_checkpoint": None}
+        self.state.milestone_index = 0
+        self.state.subsprint_index = 0
+        self.state.status = STATUS_PAUSED
+        self.state.pause_reason = reason
+        self.state.pause_checkpoint = checkpoint
+        self._audit(audit_type,
+                    {"pause_reason": reason, "checkpoint": checkpoint, **(extra or {})})
+        self._save()
+        return self.state
+
+    def _pause_parallel_needs_human(self) -> "CampaignState":
+        """A dependency-target milestone sits at 'done' (accepted, NOT merged) while its dependents
+        are blocked (§4/§7.1 — the human resolved its merge as open_pr/keep_branch, or offline has
+        no merge gate). Re-pause each blocking dep-target at its PER-MILESTONE milestone_merge gate
+        (reusing the existing checkpoint — NO new kind, §9) so the human can merge_now to unblock
+        the dependents. The paused-mirror branch of the validator then accepts the state (Codex
+        C3 B-6). NOT a coordinator-global pause (which milestone_merge is not)."""
+        dep_targets = {d for m in self.milestones for d in (m.get("depends_on") or [])}
+        for m in self.milestones:
+            mid = m["id"]
+            r = self._rt().get(mid) or {}
+            if mid in dep_targets and r.get("phase") == "done":
+                path = (self._write_milestone_merge_checkpoint_parallel(mid, m)
+                        if r.get("context") else None)
+                r["phase"] = "paused"
+                r["pause_reason"] = "milestone_merge"
+                r["pause_checkpoint"] = path
+                self._audit("campaign_parallel_needs_human",
+                            {"milestone_id": mid,
+                             "why": "dependency-target done-unmerged blocks its dependents"})
+        self._mirror_from_runtime()
+        self.state.status = STATUS_PAUSED
+        self._save()
+        return self.state
+
+    def _pause_parallel_budget(self) -> "CampaignState":
+        return self._pause_campaign_global(
+            "campaign_budget_exhausted", None, "campaign_budget_exhausted",
+            {"dimension": self._over_budget()})
+
+    def _await_any_worker(self, poll: float) -> None:
+        """Block until at least one in-flight worker has written its live-attempt result (or its
+        process exited), so the loop makes progress without a busy spin."""
+        import time
+        deadline_spins = int(getattr(self, "_parallel_max_spins", 60000))
+        for _ in range(deadline_spins):
+            for mid, rec in list(self._worker_procs.items()):
+                r = self._rt().get(mid) or {}
+                infl = r.get("inflight") or {}
+                nonce = infl.get("attempt_nonce", rec.get("attempt_nonce"))
+                if os.path.isfile(self._worker_mod.result_path(rec["worker_dir"], nonce)):
+                    return
+                proc = rec.get("proc")
+                if proc is not None and proc.poll() is not None:
+                    return   # process exited (result present, or a crash → _reap_crashed_workers)
+                if proc is None and not self._worker_mod.worker_lock_held(rec["worker_dir"]):
+                    return   # an ADOPTED worker released its flock (died) → let the reaper fence it
+            time.sleep(poll)
+        return
+
+    def _reap_crashed_workers(self) -> None:
+        """In-loop crash reconcile (Codex R3 B-6/B-11): a worker whose PROCESS DIED without writing
+        its live-attempt result crashed hard — FENCE it (best-effort kill the stale lease) + bump
+        current_attempt_nonce (a late stale result can never mask the fresh attempt) + clear inflight
+        + re-dispatch (phase→ready). Audited (observable), never a silent livelock. Death is: a
+        tracked child (Popen) that EXITED, OR an ADOPTED worker (no handle, from crash-resume) whose
+        FLOCK is released (Codex R3 B-11 — an adopted child that dies post-resume is now fenced too)."""
+        wm = self._worker_mod
+        changed = False
+        for mid, rec in list(self._worker_procs.items()):
+            r = self._rt().get(mid) or {}
+            infl = r.get("inflight")
+            if not infl:
+                continue
+            nonce = infl.get("attempt_nonce")
+            if nonce is not None and os.path.isfile(wm.result_path(rec["worker_dir"], nonce)):
+                continue   # completed WITH a result → the fold loop handles it
+            proc = rec.get("proc")
+            if proc is not None:
+                if proc.poll() is None:
+                    continue   # a tracked child still running
+            elif wm.worker_lock_held(rec["worker_dir"]):
+                continue       # an adopted worker still holding its flock → still alive
+            # dead without a result ⇒ fence + re-dispatch.
+            self._fence_stale_lease(rec["worker_dir"], nonce)
+            r["current_attempt_nonce"] = int(r.get("current_attempt_nonce", 0)) + 1
+            r["inflight"] = None
+            r["phase"] = "ready"
+            self._worker_procs.pop(mid, None)
+            self._audit("campaign_parallel_worker_crash",
+                        {"milestone_id": mid, "crashed_nonce": nonce})
+            changed = True
+        if changed:
+            self._mirror_from_runtime()
+            self._save()
+
+    def _crash_recover_parallel(self) -> None:
+        """§5.5 crash recovery on a STATUS_RUNNING resume: for each milestone with a DURABLE
+        pre-spawn inflight, reconcile so no worker double-runs a worktree —
+          (a) the live-attempt result-<nonce>.json exists ⇒ FOLD it (idempotent, §5.3);
+          (b) a live child still holds the inherited flock ⇒ ADOPT (the drive loop reaps it);
+          (c) no live child ⇒ FENCE the stale lease pid, bump current_attempt_nonce (a stale
+              lower-nonce result can never mask the fresh attempt), clear inflight, re-dispatch.
+        Reuses the proven claude_code watchdog-lease pattern."""
+        wm = self._worker_mod
+        for mid, r in list(self._rt().items()):
+            if not (isinstance(r, dict) and r.get("inflight")):
+                continue
+            nonce = r["inflight"].get("attempt_nonce")
+            worker_dir = self._worker_dir(mid)
+            if nonce is not None and os.path.isfile(wm.result_path(worker_dir, nonce)):
+                self._worker_procs[mid] = {"proc": None, "worker_dir": worker_dir,
+                                           "units_dir": os.path.join(worker_dir, "units"),
+                                           "attempt_nonce": nonce}
+                self._fold_ready(mid)
+                continue
+            if wm.worker_lock_held(worker_dir):
+                self._worker_procs[mid] = {"proc": None, "worker_dir": worker_dir,
+                                           "units_dir": os.path.join(worker_dir, "units"),
+                                           "attempt_nonce": nonce}
+                self._audit("campaign_parallel_adopt",
+                            {"milestone_id": mid, "attempt_nonce": nonce})
+                continue
+            self._fence_stale_lease(worker_dir, nonce)
+            r["current_attempt_nonce"] = int(r.get("current_attempt_nonce", 0)) + 1
+            r["inflight"] = None
+            r["phase"] = "ready"
+            self._audit("campaign_parallel_fence",
+                        {"milestone_id": mid, "stale_nonce": nonce})
+        self._mirror_from_runtime()
+        self._save()
+
+    def _fence_stale_lease(self, worker_dir: str, nonce) -> None:
+        """Best-effort SIGTERM of a stale worker lease pid (the flock is already free ⇒ the
+        process is almost certainly dead; belt-and-suspenders). Never raises."""
+        import signal
+        try:
+            with open(self._worker_mod.lease_path(worker_dir, nonce), encoding="utf-8") as fh:
+                pid = json.load(fh).get("pid")
+            if isinstance(pid, int) and pid > 0:
+                os.kill(pid, signal.SIGTERM)
+        except (OSError, ValueError):
+            pass
+
+    def _run_parallel(self, *, resume: bool, decision_resolver=None) -> CampaignState:
+        """The parallel entry (design §2) — the additive analogue of run(): signoff/resume/
+        engine-restamp, then the _drive_parallel event loop + gap-followup + DONE. Serial run()
+        is byte-identical (this is only reached when _parallel_active())."""
+        import campaign_worker as _cw
+        self._worker_mod = _cw
+        self._worker_procs = {}
+        self._pending_driver_resume = False
+        self._crash_recovery = False
+        self._gap_review_decision = None
+        if resume and self._load():
+            self._reapply_engine_restamp()
+            # Wall-clock accounting base set BEFORE any crash-recovery fold (which computes
+            # wall_clock_minutes) — a resumed fold must not read an unset _base_wall.
+            self._base_wall = self.state.wall_clock_minutes
+            self._invocation_start = self.clock()
+            self._audit("campaign_resume",
+                        {"from_status": self.state.status,
+                         "pause_reason": self.state.pause_reason})
+            if self.state.status in (STATUS_DONE, STATUS_ENDED):
+                return self.state
+            if self.state.status == STATUS_PAUSED:
+                outcome = self._handle_resume_parallel(decision_resolver)
+                if outcome in ("paused", "ended"):
+                    return self.state
+                # A paused resume that PROCEEDS may still have in-flight workers from BEFORE the
+                # pause (a fold-time global re-sign block persists the durable inflight while other
+                # workers run). The fresh process's _worker_procs is empty, so reap/wait can't see
+                # them — reconcile (fold/adopt/fence) BEFORE re-driving (Codex R3 B-14).
+                if any(isinstance(r, dict) and r.get("inflight")
+                       for r in self._rt().values()):
+                    self._crash_recover_parallel()
+            elif self.state.status == STATUS_RUNNING:
+                # §5.5 crash recovery: reconcile every durable pre-spawn inflight (fold a completed
+                # result, adopt a live child, or fence a dead one + re-dispatch) BEFORE re-driving.
+                self._crash_recover_parallel()
+        else:
+            self._audit("campaign_start",
+                        {"campaign_id": self.campaign_id, "goal": self.plan.get("goal"),
+                         "milestones": [m["id"] for m in self.milestones]})
+            status = self._signoff_status()
+            if status != "signed":
+                return self._pause("campaign_plan_signoff", None, "campaign_plan_signoff",
+                                   {"goal": self.plan.get("goal"), "signoff_status": status})
+            self._base_wall = self.state.wall_clock_minutes
+            self._invocation_start = self.clock()
+        self._init_milestone_runtime()
+        while True:
+            paused = self._drive_parallel()
+            if paused is not None:
+                return paused
+            outcome = self._gap_followup_round(decision_resolver)
+            if outcome == GAP_CONTINUE:
+                continue
+            if outcome in (GAP_PAUSED, GAP_ENDED):
+                return self.state
+            break
+        self.state.status = STATUS_DONE
+        self._audit("campaign_done",
+                    {"subsprints_run": self.state.subsprints_run,
+                     "total_spawns": self.state.total_spawns})
+        self._save()
+        return self.state
+
+    # ----- SANCTIONED singleton writers for the parallel path (Codex C3 B-4 + R2 note) ----- #
+    # These four + _pause_campaign_global + _mirror_from_runtime are the ONLY places the parallel
+    # dispatch/resume path writes top-level singleton pause/cursor/overlay fields (the §3.2 mirror
+    # + coordinator-GLOBAL pauses). The AST guard (test_campaign_parallel_ast_guard) exempts them
+    # and PROVES no OTHER parallel-reachable method touches a singleton pause/cursor field.
+    def _clear_pause_parallel(self) -> None:
+        """After a parked pause resolves: clear the top-level pause mirror → RUNNING (re-drive)."""
+        self.state.status = STATUS_RUNNING
+        self.state.pause_reason = None
+        self.state.pause_checkpoint = None
+
+    def _consume_freshness_block_parallel(self) -> None:
+        """Clear the §5.6 freshness_block overlay (the parallel block sets original_pause_reason
+        =None, so there is no serial gate to restore — just clear the overlay)."""
+        self.state.freshness_block = None
+
+    def _end_parallel(self, reason: str) -> "CampaignState":
+        """Coordinator-GLOBAL terminal end (abort) for the parallel path."""
+        self.state.status = STATUS_ENDED
+        self.state.pause_reason = reason
+        self._audit("campaign_ended", {"reason": reason})
+        self._save()
+        return self.state
+
+    def _repause_parallel(self, reason: str, why: str) -> str:
+        """A parked pause could not be resolved (missing/invalid decision) — re-pause fail-closed.
+        The mirror re-derives the pause from milestone_runtime; only status is set here."""
+        self._mirror_from_runtime()
+        self.state.status = STATUS_PAUSED
+        self._audit("campaign_repause", {"pause_reason": reason, "why": why})
+        self._save()
+        return "paused"
+
+    def _context_handle_from(self, ctx: Optional[dict]) -> Optional["li.ContextHandle"]:
+        """Rebuild a ContextHandle from a milestone_runtime[mid].context record (the parallel
+        analogue of _milestone_context_handle, which reads the singleton milestone_context)."""
+        if not ctx:
+            return None
+        return li.ContextHandle(
+            work_dir=ctx["work_dir"], branch=ctx["branch"], strategy=ctx["strategy"],
+            repo_dir=ctx["repo_dir"],
+            created=(ctx["strategy"] != li.STRATEGY_CURRENT_BRANCH),
+            base_ref=ctx.get("base_ref"))
+
+    def _handle_resume_parallel(self, decision_resolver) -> str:
+        """Parallel pause resolution (design §6). Resolves the ONE parked pause the decision
+        selects (§6.3: several parked pauses ⇒ several --resume calls), then re-drives. Reuses the
+        PURE decision logic; re-implements state-plumbing on milestone_runtime[mid] + the sanctioned
+        global writers (NEVER the singleton _handle_resume mutators). A still-unresolved pause stays
+        paused (fail-closed)."""
+        reason = self.state.pause_reason
+        # Coordinator-GLOBAL re-sign block (§5.6): re-validate freshness, consume the overlay, drive.
+        if reason == "campaign_plan_signoff":
+            if self._signoff_status() != "signed":
+                return "paused"   # still not re-signed → stay parked
+            self._consume_freshness_block_parallel()
+            self._clear_pause_parallel()
+            return "proceed"
+        # Coordinator-GLOBAL budget gate (§8) — serial-equivalent (Codex R3 B-9): REQUIRE a
+        # decision; raise_cap re-reads the (raised) signed budget + gates freshness (a budget cap
+        # is inside H, so it needs a re-sign) then re-drives; abort ends. No decision ⇒ re-pause.
+        if reason == "campaign_budget_exhausted":
+            decision = (decision_resolver(reason, self.state.pause_checkpoint)
+                        if decision_resolver is not None else None)
+            if not decision:
+                return self._repause_parallel(reason, "decision_pending")
+            if decision.get("choice") == "raise_cap":
+                self.budget = self.plan.get("budget") or {}   # re-read the raised budget
+                if not self._authority_fresh():
+                    self._pause_campaign_global(
+                        "campaign_plan_signoff", None, "campaign_freshness_block",
+                        {"signoff_status": self._signoff_status(),
+                         "drift": self._drift_field_hint()}, freshness_block=True,
+                        original_reason="campaign_budget_exhausted")
+                    return "paused"
+                self._clear_pause_parallel()
+                self._audit("campaign_resume_dispatch",
+                            {"pause_reason": reason, "action": "raise_cap"})
+                return "proceed"
+            self._end_parallel("campaign_budget_aborted")
+            return "ended"
+        # CAMPAIGN-TIER completeness gate (§1.7-F): STASH the human's adjust_scope decision so the
+        # OUTER-loop _gap_followup_round (called from _run_parallel at quiescence) consumes it once
+        # — the SAME remediate/accept_gap/abort handling as serial (Codex R3 B-7). No decision ⇒
+        # re-pause (the gap is unresolved). Resolved via the serial campaign-tier resolver path.
+        if reason == GAP_REVIEW_CHECKPOINT:
+            decision = (decision_resolver(reason, self.state.pause_checkpoint)
+                        if decision_resolver is not None else None)
+            if not decision:
+                return self._repause_parallel(reason, "decision_pending")
+            self._gap_review_decision = decision
+            self._clear_pause_parallel()   # sanctioned singleton resume-clear
+            self._audit("campaign_resume_dispatch",
+                        {"pause_reason": reason, "choice": decision.get("choice")})
+            return "proceed"
+        # §6 decompose recheck (Codex R3 B-5, serial-analogue at campaign.py:2590): a milestone
+        # parked at milestone_decompose_required whose subsprint_sequence was AUTHORED (now
+        # non-empty) in a re-signed plan re-enters the ready set — resolved by a plan edit + a
+        # re-sign, NOT a decision file. When the plan is fresh-signed, clear those milestones and
+        # re-drive (the plan edit's freshness is caught by the campaign_plan_signoff path above).
+        if self._authority_fresh():
+            recovered = False
+            for _mid, _r in self._rt().items():
+                if isinstance(_r, dict) and _r.get("phase") == "paused" \
+                        and _r.get("pause_reason") == "milestone_decompose_required" \
+                        and list(self._milestone_by_id(_mid).get("subsprint_sequence") or []):
+                    _r["phase"] = "ready"
+                    _r["pause_reason"] = None
+                    _r["pause_checkpoint"] = None
+                    recovered = True
+            if recovered:
+                self._clear_pause_parallel()
+                self._mirror_from_runtime()
+                self._save()
+                return "proceed"
+        # §6 deliver_followup resume (Codex R3 B-5, serial-analogue at campaign.py:2683): Deliver
+        # INSERTS the follow-up sub-sprint at THIS milestone's subsprint_index+1; advance PAST a
+        # genuine insertion (an id NOT in the paused-time followup_baseline_seq). Resolved by a
+        # plan edit, NOT a decision file. The parallel path requires the grown plan to be
+        # FRESH-SIGNED to advance (a human re-sign is always safe; the serial engine AUTO-restamp
+        # of the single follow-up delta is a deferred optimization, since the parallel (0,0) mirror
+        # makes the cursor-bound restamp helper unsafe to reuse). Stale ⇒ block for re-sign.
+        for _mid, _r in self._rt().items():
+            if not (isinstance(_r, dict) and _r.get("phase") == "paused"
+                    and _r.get("pause_reason") == "deliver_followup_required"):
+                continue
+            _seq = list(self._milestone_by_id(_mid).get("subsprint_sequence") or [])
+            _baseline = _r.get("followup_baseline_seq") or []
+            _nxt = int(_r.get("subsprint_index", 0)) + 1
+            if _nxt < len(_seq) and _seq[_nxt] not in _baseline:
+                if f1_required(self.plan) and not self._authority_fresh():
+                    self._pause_campaign_global(
+                        "campaign_plan_signoff", None, "campaign_freshness_block",
+                        {"signoff_status": self._signoff_status(),
+                         "drift": self._drift_field_hint()}, freshness_block=True)
+                    return "paused"
+                _r["subsprint_index"] = _nxt
+                _r["followup_baseline_seq"] = None
+                _r["phase"] = "ready"
+                _r["pause_reason"] = None
+                _r["pause_checkpoint"] = None
+                self._clear_pause_parallel()
+                self._mirror_from_runtime()
+                self._save()
+                self._audit("campaign_resume_dispatch",
+                            {"pause_reason": "deliver_followup_required",
+                             "milestone_id": _mid, "followup": _seq[_nxt]})
+                return "proceed"
+        # Per-milestone parked pause: the decision selects ONE milestone's checkpoint (§6.1/§6.3).
+        decision = (decision_resolver(reason, self.state.pause_checkpoint)
+                    if decision_resolver is not None else None)
+        if not decision:
+            return self._repause_parallel(reason, "decision_pending")
+        mid = decision.get("milestone_id")
+        r = self._rt().get(mid) if mid else None
+        if not isinstance(r, dict) or r.get("phase") != "paused":
+            return self._repause_parallel(reason, "milestone_not_paused")
+        mr = r.get("pause_reason")
+        if mr == "milestone_merge":
+            return self._resolve_milestone_merge_parallel(mid, r, decision)
+        if mr == "epoch_drift":
+            return self._resolve_epoch_drift_parallel(mid, r, decision)
+        if mr == "halt_condition_met":
+            return self._resolve_halt_parallel(mid, r, decision)
+        return self._resolve_unit_pause_parallel(mid, r, decision)
+
+    def _resolve_milestone_merge_parallel(self, mid: str, r: dict, decision: dict) -> str:
+        """Resolve a milestone_merge gate (§7.2). merge_now ⇒ protected local --no-ff merge into
+        trunk (phase→merged; conflict ⇒ re-pause at the EXISTING milestone_merge, never
+        gate_hard_fail); open_pr/keep_branch ⇒ advance without merging (phase→done, leaf terminal
+        §7.1); abort ⇒ end. Coordinator-serialized (one merge at a time)."""
+        choice = decision.get("choice")
+        if choice == "abort":
+            self._end_parallel("milestone_merge_aborted")
+            return "ended"
+        # Freshness before the IRREVERSIBLE merge (T2-A B5): a stale merge-target/gate/cleanup edit
+        # blocks the WHOLE campaign for a re-sign (the milestone stays paused at milestone_merge).
+        if not self._authority_fresh():
+            self._pause_campaign_global(
+                "campaign_plan_signoff", None, "campaign_freshness_block",
+                {"signoff_status": self._signoff_status(), "drift": self._drift_field_hint()},
+                freshness_block=True)
+            return "paused"
+        handle = self._context_handle_from(r.get("context"))
+        if choice == "merge_now" and handle is not None and handle.created:
+            try:
+                action = li.merge_into_trunk(
+                    handle, self._trunk_branch,
+                    merge_message=f"aidazi: merge milestone {mid}")
+            except li.GitOpError:
+                self._audit("campaign_milestone_merge_conflict", {"milestone_id": mid})
+                return self._repause_parallel("milestone_merge", "merge_conflict")
+            if handle.strategy == li.STRATEGY_NEW_WORKTREE:
+                li.cleanup(handle,
+                           cleanup_policy=self._milestone_isolation.get("cleanup_policy"),
+                           merged=(action == "merged"), changed=True)
+            r["phase"] = "merged"
+            self._audit("campaign_milestone_merged",
+                        {"milestone_id": mid, "action": action, "trunk": self._trunk_branch})
+        else:
+            r["phase"] = "done"   # open_pr/keep_branch → leaf done-unmerged terminal (§7.1)
+            self._audit("campaign_milestone_advanced_no_merge",
+                        {"milestone_id": mid, "choice": choice})
+        r["pause_reason"] = None
+        r["pause_checkpoint"] = None
+        r["pending_milestone_advance"] = False
+        self._clear_pause_parallel()
+        self._mirror_from_runtime()
+        self._save()
+        return "proceed"
+
+    def _resolve_epoch_drift_parallel(self, mid: str, r: dict, decision: dict) -> str:
+        """Resolve an epoch_drift hold (§5.6/§6). The gate clears ONLY by a deterministic EXACT
+        freshness-slice re-check — NEVER merely by a signed/proceed decision (Codex R3 B-4): the
+        plan must be fresh-signed AND the LIVE freshness slice for this milestone must be
+        byte-exact-equal to the slice its unit was DISPATCHED under (the human has re-aligned this
+        milestone's scope). Only then clear the durable gate — restoring a merge gate the drift
+        displaced (a completion), else re-entering the normal flow. abort ⇒ end; still-drifted or
+        not-signed ⇒ re-pause (fail-closed, so a bug/tamper can never silently continue)."""
+        choice = decision.get("choice")
+        if choice == "abort":
+            self._end_parallel("epoch_drift_aborted")
+            return "ended"
+        if choice not in ("revalidate", "proceed"):
+            return self._repause_parallel("epoch_drift", "unrecognized_choice")
+        if not self._authority_fresh():
+            self._pause_campaign_global(
+                "campaign_plan_signoff", None, "campaign_freshness_block",
+                {"signoff_status": self._signoff_status(), "drift": self._drift_field_hint()},
+                freshness_block=True)
+            return "paused"
+        drift = r.get("epoch_drift") or {}
+        stored = drift.get("dispatch_freshness_slice")
+        live = self._dispatch_freshness_slice(self._milestone_by_id(mid))
+        if _canonical_json(live) != _canonical_json(stored):
+            return self._repause_parallel("epoch_drift", "scope_still_drifted")
+        r["epoch_drift"] = None
+        if "displaced_merge_checkpoint" in drift:
+            r["phase"] = "paused"
+            r["pause_reason"] = "milestone_merge"
+            r["pause_checkpoint"] = drift.get("displaced_merge_checkpoint")
+            r["pending_milestone_advance"] = bool(
+                drift.get("displaced_pending_milestone_advance"))
+        else:
+            r["phase"] = "ready"
+            r["pause_reason"] = None
+            r["pause_checkpoint"] = None
+        self._clear_pause_parallel()
+        self._mirror_from_runtime()
+        self._save()
+        return "proceed"
+
+    def _resolve_halt_parallel(self, mid: str, r: dict, decision: dict) -> str:
+        """Resolve a per-milestone halt_condition_met (§3.5, serial-equivalent — Codex R3 B-8):
+        proceed ⇒ add the ack PROVISIONALLY (NOT permanent), mark pending resolved, re-dispatch the
+        not-yet-run sub-sprint (phase→ready). On the re-dispatch EP-pre re-arms a stale-epoch
+        cascade (_halt_epoch_recheck_parallel) so a re-sign between halt and proceed can NEVER
+        suppress a stale ack; the fold then PROMOTES the provisional acks → permanent
+        (_halt_commit_cascade_parallel). abort ⇒ end."""
+        choice = decision.get("choice")
+        if choice == "abort":
+            r["halt_condition_pending"] = None
+            r["halt_condition_provisional"] = []
+            self._end_parallel("halt_condition_aborted")
+            return "ended"
+        if choice != "proceed":
+            return self._repause_parallel("halt_condition_met", "unrecognized_choice")
+        pending = r.get("halt_condition_pending") or {}
+        # Defense-in-depth (Codex R3 B-12): re-bind condition_id to the live pending record so a
+        # decision that slipped a wrong condition can never ack this halt.
+        if decision.get("condition_id") != pending.get("condition_id"):
+            return self._repause_parallel("halt_condition_met", "condition_id_mismatch")
+        ack_key = list(pending.get("ack_key") or [])
+        prov = list(r.get("halt_condition_provisional") or [])
+        if ack_key and ack_key not in prov:
+            prov.append(ack_key)                              # PROVISIONAL (committed at fold)
+        r["halt_condition_provisional"] = prov
+        if pending:
+            pending["resolved"] = True
+        r["phase"] = "ready"
+        r["pause_reason"] = None
+        r["pause_checkpoint"] = None
+        self._clear_pause_parallel()
+        self._mirror_from_runtime()
+        self._save()
+        return "proceed"
+
+    def _resolve_unit_pause_parallel(self, mid: str, r: dict, decision: dict) -> str:
+        """Resolve a halted SUB-SPRINT pause (a unit that HALTED at a Driver gate): interpret the
+        decision (the SAME pure interpret_dispatch/_DISPATCH_TABLE the serial path uses) and either
+        re-dispatch the milestone's cursor sub-sprint (phase→ready), advance past it, or end. Any
+        non-advancing/unknown action fail-closes to a re-pause (never a silent proceed)."""
+        reason = r.get("pause_reason") or "unknown_halt"
+        m = self._milestone_by_id(mid)
+        seq = list(m.get("subsprint_sequence") or [])
+        action = interpret_dispatch(reason, decision)
+        if action == ACT_END:
+            self._end_parallel("resolved_abort")
+            return "ended"
+        # A cursor-advancing / re-dispatching resolution ACTS ON SIGNED SCOPE → gate it with the
+        # SAME freshness check as serial (Codex R3 B-5, T2-A B5): a post-sign edit ⇒ stale ⇒ block
+        # the whole campaign for a re-sign (never strand a half-advanced milestone).
+        if action in (ACT_ADVANCE_SUBSPRINT, ACT_ADVANCE_MILESTONE, ACT_REDISPATCH_FRESH):
+            if not self._authority_fresh():
+                self._pause_campaign_global(
+                    "campaign_plan_signoff", None, "campaign_freshness_block",
+                    {"signoff_status": self._signoff_status(),
+                     "drift": self._drift_field_hint()}, freshness_block=True)
+                return "paused"
+        if action == ACT_ADVANCE_MILESTONE:
+            # A human ship at an Acceptance gate CLOSES this milestone — stamp the RESUME terminal
+            # (delivered vs waived-with-reason, serial-identical _RESUME_ADVANCE_TERMINAL), then
+            # run the merge gate (its _stamp_milestone_outcome is a no-op — already stamped).
+            self._stamp_milestone_outcome(
+                mid, _RESUME_ADVANCE_TERMINAL.get(reason, "not_shipped"),
+                pause_reason=reason, decision_ref=r.get("pause_checkpoint"))
+            r["pause_reason"] = None
+            r["pause_checkpoint"] = None
+            self._complete_milestone_parallel(mid, m)
+        elif action == ACT_ADVANCE_SUBSPRINT:
+            # accepted waiver (e.g. review_out_of_scope) → advance PAST the halted sub-sprint.
+            r["subsprint_index"] = int(r.get("subsprint_index", 0)) + 1
+            r["pause_reason"] = None
+            r["pause_checkpoint"] = None
+            if r["subsprint_index"] >= len(seq):
+                self._complete_milestone_parallel(mid, m)
+            else:
+                r["phase"] = "ready"
+        elif action == ACT_REDISPATCH_FRESH:
+            # blocker removed → re-run the SAME cursor sub-sprint fresh.
+            r["phase"] = "ready"
+            r["pause_reason"] = None
+            r["pause_checkpoint"] = None
+        elif action == ACT_DELIVER_FOLLOWUP:
+            # A NEW unit must be authored by Deliver → park at deliver_followup_required (the
+            # parallel core never auto-authors, serial-identical). Record this milestone's baseline
+            # seq so a later resume tells a genuine insertion from a pre-existing next sub-sprint.
+            r["followup_baseline_seq"] = list(seq)
+            r["phase"] = "paused"
+            r["pause_reason"] = "deliver_followup_required"
+            self._mirror_from_runtime()
+            self._save()
+            return "paused"
+        else:
+            return self._repause_parallel(reason, f"unresolved_action:{action}")
+        self._clear_pause_parallel()
+        self._mirror_from_runtime()
+        self._save()
+        return "proceed"
+
 
 def run_campaign(plan: dict, run_dir: str, run_unit: RunUnit, *,
                  clock: Callable[[], str], audit_dir: Optional[str] = None,
                  resume: bool = False, decision_resolver=None,
                  repo_dir: Optional[str] = None,
                  charter: Optional[dict] = None,
-                 ledger_path: Optional[str] = None) -> CampaignState:
-    """Convenience entry point — construct a Campaign and run it."""
-    return Campaign(plan, run_dir, run_unit, clock=clock,
+                 ledger_path: Optional[str] = None,
+                 worker_run_loop_kwargs: Optional[dict] = None,
+                 worker_exec: Optional[dict] = None) -> CampaignState:
+    """Convenience entry point — construct a Campaign and run it. Phase-4: `worker_run_loop_kwargs`
+    is the SERIALIZABLE run_loop config the PARALLEL coordinator forwards to isolated workers so a
+    real (`--allow-real`) parallel campaign runs the real Driver, not mock adapters (Codex R3 B-2);
+    `worker_exec` overrides the worker's run_loop entrypoint/clock (tests)."""
+    camp = Campaign(plan, run_dir, run_unit, clock=clock,
                     audit_dir=audit_dir, repo_dir=repo_dir, charter=charter,
-                    ledger_path=ledger_path).run(
-                        resume=resume, decision_resolver=decision_resolver)
+                    ledger_path=ledger_path)
+    if worker_run_loop_kwargs is not None:
+        camp.worker_run_loop_kwargs = dict(worker_run_loop_kwargs)
+    if worker_exec is not None:
+        camp.worker_exec = dict(worker_exec)
+    return camp.run(resume=resume, decision_resolver=decision_resolver)
 
 
 # --------------------------------------------------------------------------- #
@@ -2752,6 +4373,13 @@ def _canonical_sha256(obj: Any) -> str:
     """SHA-256 over a canonical (sorted-key) JSON encoding — a stable content
     fingerprint independent of dict ordering, for the derivation provenance."""
     return hashlib.sha256(_canonical_json(obj).encode("utf-8")).hexdigest()
+
+
+def _fs_safe(name: str) -> str:
+    """A filesystem-safe token for a milestone id used in a dir/file name (Phase-4 parallel
+    worker/checkpoint paths). Milestone ids are already id-validated before dispatch; this is
+    defense-in-depth for path building."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(name)) or "_"
 
 
 # --------------------------------------------------------------------------- #
@@ -3089,6 +4717,14 @@ def _resolve_plan_authority(plan: dict, charter: Optional[dict] = None) -> dict:
             "max_no_progress_rounds": er.get("max_no_progress_rounds",
                                              E2E_REMEDIATION_DEFAULT_MAX_NO_PROGRESS),
         }
+    # Phase-4 (design §10, R0.7 B-15): fold budget.max_concurrent into H's authority.budget
+    # ONLY when >1 — absent/1 ⇒ the key is OMITTED ⇒ H byte-identical to a pre-Phase-4 snapshot
+    # (the exact additive precedent of e2e_remediation above; a serial plan never re-signs). A
+    # post-sign raise flips H ⇒ stale ⇒ re-sign. Paired with the f1_required activator so a
+    # max_concurrent>1 plan is ALWAYS F1-active and can never bind this authority outside H.
+    mc = budget.get("max_concurrent")
+    if isinstance(mc, int) and mc > 1:
+        resolved["budget"]["max_concurrent"] = mc
     return resolved
 
 
@@ -3350,6 +4986,15 @@ def f1_required(plan: Optional[dict]) -> bool:
     R-P2a NB-1: a non-empty test would silently downgrade an empty-array plan)."""
     plan = plan or {}
     if isinstance(plan.get("signoff"), dict):
+        return True
+    # Phase-4 (design §10, R0.7 B-15): a parallel plan (budget.max_concurrent>1) is ALWAYS
+    # F1-active — VALUE-checked (>1), so a serial absent/1 leaves f1_required byte-identical.
+    # Without this, a bare top-level signed_by_human:true parallel plan would take the legacy
+    # _authority_fresh short-circuit and run its scheduler authority (max_concurrent ⊂ H)
+    # OUTSIDE any signed hash; with it, a bare-signed parallel plan reads pre_f1 and pauses at
+    # campaign_plan_signoff for a proper signoff-block re-sign that binds max_concurrent into H.
+    mc = (plan.get("budget") or {}).get("max_concurrent")
+    if isinstance(mc, int) and mc > 1:
         return True
     return any(isinstance(m, dict)
                and ("covers_req_ids" in m or "milestone_signals" in m)
@@ -3724,7 +5369,7 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
     def run_unit(subsprint_id, *, milestone_id=None, subsprint_sequence=None,
                  resume=False, functional_acceptance=None, repo_dir=None,
                  covered_req_ids=None, gap_followup_spec=None,
-                 milestone_signals=None):
+                 milestone_signals=None, requirement_context=None):
         # Validate id components BEFORE building any path (fail-closed; never makedirs
         # an unsafe path), then build a COLLISION-FREE, bounded loop_id by hashing the
         # (campaign, milestone, subsprint) tuple — a raw '-' join is ambiguous when ids
@@ -3816,7 +5461,26 @@ def make_run_unit(charter: dict, units_dir: str, campaign_id: str, *,
         # gap_report stays dormant (byte-identical to today). Best-effort: a sidecar failure
         # never breaks a dispatch (the gap_report stays dormant), but it IS recorded (below) so a
         # wired-ledger failure is observable rather than silent (Codex R-P2b NB-1).
-        if plan is not None and ledger_path and os.path.isfile(ledger_path):
+        if requirement_context is not None:
+            # Phase-4 worker mode (design §5.2): the COORDINATOR produced the WHOLE
+            # requirement-context.json (from its authoritative in-memory state) and handed it in;
+            # write it VERBATIM and SKIP the self-read of the live campaign-state.json below (a
+            # worker never reads campaign state). This removes the worker↔state-file coupling
+            # outright. Best-effort + NON-SILENT, mirroring the serial write's failure recording.
+            try:
+                with open(os.path.join(unit_run_dir, "requirement-context.json"),
+                          "w", encoding="utf-8") as fh:
+                    json.dump(requirement_context, fh, indent=2, sort_keys=True)
+            except OSError as _exc:
+                try:
+                    with open(os.path.join(unit_run_dir, "requirement-context.error"),
+                              "w", encoding="utf-8") as fh:
+                        fh.write(f"requirement-context sidecar (worker-supplied) not written "
+                                 f"(gap_report dormant for this unit): "
+                                 f"{type(_exc).__name__}: {_exc}\n")
+                except OSError:
+                    pass
+        elif plan is not None and ledger_path and os.path.isfile(ledger_path):
             try:
                 with open(ledger_path, encoding="utf-8") as fh:
                     _ledger = json.load(fh)

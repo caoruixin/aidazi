@@ -597,6 +597,72 @@ def make_campaign_decision_resolver(campaign_id: Optional[str],
 
         if decision.get("campaign_id") != campaign_id:
             return _reject("campaign_id", decision.get("campaign_id"), campaign_id)
+        # Phase-4 (Codex R3 B-3): a PARALLEL campaign parks pauses PER MILESTONE (milestone_runtime),
+        # NOT on the singleton cursor/context. The decision selects ONE milestone by milestone_id
+        # (§6.3: one --resume per parked pause); validate it against THAT milestone's runtime entry
+        # (its pause_reason + checkpoint, condition_id for halt) and PRESERVE milestone_id so
+        # _handle_resume_parallel can bind it. Bypasses the serial top-level (mirror) validation.
+        try:
+            with open(os.path.join(campaign_home, "campaign-state.json"),
+                      encoding="utf-8") as _fh:
+                _state = json.load(_fh)
+        except (OSError, ValueError):
+            _state = {}
+        _rt = _state.get("milestone_runtime")
+        # CAMPAIGN-TIER gates (completeness_gap_review, campaign_budget_exhausted) are NOT
+        # per-milestone even under a parallel state — they fall through to the serial campaign-tier
+        # handling below (Codex R3 B-7/B-9). Only PER-MILESTONE gates use the milestone_runtime
+        # binding.
+        _campaign_tier = ("completeness_gap_review", "campaign_budget_exhausted")
+        if isinstance(_rt, dict) and _rt and pause_reason not in _campaign_tier:
+            d_mid = decision.get("milestone_id")
+            entry = _rt.get(d_mid) if d_mid else None
+            if not isinstance(entry, dict) or entry.get("phase") != "paused":
+                return _reject("milestone_id (paused)", d_mid, "a paused milestone")
+            m_reason = entry.get("pause_reason")
+            if decision.get("pause_reason") != m_reason:
+                return _reject("pause_reason", decision.get("pause_reason"), m_reason)
+            m_cpt = (os.path.basename(entry["pause_checkpoint"])
+                     if entry.get("pause_checkpoint") else None)
+            if decision.get("checkpoint") != m_cpt:
+                return _reject("checkpoint", decision.get("checkpoint"), m_cpt)
+            # Campaign-tier per-milestone gates forbid subsprint_id; a checkpoint-bearing UNIT
+            # pause (a halted sub-sprint) is IDENTITY-BOUND to its unit's subsprint_id (Codex R3
+            # B-10 round 5 — the serial unit binding, applied under parallel state). The folded
+            # halted unit is matched by milestone_id + the FULL checkpoint_path.
+            _unit_gates = {"milestone_merge", "halt_condition_met", "epoch_drift",
+                           "deliver_followup_required", "milestone_decompose_required"}
+            if m_reason == "halt_condition_met":
+                # Restore the condition_id binding (Codex R3 B-12 — the B-10 fold dropped it):
+                # a decision with the right milestone/checkpoint but the WRONG condition must not
+                # acknowledge the live pending halt. subsprint_id stays forbidden.
+                pend = entry.get("halt_condition_pending") or {}
+                if decision.get("condition_id") != pend.get("condition_id"):
+                    return _reject("condition_id", decision.get("condition_id"),
+                                   pend.get("condition_id"))
+                if decision.get("subsprint_id") is not None:
+                    sys.stderr.write("campaign decision: halt_condition_met must not carry "
+                                     "subsprint_id — refusing (fail-closed)\n")
+                    return None
+            elif m_reason == "milestone_merge":
+                if decision.get("subsprint_id") is not None:
+                    sys.stderr.write("campaign decision: milestone_merge must not carry "
+                                     "subsprint_id — refusing (fail-closed)\n")
+                    return None
+            elif m_reason not in _unit_gates and entry.get("pause_checkpoint"):
+                _u = next((u for u in reversed(_state.get("units") or [])
+                           if isinstance(u, dict) and u.get("milestone_id") == d_mid
+                           and u.get("checkpoint_path") == entry.get("pause_checkpoint")), None)
+                if _u is None:
+                    return _reject("paused unit lookup", d_mid, "a folded halted unit")
+                if decision.get("subsprint_id") != _u.get("subsprint_id"):
+                    return _reject("subsprint_id", decision.get("subsprint_id"),
+                                   _u.get("subsprint_id"))
+            out = {k: decision[k] for k in
+                   ("milestone_id", "subsprint_id", "choice", "condition_id", "confirm",
+                    "route", "note", "residue", "rationale", "evidence", "waiver", "waiver_id")
+                   if k in decision}
+            return out or None
         if decision.get("pause_reason") != pause_reason:
             return _reject("pause_reason", decision.get("pause_reason"), pause_reason)
         live_cpt = os.path.basename(checkpoint_path) if checkpoint_path else None
@@ -832,10 +898,30 @@ def run_campaign_entry(plan: dict, charter: dict, *,
                                      clock=clock, plan=plan,
                                      ledger_path=ledger_path, **run_loop_kwargs)
         resolver = make_campaign_decision_resolver(campaign_id, decision_path, home)
+        # Phase-4 (Codex R3 B-2): the PARALLEL coordinator launches isolated workers that
+        # reconstruct the Driver from a SERIALIZABLE run_loop config. Forward the JSON-safe
+        # subset (repo_dir / memory_root / allow_real / allow_gitlink_drift) so a real
+        # (`--allow-real`) parallel campaign runs the REAL Driver — NOT default mock adapters.
+        # Injected `adapters` OBJECTS cannot cross the subprocess boundary and are EXCLUDED (a
+        # test that injects adapters drives serial, or overrides the worker entrypoint).
+        worker_rl_kwargs = {k: v for k, v in run_loop_kwargs.items() if k != "adapters"}
+        # Codex R3 B-2 (round 2): a PARALLEL plan launches isolated WORKER subprocesses that
+        # cannot receive in-process `adapters` OBJECTS. If adapters were injected AND the plan is
+        # parallel, the workers would silently fall back to DEFAULT MOCK adapters. Fail closed —
+        # a real parallel run passes `allow_real` (serializable); a test drives serial or uses
+        # run_campaign(worker_exec=...) directly.
+        _mc = (plan.get("budget") or {}).get("max_concurrent") if isinstance(plan, dict) else None
+        if adapters is not None and isinstance(_mc, int) and _mc > 1:
+            return {**base, "status": "invalid",
+                    "error": "budget.max_concurrent>1 with injected in-process adapters: "
+                             "parallel workers are subprocesses and cannot receive adapter "
+                             "objects — pass allow_real (real run) or drive serially (fail-closed)",
+                    "exit_code": CAMPAIGN_EXIT_INVALID}
         st = _cp.run_campaign(plan, home, run_unit, clock=clock,
                               resume=resume, decision_resolver=resolver,
                               repo_dir=repo_dir, charter=charter,
-                              ledger_path=ledger_path)
+                              ledger_path=ledger_path,
+                              worker_run_loop_kwargs=worker_rl_kwargs)
     except ValueError as exc:
         # invalid plan / state / schema / mismatched campaign id / invalid ledger →
         # fail-closed.
@@ -893,39 +979,96 @@ def run_campaign_entry(plan: dict, charter: dict, *,
     except Exception:
         signoff_status = None
 
+    # Phase-4 (design §3.2.1/§6.3): build the PARALLEL per-milestone phase + ALL parked pauses
+    # FIRST (before the notifier + scalar derivation, Codex R3 B-10), so the notifier fires PER
+    # parked pause and the pause_* scalars are PHASE-DERIVED. A serial run (no milestone_runtime)
+    # omits these keys ⇒ byte-identical output.
+    _rt = getattr(st, "milestone_runtime", None) or {}
+    parallel_extra: dict = {}
+    _parallel_pauses: List[dict] = []
+    if _rt:
+        _order = {m["id"]: i for i, m in enumerate(plan.get("milestones") or [])}
+        _mids = sorted(_rt, key=lambda x: _order.get(x, len(_order)))
+        _units = [u for u in (getattr(st, "units", None) or []) if isinstance(u, dict)]
+
+        def _paused_unit_of(mid, checkpoint_path):
+            """The subsprint_id + loop_id of a paused milestone's unit — from the live inflight if
+            present, else (a FOLDED halted unit, inflight cleared, Codex R3 B-10) the matching unit
+            record by milestone_id + checkpoint_path, so a --resume decision can identity-bind it."""
+            infl = _rt[mid].get("inflight") or {}
+            if infl:
+                return infl.get("subsprint_id"), infl.get("loop_id")
+            for u in reversed(_units):
+                if u.get("milestone_id") == mid and u.get("checkpoint_path") == checkpoint_path:
+                    return u.get("subsprint_id"), u.get("loop_id")
+            return None, None
+
+        _parallel_pauses = []
+        for mid in _mids:
+            if _rt[mid].get("phase") != "paused":
+                continue
+            _cpt = _rt[mid].get("pause_checkpoint")
+            _ss, _lid = _paused_unit_of(mid, _cpt)
+            _parallel_pauses.append({
+                "milestone_id": mid, "subsprint_id": _ss,
+                "pause_reason": _rt[mid].get("pause_reason"),
+                "checkpoint": os.path.basename(_cpt) if _cpt else None,
+                "condition_id": (_rt[mid].get("halt_condition_pending")
+                                 or {}).get("condition_id"),
+                "loop_id": _lid})
+        parallel_extra = {
+            "milestones": [
+                {"milestone_id": mid, "phase": _rt[mid].get("phase"),
+                 "pause_reason": _rt[mid].get("pause_reason"),
+                 "pause_checkpoint": _rt[mid].get("pause_checkpoint")}
+                for mid in _mids],
+            "pauses": _parallel_pauses,
+            "milestones_complete": sum(
+                1 for mid in _mids if _rt[mid].get("phase") in ("done", "merged")),
+        }
+
     # Phase-3 push-not-poll (design §4.3): on EVERY campaign pause (exit 10), fire the
-    # charter's notifications.on_pause hook AFTER the pause is durably persisted (the campaign
-    # already _saved it) and the exit-10 result is computed. FAIL-SAFE: the notifier can never
-    # affect the pause or exit code. Default-OFF ⇒ a complete no-op (byte-identical).
-    # Phase-3: a halt_condition_met pause is campaign-tier (NOT a unit), so paused_unit is empty
-    # — surface the milestone_id from halt_condition_pending (needed for the identity-bound
-    # decision). subsprint_id is DELIBERATELY NOT surfaced for this gate (R2.2 NB): the decision
-    # forbids subsprint_id, so exposing it would mislead a machine/human consumer into authoring
-    # a decision the resolver refuses.
+    # charter's notifications.on_pause hook AFTER the pause is durably persisted, FAIL-SAFE +
+    # default-OFF. A halt_condition_met pause is campaign-tier (paused_unit empty). Phase-4
+    # (§6.3): under parallelism the pause_* scalars mirror the OLDEST parked pause (incl.
+    # condition_id — the top-level halt_condition_pending is intentionally unused in parallel),
+    # and the notifier fires ONCE PER parked pause.
     _hcp = getattr(st, "halt_condition_pending", None) or {}
-    _pause_milestone_id = paused_unit.get("milestone_id") or _hcp.get("milestone_id")
-    _pause_subsprint_id = paused_unit.get("subsprint_id")
+    if _parallel_pauses:
+        _oldest = _parallel_pauses[0]
+        _pause_milestone_id = _oldest.get("milestone_id")
+        _pause_subsprint_id = _oldest.get("subsprint_id")
+        _pause_condition_id = _oldest.get("condition_id")
+    else:
+        _pause_milestone_id = paused_unit.get("milestone_id") or _hcp.get("milestone_id")
+        _pause_subsprint_id = paused_unit.get("subsprint_id")
+        _pause_condition_id = _hcp.get("condition_id")
     if exit_code == CAMPAIGN_EXIT_PAUSED:
         try:
             import pause_notifier as _pn
-            pause_ctx = {
-                "campaign_id": campaign_id,
-                "reason": st.pause_reason,
-                "checkpoint": (os.path.basename(st.pause_checkpoint)
-                               if st.pause_checkpoint else None),
-                "milestone_id": _pause_milestone_id,
-                "subsprint_id": _pause_subsprint_id,
-            }
             _ledger = audit.audit_path(campaign_id, os.path.join(home, "audit"))
 
             def _emit_notif(evtype: str, payload: dict) -> None:
                 audit.append_event(campaign_id, evtype, payload,
                                    ts=clock(), path=_ledger)
 
-            _pn.notify_on_pause(charter, pause_ctx, _emit_notif)
+            # Serial (or a parallel GLOBAL pause with no paused milestone) fires once from the
+            # top-level mirror; a parallel run with parked per-milestone pauses fires per pause.
+            _notif_pauses = _parallel_pauses or [{
+                "milestone_id": _pause_milestone_id, "subsprint_id": _pause_subsprint_id,
+                "pause_reason": st.pause_reason, "condition_id": _pause_condition_id,
+                "checkpoint": (os.path.basename(st.pause_checkpoint)
+                               if st.pause_checkpoint else None)}]
+            for _p in _notif_pauses:
+                _pn.notify_on_pause(charter, {
+                    "campaign_id": campaign_id, "reason": _p.get("pause_reason"),
+                    "checkpoint": _p.get("checkpoint"),
+                    "milestone_id": _p.get("milestone_id"),
+                    "subsprint_id": _p.get("subsprint_id"),
+                    "condition_id": _p.get("condition_id"),   # halt identity (Codex R3 B-10)
+                }, _emit_notif)
         except Exception:
             pass  # the notifier path must NEVER break the pause / exit-10 return
-
     return {
         **base,
         "status": st.status,
@@ -933,8 +1076,9 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         "pause_checkpoint": st.pause_checkpoint,
         "pause_milestone_id": _pause_milestone_id,
         "pause_subsprint_id": _pause_subsprint_id,
-        "pause_condition_id": _hcp.get("condition_id"),   # Phase-3 halt_condition_met identity
-        "pause_loop_id": paused_unit.get("loop_id"),
+        "pause_condition_id": _pause_condition_id,   # halt identity (phase-derived under parallel)
+        "pause_loop_id": (_parallel_pauses[0].get("loop_id") if _parallel_pauses
+                          else paused_unit.get("loop_id")),
         "milestone_index": st.milestone_index,
         "milestones_total": len(plan.get("milestones") or []),
         "subsprints_run": st.subsprints_run,
@@ -944,6 +1088,7 @@ def run_campaign_entry(plan: dict, charter: dict, *,
         "requirement_coverage": requirement_coverage,
         "signoff_status": signoff_status,
         "milestone_outcomes": list(st.milestone_outcomes or []),
+        **parallel_extra,
     }
 
 
@@ -1026,8 +1171,18 @@ def print_campaign_result(result: dict) -> None:
     if status == "invalid":
         print(f"error          : {result.get('error')}")
     else:
-        print(f"milestones     : {result.get('milestone_index')}/"
-              f"{result.get('milestones_total')} complete")
+        # Phase-4 (design §3.2.1): under milestone_runtime the scalar milestone_index is the
+        # fail-closed (0,0) mirror, so report PHASE-DERIVED progress; serial keeps the cursor line.
+        if result.get("milestones") is not None:
+            print(f"milestones     : {result.get('milestones_complete')}/"
+                  f"{result.get('milestones_total')} complete (phase-derived; "
+                  f"milestone_index={result.get('milestone_index')} is the legacy mirror)")
+            print("               : "
+                  + ", ".join(f"{m['milestone_id']}={m['phase']}"
+                              for m in result.get("milestones") or []))
+        else:
+            print(f"milestones     : {result.get('milestone_index')}/"
+                  f"{result.get('milestones_total')} complete")
         print(f"spent          : subsprints={result.get('subsprints_run')} "
               f"spawns={result.get('total_spawns')}")
         cov = result.get("scope_coverage")
@@ -1064,6 +1219,14 @@ def print_campaign_result(result: dict) -> None:
                   f"subsprint={result.get('pause_subsprint_id')} "
                   f"loop={result.get('pause_loop_id')}")
         print(f"checkpoint     : {result.get('pause_checkpoint')}")
+        # Phase-4 (design §6.3): surface EVERY parked pause (a parallel run may park several);
+        # each needs its own --resume with a decision selecting that milestone's checkpoint.
+        _pauses = result.get("pauses")
+        if _pauses:
+            print(f"parked pauses  : {len(_pauses)} (resume each with its own decision)")
+            for p in _pauses:
+                print(f"               : milestone={p.get('milestone_id')} "
+                      f"reason={p.get('pause_reason')} checkpoint={p.get('checkpoint')}")
         print(_campaign_resume_hint(result))
     machine = {k: result.get(k) for k in (
         "campaign_id", "status", "pause_reason", "pause_checkpoint",
@@ -1071,6 +1234,15 @@ def print_campaign_result(result: dict) -> None:
         "milestone_index", "milestones_total", "subsprints_run", "total_spawns",
         "exit_code")}
     print("CAMPAIGN_STATUS=" + json.dumps(machine, sort_keys=True))
+    # Phase-4 ADDITIVE parse contract (the CAMPAIGN_STATUS= line above stays byte-identical for
+    # serial): the per-milestone phase array + parked pauses + phase-derived progress. Emitted
+    # ONLY for a parallel run (milestone_runtime present).
+    if result.get("milestones") is not None:
+        print("CAMPAIGN_MILESTONES=" + json.dumps(
+            {"milestones": result.get("milestones"),
+             "pauses": result.get("pauses"),
+             "milestones_complete": result.get("milestones_complete"),
+             "milestones_total": result.get("milestones_total")}, sort_keys=True))
     # Parallel, ADDITIVE parse contract (the CAMPAIGN_STATUS= line above stays
     # byte-identical) — emitted only when the scope-coverage projection succeeded.
     if result.get("scope_coverage"):

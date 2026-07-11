@@ -60,7 +60,8 @@
                   "properties": {
                     "max_subsprints": {"type": ["integer", "null"]},
                     "max_total_spawns": {"type": ["integer", "null"]},
-                    "max_wall_clock_minutes": {"type": ["integer", "null"]}
+                    "max_wall_clock_minutes": {"type": ["integer", "null"]},
+                    "max_concurrent": {"type": ["integer", "null"], "description": "Phase-4 (design §10): the RESOLVED parallel-runner concurrency bound, folded into H ONLY when >1 (conditional emission, mirroring e2e_remediation) — absent/1 ⇒ omitted ⇒ H byte-identical to a pre-Phase-4 snapshot. A post-sign raise flips H ⇒ stale ⇒ re-sign. OPTIONAL so a pre-Phase-4 snapshot still validates."}
                   }
                 },
                 "gap_followup": {
@@ -111,7 +112,8 @@
       "properties": {
         "max_subsprints": {"type": "integer", "minimum": 1, "description": "Max sub-sprints the campaign may dispatch before campaign_budget_exhausted."},
         "max_total_spawns": {"type": "integer", "minimum": 1, "description": "Max cumulative spawns (summed from each run_loop summary's spawn_count)."},
-        "max_wall_clock_minutes": {"type": "integer", "minimum": 1, "description": "Max cumulative wall-clock minutes (measured via the injected clock)."}
+        "max_wall_clock_minutes": {"type": "integer", "minimum": 1, "description": "Max cumulative wall-clock minutes (measured via the injected clock)."},
+        "max_concurrent": {"type": "integer", "minimum": 1, "default": 1, "description": "Phase-4 (design §10): max milestones the parallel runner may execute concurrently (one in-flight sub-sprint each). Default 1 ⇒ byte-identical to the serial runner. A value >1 is an F1 activator (f1_required) AND is bound into the signed authority.budget hash H, so a bare-signed plan re-signs and raising it flips H ⇒ re-sign. Parallel eligibility additionally requires every milestone's resolved isolation strategy = new_worktree and merge_prompt_at_close=true (charter/plan ingress, fail-closed)."}
       }
     },
     "gap_followup": {
