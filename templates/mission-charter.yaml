@@ -58,7 +58,8 @@ autonomy:
     # fix_required.
     # only_if_findings_severity_at_most = the WORST finding severity still permitted to auto-fix
     # (loop_controller precedence #4; anything strictly worse escalates to a human checkpoint):
-    #   P2 = auto-fix record-only findings only; every P0/P1 escalates (most conservative)
+    #   P2 = no P0/P1 auto-fix — every P0/P1 escalates (most conservative; P2 findings
+    #        themselves are record-only: never fixed, an all-P2 verdict normalizes to pass)
     #   P1 = auto-fix contract-level (P1) findings too; only P0 escalates (default, 2026-07-14)
     #   P0 = auto-fix everything (still bounded by max_rounds / budget / dry-stop)
     auto_fix_iteration:
