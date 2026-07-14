@@ -617,6 +617,10 @@ Generate / install:
    posture, budget, and `tooling.eval.cmd`. Schema:
    `schemas/mission-charter.schema.json`. (Pure human-paste adopters who skip the
    orchestrator may defer this — greenfield STEP 7 is optional.)
+   ⚠ `eval.cmd` runs with **CWD = the per-gate artifacts dir, NOT your repo** —
+   anchor repo-bound checks with `cd "$EVAL_REPO_DIR" && <cmd>` (the orchestrator
+   exports `EVAL_REPO_DIR` = the work repo, `EVAL_RUN_DIR` = the artifacts dir;
+   `process/delivery-loop.md` §4.2.6).
 3. **`docs/current/*`** — the three domain contracts plus state ledgers, per the
    worked example: `domain_taxonomy.md`, `runtime_invariants.md`,
    `eval_acceptance_bars.md`, `agent_context_guide.md`, the already-created

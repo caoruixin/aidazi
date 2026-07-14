@@ -723,6 +723,29 @@ def _check_notifications(charter: dict, report: Report) -> None:
                          "notifications.on_pause")
 
 
+def _check_eval_cwd_anchor(charter: dict, report: Report) -> None:
+    """ADVISORY: the orchestrator runs tooling.eval.cmd with CWD = the per-gate
+    ARTIFACTS dir (evidence isolation), NOT the work repo (driver._run_eval_cmd).
+    A repo-anchored cmd ("run the tests") must reference $EVAL_REPO_DIR; a cmd that
+    inspects the artifacts themselves references $EVAL_RUN_DIR. A cmd naming NEITHER
+    is very likely assuming a repo CWD it will not get — WARN (never an error: some
+    cmds are legitimately CWD-independent, and existing adopters must not break)."""
+    eval_cfg = (charter.get("tooling") or {}).get("eval")
+    if not isinstance(eval_cfg, dict):
+        return
+    cmd = eval_cfg.get("cmd")
+    if not isinstance(cmd, str) or not cmd.strip():
+        return
+    if "EVAL_REPO_DIR" in cmd or "EVAL_RUN_DIR" in cmd:
+        return
+    report.warn(
+        "eval_cmd_cwd_anchor",
+        "tooling.eval.cmd references neither $EVAL_REPO_DIR nor $EVAL_RUN_DIR — it runs "
+        "with CWD = the per-gate artifacts dir, NOT the work repo; a repo-anchored check "
+        "(e.g. `npm test`, `pytest`) should be prefixed with `cd \"$EVAL_REPO_DIR\" && `",
+        "tooling.eval.cmd")
+
+
 def _check_gap_followup_bounds(campaign_plan: Any, report: Report) -> None:
     """§A.3 STATIC enforcement — the build-time sibling of the §1.7-F clause-2 RUNTIME
     bound (engine-kit/orchestrator/campaign.py:_gap_followup_bounds). It mirrors, for the
@@ -1688,6 +1711,7 @@ def validate_semantics(charter: Any, report: Report, overrides: Optional[Overrid
     _check_e2e_remediation_bound(charter, report)
     _check_halt_conditions(charter, report)   # Phase-3 (design §3.6) — NO-OP when absent
     _check_notifications(charter, report)     # Phase-3 (design §4)   — NO-OP when absent
+    _check_eval_cwd_anchor(charter, report)   # ADVISORY WARN only — NO-OP when no eval.cmd
     # P-0a checks (fire ONLY when the relevant new charter fields are present):
     _check_connector_grants(
         charter,

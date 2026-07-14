@@ -617,6 +617,12 @@ class TestSubSprintGate(unittest.TestCase):
                 drv_.run(subsprint_id="sprint-001")
             self.assertEqual(ctx.exception.state, STATE_GATE_PENDING)
             self.assertIn("sub-sprint gate", ctx.exception.reason)
+            # The checkpoint carries the captured evidence: paths + stderr tail,
+            # so the human rules on the actual failure without opening the run dir.
+            self.assertIn("evidence:", ctx.exception.reason)
+            self.assertIn("subsprint_gate/stdout.txt", ctx.exception.reason)
+            self.assertIn("subsprint_gate/stderr.txt", ctx.exception.reason)
+            self.assertIn("simulated eval failure", ctx.exception.reason)
             self.assertEqual(len(adapters["review"].history), 0)
             self.assertEqual(len(adapters["deliver"].history), 0)
             events = audit.read_events(drv_.audit_ledger)

@@ -447,6 +447,21 @@ run_acceptance:
   produces JSON verdict per schemas/acceptance-verdict.schema.json
 ```
 
+**Execution contract (CWD + env).** The orchestrator runs `eval.cmd` with **CWD = the
+per-gate artifacts dir** (`eval/runs/<sub-sprint-id>/<gate>/`), NOT the work repo — this
+keeps the two gates' stdout/stderr evidence separate. Two env vars are exported for the
+cmd to anchor itself:
+
+- `EVAL_REPO_DIR` — the bound work repo (empty when no repo is bound; a repo-anchored cmd
+  then fails, correctly, rather than probing the artifacts dir);
+- `EVAL_RUN_DIR` — the per-gate artifacts dir itself (the CWD).
+
+A repo-anchored check ("run the tests") MUST be written `cd "$EVAL_REPO_DIR" && <cmd>`.
+The charter validator emits an advisory `eval_cmd_cwd_anchor` WARN when `eval.cmd`
+references neither variable. On failure, the `gate_hard_fail` checkpoint carries the
+evidence paths (`stdout.txt` / `stderr.txt`) plus the stderr tail, so the human rules on
+the actual output without opening the run dir.
+
 **Why F5**:
 - Dev sandbox is workspace-write; orchestrator-run keeps bad-case suite outside Dev sandbox (no eval contamination).
 - Acceptance sandbox is read-only; Acceptance cannot run scripts or mutate the repo. F5 lets Acceptance judge from real execution data WITHOUT giving Acceptance write access OR the dev sandbox.

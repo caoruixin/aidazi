@@ -455,6 +455,35 @@ class InteractiveTests(unittest.TestCase):
         self.assertTrue(plan.brief_confirmed)
         self.assertEqual(plan.subsprint_sequence, ["S1-eligibility-core", "S2-explanation"])
 
+    def test_eval_cmd_default_is_repo_anchored(self):
+        # The orchestrator runs eval.cmd with CWD = the artifacts dir, NOT the
+        # repo — the wizard default must carry the $EVAL_REPO_DIR anchor.
+        script = list(self._SCRIPT)
+        script[15] = ""   # eval cmd: accept the default
+        it = iter(script)
+        data = ai.collect_answers_interactive(_FRAMEWORK_ROOT, reader=lambda: next(it),
+                                              writer=lambda s: None)
+        self.assertEqual(data["eval"]["cmd"],
+                         'cd "$EVAL_REPO_DIR" && python -m pytest -q')
+
+    def test_unanchored_eval_cmd_prints_cwd_note(self):
+        script = list(self._SCRIPT)
+        script[15] = "npm test"   # references neither EVAL_REPO_DIR nor EVAL_RUN_DIR
+        out: list = []
+        it = iter(script)
+        ai.collect_answers_interactive(_FRAMEWORK_ROOT, reader=lambda: next(it),
+                                       writer=out.append)
+        self.assertIn("references neither", "".join(out))
+
+    def test_anchored_eval_cmd_prints_no_cwd_note(self):
+        script = list(self._SCRIPT)
+        script[15] = 'cd "$EVAL_REPO_DIR" && npm test'
+        out: list = []
+        it = iter(script)
+        ai.collect_answers_interactive(_FRAMEWORK_ROOT, reader=lambda: next(it),
+                                       writer=out.append)
+        self.assertNotIn("references neither", "".join(out))
+
     def test_i3_interactive_no_confirm_leaves_flags_false(self):
         script = list(self._SCRIPT)
         script[6] = "no"   # confirm intent

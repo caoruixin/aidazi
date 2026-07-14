@@ -1398,10 +1398,17 @@ class Driver:
             self._audit(event_type, {
                 "cmd": cmd, "returncode": proc.returncode,
                 "evidence_dir": evidence_dir, "ok": False})
+            # Surface the captured evidence in the checkpoint itself so the human
+            # rules on the actual failure without hunting through the run dir.
+            stderr_tail = "\n".join((proc.stderr or "").strip().splitlines()[-10:])
+            tail_block = (f"\n\nstderr (last lines):\n{stderr_tail}"
+                          if stderr_tail else "")
             raise self._gate_hard_fail(
                 f"{failure_label} eval cmd exited {proc.returncode} "
                 f"(charter.tooling.eval.cmd); human resolves "
-                f"(re-run / accept-failure-and-route / abort)",
+                f"(re-run / accept-failure-and-route / abort); "
+                f"evidence: {evidence_dir}/stdout.txt, {evidence_dir}/stderr.txt"
+                f"{tail_block}",
                 fail_state)
         self._audit(event_type, {
             "cmd": cmd, "returncode": 0,

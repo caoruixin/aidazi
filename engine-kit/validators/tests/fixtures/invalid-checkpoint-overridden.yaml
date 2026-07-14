@@ -33,7 +33,7 @@ tooling:
     agent_kind: codex
     tools: [Read, Grep, Glob]
   eval:
-    cmd: pytest -q
+    cmd: cd "$EVAL_REPO_DIR" && pytest -q
     timeout_seconds: 600
   acceptance:
     enabled: false

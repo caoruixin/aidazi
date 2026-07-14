@@ -1003,7 +1003,13 @@ def collect_answers_interactive(framework_root: str, *, reader=None, writer=None
     wall = _ask_int(reader, _w, "  Budget: max wall-clock minutes", 240)
 
     _w("\nEval command (orchestrator runs it for F5 evidence):\n")
-    eval_cmd = ask("  Eval cmd", "python -m pytest -q")
+    _w("  CWD is the per-gate ARTIFACTS dir, NOT the work repo — anchor repo-bound\n"
+       "  checks with $EVAL_REPO_DIR (exported by the orchestrator).\n")
+    eval_cmd = ask("  Eval cmd", 'cd "$EVAL_REPO_DIR" && python -m pytest -q')
+    if "EVAL_REPO_DIR" not in eval_cmd and "EVAL_RUN_DIR" not in eval_cmd:
+        _w("  NOTE: this cmd references neither $EVAL_REPO_DIR nor $EVAL_RUN_DIR —\n"
+           "  it will run in the artifacts dir, not your repo. Prefix with\n"
+           '  `cd "$EVAL_REPO_DIR" && ` if it should run against the repo.\n')
     eval_to = _ask_int(reader, _w, "  Eval timeout seconds", 600)
 
     scope = {"subsprint_sequence": subsprints, "layers_allowed": layers,
