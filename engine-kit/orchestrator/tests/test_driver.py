@@ -617,11 +617,33 @@ class TestSubSprintGate(unittest.TestCase):
                 drv_.run(subsprint_id="sprint-001")
             self.assertEqual(ctx.exception.state, STATE_GATE_PENDING)
             self.assertIn("sub-sprint gate", ctx.exception.reason)
+            # The checkpoint carries the captured evidence: paths + stderr tail,
+            # so the human rules on the actual failure without opening the run dir.
+            self.assertIn("evidence:", ctx.exception.reason)
+            self.assertIn("subsprint_gate/stdout.txt", ctx.exception.reason)
+            self.assertIn("subsprint_gate/stderr.txt", ctx.exception.reason)
+            self.assertIn("simulated eval failure", ctx.exception.reason)
             self.assertEqual(len(adapters["review"].history), 0)
             self.assertEqual(len(adapters["deliver"].history), 0)
             events = audit.read_events(drv_.audit_ledger)
             gate = next(e for e in events if e["type"] == "subsprint_gate_run")
             self.assertFalse(gate["payload"]["ok"])
+
+    def test_eval_cmd_failure_stderr_tail_is_capped(self):
+        # One huge stderr line must not bloat the checkpoint reason: the tail is
+        # bounded by chars as well as lines, with a truncation marker pointing
+        # at the full stderr.txt evidence.
+        huge_cmd = (f'"{_sys.executable}" -c '
+                    f'"import sys; sys.stderr.write(\'x\'*50000); sys.exit(3)"')
+        charter = load_charter(CHARTER_PATH)
+        charter["tooling"]["eval"] = {"cmd": huge_cmd, "timeout_seconds": 30}
+        with tempfile.TemporaryDirectory() as d:
+            drv_ = _driver(d, charter=charter, adapters=_adapters())
+            with self.assertRaises(GateHardFail) as ctx:
+                drv_.run(subsprint_id="sprint-001")
+            self.assertIn("truncated; full output in stderr.txt",
+                          ctx.exception.reason)
+            self.assertLess(len(ctx.exception.reason), 3000)
 
 
 class TestClosePromptSequenceHint(unittest.TestCase):

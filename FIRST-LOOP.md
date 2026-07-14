@@ -47,6 +47,18 @@ feed it this file. It drives the **first Delivery Loop** for you.
 - The adopter-owned `engine-kit/` + `schemas/` + a Python env with the validator/
   runner deps (`PyYAML`, `jsonschema`) — the wizard sets these up (e.g. `.venv/`).
 
+Two charter knobs worth knowing before the first run:
+
+- **`tooling.eval.cmd` runs with CWD = the per-gate artifacts dir, NOT your repo.**
+  Anchor repo-bound checks with `cd "$EVAL_REPO_DIR" && <cmd>` (`EVAL_RUN_DIR` = the
+  artifacts dir; `process/delivery-loop.md` §4.2.6). The validator WARNs when the cmd
+  references neither variable.
+- **`autonomy.auto_pass_rules.auto_fix_iteration.only_if_findings_severity_at_most`**
+  is the worst finding severity the loop may auto-fix without a human (template
+  default `P1`: contract-level findings auto-fix, only P0 escalates; set `P2` for the
+  most conservative posture — every P0/P1 escalates; still bounded by `max_rounds` /
+  budget / dry-stop either way).
+
 ---
 
 ## The copy-paste prompt
@@ -73,10 +85,17 @@ Working directory is THIS repo's root (the adopter repo). Do everything from her
      prompt): use  --loop-mode full_chain_guided  (adds research -> gate1 ->
      decompose before the delivery loop).
    - Once decomposed: use  --loop-mode delivery_only.
+   NOTE: EVERY sub-sprint in the charter's subsprint_sequence needs either a
+   schema-valid decompose-plan entry or an authored compact/<id>-dev-prompt.md
+   BEFORE its Dev dispatch — otherwise the loop HALTs at dev_spec_refinement for
+   that sub-sprint (by design; it never spends a live Dev call on an unbounded
+   task). Pre-author them to avoid one halt per sub-sprint.
 
 4. PROVE IT OFFLINE FIRST (mock adapters; zero model calls; temp artifacts):
-   .venv/bin/python engine-kit/scheduling/run_loop.py --charter charter.yaml --loop-mode <mode>
+   .venv/bin/python engine-kit/scheduling/run_loop.py --charter charter.yaml --loop-mode <mode> --repo-dir .
    Show me the state trace + audit-chain result.
+   (Keep --repo-dir . even offline: it also populates $EVAL_REPO_DIR — a repo-anchored
+   eval.cmd like the default `cd "$EVAL_REPO_DIR" && ...` fails on `cd ""` without it.)
 
 5. RUN THE REAL FIRST LOOP (live models). Before this, confirm with me that the
    bootstrap is committed to git (Loop Ingress isolates per the charter's
@@ -109,7 +128,7 @@ Audit-Spine hash chain.
 | `--charter charter.yaml` | the validated charter (required) |
 | `--loop-mode delivery_only \| full_chain_guided` | `delivery_only` is default; `full_chain_guided` adds research→gate1→decompose |
 | `--subsprint-id sprint-001` | which sub-sprint to drive |
-| `--repo-dir .` | enables **Loop Ingress** git isolation (per `charter.isolation`); also sets the base for the default run dir |
+| `--repo-dir .` | enables **Loop Ingress** git isolation (per `charter.isolation`); also sets the base for the default run dir AND populates `$EVAL_REPO_DIR` for repo-anchored `eval.cmd` |
 | `--run-dir <path>` | override run-artifact dir (default: `<repo>/.runs/<loop_id>`) |
 | `--allow-real` (+ env `AIDAZI_ALLOW_REAL_ADAPTER=1`) | build + run the **real** adapters; without it, **mock** (safe dry-run) |
 | `--memory-root <dir>` (or `charter.memory.enabled: true`) | enable **Loop Memory** (optional; OFF by default) — inject prior cross-loop lessons at ingress, record lessons at close; starts empty |

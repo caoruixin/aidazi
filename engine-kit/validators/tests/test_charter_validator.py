@@ -377,7 +377,7 @@ class SemanticUnitTests(unittest.TestCase):
                 "deliver": {"agent_kind": "claude_code"},
                 "dev": {"agent_kind": "claude_code"},
                 "review": {"agent_kind": "codex"},
-                "eval": {"cmd": "true", "timeout_seconds": 1},
+                "eval": {"cmd": 'cd "$EVAL_REPO_DIR" && true', "timeout_seconds": 1},
                 "acceptance": {
                     "enabled": False,
                     "on_fix_required": {
@@ -516,7 +516,7 @@ class CapabilityGateTests(unittest.TestCase):
                 "deliver": {"agent_kind": "claude_code"},
                 "dev": {"agent_kind": "claude_code"},
                 "review": {"agent_kind": "codex"},
-                "eval": {"cmd": "true", "timeout_seconds": 1},
+                "eval": {"cmd": 'cd "$EVAL_REPO_DIR" && true', "timeout_seconds": 1},
                 "acceptance": {
                     "enabled": False,
                     "harness": "headless",
@@ -559,7 +559,7 @@ class CapabilityGateTests(unittest.TestCase):
                 "deliver": {"agent_kind": "claude_code"},
                 "dev": {"agent_kind": "claude_code"},
                 "review": {"agent_kind": "codex"},
-                "eval": {"cmd": "true", "timeout_seconds": 1},
+                "eval": {"cmd": 'cd "$EVAL_REPO_DIR" && true', "timeout_seconds": 1},
                 "acceptance": {
                     "enabled": False,
                     "on_fix_required": {
@@ -601,7 +601,7 @@ def _facet_a_charter() -> dict:
                        "provider": "openai", "model": "gpt-5.5",
                        "capability_ref": "openai-gpt5-codex",
                        "tools": ["Read", "Grep", "Glob"]},
-            "eval": {"cmd": "true", "timeout_seconds": 1},
+            "eval": {"cmd": 'cd "$EVAL_REPO_DIR" && true', "timeout_seconds": 1},
             "acceptance": {"enabled": False, "agent_kind": "claude_code",
                            "harness": "claude_code", "provider": "anthropic",
                            "model": "claude-opus-4-8",
@@ -1163,6 +1163,44 @@ class NotificationsTests(unittest.TestCase):
         self.assertIn("notifications_argv0_blank", report.rules_fired)
 
 
+class EvalCwdAnchorTests(unittest.TestCase):
+    """ADVISORY eval_cmd_cwd_anchor WARN: eval.cmd runs with CWD = the per-gate
+    artifacts dir, so a cmd naming neither $EVAL_REPO_DIR nor $EVAL_RUN_DIR is
+    very likely assuming a repo CWD it will not get (the tankbattle 2026-07-14
+    first-eval-gate failure; Phase-1 canary hit the same trap). Never an ERROR."""
+
+    def _base(self) -> dict:
+        return SemanticUnitTests._base(self)
+
+    def test_unanchored_cmd_warns_only(self):
+        c = self._base()
+        c["tooling"]["eval"]["cmd"] = "npm test && npx playwright test"
+        report = cv.validate_charter(c)
+        self.assertTrue(report.ok, msg=report.render())  # WARN, not ERROR
+        self.assertIn("eval_cmd_cwd_anchor", {i.rule for i in report.warnings})
+
+    def test_repo_dir_anchor_is_silent(self):
+        c = self._base()
+        c["tooling"]["eval"]["cmd"] = 'cd "$EVAL_REPO_DIR" && npm test'
+        report = cv.validate_charter(c)
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertNotIn("eval_cmd_cwd_anchor", {i.rule for i in report.warnings})
+
+    def test_run_dir_reference_is_silent(self):
+        # A cmd inspecting the artifacts dir itself knows the CWD contract.
+        c = self._base()
+        c["tooling"]["eval"]["cmd"] = 'test -s "$EVAL_RUN_DIR/evidence.json"'
+        report = cv.validate_charter(c)
+        self.assertTrue(report.ok, msg=report.render())
+        self.assertNotIn("eval_cmd_cwd_anchor", {i.rule for i in report.warnings})
+
+    def test_no_eval_cmd_is_noop(self):
+        c = self._base()
+        del c["tooling"]["eval"]
+        report = cv.validate_charter(c)
+        self.assertNotIn("eval_cmd_cwd_anchor", {i.rule for i in report.warnings})
+
+
 class ModelIsHarnessNameTests(unittest.TestCase):
     """A harness name is never a model id: deterministic ERROR at preflight
     (the airplat 2026-07-07 'Cannot use this model: cursor-agent' failure)."""
@@ -1187,7 +1225,7 @@ class ModelIsHarnessNameTests(unittest.TestCase):
                 "dev": {"agent_kind": harness, "harness": harness,
                         "provider": provider, "model": model},
                 "review": {"agent_kind": "codex"},
-                "eval": {"cmd": "true", "timeout_seconds": 1},
+                "eval": {"cmd": 'cd "$EVAL_REPO_DIR" && true', "timeout_seconds": 1},
                 "acceptance": {
                     "enabled": False,
                     "on_fix_required": {

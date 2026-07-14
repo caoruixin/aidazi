@@ -46,7 +46,7 @@ tooling:
     model: gpt-5.5
     tools: [Read, Grep, Glob]
   eval:
-    cmd: pytest -q engine-kit/validators/tests
+    cmd: cd "$EVAL_REPO_DIR" && pytest -q engine-kit/validators/tests
     timeout_seconds: 600
   acceptance:
     enabled: true

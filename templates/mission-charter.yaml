@@ -56,10 +56,16 @@ autonomy:
     # default (2026-06-29). Removes the most common mid-loop human halt while staying bounded
     # (max_rounds + severity cap). Set enabled: false to require a human confirm on every Review
     # fix_required.
+    # only_if_findings_severity_at_most = the WORST finding severity still permitted to auto-fix
+    # (loop_controller precedence #4; anything strictly worse escalates to a human checkpoint):
+    #   P2 = no P0/P1 auto-fix — every P0/P1 escalates (most conservative; P2 findings
+    #        themselves are record-only: never fixed, an all-P2 verdict normalizes to pass)
+    #   P1 = auto-fix contract-level (P1) findings too; only P0 escalates (default, 2026-07-14)
+    #   P0 = auto-fix everything (still bounded by max_rounds / budget / dry-stop)
     auto_fix_iteration:
       enabled: true
       max_rounds: 2
-      only_if_findings_severity_at_most: P2
+      only_if_findings_severity_at_most: P1
     # adaptive_insert stays DISABLED here: gap-driven Acceptance->Deliver follow-up (Track 2 P2.0)
     # is a separate, pre-authorized in-envelope path that requires its own Constitution amendment
     # before it may be enabled. Do not enable adaptive_insert as part of the autonomy default.
@@ -141,7 +147,11 @@ tooling:
     # skills: [anti-hardcode-review-kernel]  # exemplar packaged skill (skills/anti-hardcode-review-kernel/)
     # subagent_fanout: false                 # read-only lenses only if enabled
   eval:
-    cmd: <shell-command-orchestrator-runs-for-F5-evidence>
+    # CWD = the per-gate ARTIFACTS dir (evidence isolation), NOT the work repo. Anchor
+    # repo-bound checks with $EVAL_REPO_DIR (exported by the orchestrator; empty when no
+    # repo is bound — a repo-anchored cmd then fails, correctly). $EVAL_RUN_DIR = the
+    # artifacts dir itself.
+    cmd: cd "$EVAL_REPO_DIR" && <shell-command-orchestrator-runs-for-F5-evidence>
     timeout_seconds: 600
   acceptance:
     mode: advisory  # off | advisory | auto (canonical; new-charter default). advisory runs but HALTs a pass at

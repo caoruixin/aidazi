@@ -9,7 +9,7 @@ sources:
 - path: governance/context_briefing.md
   sha256: e3cb62ed4a4a4e6d698eb30bc94c9f5b1227201675f4d44be8872067430b4c20
 - path: process/delivery-loop.md
-  sha256: b1d25ba98c783cae57e9f2c60071829db499a22db656ec40d8d29265162a2dee
+  sha256: 0a644d1f5c6cec6646250c5101f4b1cc54ebfd5b0a4e2e96cf70c8d94a7aadb2
 - path: process/role-skill-model.md
   sha256: 33e903c8b9e1ce3fcb2f1ea98b912d02b3a4372443b6efbae0edd25ed630354e
 - path: role-cards/research-agent.md
