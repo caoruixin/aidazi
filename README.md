@@ -119,7 +119,7 @@ flowchart TB
 ### 2.3 Supporting components
 
 - **Control Plane** — the *default* session a fresh coding agent lands in: a lightweight NL command surface **in front of** the chain (not a sixth role). It classifies a request into a routing class, records a schema-valid intent, and dispatches/resumes the right role or runner. It **never** signs artifacts, writes verdicts, or routes around checkpoints.
-- **Governance kernel** — `constitution.md` (sole normative source) projected at cold-start into the always-load kernels; charter validators **reject any checkpoint bypass and refuse to boot**.
+- **Governance kernel** — the always-load kernel trio (`constitution-core.md` + `authoring-kernel.md` + `context_briefing.md`) carries the hard constraints at cold-start, projected from `constitution.md` (sole normative source; the full canonical loads on-demand); charter validators **reject any checkpoint bypass and refuse to boot**.
 - **Requirement Ledger + OW-M3** — `docs/requirements-ledger.json` (durable, intake-agnostic requirement→disposition record). Each requirement's **`surface`** (`user_facing`/`non_user_facing`) is an input contract: a milestone covering any `user_facing` requirement **must** resolve functional acceptance to **`browser_e2e`** (real browser-driven evidence), else sign-off refuses. Additive: no ledger ⇒ dormant/byte-identical. As of **v5**, onboarding **default-generates** a seeded ledger and Research auto-proposes `surface` — so new adopters get Acceptance correctly wired with a human confirming only at authority points (**no new runtime gate**).
 - **Quick-Fix lane** — a human-explicit, **loop-independent** lane for small **non-behavioral** fixes that runs *outside* any loop (no checkpoints to skip). Result is never auto-applied (human cherry-picks); fails closed on unsupported harnesses (`claude_code` + `codex` supported).
 - **Adapter / harness abstraction** — each role binds a `harness × provider × model` in `charter.tooling.<role>`; role boundaries stay invariant regardless of backing agent. This is what makes aidazi **harness-agnostic**.
@@ -338,7 +338,7 @@ The three comparisons below each take a neighbor on the dimensions *it* is usual
 | **milestone / sub-sprint** | a unit of delivery scope closed by an Acceptance gate / the atomic dev→review→close unit inside it (3–5 per milestone) |
 | **MANDATORY_CHECKPOINT** | one of 9 points where human authority is non-negotiable; a charter MAY add, MAY NOT bypass — validator refuses to boot |
 | **acceptance_input_hash / LOAD-CLOSURE** | the digest binding every verdict-affecting Acceptance input; advisory/authoring fields are projected out — no unbound input |
-| **kernel / constitution-core** | the always-load compact projection of the constitution's hard constraints held at cold-start |
+| **kernel / constitution-core** | the always-load compact projection of the constitution's hard constraints held at cold-start (the full canonical loads on-demand) |
 | **control plane** | the default lightweight NL command session that routes requests to the chain/runner; not a sixth role |
 | **Two Loops** | the named distinction between the Delivery Loop (team delivery) and the Auto Loop (agent self-improvement) |
 | **delivery loop / campaign loop** | single-milestone team delivery (Δ-18) / the multi-milestone outer loop over the Driver, pausing only at human gates |
